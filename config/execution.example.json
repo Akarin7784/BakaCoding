@@ -1,0 +1,32 @@
+{
+  "$schema_version": "bakacoding.execution-config.v1",
+  "workspace": {
+    "strategy": "git-worktree",
+    "base": "confirmed-commit",
+    "preserve_user_changes": true
+  },
+  "execution": {
+    "selected": "local",
+    "automatic_backend_switching": false,
+    "backends": {
+      "local": {
+        "enabled": true,
+        "toolchain": "host",
+        "require_docker": false
+      },
+      "docker": {
+        "enabled": false,
+        "image": null,
+        "privileged": false,
+        "mount_docker_socket": false
+      },
+      "ssh-linux": {
+        "enabled": false,
+        "ssh_config_host": null,
+        "remote_workspace_root": null,
+        "host_key_verification": "strict",
+        "require_docker": false
+      }
+    }
+  }
+}
