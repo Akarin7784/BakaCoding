@@ -29,3 +29,5 @@ Thumbs.db
 
 # BakaCoding local worktrees
 .bakacoding/worktrees/
+dist-electron/
+dist-renderer/
