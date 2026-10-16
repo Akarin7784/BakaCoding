@@ -65,7 +65,7 @@ flowchart TD
 
 Node.js + TypeScript 本机协调服务，React + TypeScript 界面，Electron 桌面壳，SQLite（WAL）。默认在本机 Git worktree 中执行，见 [执行配置草案](config/execution.example.json)。
 
-[模型配置示例](config/models.example.json) 按评审组 / 主管结构给出开发阶段的角色示例（`supervisor`、`review_board`、`sub_agent`、`coder`，均为 DeepSeek Flash），字段仍是草案，完整字段草案见 [整体设计 §10](docs/product-design.md#10-评审组与主管模型)。目前没有运行程序读取这些配置。
+[模型配置示例](config/models.example.json) 按评审组 / 主管结构给出开发阶段的角色示例（`supervisor`、`review_board`、`sub_agent`、`coder`，均为 DeepSeek Flash），字段仍是草案，完整字段草案见 [整体设计 §10](docs/product-design.md#10-评审组与主管模型)。这些配置由 `@bakacoding/config-budget` 读取和校验（开发中）。
 
 ## 文档
 
