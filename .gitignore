@@ -1,0 +1,26 @@
+# Local deliverables and review intermediates
+/deliverables/
+
+# Local credentials and settings
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.codex/
+.agents/
+.aws/
+
+# Dependencies and generated output
+node_modules/
+dist/
+coverage/
+playwright-report/
+test-results/
+*.log
+
+# Operating system and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
