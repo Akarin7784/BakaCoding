@@ -1,0 +1,105 @@
+import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
+import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve } from "node:path";
+import { promisify } from "node:util";
+
+const run = promisify(execFile);
+
+export const WORKTREES_DIR = ".bakacoding/worktrees";
+const IGNORE_LINE = "/.bakacoding/worktrees/";
+const TICKET_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+export interface WorktreeInfo {
+  path: string;
+  branch: string;
+}
+
+async function git(cwd: string, ...args: string[]): Promise<string> {
+  const { stdout } = await run("git", args, { cwd, maxBuffer: 16 * 1024 * 1024 });
+  return stdout.trim();
+}
+
+function assertTicket(ticket_id: string): void {
+  if (!TICKET_RE.test(ticket_id) || ticket_id.includes("..")) {
+    throw new Error(`非法 ticket_id：${JSON.stringify(ticket_id)}`);
+  }
+}
+
+/** 每单 worktree 管理：路径 <repo>/.bakacoding/worktrees/<ticket_id>-r<n>，分支 bakacoding/<ticket_id>-r<n>。 */
+export class WorktreeManager {
+  private constructor(readonly repoRoot: string) {}
+
+  static async open(dir: string): Promise<WorktreeManager> {
+    return new WorktreeManager(await git(resolve(dir), "rev-parse", "--show-toplevel"));
+  }
+
+  /** 把 worktree 目录写进 .git/info/exclude（不改用户跟踪的 .gitignore）。 */
+  async ensureIgnored(): Promise<void> {
+    const commonDir = resolve(
+      this.repoRoot,
+      await git(this.repoRoot, "rev-parse", "--git-common-dir"),
+    );
+    const exclude = join(commonDir, "info", "exclude");
+    await mkdir(join(commonDir, "info"), { recursive: true });
+    const cur = existsSync(exclude) ? await readFile(exclude, "utf8") : "";
+    if (
+      cur.split(/\r?\n/).some((l) => l.trim() === IGNORE_LINE || l.trim() === `${WORKTREES_DIR}/`)
+    )
+      return;
+    await appendFile(exclude, `${cur && !cur.endsWith("\n") ? "\n" : ""}${IGNORE_LINE}\n`);
+  }
+
+  async createWorktree(
+    ticket_id: string,
+    base_commit: string,
+    resubmit_index = 0,
+  ): Promise<WorktreeInfo> {
+    assertTicket(ticket_id);
+    if (!Number.isInteger(resubmit_index) || resubmit_index < 0)
+      throw new Error("resubmit_index 须为非负整数");
+    const sha = await git(this.repoRoot, "rev-parse", "--verify", `${base_commit}^{commit}`);
+    await this.ensureIgnored();
+    const name = `${ticket_id}-r${resubmit_index}`;
+    const path = join(this.repoRoot, WORKTREES_DIR, name);
+    const branch = `bakacoding/${name}`;
+    if (existsSync(path)) throw new Error(`worktree 已存在：${path}`);
+    await mkdir(join(this.repoRoot, WORKTREES_DIR), { recursive: true });
+    // 新 worktree 只含已提交内容，不带入未跟踪文件（如密钥）。
+    await git(this.repoRoot, "worktree", "add", "-b", branch, path, sha);
+    return { path, branch };
+  }
+
+  async list(): Promise<WorktreeInfo[]> {
+    const out = await git(this.repoRoot, "worktree", "list", "--porcelain");
+    const res: WorktreeInfo[] = [];
+    let path = "";
+    for (const line of out.split("\n")) {
+      if (line.startsWith("worktree ")) path = line.slice(9);
+      else if (line.startsWith("branch refs/heads/bakacoding/"))
+        res.push({ path, branch: line.slice(18) });
+    }
+    return res.filter((w) => this.isManaged(w.path));
+  }
+
+  private isManaged(p: string): boolean {
+    const rel = relative(join(this.repoRoot, WORKTREES_DIR), p);
+    return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+  }
+
+  /** 按 ticket_id（清掉该单所有轮次）或 worktree 路径清理：删 worktree 和对应分支。 */
+  async cleanup(ticketIdOrPath: string): Promise<string[]> {
+    const all = await this.list();
+    const byPath = ticketIdOrPath.includes("/") || ticketIdOrPath.includes("\\");
+    if (!byPath) assertTicket(ticketIdOrPath);
+    const targets = byPath
+      ? all.filter((w) => resolve(w.path) === resolve(ticketIdOrPath))
+      : all.filter((w) => /^bakacoding\/(.+)-r\d+$/.exec(w.branch)?.[1] === ticketIdOrPath);
+    for (const w of targets) {
+      await git(this.repoRoot, "worktree", "remove", "--force", w.path);
+      await git(this.repoRoot, "branch", "-D", w.branch);
+    }
+    await git(this.repoRoot, "worktree", "prune");
+    return targets.map((w) => w.path);
+  }
+}
