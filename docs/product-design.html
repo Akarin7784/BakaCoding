@@ -1,5 +1,5 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="BakaCoding 整体设计：Flash 编码池、副 Agent 评审与复投、合并队列、评审组与主管模型。"><title>BakaCoding 笨蛋编程助手 整体设计</title><style>:root{--ink:#202833;--muted:#647184;--line:#dce2e9;--blue:#244b75}*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:24px}body{margin:0;background:#f3f5f7;color:var(--ink);font:16px/1.9 "Microsoft YaHei","PingFang SC",sans-serif}aside{position:fixed;left:0;top:0;bottom:0;width:270px;padding:30px 22px;background:#fff;border-right:1px solid var(--line);overflow:auto}aside .brand{font-size:23px;font-weight:750;letter-spacing:0;color:#14253d}aside .meta{font-size:12px;color:var(--muted);margin:5px 0 22px}nav a{display:block;color:#4c596a;text-decoration:none;padding:6px 0;font-size:13px;line-height:1.55}nav a:hover,nav a.active{color:var(--blue);font-weight:700}main{max-width:1120px;margin:35px 42px 80px 310px;background:white;padding:55px 62px 70px;border:1px solid #e3e7ec}h1,h2,h3{color:#000;line-height:1.45}h1{font-size:31px;letter-spacing:-.5px;margin:0 0 18px;max-width:800px}h2{font-size:25px;margin:64px 0 20px;padding-top:5px}h3{font-size:19px;margin:32px 0 12px}p{margin:12px 0 17px;overflow-wrap:anywhere}main>p:first-of-type{font-size:14px;color:var(--muted);margin-bottom:28px}a{color:var(--blue);text-underline-offset:3px}a.ref{font-size:.86em;white-space:nowrap}ol,ul{padding-left:25px}li{padding:4px 0}#navigation+ol{columns:2;column-gap:35px;font-size:14px}table{border-collapse:collapse;width:100%;font-size:13px;line-height:1.7;margin:12px 0 24px}th,td{border:1px solid #d9d9d9;padding:11px 12px;text-align:left;vertical-align:middle;min-width:64px}th{background:#eaf0f7;color:#000;font-weight:700}tr:nth-child(even) td{background:#fafbfd}.table-wrap{max-width:100%;overflow-x:auto}pre{background:#f5f7f9;border:1px solid #e0e5eb;border-radius:5px;padding:20px;font:12px/1.8 Consolas,"Microsoft YaHei",monospace;overflow:auto;white-space:pre}code{font-family:Consolas,"Microsoft YaHei",monospace}figure{margin:25px 0}.system-map svg{width:100%;height:auto}figcaption{font-size:12px;color:var(--muted);text-align:center}.source-image{margin:25px 0;color:var(--muted);font-size:13px}.source-image img{width:100%;height:auto;margin-top:15px;cursor:zoom-in}summary{cursor:pointer}.tools{position:fixed;bottom:20px;right:20px;display:flex;gap:8px}.tools button{border:1px solid #ccd5df;background:white;color:#34445a;border-radius:7px;padding:10px 16px;cursor:pointer;font:13px "Microsoft YaHei",sans-serif}footer{margin-top:50px;font-size:12px;color:var(--muted)}@media(min-width:1550px){main{margin-left:calc(270px + (100vw - 1430px)/2)}}@media(max-width:1050px){aside{width:220px;padding:24px 15px}main{margin-left:245px;margin-right:25px;padding:35px 28px}body{font-size:15px}}@media(max-width:760px){aside{position:static;width:auto;max-height:240px;border-bottom:1px solid var(--line)}aside nav{columns:2}main{margin:18px 12px;padding:28px 20px}h1{font-size:26px}#navigation+ol{columns:1}.tools{bottom:10px;right:10px}}@media print{@page{size:A4;margin:18mm 16mm}body{font-size:10pt;line-height:1.7;background:white}aside,.tools,.source-image{display:none}main{margin:0;max-width:none;padding:0;border:0}h1{font-size:25pt}h2{font-size:18pt;margin-top:28px;break-after:avoid}h3{font-size:12pt;break-after:avoid}p{orphans:3;widows:3}table{font-size:8.4pt;line-height:1.5;table-layout:auto}th,td{padding:7px 8px}tr,figure,pre{break-inside:avoid}thead{display:table-header-group}.table-wrap{overflow:visible}pre{font-size:7.5pt;white-space:pre-wrap;overflow-wrap:anywhere}.system-map{break-inside:avoid}h2,h3{break-after:avoid-page}a{color:#233f62}nav a{color:black}}</style></head><body><aside><div class="brand">BakaCoding</div><div class="meta">整体设计 2.4<br>2026.10.17 · 由 product-design.md 生成</div><nav aria-label="章节导航"><a href="#chapter-1">1 定位</a><a href="#chapter-2">2 v1 范围</a><a href="#chapter-3">3 核心流水线</a><a href="#chapter-4">4 需求单</a><a href="#chapter-5">5 Flash 编码池</a><a href="#chapter-6">6 受限工具层</a><a href="#chapter-7">7 副 Agent 与 PR 抽象</a><a href="#chapter-8">8 评审与复投</a><a href="#chapter-9">9 合并队列与反压</a><a href="#chapter-10">10 评审组与主管模型</a><a href="#chapter-11">11 安全</a><a href="#chapter-12">12 持久化与恢复</a><a href="#chapter-13">13 成本与预算</a><a href="#chapter-14">14 日志与观测</a><a href="#chapter-15">15 技术栈与执行环境</a><a href="#chapter-16">16 界面</a><a href="#chapter-17">17 主要风险</a><a href="#chapter-18">18 待定事项</a></nav></aside><main><h1>BakaCoding 笨蛋编程助手 整体设计</h1>
-<p>版本 2.4 · 2026 年 10 月 17 日（UTC+8）· 采用 MIT 协议的开源项目</p>
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="BakaCoding 整体设计：Flash 编码池、副 Agent 评审与复投、合并队列、评审组与主管模型。"><title>BakaCoding 笨蛋编程助手 整体设计</title><style>:root{--ink:#202833;--muted:#647184;--line:#dce2e9;--blue:#244b75}*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:24px}body{margin:0;background:#f3f5f7;color:var(--ink);font:16px/1.9 "Microsoft YaHei","PingFang SC",sans-serif}aside{position:fixed;left:0;top:0;bottom:0;width:270px;padding:30px 22px;background:#fff;border-right:1px solid var(--line);overflow:auto}aside .brand{font-size:23px;font-weight:750;letter-spacing:0;color:#14253d}aside .meta{font-size:12px;color:var(--muted);margin:5px 0 22px}nav a{display:block;color:#4c596a;text-decoration:none;padding:6px 0;font-size:13px;line-height:1.55}nav a:hover,nav a.active{color:var(--blue);font-weight:700}main{max-width:1120px;margin:35px 42px 80px 310px;background:white;padding:55px 62px 70px;border:1px solid #e3e7ec}h1,h2,h3{color:#000;line-height:1.45}h1{font-size:31px;letter-spacing:-.5px;margin:0 0 18px;max-width:800px}h2{font-size:25px;margin:64px 0 20px;padding-top:5px}h3{font-size:19px;margin:32px 0 12px}p{margin:12px 0 17px;overflow-wrap:anywhere}main>p:first-of-type{font-size:14px;color:var(--muted);margin-bottom:28px}a{color:var(--blue);text-underline-offset:3px}a.ref{font-size:.86em;white-space:nowrap}ol,ul{padding-left:25px}li{padding:4px 0}#navigation+ol{columns:2;column-gap:35px;font-size:14px}table{border-collapse:collapse;width:100%;font-size:13px;line-height:1.7;margin:12px 0 24px}th,td{border:1px solid #d9d9d9;padding:11px 12px;text-align:left;vertical-align:middle;min-width:64px}th{background:#eaf0f7;color:#000;font-weight:700}tr:nth-child(even) td{background:#fafbfd}.table-wrap{max-width:100%;overflow-x:auto}pre{background:#f5f7f9;border:1px solid #e0e5eb;border-radius:5px;padding:20px;font:12px/1.8 Consolas,"Microsoft YaHei",monospace;overflow:auto;white-space:pre}code{font-family:Consolas,"Microsoft YaHei",monospace}figure{margin:25px 0}.system-map svg{width:100%;height:auto}figcaption{font-size:12px;color:var(--muted);text-align:center}.source-image{margin:25px 0;color:var(--muted);font-size:13px}.source-image img{width:100%;height:auto;margin-top:15px;cursor:zoom-in}summary{cursor:pointer}.tools{position:fixed;bottom:20px;right:20px;display:flex;gap:8px}.tools button{border:1px solid #ccd5df;background:white;color:#34445a;border-radius:7px;padding:10px 16px;cursor:pointer;font:13px "Microsoft YaHei",sans-serif}footer{margin-top:50px;font-size:12px;color:var(--muted)}@media(min-width:1550px){main{margin-left:calc(270px + (100vw - 1430px)/2)}}@media(max-width:1050px){aside{width:220px;padding:24px 15px}main{margin-left:245px;margin-right:25px;padding:35px 28px}body{font-size:15px}}@media(max-width:760px){aside{position:static;width:auto;max-height:240px;border-bottom:1px solid var(--line)}aside nav{columns:2}main{margin:18px 12px;padding:28px 20px}h1{font-size:26px}#navigation+ol{columns:1}.tools{bottom:10px;right:10px}}@media print{@page{size:A4;margin:18mm 16mm}body{font-size:10pt;line-height:1.7;background:white}aside,.tools,.source-image{display:none}main{margin:0;max-width:none;padding:0;border:0}h1{font-size:25pt}h2{font-size:18pt;margin-top:28px;break-after:avoid}h3{font-size:12pt;break-after:avoid}p{orphans:3;widows:3}table{font-size:8.4pt;line-height:1.5;table-layout:auto}th,td{padding:7px 8px}tr,figure,pre{break-inside:avoid}thead{display:table-header-group}.table-wrap{overflow:visible}pre{font-size:7.5pt;white-space:pre-wrap;overflow-wrap:anywhere}.system-map{break-inside:avoid}h2,h3{break-after:avoid-page}a{color:#233f62}nav a{color:black}}</style></head><body><aside><div class="brand">BakaCoding</div><div class="meta">整体设计 2.5<br>2026.10.17 · 由 product-design.md 生成</div><nav aria-label="章节导航"><a href="#chapter-1">1 定位</a><a href="#chapter-2">2 v1 范围</a><a href="#chapter-3">3 核心流水线</a><a href="#chapter-4">4 需求单</a><a href="#chapter-5">5 Flash 编码池</a><a href="#chapter-6">6 受限工具层</a><a href="#chapter-7">7 副 Agent 与 PR 抽象</a><a href="#chapter-8">8 评审与复投</a><a href="#chapter-9">9 合并队列与反压</a><a href="#chapter-10">10 评审组与主管模型</a><a href="#chapter-11">11 安全</a><a href="#chapter-12">12 持久化与恢复</a><a href="#chapter-13">13 成本与预算</a><a href="#chapter-14">14 日志与观测</a><a href="#chapter-15">15 技术栈与执行环境</a><a href="#chapter-16">16 界面</a><a href="#chapter-17">17 主要风险</a><a href="#chapter-18">18 诊断包导出</a><a href="#chapter-19">19 待定事项</a></nav></aside><main><h1>BakaCoding 笨蛋编程助手 整体设计</h1>
+<p>版本 2.5 · 2026 年 10 月 17 日（UTC+8）· 采用 MIT 协议的开源项目</p>
 <blockquote>
 <p>本文是 BakaCoding 的整体设计，依据 <a href="https://github.com/Akarin7784/BakaCoding/blob/main/docs/bakacoding-analysis-and-design.md">分析与设计</a> 和 <a href="https://github.com/Akarin7784/BakaCoding/blob/main/docs/bakacoding-design-backlog.md">设计决策与待办</a> 重写。现阶段只做整体设计，不划分开发切片。<strong>当前处于设计阶段，尚无可运行代码</strong>；性能、规模和效果都需要实测验证。文中不写吞吐、速度、价格数字，配置默认值都是初始值，待实测；需要时引用 <a href="https://github.com/Akarin7784/BakaCoding/blob/main/docs/bakacoding-flash-concurrency-research.md">Flash 并发研究</a> 中带来源的事实。</p>
 </blockquote>
@@ -56,7 +56,7 @@
 <ul>
 <li><strong>Flash 的权限由副 Agent 按单现场设计</strong>：副 Agent 读完需求单后决定给哪些工具、可读写哪些文件、能否新建、删除或重命名。写权限只能在本单写入范围以内。Flash 中途需要更多权限时向副 Agent 申请，副 Agent 当场批准或拒绝；但申请的写权限超出本单写入范围时，副 Agent 不能直接批，要交给调度器重新加锁，加锁失败就上报主管。</li>
 <li><strong>系统外层硬边界</strong>（副 Agent 也不能越过）：只能在本单工作区内；不给 shell、网络、git；密钥和 <code>.env</code> 类文件不放行。路径按真实路径解析，处理符号链接。</li>
-<li>权限清单（含中途的批准和拒绝）写入 PR 记录，评审时一并审查。</li>
+<li>权限清单（含中途的申请、批准和拒绝，每条带时间和理由）写入 PR 记录，评审时一并审查；需记录以供诊断包使用（第 18 节）。</li>
 <li>依赖类需求单：Flash 只改清单文件，不装包，评审时标为高风险；实际安装由用户自己的 CI 负责。</li>
 </ul>
 <h2 id="chapter-7">7. 副 Agent 与 PR 抽象</h2>
@@ -64,7 +64,7 @@
 <li>一单一个副 Agent：写编码提示词、设计 Flash 权限、开 PR、发起评审、复投。副 Agent 之间不互审。</li>
 <li><strong>PR 抽象</strong>，一套接口两种实现：</li>
 <li>有 GitHub：推到工作分支后直接开真 PR；合并队列轮到且冲突检测通过后，由 BakaCoding 主动在 GitHub 上把 PR 合入集成分支。</li>
-<li>没有远程仓库：建本地工作分支，加一条 PR 记录（diff、需求单、评审结论、权限清单、复投计数），合并就是本地合进集成分支。</li>
+<li>没有远程仓库：建本地工作分支，加一条 PR 记录（diff、需求单、评审结论、权限清单、复投计数；每轮的 diff、评审结论、不通过原因和带回的评审意见按轮次保留，需记录以供诊断包使用（第 18 节）），合并就是本地合进集成分支。</li>
 <li><strong>本地记录为准</strong>：状态、复投次数、评审结论都以 BakaCoding 自己的记录为准，GitHub PR 只是同步出去的展示和合并通道。两边不一致时以本地为准，差异记入日志。用户在 GitHub 上手动关闭或合并 PR 时，同步回本地，交给主管 Agent 处理。</li>
 </ul>
 <h2 id="chapter-8">8. 评审与复投</h2>
@@ -168,17 +168,26 @@
 <li>本机协调服务使用 SQLite（WAL），单一写入者加租约，配合幂等键。</li>
 <li>重启后能识别在途的 Flash 调用、未推送的补丁和已开的 PR，不重复开 PR。</li>
 <li>PR 抽象的本地记录也存在这里。</li>
+<li>每单的基线 commit 和上下文包要保存到可复现为止，合并结果（是否冲突、基线是否变化、是否重新评审、最终是否合入）和读到的 CI check 结果也要落库；需记录以供诊断包使用（第 18 节）。</li>
 </ul>
 <h2 id="chapter-13">13. 成本与预算</h2>
 <ul>
 <li><strong>每日预算必填</strong>：不预设金额，首次运行时必须填写，和主管模型一样，缺了就不启动。</li>
 <li>每单上限默认为每日预算的 5%（初始值，待实测），含复投的花费；每单另设输出上限。</li>
 <li>触顶时降并发。</li>
-<li>费用台账按需求单（含复投）、副 Agent、评审组分列。</li>
+<li>费用台账按需求单（含复投）、副 Agent、评审组分列；每次调用的费用也要单独记，并标明是否属于复投，需记录以供诊断包使用（第 18 节）。</li>
 <li>成本主要由并发数、单张需求单的输入上下文和复投次数决定。</li>
 </ul>
 <h2 id="chapter-14">14. 日志与观测</h2>
-<p>结构化事件日志记录每次调用的模型、档位、token、缓存命中、耗时和结果，以及反压决策原因、本地与 GitHub 记录的差异。每张单从需求单到合并全程可追溯。</p>
+<p>结构化事件日志记录每次调用的角色、模型、档位、完整提示词和输出、token、缓存命中、耗时、结果、是否因限流重试，以及主管拆单时的推理摘要。其中角色、完整提示词和输出、限流重试、推理摘要是新增项，需记录以供诊断包使用（第 18 节）。日志还记录反压决策原因、本地与 GitHub 记录的差异。每张单从需求单到合并全程可追溯。</p>
+<ul>
+<li><strong>落库前轻脱敏</strong>：写入日志前先去掉 key、<code>.env</code> 内容和疑似密钥；导出诊断包时再做完整脱敏（第 18 节）。</li>
+<li><strong>保留期限</strong>：完整提示词和输出默认保留 30 天（<code>diagnostics.retention_days</code>，初始值，待实测，可配置）；过期后只留摘要和统计（token、费用、结论）。用户标为“收进评测集”的单永久保留。</li>
+</ul>
+<pre><code class="language-jsonc">&quot;diagnostics&quot;: {                  // 草案
+  &quot;retention_days&quot;: 30            // 完整提示词和输出的保留天数；收进评测集的单不受限
+}
+</code></pre>
 <h2 id="chapter-15">15. 技术栈与执行环境</h2>
 <ul>
 <li>技术栈：React + TypeScript 界面，Node.js + TypeScript 本机协调服务，SQLite + WAL，桌面壳 Electron。</li>
@@ -209,6 +218,7 @@
 <li>PR 列表：每条显示状态和复投次数，点开跳到所在群里对应的需求话题。</li>
 <li><strong>编码池状态</strong>（并发、限流、反压）不单独做页面，放在右侧边栏顶部，占一行。</li>
 <li><strong>配置</strong>：做成主管对话里的设置入口，不单独做配置页。</li>
+<li><strong>诊断包导出入口</strong>：右侧边栏 PR 列表（单张需求单）和主管对话（单张单、一个需求或某个时间段），见第 18 节。</li>
 <li><strong>视觉风格</strong>：简约、极简；Agent 图标用简约设计的机器人。</li>
 <li>颜色：中性色为主，只用一种强调色，强调色只用来标状态（运行、复投、冲突、已合并）；不用渐变，不用装饰性阴影。</li>
 <li>分区：靠留白和细分隔线，不堆叠卡片；默认跟随系统的深色 / 浅色模式。</li>
@@ -221,7 +231,31 @@
 <li><strong>拆单质量</strong>：编码池能否并发，取决于主管能否拆出写入范围不重叠、足够小、自洽的需求单。</li>
 <li><strong>语义冲突</strong>：写入范围不重叠只能防止文本冲突，挡不住语义冲突；靠需求单的接口声明、生产者→消费者排序、基线变化后的重新评审，以及合入 main 前主管审集成分支整体 diff（配了 CI 的须为绿）来缓解；v1 不执行代码，集成分支仍可能出现只有构建才能发现的问题。</li>
 </ul>
-<h2 id="chapter-18">18. 待定事项</h2>
+<h2 id="chapter-18">18. 诊断包导出</h2>
+<p>用于排查问题和离线分析。离线分析不是验收；现阶段不做验收设计。</p>
+<ul>
+<li><strong>导出粒度</strong>：单张需求单、一个需求（含它拆出的所有单）、某个时间段。<strong>一个包只放一个项目</strong>：按时间段导出时必须选择项目；跨项目就分别导出多个包，合并评测集交给离线工具。入口在右侧边栏的 PR 列表或主管对话（第 16 节）。</li>
+<li><strong>包的形式</strong>：一个 zip，内含 JSONL 和原始文件。</li>
+<li><strong>内容</strong>：</li>
+<li>需求单原文，以及主管拆单时的推理摘要。</li>
+<li>每次模型调用的角色、模型、档位、完整提示词和输出（超过保留期的只有摘要和统计）、token 数、缓存命中、耗时、是否因限流重试。</li>
+<li>副 Agent 给出的权限清单，以及中途的申请、批准和拒绝。</li>
+<li>每一轮的 diff、评审结论和不通过原因；复投次数，以及每次复投带回的评审意见。</li>
+<li>合并结果：是否冲突、基线是否变化、是否重新评审、最终是否合入。</li>
+<li>读到的 CI check 结果（如果有）。</li>
+<li>费用：每次调用的费用，按需求单汇总，复投产生的费用单独列出。</li>
+<li>基线 commit，以及复现这张单所需的上下文包。</li>
+<li><strong>离线分析与评测集</strong>：</li>
+<li>每张单带一个结果标签：通过、复投后通过、超限上报、被用户否决。</li>
+<li>用户可以把某张单标为“收进评测集”，它的完整记录永久保留（第 14 节）。</li>
+<li>提供重放格式：给定基线 commit、需求单和上下文包，用别的模型或档位重跑同一张单，再对比评审结果。复投率和评审质量都从这里统计。</li>
+<li><strong>安全</strong>：</li>
+<li>落库前已做轻脱敏（第 14 节）；导出前再强制完整脱敏，去掉 key、<code>.env</code> 内容和疑似密钥（与第 11 节同一套规则）。</li>
+<li>默认只带 diff 和上下文片段；带完整仓库须用户勾选。</li>
+<li>包里附一份脱敏报告。</li>
+<li><strong>格式</strong>：带版本号的 schema <code>bakacoding-diag/v1</code>；以后只加字段，不破坏旧包。</li>
+</ul>
+<h2 id="chapter-19">19. 待定事项</h2>
 <p>设计上已无待定项。</p>
 <ul>
 <li>~~是否只用国产模型~~：已定，开发阶段只接 DeepSeek，其他服务商以后通过适配层补丁接入。</li>
