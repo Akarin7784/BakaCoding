@@ -77,6 +77,13 @@ Node.js + TypeScript 本机协调服务，React + TypeScript 界面，Electron �
 
 文档通过 GitHub Pages 托管，`docs/` 更新合并到 `main` 后自动部署。
 
+## 配置
+
+配置示例在 `config/models.example.json`。配置按 schema 严格校验，遇到未知字段直接报错，JSON 里不写注释。
+
+- `budget.daily_micro_usd`：每日预算，必填，单位是整数微美元（1 美元 = 1,000,000）。示例文件里的数值是示例，请按自己预算改。
+- API key 只从环境变量读取（`DEEPSEEK_API_KEY`；用 GitHub 时另读 `GITHUB_TOKEN`），不要写进配置或仓库。
+
 ## 参与共建
 
 欢迎通过 [Issues](https://github.com/Akarin7784/BakaCoding/issues) 讨论设计。公开讨论请勿附带密钥、隐私或未经授权的私有代码。

@@ -1,6 +1,6 @@
 # BakaCoding 笨蛋编程助手 整体设计
 
-版本 3.0（设计定稿）· 2026 年 10 月 17 日（UTC+8）· 采用 MIT 协议的开源项目
+版本 3.1（接口决定）· 2026 年 10 月 17 日（UTC+8）· 采用 MIT 协议的开源项目
 
 > 本文是 BakaCoding 的整体设计，依据 [分析与设计](bakacoding-analysis-and-design.md) 和 [设计决策与待办](bakacoding-design-backlog.md) 重写。现阶段只做整体设计，不划分开发切片。**当前处于设计阶段，尚无可运行代码**；性能、规模和效果都需要实测验证。文中不写吞吐、速度、价格数字，配置默认值都是初始值，待实测；需要时引用 [Flash 并发研究](bakacoding-flash-concurrency-research.md) 中带来源的事实。
 
@@ -54,18 +54,18 @@ BakaCoding 帮助个人开发者推进大型软件工程。核心是 **Flash 编
 
 ## 5. Flash 编码池
 
-- 每张需求单开一个临时 Flash 代理，写完即销毁。默认思考档 `low`，用户可按项目或单次运行配置；思考档位取值 `off` / `low` / `high` / `max`，角色配置的 `low` / `high` / `max` 直接对应，不使用数值档位；配置字段 `effort` 与服务商无关，取值 `off` / `low` / `high` / `max`；映射由模块 1 的服务商能力表负责：DeepSeek → `output_config.effort`，OpenAI 兼容服务商 → `reasoning_effort`（[serialize.ts](https://github.com/deepseek-ai/deepseek-harness/tree/dsh-v0.2.1-alpha.5/packages/llm/llm-deepseek/src/serialize.ts)）；不支持的档位报错，不静默改档。
+- 每张需求单开一个临时 Flash 代理，写完即销毁。默认思考档 `low`，用户可按项目或单次运行配置；思考档位取值 `off` / `low` / `high` / `max`，角色配置的 `low` / `high` / `max` 直接对应，不使用数值档位；配置字段 `effort` 与服务商无关，取值 `off` / `low` / `high` / `max`；映射由模块 1 的服务商能力表负责：DeepSeek → `output_config.effort`，OpenAI 兼容服务商 → `reasoning_effort`（[serialize.ts](https://github.com/deepseek-ai/deepseek-harness/tree/dsh-v0.2.1-alpha.5/packages/llm/llm-deepseek/src/serialize.ts)）；服务商不支持的档位降到最高可用档，并记一条警告，不报错；映射以能力表为准，配置里不设 `effort_map`。
 - 默认模型：DeepSeek V4.1-Flash（`deepseek-flash`）。开发阶段所有角色都用 DeepSeek Flash，一个 key 跑通整条流水线（开发配置，不是产品设计，见第 10 节）。
 - 并发数 N 按研究文档第 5.5 节的公式计算，默认上限 8，硬上限 64（初始值，待实测）；超过硬上限须用户手动改配置。
-- 并发数只计编码阶段的单；PR 等待合并时不占编码槽位。
-- 每单一个 Git worktree，从确认基线创建。
+- 并发数只计编码阶段的单；PR 等待合并时不占编码槽位。编码槽位统一由调度器（模块 9）管理，编码池本身不设并发上限。
+- 每单一个 Git worktree，从确认基线创建，路径为 `.bakacoding/worktrees/<ticket_id>-r<n>`（`n` 为轮次），该目录写进 `.gitignore`。
 - 协调器统一用令牌桶限流（由模型接入适配层实现，见第 15 节），令牌桶按账号全局共享，所有 Flash 代理和所有项目合用一个桶，不按 key 分；遇到 429 时指数退避加抖动，启动时平滑放量。服务商限额按账号计算，多开 key 不增加额度（见研究文档第 1–2 节）。
 - 提示词把稳定的公共前缀放在前、需求单放在后，以提高前缀缓存命中率。同一项目的系统提示、工具定义、架构约束组成逐字节固定的公共前缀，不放时间戳和单号；DeepSeek 新版缓存须完整匹配前缀单元才算命中（https://api-docs.deepseek.com/guides/kv_cache ）。
 - **后备做法**：确需中途改提示时，新内容作为一条 system 消息追加到历史末尾，工具定义只增不改，开头不动，以保留前缀缓存（与 harness 对 V4.1-Flash 的做法一致：[models.ts](https://github.com/deepseek-ai/deepseek-harness/tree/dsh-v0.2.1-alpha.5/packages/llm/llm-deepseek/src/models.ts)、[serialize.ts](https://github.com/deepseek-ai/deepseek-harness/tree/dsh-v0.2.1-alpha.5/packages/llm/llm-deepseek/src/serialize.ts)）。
 
 ## 6. 受限工具层
 
-- **权限清单格式**：三级——读写、只读、拒绝；未列出的一律按拒绝处理（默认全部拒绝；参考 [Copilot CLI 本地沙箱文档](https://docs.github.com/en/copilot/concepts/agents/copilot-cli/understanding-local-sandboxing)）。
+- **权限清单格式**：三级——读写、只读、拒绝；未列出的一律按拒绝处理（默认全部拒绝）。数据格式为 `[{ glob, level }]`，`level` 取 `rw`（读写）/ `ro`（只读）/ `deny`（拒绝），未匹配任何条目的路径即拒绝（参考 [Copilot CLI 本地沙箱文档](https://docs.github.com/en/copilot/concepts/agents/copilot-cli/understanding-local-sandboxing)）。
 - **Flash 的权限由副 Agent 按单现场设计**：副 Agent 读完需求单后决定给哪些工具、可读写哪些文件、能否新建、删除或重命名。写权限只能在本单写入范围以内。Flash 中途需要更多权限时向副 Agent 申请，副 Agent 当场批准或拒绝；但申请的写权限超出本单写入范围时，副 Agent 不能直接批，要交给调度器重新加锁，加锁失败就上报主管。
 - **文件工具**（对齐 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（tag dsh-v0.2.1-alpha.5） 完整模式，不以 Minimal 模式为基线；见 [工具目录](https://github.com/deepseek-ai/deepseek-harness/tree/dsh-v0.2.1-alpha.5/docs/tool-catalog.md)）：`read`（`file_path`、`offset`、`limit`）、`write`（整文件写）、`edit`（`old_string`、`new_string`、`replace_all`）、`glob`、`grep`，共五个，取代原先的读、写、列目录、搜索四个工具。与「只给基础编码工具、不给 shell」一致。
   - `edit` 为字面量唯一匹配替换：换行统一为 LF 后精确匹配，不做模糊匹配；匹配 0 次报 `FS_EDIT_NOT_FOUND`，匹配多次且未设 `replace_all` 报 `FS_AMBIGUOUS_EDIT`（[fsio.ts](https://github.com/deepseek-ai/deepseek-harness/tree/dsh-v0.2.1-alpha.5/packages/fs/fs-local/src/fsio.ts)）。
@@ -81,6 +81,8 @@ BakaCoding 帮助个人开发者推进大型软件工程。核心是 **Flash 编
 - **PR 抽象**，一套接口两种实现：
   - 有 GitHub：推到工作分支后直接开真 PR；合并队列轮到且冲突检测通过后，由 BakaCoding 主动在 GitHub 上把 PR 合入集成分支。
   - 没有远程仓库：建本地工作分支，加一条 PR 记录（diff、需求单、评审结论、权限清单、复投计数；每轮的 diff、评审结论、不通过原因和带回的评审意见按轮次保留，需记录以供诊断包使用（第 18 节）），合并就是本地合进集成分支。
+  - 接口：Flash 产出的补丁由 PR 抽象 `commitPatch(ticket_id, worktree_path, patch) → sha` 转成 commit；`diff` 返回 `{ base_sha, head_sha, files: [{ path, status, additions, deletions, patch }] }`。
+  - GitHub token 由配置与预算模块的 `getSecret("GITHUB_TOKEN")` 读取；读不到时只建本地 PR 记录。
 - **本地记录为准**：状态、复投次数、评审结论都以 BakaCoding 自己的记录为准，GitHub PR 只是同步出去的展示和合并通道。两边不一致时以本地为准，差异记入日志。用户在 GitHub 上手动关闭或合并 PR 时，同步回本地，交给主管 Agent 处理。
 
 ## 8. 评审与复投
@@ -110,7 +112,7 @@ BakaCoding 帮助个人开发者推进大型软件工程。核心是 **Flash 编
 - 合入 main 由配置 `pipeline.main_merge` 决定：
   - `user`（默认）：集成分支攒够并通过上述检查后，主管通知用户自行合入。
   - `supervisor`：检查通过后由主管直接合入 main，合完通知用户。
-- **反压**：按评审积压和 API 并发调整编码并发，并记录原因。阈值如下（均为初始值，待实测）：
+- **反压**：按评审积压和 API 并发调整编码并发，并记录原因。评审积压由评审池通过 `review_backlog` 事件发给调度器，调度器不直接调用评审池。阈值如下（均为初始值，待实测）：
   - 评审容量 = 评审池成员数 × 每个成员的并发评审数（默认 2）；成员数为 0 时按 1 个成员计算，即容量为 2。
   - 评审积压超过容量 2 倍：编码并发减半；超过 4 倍：暂停派新单。
   - 积压回落到容量以下后，每 5 分钟加 1 个编码槽位，直到回到 N。
@@ -163,7 +165,7 @@ BakaCoding 帮助个人开发者推进大型软件工程。核心是 **Flash 编
   }
 },
 "budget": {
-  "daily": null,                  // 必填；首次运行填写，缺失不启动；不预设金额
+  "daily_micro_usd": null,        // 必填，整数微美元；首次运行填写，缺失不启动；不预设金额
   "per_ticket_ratio": 0.05        // 每单上限 = 每日预算 × 5%，含复投
   "offpeak_preference": false     // 闲时开关，默认关；只影响 priority=deferred 的单
 },
@@ -194,6 +196,8 @@ BakaCoding 帮助个人开发者推进大型软件工程。核心是 **Flash 编
 
 - 本机协调服务使用 SQLite（WAL），单一写入者加租约，配合幂等键。
 - **事件总线**：模块之间通过进程内事件总线解耦，下层发事件、上层订阅；存储模块订阅全部事件写入事件日志。用到总线不算模块之间的依赖，只有直接调用才算。模块划分和事件清单见 [功能模块](modules.md)（四层共 13 个模块）。
+- **总线语义**：进程内异步分发；支持 `*` 通配订阅（存储模块用它订阅全部事件）；span 由发布方生成，`trace_id` 按需求生成。
+- **事件格式**：事件类型、常量和 zod schema 放在共享类型包 `@bakacoding/types`（第 15 节）。公共字段（`trace_id`、`span_id`、`parent_span_id`、`ts`、`seq`）放在事件顶层，事件自己的字段放进 `payload`；`ts` 为 ISO 8601 UTC 时间，必须以 `Z` 结尾；`seq` 单调递增。事件里的 `role` 取 `supervisor` / `reviewer` / `sub_agent` / `coder`，`reviewer` 指单个评审成员（配置 `roles.review_board.members[]` 的一项），`review_board` 指整个评审组。完整事件清单见 [功能模块](modules.md)。
 - 重启后能识别在途的 Flash 调用、未推送的补丁和已开的 PR，不重复开 PR。
 - PR 抽象的本地记录也存在这里。
 - 每单的基线 commit 和上下文包要保存到可复现为止，合并结果（是否冲突、基线是否变化、是否重新评审、最终是否合入）和读到的 CI check 结果也要落库；需记录以供诊断包使用（第 18 节）。
@@ -206,6 +210,9 @@ BakaCoding 帮助个人开发者推进大型软件工程。核心是 **Flash 编
 - **闲时偏好开关** `budget.offpeak_preference`：默认关；打开后预算紧张时，`priority=deferred` 的单优先等到闲时再跑，由调度器读开关和优先级决定（DeepSeek 闲时价格为高峰的一半：https://api-docs.deepseek.com/quick_start/pricing ）。v1 只做这一个开关。
 - 费用台账按缓存命中/未命中、闲时/高峰分开计价（DeepSeek 命中与未命中、闲时与高峰价格不同，同上链接）。
 - 费用台账按需求单（含复投）、副 Agent、评审组分列；每次调用的费用也要单独记，并标明是否属于复投，需记录以供诊断包使用（第 18 节）。
+- **金额单位**：费用一律用整数微美元（1 美元 = 1,000,000 微美元）；每日预算字段为 `budget.daily_micro_usd`。
+- **单价表**：单价和优惠时段放在 `config/pricing.json`，数值取自 DeepSeek 官方价格页（https://api-docs.deepseek.com/quick_start/pricing ），文件内注明链接和查阅日期。规则：`peak_hours_utc` 为 `[["01:00","04:00"],["06:00","10:00"]]`，只在周一至周五生效；`cn_public_holidays` 为 `["YYYY-MM-DD"]` 列表，按北京时间的日期认定，列表里的日子全天算闲时；该列表人工维护，每一年都写明来源（国务院办公厅发布的放假通知）；列表里缺的日子按高峰价算；`source` 字段写价格页原文和查阅时间（价格页原文：周一至周五 UTC 01:00–04:00、06:00–10:00 为高峰，不含中国法定节假日；其余时间含周末和中国法定节假日全天为闲时）。
+- **台账落库**：台账通过共享类型包中的 `LedgerStore` 接口落库（条目用对应调用事件的 `event_id` 做幂等键，按 UTC 日期汇总），由存储模块实现，启动时注入给配置与预算模块，后者不直接依赖存储模块。模型接入层每次调用前先查 `budgetState()`。
 - 成本主要由并发数、单张需求单的输入上下文和复投次数决定。
 
 ## 14. 日志与观测
@@ -233,7 +240,10 @@ BakaCoding 帮助个人开发者推进大型软件工程。核心是 **Flash 编
 - **服务商能力表**：适配层为每个服务商维护一张能力表，负责把配置字段 `effort` 映射到各服务商字段（DeepSeek → `output_config.effort`，OpenAI 兼容服务商 → `reasoning_effort`），记录兼容接口忽略的字段，思考档位映射到 `output_config.effort`，不依赖 `cache_control` 和 `budget_tokens`，需要串行调用工具时由本地保证（例如 DeepSeek 的 Anthropic 兼容接口忽略 `budget_tokens`、`cache_control` 等：https://api-docs.deepseek.com/guides/anthropic_api ）。
 - **代码复用许可**：可搬 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（tag dsh-v0.2.1-alpha.5） 的 MIT 代码（`applyLiteralEdit` / `countOccurrences`、文件工具 schema 与错误文案、DeepSeek 请求序列化和档位逻辑），保留其版权和许可声明，并在 NOTICE 中注明来源和 tag dsh-v0.2.1-alpha.5（仓库尚无代码，搬代码时再建 NOTICE）。harness 中 MPL-2.0 许可的组件不引入。
 - **模块划分**：四层共 13 个模块，含模块 0 事件总线，见 [功能模块](modules.md)。
-- **API key**：优先从环境变量 `DEEPSEEK_API_KEY` 读取；本地配置文件 `config/secrets.local.json` 只作备选，该文件必须写进 `.gitignore`。key 不写进仓库，也不写进配置示例。
+- **工程结构**：TypeScript monorepo（pnpm workspace），每个模块一个包，另有共享类型包 `@bakacoding/types`（只依赖 zod，放事件类型、常量和 zod schema，所有模块包都依赖它）。测试用 vitest，lint 用 eslint，格式用 prettier。各角色提示词模板放在 `packages/config-budget/prompts/`。
+- **配置校验**：配置 JSON 里不加注释字段；schema 严格校验，遇到未知字段直接报错。示例配置中的预算是示例值，说明写在 README 的配置章节和 zod 的 `.describe()` 里。
+- **模型调用上下文**：模型接入层的 `call()` 带必填参数 `ctx: { role, requirement_id, ticket_id | null, is_resubmit, trace }`；主管等没有单号的调用 `ticket_id` 填 `null`。
+- **API key**：优先从环境变量 `DEEPSEEK_API_KEY` 读取；本地配置文件 `config/secrets.local.json` 只作备选，该文件必须写进 `.gitignore`。key 不写进仓库，也不写进配置示例。读密钥统一用配置与预算模块的 `getSecret(name)`，目前读 `DEEPSEEK_API_KEY` 和 `GITHUB_TOKEN`。
 
 ## 16. 界面
 
@@ -312,6 +322,7 @@ v3.0 为设计定稿，设计上没有待定项。原「待项目负责人确认
 - 已定：每个服务商一张能力表（第 15 节）。
 - 已定：接口声明必填、合并成功后发 `interface_changed` 事件把接口变更推送给在途单（第 4、9 节）；主管项目决策记忆（第 10 节）；评审输入固定（第 8 节）；权限清单三级格式、默认全部拒绝（第 6 节）；桌面界面选型（第 15 节）。
 - 已定：文件工具五个（§6）、思考档位取值（§5）、DeepSeek 默认走 Anthropic 兼容（§15）、中途改提示后备做法（§5）、harness 代码复用许可规则（§15）。
+- 已定（v3.1）：共享类型包、不支持档位降档加警告、去掉 `effort_map`、`call()` 的 `ctx`、`getSecret`、`commitPatch` 与 diff 结构、PR 抽象依赖配置与预算、`review_backlog` 事件与编码槽位由调度器管理、`LedgerStore` 注入、总线语义、`permission_list` 格式、worktree 路径、时间格式与 `seq`、微美元、vitest / eslint / prettier、提示词模板目录、`pricing.json`（第 5、6、7、9、12、13、15 节）。
 - 已定：开发阶段只接 DeepSeek，其他服务商以后通过适配层补丁接入。
 - 仍待实测（不是设计待定项）：评审判不过的门槛、R1、R2（第 8、17 节）。
 - **不跑 SWE-PRBench**：DeepSeek V4.1-Flash 官方资料中没有代码评审类评测，评审精度靠诊断包实测（第 18 节）。
@@ -334,6 +345,7 @@ v3.0 为设计定稿，设计上没有待定项。原「待项目负责人确认
 
 ## 变更记录
 
+- **v3.1（2026-10-17，接口决定）**：设计负责人拍板的接口细节同步进来：新增共享类型包 `@bakacoding/types`；不支持的思考档位改为降到最高可用档并记警告（§5）；去掉 `effort_map`，映射以能力表为准；`call()` 加必填 `ctx`；每日预算字段改名为 `budget.daily_micro_usd`（整数微美元），配置 schema 严格校验、未知字段报错，`pricing.json` 加节假日规则（`peak_hours_utc`、按北京时间日期认定的 `cn_public_holidays` 人工维护列表、`source`）；读密钥统一为 `getSecret(name)`（`DEEPSEEK_API_KEY`、`GITHUB_TOKEN`）；PR 抽象新增 `commitPatch`，diff 改为带 base/head sha 和逐文件 patch 的结构，无 token 只建本地记录，PR 抽象依赖配置与预算；评审积压改由 `review_backlog` 事件传给调度器，编码槽位由调度器统一管理；台账经 `LedgerStore` 落库并注入；总线异步、支持 `*` 通配、span 由发布方生成；`permission_list` 格式；worktree 路径；事件公共字段放顶层、自有字段放 `payload`，`ts` 为 Z 结尾的 UTC 时间加 `seq`，写入范围事件带 `request_id`，`escalated` 用 `reason` 四种取值，两个积压事件同为 `{ pending, capacity }`，`role` 取值与评审组对应关系写清，金额用整数微美元；vitest / eslint / prettier；提示词模板目录；`config/pricing.json`（§5、§6、§7、§9、§12、§13、§15、§19）。
 - **v3.0（2026-10-17，设计定稿）**：原待项目负责人确认的 5 项与设计负责人新拍板的各项全部定为已定：接口声明必填、合并后发 `interface_changed` 推送给在途单（§4、§9）；主管项目决策记忆（§10）；评审输入固定为 diff + 需求单 + 精简摘要，判不过门槛待实测（§8）；权限清单三级格式、默认全部拒绝（§6）；公共前缀逐字节固定、台账分开计价（§5、§13）；服务商能力表（§15）；`eval_task` 导出时人工补填、可导出 SWE-bench JSONL（§18）；追踪字段向 OpenTelemetry GenAI 靠拢（§14）；`priority` 改为 `normal` / `deferred`，与思考档位无关，闲时开关默认关（§4、§13）；桌面界面选型（§15）；文件工具对齐 DeepSeek Harness 的 read/write/edit/glob/grep 与四种错误码（§6）；思考档位 off/low/high/max 写进 `output_config.effort`（§5）；DeepSeek 默认走 Anthropic 兼容接口（§15）；中途改提示的后备做法（§5）；harness MIT 代码复用与 NOTICE 规则、不引入 MPL-2.0（§15）；新增风险 R2（§17）；配置字段 `reasoning_effort` 改名为 `effort`，与服务商无关，由能力表映射（§5、§10、§15）；配置示例 `config/models.example.json` 改为新角色结构（`supervisor`、`review_board`、`sub_agent`、`coder`）；§10 草案改为同一平级结构（去掉 `review_board.supervisor` 嵌套，`coding_pool` 改名 `coder`），主管必填与固定 max 由模块 3 校验；`concurrency_max` / `concurrency_hard_max` 移到 `pipeline` 下，限制同时在编码阶段的需求单数，反压调的也是这个数，等待评审和等待合并的单不占编码槽位，`resubmit_effort` 留在 `roles.coder`。§19 改为已定清单并新增「后续版本」；Vercel AI SDK 不采纳；不跑 SWE-PRBench。
 - **v2.6（2026-10-17）**：同步事件总线和 13 个模块（链接到功能模块文档）；令牌桶按账号全局共享；写明配置操作（项目导入、设置、Git 侧栏）不经过主管。R1 风险改为待实测。标为待项目负责人确认：追踪字段、`eval_task`、闲时开关与 `priority`、固定公共前缀、服务商能力表。
 - v2.5：新增诊断包导出。v2.4：简化界面。v2.3：开发阶段模型接入。v2.2：定下各项默认值。v2.1：设计评审修订。v2.0：按整体设计重写。
