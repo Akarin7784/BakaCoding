@@ -104,6 +104,24 @@ flowchart TD
 
 本地优先不要求整个工程的计算都发生在一台机器上。调用云模型或远程 worker 时，代码与上下文的数据流需要明确展示和授权。
 
+## 默认模型与自定义配置
+
+默认统一使用 **DeepSeek V4.1 Flash**，按角色分配思考强度：
+
+| 角色 | 默认模型 | 产品档位 | DeepSeek 实际参数 |
+| --- | --- | --- | --- |
+| 主 BOT | DeepSeek V4.1 Flash | 最高 | `max` |
+| 次 BOT，包括子系统协调与功能设计 | DeepSeek V4.1 Flash | 中档 | `high` |
+| Flash 编码流水线 | DeepSeek V4.1 Flash | low | `low` |
+
+官方模型 ID 为 `deepseek-flash`。原生三档为 `low / high / max`；产品配置中的 `medium` 显式映射到 `high`，不会把 `high` 误写成最高档。[模型信息](https://api-docs.deepseek.com/quick_start/pricing/) · [思考档位](https://api-docs.deepseek.com/guides/thinking_mode/)
+
+各角色支持分别配置服务商、API 地址、模型、思考档位、凭据引用和运行限制，也可使用同源或不同来源的模型。默认不自动换模型或跨服务商回退。验证角色默认继承次 BOT 配置，保留独立上下文与确定性检查，并可单独覆盖。
+
+配置优先级为单次运行、项目、用户、内置默认；每次运行保存实际生效的模型与参数快照。不支持的档位会明确报错，不静默改成其他档位。
+
+参见 [配置示例](config/models.example.json) 和 [完整配置设计](https://akarin7784.github.io/BakaCoding/#chapter-14)。示例是配置契约草案，项目当前尚未提供读取它的运行程序。
+
 ## 如何定义完成
 
 一个阶段成果需要同时满足：

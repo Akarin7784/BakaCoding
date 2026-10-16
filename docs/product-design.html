@@ -1,5 +1,5 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="帮助个人开发者完成超大规模软件开发与维护的产品设计，含架构、任务组织和系统验证。"><title>BakaCoding 笨蛋编程助手 产品设计文档</title><style>:root{--ink:#202833;--muted:#647184;--line:#dce2e9;--blue:#244b75}*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:24px}body{margin:0;background:#f3f5f7;color:var(--ink);font:16px/1.9 "Microsoft YaHei","PingFang SC",sans-serif}aside{position:fixed;left:0;top:0;bottom:0;width:270px;padding:30px 22px;background:#fff;border-right:1px solid var(--line);overflow:auto}aside .brand{font-size:23px;font-weight:750;letter-spacing:0;color:#14253d}aside .meta{font-size:12px;color:var(--muted);margin:5px 0 22px}nav a{display:block;color:#4c596a;text-decoration:none;padding:6px 0;font-size:13px;line-height:1.55}nav a:hover,nav a.active{color:var(--blue);font-weight:700}main{max-width:1120px;margin:35px 42px 80px 310px;background:white;padding:55px 62px 70px;border:1px solid #e3e7ec}h1,h2,h3{color:#000;line-height:1.45}h1{font-size:31px;letter-spacing:-.5px;margin:0 0 18px;max-width:800px}h2{font-size:25px;margin:64px 0 20px;padding-top:5px}h3{font-size:19px;margin:32px 0 12px}p{margin:12px 0 17px;overflow-wrap:anywhere}main>p:first-of-type{font-size:14px;color:var(--muted);margin-bottom:28px}a{color:var(--blue);text-underline-offset:3px}a.ref{font-size:.86em;white-space:nowrap}ol,ul{padding-left:25px}li{padding:4px 0}#navigation+ol{columns:2;column-gap:35px;font-size:14px}table{border-collapse:collapse;width:100%;font-size:13px;line-height:1.7;margin:12px 0 24px}th,td{border:1px solid #d9d9d9;padding:11px 12px;text-align:left;vertical-align:middle;min-width:64px}th{background:#eaf0f7;color:#000;font-weight:700}tr:nth-child(even) td{background:#fafbfd}.table-wrap{max-width:100%;overflow-x:auto}pre{background:#f5f7f9;border:1px solid #e0e5eb;border-radius:5px;padding:20px;font:12px/1.8 Consolas,"Microsoft YaHei",monospace;overflow:auto;white-space:pre}code{font-family:Consolas,"Microsoft YaHei",monospace}figure{margin:25px 0}.system-map svg{width:100%;height:auto}figcaption{font-size:12px;color:var(--muted);text-align:center}.source-image{margin:25px 0;color:var(--muted);font-size:13px}.source-image img{width:100%;height:auto;margin-top:15px;cursor:zoom-in}summary{cursor:pointer}.tools{position:fixed;bottom:20px;right:20px;display:flex;gap:8px}.tools button{border:1px solid #ccd5df;background:white;color:#34445a;border-radius:7px;padding:10px 16px;cursor:pointer;font:13px "Microsoft YaHei",sans-serif}footer{margin-top:50px;font-size:12px;color:var(--muted)}@media(min-width:1550px){main{margin-left:calc(270px + (100vw - 1430px)/2)}}@media(max-width:1050px){aside{width:220px;padding:24px 15px}main{margin-left:245px;margin-right:25px;padding:35px 28px}body{font-size:15px}}@media(max-width:760px){aside{position:static;width:auto;max-height:240px;border-bottom:1px solid var(--line)}aside nav{columns:2}main{margin:18px 12px;padding:28px 20px}h1{font-size:26px}#navigation+ol{columns:1}.tools{bottom:10px;right:10px}}@media print{@page{size:A4;margin:18mm 16mm}body{font-size:10pt;line-height:1.7;background:white}aside,.tools,.source-image{display:none}main{margin:0;max-width:none;padding:0;border:0}h1{font-size:25pt}h2{font-size:18pt;margin-top:28px;break-after:avoid}h3{font-size:12pt;break-after:avoid}p{orphans:3;widows:3}table{font-size:8.4pt;line-height:1.5;table-layout:auto}th,td{padding:7px 8px}tr,figure,pre{break-inside:avoid}thead{display:table-header-group}.table-wrap{overflow:visible}pre{font-size:7.5pt;white-space:pre-wrap;overflow-wrap:anywhere}.system-map{break-inside:avoid}h2,h3{break-after:avoid-page}a{color:#233f62}nav a{color:black}}</style></head><body><aside><div class="brand">BakaCoding</div><div class="meta">产品设计文档 1.1<br>2026.10.17 · 个人开发超大软件</div><nav aria-label="章节导航"><a href="#chapter-1">1 原架构分析与改造结论</a><a href="#chapter-2">2 最近 30 天技术调研</a><a href="#chapter-3">3 产品定位与用户需求</a><a href="#chapter-4">4 首版范围与产品原则</a><a href="#chapter-5">5 用户旅程与典型场景</a><a href="#chapter-6">6 信息架构与页面设计</a><a href="#chapter-7">7 功能需求与验收标准</a><a href="#chapter-8">8 智能体职责与协作协议</a><a href="#chapter-9">9 任务状态与调度机制</a><a href="#chapter-10">10 知识与组件产品设计</a><a href="#chapter-11">11 质量与交付证据</a><a href="#chapter-12">12 推荐系统架构</a><a href="#chapter-13">13 数据模型与接口契约</a><a href="#chapter-14">14 模型路由与预算</a><a href="#chapter-15">15 安全与数据控制</a><a href="#chapter-16">16 非功能需求与运行维护</a><a href="#chapter-17">17 指标与评估实验</a><a href="#chapter-18">18 超大规模软件的工程组织</a><a href="#chapter-19">19 超大项目的验证与完成标准</a><a href="#chapter-20">20 完整功能示例</a><a href="#chapter-21">21 风险与待验证决策</a><a href="#chapter-22">22 调研来源与核验说明</a></nav></aside><main><h1>BakaCoding 笨蛋编程助手产品设计文档</h1>
-<p>版本 1.1 · 2026 年 10 月 17 日 · 让个人开发者完成超大规模软件的开发与维护</p>
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="帮助个人开发者完成超大规模软件开发与维护的产品设计，含架构、任务组织和系统验证。"><title>BakaCoding 笨蛋编程助手 产品设计文档</title><style>:root{--ink:#202833;--muted:#647184;--line:#dce2e9;--blue:#244b75}*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:24px}body{margin:0;background:#f3f5f7;color:var(--ink);font:16px/1.9 "Microsoft YaHei","PingFang SC",sans-serif}aside{position:fixed;left:0;top:0;bottom:0;width:270px;padding:30px 22px;background:#fff;border-right:1px solid var(--line);overflow:auto}aside .brand{font-size:23px;font-weight:750;letter-spacing:0;color:#14253d}aside .meta{font-size:12px;color:var(--muted);margin:5px 0 22px}nav a{display:block;color:#4c596a;text-decoration:none;padding:6px 0;font-size:13px;line-height:1.55}nav a:hover,nav a.active{color:var(--blue);font-weight:700}main{max-width:1120px;margin:35px 42px 80px 310px;background:white;padding:55px 62px 70px;border:1px solid #e3e7ec}h1,h2,h3{color:#000;line-height:1.45}h1{font-size:31px;letter-spacing:-.5px;margin:0 0 18px;max-width:800px}h2{font-size:25px;margin:64px 0 20px;padding-top:5px}h3{font-size:19px;margin:32px 0 12px}p{margin:12px 0 17px;overflow-wrap:anywhere}main>p:first-of-type{font-size:14px;color:var(--muted);margin-bottom:28px}a{color:var(--blue);text-underline-offset:3px}a.ref{font-size:.86em;white-space:nowrap}ol,ul{padding-left:25px}li{padding:4px 0}#navigation+ol{columns:2;column-gap:35px;font-size:14px}table{border-collapse:collapse;width:100%;font-size:13px;line-height:1.7;margin:12px 0 24px}th,td{border:1px solid #d9d9d9;padding:11px 12px;text-align:left;vertical-align:middle;min-width:64px}th{background:#eaf0f7;color:#000;font-weight:700}tr:nth-child(even) td{background:#fafbfd}.table-wrap{max-width:100%;overflow-x:auto}pre{background:#f5f7f9;border:1px solid #e0e5eb;border-radius:5px;padding:20px;font:12px/1.8 Consolas,"Microsoft YaHei",monospace;overflow:auto;white-space:pre}code{font-family:Consolas,"Microsoft YaHei",monospace}figure{margin:25px 0}.system-map svg{width:100%;height:auto}figcaption{font-size:12px;color:var(--muted);text-align:center}.source-image{margin:25px 0;color:var(--muted);font-size:13px}.source-image img{width:100%;height:auto;margin-top:15px;cursor:zoom-in}summary{cursor:pointer}.tools{position:fixed;bottom:20px;right:20px;display:flex;gap:8px}.tools button{border:1px solid #ccd5df;background:white;color:#34445a;border-radius:7px;padding:10px 16px;cursor:pointer;font:13px "Microsoft YaHei",sans-serif}footer{margin-top:50px;font-size:12px;color:var(--muted)}@media(min-width:1550px){main{margin-left:calc(270px + (100vw - 1430px)/2)}}@media(max-width:1050px){aside{width:220px;padding:24px 15px}main{margin-left:245px;margin-right:25px;padding:35px 28px}body{font-size:15px}}@media(max-width:760px){aside{position:static;width:auto;max-height:240px;border-bottom:1px solid var(--line)}aside nav{columns:2}main{margin:18px 12px;padding:28px 20px}h1{font-size:26px}#navigation+ol{columns:1}.tools{bottom:10px;right:10px}}@media print{@page{size:A4;margin:18mm 16mm}body{font-size:10pt;line-height:1.7;background:white}aside,.tools,.source-image{display:none}main{margin:0;max-width:none;padding:0;border:0}h1{font-size:25pt}h2{font-size:18pt;margin-top:28px;break-after:avoid}h3{font-size:12pt;break-after:avoid}p{orphans:3;widows:3}table{font-size:8.4pt;line-height:1.5;table-layout:auto}th,td{padding:7px 8px}tr,figure,pre{break-inside:avoid}thead{display:table-header-group}.table-wrap{overflow:visible}pre{font-size:7.5pt;white-space:pre-wrap;overflow-wrap:anywhere}.system-map{break-inside:avoid}h2,h3{break-after:avoid-page}a{color:#233f62}nav a{color:black}}</style></head><body><aside><div class="brand">BakaCoding</div><div class="meta">产品设计文档 1.2<br>2026.10.17 · 个人开发超大软件</div><nav aria-label="章节导航"><a href="#chapter-1">1 原架构分析与改造结论</a><a href="#chapter-2">2 最近 30 天技术调研</a><a href="#chapter-3">3 产品定位与用户需求</a><a href="#chapter-4">4 首版范围与产品原则</a><a href="#chapter-5">5 用户旅程与典型场景</a><a href="#chapter-6">6 信息架构与页面设计</a><a href="#chapter-7">7 功能需求与验收标准</a><a href="#chapter-8">8 智能体职责与协作协议</a><a href="#chapter-9">9 任务状态与调度机制</a><a href="#chapter-10">10 知识与组件产品设计</a><a href="#chapter-11">11 质量与交付证据</a><a href="#chapter-12">12 推荐系统架构</a><a href="#chapter-13">13 数据模型与接口契约</a><a href="#chapter-14">14 模型路由与预算</a><a href="#chapter-15">15 安全与数据控制</a><a href="#chapter-16">16 非功能需求与运行维护</a><a href="#chapter-17">17 指标与评估实验</a><a href="#chapter-18">18 超大规模软件的工程组织</a><a href="#chapter-19">19 超大项目的验证与完成标准</a><a href="#chapter-20">20 完整功能示例</a><a href="#chapter-21">21 风险与待验证决策</a><a href="#chapter-22">22 调研来源与核验说明</a></nav></aside><main><h1>BakaCoding 笨蛋编程助手产品设计文档</h1>
+<p>版本 1.2 · 2026 年 10 月 17 日 · 让个人开发者完成超大规模软件的开发与维护</p>
 <p>BakaCoding（笨蛋编程助手）是采用 MIT 协议的开源项目，帮助个人开发者完成超大规模软件的开发与维护。系统把整体架构、子系统依赖、功能实现、集成验证和长期工程知识组织成可持续推进的工程闭环。个人开发者负责目标、关键设计和最终验收，工作台承接跨模块协调、任务执行与验证，让项目规模能够超出一个人靠记忆和手工调度所能管理的范围。</p>
 <p>核心产品判断是：保留原图的知识优先和按功能滚动交付，将主 BOT 改为有边界的规划器，将固定串行流水线改为受依赖和资源约束的任务图，将相邻 BOT 互审补充为独立验证，将自动知识沉淀改为可审核、可追溯、可失效的资产管理。首版用较少的运行角色完成可靠闭环，默认同时运行一个编码任务。</p>
 <p>技术调研核验日期为北京时间 2026 年 10 月 17 日。近期技术证据窗口为 2026 年 9 月 17 日至 10 月 17 日。文中带有来源编号的外部能力属于已核验资料；功能、规模目标、数值目标与技术选型属于本产品的设计建议或待验证假设，均不代表已实现能力或实测结果。</p>
@@ -127,7 +127,7 @@
 <td>S02</td>
 <td>9 月 28 日</td>
 <td>Anthropic 发布 Claude Sonnet 5.5，公布性能、速度及价格信息</td>
-<td>将其列为常规编码候选，通过本地任务集测评后决定默认模型</td>
+<td>作为可自定义选择的备选模型，默认配置采用 DeepSeek V4.1 Flash</td>
 </tr>
 <tr>
 <td>S03</td>
@@ -192,10 +192,10 @@
 </tbody></table></div>
 <p>完整链接见第 22 节。S01 至 S12 的解读是本方案的产品推论，不能视为来源作者对 KFPA 的背书。</p>
 <h3>2.3 模型与运行框架的选择</h3>
-<p>当前可核验的近期候选包括 GPT-6.1 Sol、GPT-6 Astra、Claude Sonnet 5.5 和 Claude Opus 5.5。它们是本轮证据支持的候选集合，不宣称穷尽全部最新模型或给出通用能力排名。账户实际可访问的模型、准确模型标识、输出结构支持和配额，由运行时能力探测决定。</p>
-<p>Google 在 10 月 13 日的官方应用发布记录中还公告了 Gemini 4 Argon <a class="ref" href="#source-S11">[S11]</a>。本轮该证据建立的是 Gemini 应用中的推出状态，不能据此推断相同名称模型已经通过第三方 API 对本产品开放，因此将其列入观察名单，不直接加入首版可调用模型表。Qwen Code 的近期 SDK 发布则证明存在程序化接入候选 <a class="ref" href="#source-S12">[S12]</a>，但开源运行框架不等于底层模型免费、可离线运行或自动满足数据不出域要求。</p>
-<p>模型和编码运行框架要分别评估。模型负责推理与生成；运行框架负责文件操作、命令、工具循环、事件和上下文。官方 Codex SDK 与 Claude Code 的程序化调用文档可作为适配入口 <a class="ref" href="#source-B01">[B01]</a><a class="ref" href="#source-B02">[B02]</a>。建议技术验证默认先接 Codex SDK，验证事件、取消、恢复、权限和费用能力；如果关键能力不能满足，就在相同任务上比较 Claude 程序化运行方案后再定正式适配。首版只接通一种正式支持的运行框架，第二种适配在同一测试集上验证后开放。不能把已有消费订阅可供人在客户端使用，推断为允许本产品以任意形式转售、共享或自动化调用。</p>
-<p>本轮近期资料突出的是运行框架、上下文与验证能力的演进。首版采用显式状态机加编码适配器，避免同时叠加多套互相管理会话、重试和子任务的框架。若试验使用 Deep Agents，应替换相应角色执行层，保留 KFPA 的事实状态、预算和证据作为权威来源。</p>
+<p>产品默认模型已经确定为 DeepSeek V4.1 Flash，官方 API 标识为 <code>deepseek-flash</code> <a class="ref" href="#source-B07">[B07]</a><a class="ref" href="#source-B09">[B09]</a>。主 BOT 使用最高档 <code>max</code>，Flash 编码流水线使用 <code>low</code>，次 BOT 使用中档，对应原生 <code>high</code>。产品保留 <code>medium</code> 作为中档逻辑值，由适配器显式映射到 <code>high</code> <a class="ref" href="#source-B08">[B08]</a>。同源模型是默认方案，不强制要求使用不同供应商。</p>
+<p>本轮技术调研中的 GPT、Claude、Gemini 和 Qwen 资料用于能力参考及自定义适配，不改变用户指定的默认模型。应用内模型上线、编码运行框架发布和第三方 API 可用性分别核验，不混为一个能力。</p>
+<p>模型 API 与执行运行框架分开配置。默认接入路径需要支持 DeepSeek API，并由 BakaCoding 控制文件、命令、状态、预算和工具循环。Codex SDK、Claude 程序化运行或其他兼容框架可以作为执行适配候选 <a class="ref" href="#source-B01">[B01]</a><a class="ref" href="#source-B02">[B02]</a>，采用前验证它们对用户自定义端点、模型与档位的实际传递能力；不能让某个框架的固定模型菜单限制产品配置。</p>
+<p>首版采用显式状态机加执行适配器。供应商配置、角色模型与思考档位作为独立配置契约固定到每次运行，工具权限和质量门禁保持由程序执行。第 14 节定义完整默认值、覆盖规则与兼容校验。</p>
 <h3>2.4 明确不追逐的技术</h3>
 <p>Scion 是供应商内部工程案例，不应推断为可采购或直接接入的开源组件，也没有理由让个人开发者替换 Git <a class="ref" href="#source-S04">[S04]</a>。模型官方演示、单项排行榜和供应商成本案例不能直接转化为产品承诺。首版也不以多智能体自由对话、超长上下文、自动学习或全量向量化作为卖点。</p>
 <p>Git worktree、SQLite、检索、持久化执行和协议连接属于工程基础，其价值不因发布时间较早而失效。本文将其放在基础选型中，未将几个月前的发布冒充近期进展。MCP 接入只在明确需要外部工具时加入；协议版本需协商和固定，本轮不主张存在尚未核实的 10 月新版本。</p>
@@ -458,9 +458,9 @@
 </tr>
 <tr>
 <td>FR18</td>
-<td>P1</td>
-<td>第二运行框架</td>
-<td>相同契约和证据格式可用；能力不足时拒绝对应动作而非静默降级</td>
+<td>P0</td>
+<td>角色模型自定义配置</td>
+<td>主 BOT max、编码 low、次 BOT 中档默认正确；用户可逐角色覆盖端点、模型与档位；不支持的参数明确报错</td>
 </tr>
 <tr>
 <td>FR19</td>
@@ -539,7 +539,7 @@
 <td>不是模型，不接受文本绕过规则</td>
 </tr>
 </tbody></table></div>
-<p>规划与设计角色可复用同一模型配置，但按全局、子系统和任务隔离上下文。子系统角色按实际复杂度创建，不为每个目录常驻一个代理。验证器可先用同一供应商的独立上下文加确定性测试，并不自动等于完全独立。对鉴权、支付和迁移等高风险任务，P1 再引入不同模型或人工专项评审；差异模型也不能替代证据。</p>
+<p>规划与设计角色可复用同一模型配置，但按全局、子系统和任务隔离上下文。子系统角色按实际复杂度创建，不为每个目录常驻一个代理。主 BOT 默认绑定 primary 配置，子系统协调与功能设计绑定 secondary 配置，编码执行器绑定 coding 配置。验证器默认继承 secondary，使用独立上下文和确定性测试，也允许用户单独配置模型。使用同源模型不触发阻断或强制异源切换。</p>
 <h3>8.2 编码任务包</h3>
 <p>每个任务包包含 task_id、feature_revision、base_commit、允许文件与命令、目标行为、接口约束、知识引用、开发测试、禁止动作、交付格式、费用上限和失效条件。任务包内容通过 schema 校验后才能执行。模型返回的额外字段不能转化成权限。</p>
 <pre><code class="language-json">{
@@ -757,9 +757,9 @@
 <td>先证明命中与维护成本，再加入向量检索</td>
 </tr>
 <tr>
-<td>编码</td>
-<td>一种官方程序化运行框架</td>
-<td>优先稳定事件、恢复、权限和用量接口 <a class="ref" href="#source-B01">[B01]</a><a class="ref" href="#source-B02">[B02]</a></td>
+<td>模型与编码</td>
+<td>DeepSeek V4.1 Flash API 加受控执行适配器</td>
+<td>逐角色传递 max、high 与 low；执行框架不得覆盖用户模型设置 <a class="ref" href="#source-B07">[B07]</a><a class="ref" href="#source-B08">[B08]</a></td>
 </tr>
 <tr>
 <td>Web 验证</td>
@@ -850,8 +850,18 @@
 </tr>
 <tr>
 <td>Run</td>
-<td>id、task_id、attempt、adapter_version、policy_revision</td>
-<td>一次运行固定版本和动作策略</td>
+<td>id、task_id、attempt、adapter_version、policy_revision、model_config_revision</td>
+<td>一次运行固定版本、动作策略与有效模型配置</td>
+</tr>
+<tr>
+<td>ProviderConfig</td>
+<td>id、base_url、protocol、credential_ref、capabilities</td>
+<td>凭据不入配置正文，能力与端点绑定</td>
+</tr>
+<tr>
+<td>RoleModelConfig</td>
+<td>id、revision、scope、role、model、effort、limits、fallbacks</td>
+<td>逻辑档位与实际参数可追踪，覆盖不影响在途步骤</td>
 </tr>
 <tr>
 <td>Step</td>
@@ -910,6 +920,21 @@
 </tr>
 </thead>
 <tbody><tr>
+<td>GET /v1/model-config</td>
+<td>读取脱敏的角色模型配置</td>
+<td>返回默认、覆盖和实际生效来源</td>
+</tr>
+<tr>
+<td>PUT /v1/model-config</td>
+<td>保存用户或项目配置</td>
+<td>修订校验，凭据仅接受安全引用</td>
+</tr>
+<tr>
+<td>POST /v1/model-config/validate</td>
+<td>验证参数与能力</td>
+<td>静态校验无需调用模型；计费试调用须明确显示</td>
+</tr>
+<tr>
 <td>POST /v1/projects</td>
 <td>接入仓库并启动诊断</td>
 <td>真实路径校验，未授权时只读</td>
@@ -994,12 +1019,56 @@
 <h3>13.3 适配器能力契约</h3>
 <p>每个适配器声明支持的模型、事件类型、会话恢复、结构化输出、权限控制、成本回报、取消语义和沙箱方式。最低要求为可观察的动作、明确的完成和失败状态，以及宿主侧可以执行预算和权限限制。缺少某项能力时界面明确禁用相关模式，不能通过解析一句“完成了”补足协议。</p>
 <h2 id="chapter-14">14 模型路由与预算</h2>
-<h3>14.1 路由决策</h3>
-<p>先按数据出域限制、账户权限、正式支持能力和可用配额过滤，再考虑风险、任务类型、上下文量与历史通过率。普通组件调整从成本较低且通过本产品测试的模型开始；跨模块改动、迁移和疑难修复使用更强配置；独立验证使用独立上下文和确定性检查。禁止根据模型自信分数单独决定降低检查等级。</p>
-<p>近期模型路由文章支持将路由放在掌握任务上下文的运行层，而非只在通用网关决定 <a class="ref" href="#source-S07">[S07]</a>。首版采用显式规则，理由可展示；积累足够带验收标签的运行记录后，再评估学习式路由。模型更新不自动替换正在运行的配置。</p>
-<h3>14.2 模型升级与降级</h3>
-<p>新模型先进入影子评估，不直接执行用户任务。通过代表性用例后，以少量新任务灰度，并与固定旧配置比较。发现工具兼容、成本、成功率或权限行为回归时可以一键回退。更换模型导致上下文、授权或输出协议不一致时，需要创建新运行而非继续旧会话。</p>
-<p>供应商不可用时，不把代码自动发给另一个供应商。用户预先允许的供应商集合内才可切换，并记录原因。任务失败后的模型升级不能突破原预算，追加费用需要重新确认。</p>
+<h3>14.1 默认角色配置</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>角色配置</th>
+<th>职责</th>
+<th>默认模型</th>
+<th>产品思考档位</th>
+<th>DeepSeek 实际档位</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>primary</td>
+<td>主 BOT、全局目标与架构规划</td>
+<td>DeepSeek V4.1 Flash</td>
+<td>最高 max</td>
+<td>max</td>
+</tr>
+<tr>
+<td>secondary</td>
+<td>次 BOT、子系统协调、功能设计和滚动互审</td>
+<td>DeepSeek V4.1 Flash</td>
+<td>中档 medium</td>
+<td>high</td>
+</tr>
+<tr>
+<td>coding</td>
+<td>Flash 编码流水线、实现与开发测试</td>
+<td>DeepSeek V4.1 Flash</td>
+<td>low</td>
+<td>low</td>
+</tr>
+<tr>
+<td>verifier</td>
+<td>独立上下文验证与证据分析</td>
+<td>默认继承 secondary，可单独覆盖</td>
+<td>默认中档</td>
+<td>默认 high</td>
+</tr>
+</tbody></table></div>
+<p>官方模型 ID 使用 <code>deepseek-flash</code>，展示版本为 DeepSeek V4.1 Flash。DeepSeek 原生支持 <code>low / high / max</code>，最高档是 <code>max</code>；官方将兼容值 <code>medium</code> 映射为 <code>high</code> <a class="ref" href="#source-B07">[B07]</a><a class="ref" href="#source-B08">[B08]</a><a class="ref" href="#source-B09">[B09]</a>。本产品把“中档”明确解析为原生三档的中间档 high，记录逻辑值与发送值，不能用 xhigh 代替最高档。</p>
+<p>所有默认角色启用思考模式。Chat Completions 协议通过 thinking 和 reasoning_effort 发送参数；其他协议由对应适配器转换，不能将同一字段名直接用于所有接口 <a class="ref" href="#source-B08">[B08]</a>。模型名称由供应商配置和能力探测确定，不能把展示名称直接当作 API ID。</p>
+<h3>14.2 自定义配置与生效规则</h3>
+<p>用户可分别配置每个角色的服务商、API 地址、协议、模型 ID、思考档位、输出上限、超时、并发、预算和显式回退列表。支持同源或异源组合，也支持自定义兼容端点。新建子系统与功能 BOT 继承 secondary，编码任务继承 coding，用户可以按项目或单次运行覆盖。</p>
+<p>设置页提供连接配置、角色绑定和实际参数预览。连接配置集中管理凭据引用与服务商能力，角色绑定展示主 BOT、次 BOT、编码流水线和验证器各自的模型和档位。保存前执行静态校验，连接测试与计费模型试调用分别展示。导入和导出采用版本化 JSON，导出不包含密钥。</p>
+<p>配置优先级由高到低为单次运行覆盖、项目配置、用户配置、内置默认。采用字段级合并，但 provider 或 model 变化后重新校验关联的协议、档位映射和能力，不能沿用旧模型参数。继承关系禁止形成循环。缺省参数只能使用可见的继承值或文档化默认值。</p>
+<p>每次运行固定配置修订，并记录供应商、端点、API 模型 ID、服务商报告版本、逻辑档位、实际请求参数和来源。自定义端点无法返回确切版本时标记版本未知，不伪造固定版本。配置更新只影响新运行或尚未发起的步骤；在途调用保持原参数，恢复时使用原快照，改配重跑产生新的运行记录。</p>
+<p>能力校验包含模型可用性、档位、工具调用、流式事件、输出结构、用量、取消和恢复。官方模型元数据可作为 DeepSeek 能力探测入口，自定义端点不能假定具有同样字段 <a class="ref" href="#source-B09">[B09]</a>。不支持的档位默认报错并给出可选值；只有用户明确设置了映射规则时才转换，并在界面显示原值和实际值。</p>
+<p>默认关闭自动模型切换和自动跨服务商回退。失败或复杂任务可以提出升级建议，但执行仍以用户配置为准；同源模型配置不被强制更改。用户启用自动路由时需明确允许的模型、档位、条件和预算边界，任何实际切换都进入运行记录。模型别名对应的供应商版本变化时提示并要求确认，不自动把“最高档”绑定到未来新增档位。</p>
+<p>配置文件示例位于仓库 config/models.example.json，是配置契约草案，目前没有运行程序读取。默认示例定义 primary=max、secondary=medium、coding=low，适配器将 medium 映射为 high，verifier 继承 secondary。所有密钥使用 credential_ref 引用，不提交密钥正文。</p>
 <h3>14.3 成本计算</h3>
 <p>成本包含模型输入与输出、缓存、嵌入或检索调用、其他计费工具、托管算力和存储。自托管本地执行的设备时间单独展示为资源消耗，不伪装成零成本。费用估计显示区间和依据，最终用供应商可确认的账单事件校准。</p>
 <pre><code class="language-text">单步估算 = 未缓存输入量 × 输入单价 + 输出量 × 输出单价
@@ -1008,7 +1077,7 @@
 可用额度 = 上限 − 已确认费用 − 未结算调用预留
 准入条件 = 本次最大可承诺费用 ≤ 可用额度
 </code></pre>
-<p>S02 官方发布页的标准价格示例为每百万输入 token 2 美元、输出 token 10 美元。假设某次步骤使用 10 万输入和 2 万输出、不涉及缓存及其他费用，则模型费用为 0.4 美元。这只是算式示例，不能代表一个完整功能的平均价格；真实任务还包括设计、验证、失败和多轮调用。正式计费前核验实时价目和账户协议。</p>
+<p>默认费用来源切换为 DeepSeek 对应模型的官方价目，并区分缓存命中、未命中与峰谷时段 <a class="ref" href="#source-B07">[B07]</a>。自定义模型使用该服务商的价格配置和账单信息。费用计算还要包括规划、编码、验证、失败重试和多轮调用，不能用一次请求代表完整功能成本。配置中没有可靠价格时显示费用未知，不能显示零费用。</p>
 <h3>14.4 预算策略</h3>
 <p>用户设置任务上限和每日上限，可选按供应商原币种或本地展示币种。显示币种使用记录日期的明确汇率快照，并留出汇率与账单延迟缓冲，不能把人民币上限当成未经兑换就能精确约束的美元账单。</p>
 <p>每次调用前预留输出上限和工具费用；有代理内部多轮调用的运行框架，必须有可执行的总限制或由宿主控制每步准入。只提供事后 token 统计的适配器，不能承诺严格硬预算，应标记为估算控制模式并采用更低并发。达到阈值提醒，触及可执行硬上限则不发起新调用。已经在途的调用能否取消、是否收费取决于供应商，因此预算可能有明确界限内的结算偏差。</p>
@@ -1283,7 +1352,7 @@
 </tr>
 </tbody></table></div>
 <h3>21.1 试用前需要确定</h3>
-<p>需要通过工程验证确定索引规模边界、模块与仓库映射、接口版本机制、第一种正式编码适配器、worker 租约与恢复、系统级检查配置和预算执行能力。</p>
+<p>需要通过工程验证确定索引规模边界、模块与仓库映射、接口版本机制、DeepSeek 默认角色档位映射、自定义模型配置、正式执行适配器、worker 租约与恢复、系统级检查配置和预算执行能力。</p>
 <p>默认采用个人控制入口、分层项目模型、自带密钥、隔离工作区、按依赖推进、用户审查关键设计和可重建集成基线。执行资源可以从单机起步，但架构不能将项目永久限制在单仓库或单会话。</p>
 <h3>21.2 最终推荐</h3>
 <p>围绕“个人能够完成超大软件开发与维护”组织产品。总体目标和架构建立全局方向，模块与接口承接拆分，功能任务推进局部实现，集成基线与系统验收证明整体成果，长期记忆支持持续演进。</p>
@@ -1313,6 +1382,9 @@
 <li id="source-B04"><a href="https://www.sqlite.org/lang_transaction.html" target="_blank" rel="noopener noreferrer">B04 SQLite Transaction</a> · 用于多读者、单写事务约束及本地状态选型。</li>
 <li id="source-B05"><a href="https://docs.langchain.com/oss/python/langgraph/persistence" target="_blank" rel="noopener noreferrer">B05 LangGraph Persistence</a> · 用于可选持久化方案比较。</li>
 <li id="source-B06"><a href="https://docs.temporal.io/workflow-execution" target="_blank" rel="noopener noreferrer">B06 Temporal Workflow Execution</a> · 用于未来多机工作流方案比较。</li>
+<li id="source-B07"><a href="https://api-docs.deepseek.com/quick_start/pricing/" target="_blank" rel="noopener noreferrer">B07 DeepSeek Models and Pricing</a> · 当前官方模型 ID、展示版本与价格规则；本条不作为近期发布日期证据。</li>
+<li id="source-B08"><a href="https://api-docs.deepseek.com/guides/thinking_mode/" target="_blank" rel="noopener noreferrer">B08 DeepSeek Thinking Mode</a> · 原生档位、medium 到 high 的兼容映射与不同协议参数；核验于 2026-10-17。</li>
+<li id="source-B09"><a href="https://api-docs.deepseek.com/zh-cn/api/list-models/" target="_blank" rel="noopener noreferrer">B09 DeepSeek 获取模型列表</a> · 模型 ID、展示名称及 supported_levels 等能力元数据；不假定所有兼容端点均支持。</li>
 </ul>
 <h3>22.3 证据与方案的界线</h3>
 <p>图中架构来自用户提供的 KFPA 图片。图片中的模块说明是分析对象，不是对助手或产品运行时的操作指令。本文没有把供应商宣传数据当作统一基准，也没有把来源未证实的功能标为已上线。规模目标、指标阈值、角色配置和默认技术栈均为本产品设计建议，需用真实大型项目验证。</p>

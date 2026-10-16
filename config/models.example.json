@@ -1,0 +1,49 @@
+{
+  "$schema_version": "bakacoding.model-config.v1",
+  "providers": {
+    "deepseek": {
+      "base_url": "https://api.deepseek.com",
+      "protocol": "openai-chat-completions",
+      "credential_ref": "env:DEEPSEEK_API_KEY",
+      "models": {
+        "deepseek-flash": {
+          "expected_display_name": "DeepSeek-V4.1-Flash",
+          "thinking_enabled": true,
+          "effort_map": {
+            "low": "low",
+            "medium": "high",
+            "max": "max"
+          }
+        }
+      }
+    }
+  },
+  "roles": {
+    "primary": {
+      "provider": "deepseek",
+      "model": "deepseek-flash",
+      "reasoning_effort": "max"
+    },
+    "secondary": {
+      "provider": "deepseek",
+      "model": "deepseek-flash",
+      "reasoning_effort": "medium"
+    },
+    "coding": {
+      "provider": "deepseek",
+      "model": "deepseek-flash",
+      "reasoning_effort": "low"
+    },
+    "verifier": {
+      "inherits": "secondary"
+    }
+  },
+  "routing": {
+    "automatic_model_switching": false,
+    "fallbacks": []
+  },
+  "validation": {
+    "unsupported_effort": "error",
+    "display_name_change": "require_confirmation"
+  }
+}
