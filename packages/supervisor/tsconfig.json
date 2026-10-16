@@ -1,0 +1,32 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src"],
+  "references": [
+    {
+      "path": "../config-budget"
+    },
+    {
+      "path": "../model-gateway"
+    },
+    {
+      "path": "../pr"
+    },
+    {
+      "path": "../scheduler"
+    },
+    {
+      "path": "../storage"
+    },
+    {
+      "path": "../sub-agent"
+    },
+    {
+      "path": "../types"
+    }
+  ],
+  "exclude": ["src/**/*.test.ts"]
+}

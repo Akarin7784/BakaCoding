@@ -1,0 +1,22 @@
+{
+  "name": "@bakacoding/sub-agent",
+  "version": "0.0.0",
+  "private": true,
+  "description": "模块 8：副 Agent",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "@bakacoding/coder-pool": "workspace:*",
+    "@bakacoding/config-budget": "workspace:*",
+    "@bakacoding/pr": "workspace:*",
+    "@bakacoding/review-pool": "workspace:*",
+    "@bakacoding/storage": "workspace:*",
+    "@bakacoding/types": "workspace:*",
+    "@bakacoding/workspace": "workspace:*"
+  }
+}

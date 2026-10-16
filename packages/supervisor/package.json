@@ -1,0 +1,22 @@
+{
+  "name": "@bakacoding/supervisor",
+  "version": "0.0.0",
+  "private": true,
+  "description": "模块 10：主管",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "@bakacoding/config-budget": "workspace:*",
+    "@bakacoding/model-gateway": "workspace:*",
+    "@bakacoding/pr": "workspace:*",
+    "@bakacoding/scheduler": "workspace:*",
+    "@bakacoding/storage": "workspace:*",
+    "@bakacoding/sub-agent": "workspace:*",
+    "@bakacoding/types": "workspace:*"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "@bakacoding/review-pool",
+  "version": "0.0.0",
+  "private": true,
+  "description": "模块 7：评审池",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "@bakacoding/config-budget": "workspace:*",
+    "@bakacoding/model-gateway": "workspace:*",
+    "@bakacoding/pr": "workspace:*",
+    "@bakacoding/storage": "workspace:*",
+    "@bakacoding/types": "workspace:*"
+  }
+}

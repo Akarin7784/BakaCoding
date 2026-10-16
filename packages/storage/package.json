@@ -1,0 +1,17 @@
+{
+  "name": "@bakacoding/storage",
+  "version": "0.0.0",
+  "private": true,
+  "description": "模块 2：存储与事件日志",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "@bakacoding/config-budget": "workspace:*",
+    "@bakacoding/types": "workspace:*"
+  }
+}
