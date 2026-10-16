@@ -65,12 +65,13 @@ flowchart TD
 
 Node.js + TypeScript 本机协调服务，React + TypeScript 界面，Electron 桌面壳，SQLite（WAL）。默认在本机 Git worktree 中执行，见 [执行配置草案](config/execution.example.json)。
 
-[模型配置示例](config/models.example.json) 是早期的配置契约草案，还没有更新为评审组 / 主管结构，新字段草案见 [整体设计 §10](docs/product-design.md#10-评审组与主管模型)。目前没有运行程序读取这些配置。
+[模型配置示例](config/models.example.json) 按评审组 / 主管结构给出开发阶段的角色示例（`supervisor`、`review_board`、`sub_agent`、`coder`，均为 DeepSeek Flash），字段仍是草案，完整字段草案见 [整体设计 §10](docs/product-design.md#10-评审组与主管模型)。目前没有运行程序读取这些配置。
 
 ## 文档
 
 - [整体设计](docs/product-design.md)（[在线版](https://akarin7784.github.io/BakaCoding/)）
 - [分析与设计（详细版）](docs/bakacoding-analysis-and-design.md)
+- [功能模块](docs/modules.md)
 - [设计决策与待办](docs/bakacoding-design-backlog.md)
 - [Flash 并发研究](docs/bakacoding-flash-concurrency-research.md) · [设计评审](docs/bakacoding-plan-review.md)
 
