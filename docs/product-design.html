@@ -155,7 +155,7 @@
   }
 },
 &quot;budget&quot;: {
-  &quot;daily_micro_usd&quot;: null,        // 必填，整数微美元；首次运行填写，缺失不启动；不预设金额
+  &quot;daily_micro_usd&quot;: null,        // 必填，整数微美元；首次运行填写，缺失不启动；不预设默认值，示例仅供参考
   &quot;per_ticket_ratio&quot;: 0.05        // 每单上限 = 每日预算 × 5%，含复投
   &quot;offpeak_preference&quot;: false     // 闲时开关，默认关；只影响 priority=deferred 的单
 },
@@ -193,7 +193,7 @@
 </ul>
 <h2 id="chapter-13">13. 成本与预算</h2>
 <ul>
-<li><strong>每日预算必填</strong>：不预设金额，首次运行时必须填写，和主管模型一样，缺了就不启动。</li>
+<li><strong>每日预算必填</strong>：不预设默认值，示例仅供参考；首次运行时必须填写，和主管模型一样，缺了就不启动。</li>
 <li>每单上限默认为每日预算的 5%（初始值，待实测），含复投的花费；每单另设输出上限。</li>
 <li>触顶时降并发。</li>
 <li><strong>闲时偏好开关</strong> <code>budget.offpeak_preference</code>：默认关；打开后预算紧张时，<code>priority=deferred</code> 的单优先等到闲时再跑，由调度器读开关和优先级决定（DeepSeek 闲时价格为高峰的一半：https://api-docs.deepseek.com/quick_start/pricing ）。v1 只做这一个开关。</li>

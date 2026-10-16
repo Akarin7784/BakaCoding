@@ -165,7 +165,7 @@ BakaCoding 帮助个人开发者推进大型软件工程。核心是 **Flash 编
   }
 },
 "budget": {
-  "daily_micro_usd": null,        // 必填，整数微美元；首次运行填写，缺失不启动；不预设金额
+  "daily_micro_usd": null,        // 必填，整数微美元；首次运行填写，缺失不启动；不预设默认值，示例仅供参考
   "per_ticket_ratio": 0.05        // 每单上限 = 每日预算 × 5%，含复投
   "offpeak_preference": false     // 闲时开关，默认关；只影响 priority=deferred 的单
 },
@@ -204,7 +204,7 @@ BakaCoding 帮助个人开发者推进大型软件工程。核心是 **Flash 编
 
 ## 13. 成本与预算
 
-- **每日预算必填**：不预设金额，首次运行时必须填写，和主管模型一样，缺了就不启动。
+- **每日预算必填**：不预设默认值，示例仅供参考；首次运行时必须填写，和主管模型一样，缺了就不启动。
 - 每单上限默认为每日预算的 5%（初始值，待实测），含复投的花费；每单另设输出上限。
 - 触顶时降并发。
 - **闲时偏好开关** `budget.offpeak_preference`：默认关；打开后预算紧张时，`priority=deferred` 的单优先等到闲时再跑，由调度器读开关和优先级决定（DeepSeek 闲时价格为高峰的一半：https://api-docs.deepseek.com/quick_start/pricing ）。v1 只做这一个开关。
