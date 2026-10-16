@@ -11,8 +11,9 @@
     "typecheck": "tsc --noEmit -p ."
   },
   "dependencies": {
-    "@bakacoding/config-budget": "workspace:*",
-    "@bakacoding/storage": "workspace:*",
     "@bakacoding/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43"
   }
 }
