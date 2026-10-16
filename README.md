@@ -8,7 +8,7 @@
 
 以知识为基础，以架构为约束，用受控多智能体持续推进完整工程。
 
-[产品设计文档](docs/product-design.md) · [排版阅读版](docs/product-design.html) · [核心架构](#核心架构) · [参与讨论](https://github.com/Akarin7784/BakaCoding/issues)
+[在线文档](https://akarin7784.github.io/BakaCoding/) · [文档源码](docs/product-design.md) · [核心架构](#核心架构) · [参与讨论](https://github.com/Akarin7784/BakaCoding/issues)
 
 ![Status](https://img.shields.io/badge/status-product_design-blue)
 ![For](https://img.shields.io/badge/for-individual_developers-486581)
@@ -120,9 +120,12 @@ flowchart TD
 
 完整方案共 22 章、22 项功能需求及验收标准，覆盖定位、交互、代理协作、任务状态、知识、架构、数据与接口、运行资源、安全、超大工程组织和系统级验收。
 
+- [在线文档网站](https://akarin7784.github.io/BakaCoding/)：直接在浏览器阅读完整方案，支持章节导航、架构图和打印。
 - [产品设计文档 Markdown](docs/product-design.md)：适合在 GitHub 阅读、讨论和修改。
-- [产品设计文档 HTML](docs/product-design.html)：含章节导航和架构图；下载后可在浏览器阅读和打印。
+- [离线阅读版 HTML](https://akarin7784.github.io/BakaCoding/product-design.html)：可在线阅读，也可保存为 HTML 后离线打开。
 - [原始 KFPA 架构图](docs/assets/kfpa-original.png)：方案的架构起点。
+
+文档通过 GitHub Pages 托管。`docs/` 更新合并到 `main` 后，GitHub Actions 会自动部署；`docs/product-design.html` 同时作为网站首页，保持在线与离线版本一致。
 
 技术调研核验于 **2026 年 10 月 17 日**，近期部分采用 **2026 年 9 月 17 日至 10 月 17 日**窗口内的 12 条官方资料。基础能力文档另列，已发布能力与设计建议分别说明。
 
