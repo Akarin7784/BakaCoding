@@ -1,6 +1,6 @@
 # BakaCoding 笨蛋编程助手 整体设计
 
-版本 2.2 · 2026 年 10 月 17 日（UTC+8）· 采用 MIT 协议的开源项目
+版本 2.3 · 2026 年 10 月 17 日（UTC+8）· 采用 MIT 协议的开源项目
 
 > 本文是 BakaCoding 的整体设计，依据 [分析与设计](bakacoding-analysis-and-design.md) 和 [设计决策与待办](bakacoding-design-backlog.md) 重写。现阶段只做整体设计，不划分开发切片。**当前处于设计阶段，尚无可运行代码**；性能、规模和效果都需要实测验证。文中不写吞吐、速度、价格数字，配置默认值都是初始值，待实测；需要时引用 [Flash 并发研究](bakacoding-flash-concurrency-research.md) 中带来源的事实。
 
@@ -54,11 +54,11 @@ BakaCoding 帮助个人开发者推进大型软件工程。核心是 **Flash 编
 ## 5. Flash 编码池
 
 - 每张需求单开一个临时 Flash 代理，写完即销毁。默认思考档 `low`，用户可按项目或单次运行配置；不支持的档位报错，不静默改档。
-- 默认模型：DeepSeek V4.1-Flash（`deepseek-flash`）。
+- 默认模型：DeepSeek V4.1-Flash（`deepseek-flash`）。开发阶段所有角色都用 DeepSeek Flash，一个 key 跑通整条流水线（开发配置，不是产品设计，见第 10 节）。
 - 并发数 N 按研究文档第 5.5 节的公式计算，默认上限 8，硬上限 64（初始值，待实测）；超过硬上限须用户手动改配置。
 - 并发数只计编码阶段的单；PR 等待合并时不占编码槽位。
 - 每单一个 Git worktree，从确认基线创建。
-- 协调器统一用令牌桶限流，所有 Flash 代理共享；遇到 429 时指数退避加抖动，启动时平滑放量。服务商限额按账号计算，多开 key 不增加额度（见研究文档第 1–2 节）。
+- 协调器统一用令牌桶限流（由模型接入适配层实现，见第 15 节），所有 Flash 代理共享；遇到 429 时指数退避加抖动，启动时平滑放量。服务商限额按账号计算，多开 key 不增加额度（见研究文档第 1–2 节）。
 - 提示词把稳定的公共前缀放在前、需求单放在后，以提高前缀缓存命中率。
 
 ## 6. 受限工具层
@@ -102,7 +102,7 @@ BakaCoding 帮助个人开发者推进大型软件工程。核心是 **Flash 编
   - `user`（默认）：集成分支攒够并通过上述检查后，主管通知用户自行合入。
   - `supervisor`：检查通过后由主管直接合入 main，合完通知用户。
 - **反压**：按评审积压和 API 并发调整编码并发，并记录原因。阈值如下（均为初始值，待实测）：
-  - 评审容量 = 评审池成员数 × 每个成员的并发评审数（默认 2）；成员数为 0 时按主管 1 个成员计算。
+  - 评审容量 = 评审池成员数 × 每个成员的并发评审数（默认 2）；成员数为 0 时按 1 个成员计算，即容量为 2。
   - 评审积压超过容量 2 倍：编码并发减半；超过 4 倍：暂停派新单。
   - 积压回落到容量以下后，每 5 分钟加 1 个编码槽位，直到回到 N。
   - 主管待办队列（入口、拆单、上报、高风险 PR）也计入反压，积压超过 `pipeline.supervisor_backlog_limit`（默认 10）时暂停派新单。
@@ -110,23 +110,31 @@ BakaCoding 帮助个人开发者推进大型软件工程。核心是 **Flash 编
 
 ## 10. 评审组与主管模型
 
-- 不设单一主 Agent，由多个旗舰模型组成评审组。
+- 不设单一主 Agent，由多个旗舰模型组成评审组。正式版要求评审组用旗舰模型，配置里允许换成别的模型。
+- **开发阶段配置**（只是开发配置，不是产品设计）：所有角色都用 DeepSeek Flash，靠三样东西区分角色：
+  - 思考档位：主管 `max`，评审池和副 Agent `high`，编码池默认 `low`，复投按第 8 节升档。
+  - 角色提示词：每个角色各写一套。
+  - 权限：只有编码池能写代码；评审池只能读 diff 和需求单；主管负责拆单和裁决，也不写代码。
+  - 其他服务商的旗舰模型以后通过适配层补丁接入。
 - **职责划分**：主管负责拆单和最终裁决（成员分歧、上报的单、高风险 PR、合入 main 前的集成分支审查）；评审池成员只做 PR 评审，不拆单。
 - **成员数**：默认 1 个主管加 2 个评审池成员（初始值，待实测），可配置；成员数为 0 时由主管兼任评审。
 - **必须设置主管模型**：缺失时配置校验报错、不启动；主管固定用最高思考档。模型没有 max 档时用它能用的最高档，启动时提示一次并记入日志，不报错。
 - **没有分歧环节**：评审池里每张单只由一个模型评审；上报单由主管裁决，主管的结论就是最终结论。
 - **用户只对接主管 Agent**：新需求、上报单的处理、GitHub 上的手动操作都经过主管，由主管拆单并重新投入编码池。
-- 副 Agent 模型默认用中档旗舰模型，可配置（`sub_agent`）；它负责写编码提示词和设计 Flash 权限，对质量影响大。
-- 配置字段结构（**草案**，字段名尚未定稿，所有数值都是初始值，待实测；仓库 `config/` 下的示例文件暂未更新）：
+- 副 Agent 模型可配置（`sub_agent`），开发阶段用 DeepSeek Flash `high` 档；它负责写编码提示词和设计 Flash 权限，对质量影响大。
+- 配置字段结构（**草案**，下面的模型取值是开发阶段配置，正式版评审组换成旗舰模型；字段名尚未定稿，所有数值都是初始值，待实测；仓库 `config/` 下的示例文件暂未更新；API key 不写进配置，见第 15 节）：
 
 ```jsonc
 "review_board": {
   "supervisor": {                 // 必填；缺失即报错、不启动
     "provider": "deepseek",
-    "model": "<旗舰模型>",
+    "model": "deepseek-flash",
     "reasoning_effort": "max"      // 固定最高档；没有 max 档时用最高可用档并提示
   },
-  "members": [ { "id": "...", "provider": "...", "model": "...", "reasoning_effort": "..." } ],  // 默认 2 个；0 个时主管兼任评审
+  "members": [                    // 默认 2 个；0 个时主管兼任评审
+    { "id": "reviewer-1", "provider": "deepseek", "model": "deepseek-flash", "reasoning_effort": "high" },
+    { "id": "reviewer-2", "provider": "deepseek", "model": "deepseek-flash", "reasoning_effort": "high" }
+  ],
   "review_assignment": "least_busy",
   "sticky_on_resubmit": true,
   "skip_rate_limited": true
@@ -141,16 +149,16 @@ BakaCoding 帮助个人开发者推进大型软件工程。核心是 **Flash 编
   "per_ticket_ratio": 0.05        // 每单上限 = 每日预算 × 5%，含复投
 },
 "backpressure": {
-  "reviews_per_member": 2,        // 评审容量 = 成员数 × 本值（0 成员按 1 计）
+  "reviews_per_member": 2,        // 评审容量 = 成员数 × 本值；0 成员按 1 计，容量为 2
   "halve_at": 2,                  // 积压 > 容量 × 2：编码并发减半
   "pause_at": 4,                  // 积压 > 容量 × 4：暂停派新单
   "recover_step": 1,              // 回落到容量以下后每次加 1 个槽位
   "recover_interval_min": 5
 },
-"sub_agent": {                    // 默认中档旗舰模型，可配置
-  "provider": "...",
-  "model": "<中档旗舰模型>",
-  "reasoning_effort": "..."
+"sub_agent": {                    // 可配置；开发阶段为 DeepSeek Flash high
+  "provider": "deepseek",
+  "model": "deepseek-flash",
+  "reasoning_effort": "high"
 },
 "pipeline": {
   "resubmit_limits": { "review": 3, "conflict": 2 },
@@ -188,6 +196,8 @@ BakaCoding 帮助个人开发者推进大型软件工程。核心是 **Flash 编
 
 - 技术栈：React + TypeScript 界面，Node.js + TypeScript 本机协调服务，SQLite + WAL，桌面壳 Electron。
 - 执行环境：默认本机 Git worktree（见 `config/execution.example.json`）。
+- **模型接入适配层**：按协议做适配，v1 先实现 OpenAI 兼容和 Anthropic 兼容两种协议；DeepSeek 走 OpenAI 兼容。新服务商以补丁形式加配置接入，不改核心。限流、计费和思考档位映射都放在适配层。
+- **API key**：优先从环境变量 `DEEPSEEK_API_KEY` 读取；本地配置文件 `config/secrets.local.json` 只作备选，该文件必须写进 `.gitignore`。key 不写进仓库，也不写进配置示例。
 
 ## 16. 界面
 
@@ -201,7 +211,9 @@ BakaCoding 帮助个人开发者推进大型软件工程。核心是 **Flash 编
 
 ## 18. 待定事项
 
-- 是否只用国产模型（由项目负责人决定）。
+设计上已无待定项。
+
+- ~~是否只用国产模型~~：已定，开发阶段只接 DeepSeek，其他服务商以后通过适配层补丁接入。
 
 其余事项（评审组成员数与模型、无 max 档的处理、分歧规则、默认并发数、复投升档、预算、反压阈值）已于 2026-10-17 定为初始值，见上文各节。
 

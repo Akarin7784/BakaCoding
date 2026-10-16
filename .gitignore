@@ -4,6 +4,7 @@
 # Local credentials and settings
 .env
 .env.*
+config/secrets.local.json
 !.env.example
 *.pem
 *.key
