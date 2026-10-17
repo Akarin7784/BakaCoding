@@ -1,6 +1,12 @@
 // 把主进程下发的事件和需求单摘要整理成界面的视图数据。纯函数，不碰 Node。
 import type { DesktopSnapshot, DesktopUpdate, TicketView, UiEvent } from "../../shared/api";
-import type { EscalationView, FlashCallSummary, ProjectView, Requirement } from "../mock/types";
+import type {
+  EscalationView,
+  FlashCallSummary,
+  ProjectView,
+  Requirement,
+  TicketWarningView,
+} from "../mock/types";
 
 export interface LiveState {
   db: DesktopSnapshot["db"];
@@ -33,6 +39,8 @@ export interface LiveViews {
   flashCalls: Record<string, FlashCallSummary>;
   /** 找不到所属项目的上报（如 `unattributed:<pr_id>`、需求号对不上任何项目），按 seq 顺序。 */
   unattributed: EscalationView[];
+  /** 找不到所属项目的 ticket_warning（项目号对不上任何项目），按 seq 顺序（T-050）。 */
+  unattributedWarnings: TicketWarningView[];
 }
 
 export function buildViews(state: LiveState): LiveViews {
@@ -56,6 +64,7 @@ export function buildViews(state: LiveState): LiveViews {
         messages: [],
         prs: [],
         escalations: [],
+        warnings: [],
         git: null,
         pool: null,
       });
@@ -99,6 +108,22 @@ export function buildViews(state: LiveState): LiveViews {
     else unattributed.push(esc);
   }
 
+  const unattributedWarnings: TicketWarningView[] = [];
+  for (const e of state.events) {
+    if (e.type !== "ticket_warning") continue;
+    const w: TicketWarningView = {
+      event_id: e.event_id,
+      ts: e.ts,
+      requirement_id: e.requirement_id,
+      ticket_id: e.ticket_id,
+      code: e.payload.code,
+      detail: e.payload.detail,
+    };
+    const view = projects.get(e.payload.project_id);
+    if (view) view.warnings.push(w);
+    else unattributedWarnings.push(w);
+  }
+
   for (const t of state.tickets) {
     projects.get(t.project_id)?.prs.push({
       // 模块 6 的 pr_id 还没和单号关联起来，先显示单号。
@@ -118,5 +143,5 @@ export function buildViews(state: LiveState): LiveViews {
       title: requirement_id,
     }));
   }
-  return { projects: [...projects.values()], flashCalls, unattributed };
+  return { projects: [...projects.values()], flashCalls, unattributed, unattributedWarnings };
 }
