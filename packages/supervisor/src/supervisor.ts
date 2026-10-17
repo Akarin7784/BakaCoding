@@ -36,7 +36,6 @@ import {
   type SupervisorTicket,
   type TakeOverReport,
   type IntegrationReview,
-  type IntegrationBlockReason,
   type MainMergeResult,
   MainMergeError,
   INTEGRATION_DIFF_MAX_CODEPOINTS,
@@ -1358,8 +1357,8 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       ),
     );
     // T-042 Q-1：合入集成分支后，无在途单时自动审一次（同一 head 只审一次）
-    const offInterface = deps.subscribe("interface_changed", (e) => {
-      void maybeAutoReview(e).catch((err: unknown) =>
+    const offInterface = deps.subscribe("interface_changed", () => {
+      void maybeAutoReview().catch((err: unknown) =>
         logger.warn("自动审查集成分支失败", err),
       );
     });
@@ -1374,7 +1373,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     };
   }
 
-  async function maybeAutoReview(_e: EventOf<"interface_changed">): Promise<void> {
+  async function maybeAutoReview(): Promise<void> {
     if (stopped || !deps.pr) return;
     if (deps.integration && !(await deps.integration.idle())) return;
     let head: string;
