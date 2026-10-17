@@ -1,0 +1,20 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src"],
+  "references": [
+    {
+      "path": "../config-budget"
+    },
+    {
+      "path": "../storage"
+    },
+    {
+      "path": "../types"
+    }
+  ],
+  "exclude": ["src/**/*.test.ts"]
+}

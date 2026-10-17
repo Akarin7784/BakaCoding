@@ -1,0 +1,16 @@
+{
+  "name": "@bakacoding/types",
+  "version": "0.0.0",
+  "private": true,
+  "description": "共享类型：事件类型、常量和 zod schema",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  }
+}

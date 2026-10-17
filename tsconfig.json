@@ -1,0 +1,50 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "packages/types"
+    },
+    {
+      "path": "packages/types"
+    },
+    {
+      "path": "packages/event-bus"
+    },
+    {
+      "path": "packages/model-gateway"
+    },
+    {
+      "path": "packages/storage"
+    },
+    {
+      "path": "packages/config-budget"
+    },
+    {
+      "path": "packages/workspace"
+    },
+    {
+      "path": "packages/coder-pool"
+    },
+    {
+      "path": "packages/pr"
+    },
+    {
+      "path": "packages/review-pool"
+    },
+    {
+      "path": "packages/sub-agent"
+    },
+    {
+      "path": "packages/scheduler"
+    },
+    {
+      "path": "packages/supervisor"
+    },
+    {
+      "path": "packages/diagnostics"
+    },
+    {
+      "path": "packages/desktop"
+    }
+  ]
+}

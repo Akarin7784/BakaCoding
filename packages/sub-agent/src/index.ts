@@ -1,0 +1,3 @@
+// 模块 8 占位，接口见 docs/modules.md「8.」一节。
+export const MODULE_ID = 8 as const;
+export const MODULE_NAME = "@bakacoding/sub-agent" as const;
