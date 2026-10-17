@@ -2787,3 +2787,222 @@ describe("T-041c 高风险闸门", () => {
     expect(paused).toEqual([2]);
   });
 });
+
+describe("T-064 定时 sync + 独占区域大小写 + adopt 已合入", () => {
+  function fakeTimers(getNow: () => number) {
+    type Job = { at: number; fn: () => void };
+    const jobs: Job[] = [];
+    return {
+      timers: {
+        setTimeout: (fn: () => void, ms: number) => {
+          const job: Job = { at: getNow() + ms, fn };
+          jobs.push(job);
+          return job;
+        },
+        clearTimeout: (h: unknown) => {
+          const i = jobs.indexOf(h as Job);
+          if (i >= 0) jobs.splice(i, 1);
+        },
+      },
+      async flush(to: number) {
+        for (;;) {
+          const due = jobs.filter((j) => j.at <= to).sort((a, b) => a.at - b.at);
+          if (!due.length) break;
+          const j = due[0]!;
+          const i = jobs.indexOf(j);
+          if (i >= 0) jobs.splice(i, 1);
+          j.fn();
+          // runTimedSync 是 async：多轮 microtask 把它跑完
+          for (let k = 0; k < 20; k++) await Promise.resolve();
+        }
+      },
+      jobs,
+    };
+  }
+
+  it("N6：Package.json / 子目录 PACKAGE.JSON 的代表路径经 isDependencyFile 判独占（T-065 合入后不区分大小写）", async () => {
+    const { isDependencyFile } = await import("@bakacoding/sub-agent");
+    // 当前 main 的 isDependencyFile 区分大小写；N6 直接调它，两边规则保持一致
+    expect(inExclusiveZone("package.json", DEFAULT_EXCLUSIVE_ZONES)).toBe(true);
+    expect(inExclusiveZone("apps/web/package.json", DEFAULT_EXCLUSIVE_ZONES)).toBe(true);
+    expect(inExclusiveZone("docs/package.json.md", DEFAULT_EXCLUSIVE_ZONES)).toBe(false);
+    expect(inExclusiveZone("src/**", DEFAULT_EXCLUSIVE_ZONES)).toBe(false);
+    // 与 isDependencyFile 一致：若 8 认 Package.json，9 也认
+    expect(inExclusiveZone("Package.json", DEFAULT_EXCLUSIVE_ZONES)).toBe(
+      isDependencyFile("Package.json"),
+    );
+    expect(inExclusiveZone("apps/web/PACKAGE.JSON", DEFAULT_EXCLUSIVE_ZONES)).toBe(
+      isDependencyFile("apps/web/PACKAGE.JSON"),
+    );
+  });
+
+  it("N6：两张写入范围分别是 package.json 与 **/package.json 的单不能同时持锁", async () => {
+    const h = harness();
+    const d = withHandle(h);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { write_scope: ["package.json"] }));
+    await s.enqueue(ticket("T-2", { write_scope: ["**/package.json"] }));
+    await settle(s);
+    expect(d.handled).toEqual(["T-1"]);
+    d.pending.get("T-1")!.resolve({ kind: "escalated", pr_id: null });
+    await settle(s);
+    expect(d.handled).toEqual(["T-1", "T-2"]);
+  });
+
+  it("N1/N2：startSyncLoop 后按 sync_poll_ms 调 sync；stop 后不再调；0 关闭", async () => {
+    let now = 1_000_000;
+    const ft = fakeTimers(() => now);
+    const h = harness();
+    h.deps.sync_poll_ms = 1000;
+    h.deps.timers = ft.timers;
+    h.deps.clock = { now: () => now, sleep: async (ms) => void (now += ms) };
+    let syncCount = 0;
+    const inner = h.deps.createPr;
+    h.deps.createPr = async (opts) => {
+      const pr = await inner(opts);
+      const orig = pr.sync.bind(pr);
+      pr.sync = async () => {
+        syncCount++;
+        return orig();
+      };
+      return pr;
+    };
+    const s = createScheduler(h.deps);
+    await s.start();
+    expect(syncCount).toBe(0);
+    s.startSyncLoop();
+    s.startSyncLoop(); // 幂等
+    now = 1_001_000;
+    await ft.flush(now);
+    expect(syncCount).toBe(1);
+    now = 1_002_000;
+    await ft.flush(now);
+    expect(syncCount).toBe(2);
+    s.stop();
+    now = 1_010_000;
+    await ft.flush(now);
+    expect(syncCount).toBe(2);
+
+    const h2 = harness();
+    h2.deps.sync_poll_ms = 0;
+    h2.deps.timers = fakeTimers(() => 0).timers;
+    const s2 = createScheduler(h2.deps);
+    await s2.start();
+    s2.startSyncLoop();
+    expect(s2.syncState().enabled).toBe(false);
+    s2.stop();
+  });
+
+  it("N1：限流时下一轮不早于 retry_after_ms；鉴权失败停掉定时同步", async () => {
+    let now = 0;
+    const ft = fakeTimers(() => now);
+    const h = harness();
+    h.deps.sync_poll_ms = 1000;
+    h.deps.timers = ft.timers;
+    h.deps.clock = { now: () => now, sleep: async (ms) => void (now += ms) };
+    const { GithubAuthError } = await import("@bakacoding/pr");
+    let n = 0;
+    const inner = h.deps.createPr;
+    h.deps.createPr = async (opts) => {
+      const pr = await inner(opts);
+      pr.sync = async () => {
+        n++;
+        if (n === 1) throw rateLimit(5000);
+        if (n === 2) throw new GithubAuthError(401, "sync");
+        return [];
+      };
+      return pr;
+    };
+    const s = createScheduler(h.deps);
+    await s.start();
+    s.startSyncLoop();
+    now = 1000;
+    await ft.flush(now);
+    expect(n).toBe(1);
+    // 下一轮应在 max(5000, 1000)=5000 之后
+    now = 1000 + 4999;
+    await ft.flush(now);
+    expect(n).toBe(1);
+    now = 1000 + 5000;
+    await ft.flush(now);
+    expect(n).toBe(2);
+    expect(s.syncState().disabled_reason).toBe("auth");
+    expect(s.syncState().enabled).toBe(false);
+    now += 60_000;
+    await ft.flush(now);
+    expect(n).toBe(2); // 停了
+    s.stop();
+  });
+
+  it("N3：6 的 sync 返回 [] 但 prRecord 已 merged → 记成 merged 并放锁", async () => {
+    const h = harness();
+    h.deps.holdHighRisk = true;
+    h.deps.prRecord = async (pr_id) =>
+      pr_id === "pr-1"
+        ? { status: "merged", merge_sha: "ab".repeat(20) }
+        : undefined;
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { write_scope: ["a.ts"] }));
+    await s.submit({
+      ticket_id: "T-1",
+      pr_id: "pr-1",
+      worktree_path: "/wt/T-1-r0",
+      high_risk: true,
+    });
+    await settle(s);
+    expect(s.status("T-1")).toBe("merge_queued"); // 仍被闸门扣着
+    h.syncChanges = [];
+    const applied = await s.sync();
+    expect(applied.map((c) => c.to)).toEqual(["merged"]);
+    expect(s.status("T-1")).toBe("merged");
+    expect(h.statuses.filter(([t, st]) => t === "T-1" && st === "merged").length).toBeGreaterThan(0);
+    const ic = h.published.filter((e) => e.type === "interface_changed");
+    expect(ic.length).toBe(1);
+    s.stop();
+  });
+
+  it("B2：adopt already_merged → merged，合法 sha 发 interface_changed；无 sha 不发", async () => {
+    const h = harness();
+    const s = await started(h);
+    const r1 = await s.adopt(ticket("T-1", { write_scope: ["a.ts"], interfaces: [{ file: "a.ts", symbol: "x" }] }), {
+      pr_id: "pr-m",
+      head_sha: SHA("b"),
+      worktree_path: "/wt/T-1-r0",
+      base_commit: SHA("a"),
+      already_merged: true,
+      merge_sha: "cd".repeat(20),
+    });
+    expect(r1).toBe("merged");
+    expect(s.status("T-1")).toBe("merged");
+    expect(h.published.filter((e) => e.type === "interface_changed").length).toBe(1);
+
+    const r2 = await s.adopt(ticket("T-2", { write_scope: ["b.ts"] }), {
+      pr_id: "pr-m2",
+      head_sha: SHA("c"),
+      worktree_path: "/wt/T-2-r0",
+      already_merged: true,
+      // 非法 sha
+      merge_sha: "short",
+    });
+    expect(r2).toBe("merged");
+    expect(s.status("T-2")).toBe("merged");
+    // 仍只有 T-1 那一条 interface_changed
+    expect(h.published.filter((e) => e.type === "interface_changed").length).toBe(1);
+    s.stop();
+  });
+
+  it("B2 反向：去掉 already_merged 时 adopt 会进合并队列而不是直接 merged", async () => {
+    const h = harness();
+    h.merges.set("pr-x", [rateLimit(60_000)]); // 卡住别合掉
+    const s = await started(h);
+    const r = await s.adopt(ticket("T-1", { write_scope: ["a.ts"] }), {
+      pr_id: "pr-x",
+      head_sha: SHA("b"),
+      worktree_path: "/wt/T-1-r0",
+      base_commit: SHA("a"),
+    });
+    expect(r).toBe("adopted");
+    expect(s.status("T-1")).toBe("merge_queued");
+    s.stop();
+  });
+});
