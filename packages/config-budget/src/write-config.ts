@@ -1,7 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, open, rename, unlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { ConfigSchema, formatConfigIssue, SECRET_NAMES } from "./config.js";
+import { ConfigSchema, SECRET_NAMES } from "./config.js";
+import { formatConfigIssue } from "./safe-error.js";
 import { redact } from "./redact.js";
 
 export type WriteConfigResult = { ok: true } | { ok: false; errors: string[] };
