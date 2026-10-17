@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`2bea5bf` · main 上测试：39 个测试文件、713 个测试全部通过 · 更新日期：2026-10-17（UTC+8）
+> 上次更新时 main：`33a38e0` · main 上测试：41 个测试文件、757 个测试全部通过 · 更新日期：2026-10-17（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -37,8 +37,7 @@ flowchart BT
   classDef doing fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef done fill:#dcfce7,stroke:#16a34a,color:#14532d
 
-  class M0,M1,M2,M4,M5,M6,M7,M8,M9,M11,M12,T done
-  class M3 doing
+  class M0,M1,M2,M3,M4,M5,M6,M7,M8,M9,M11,M12,T done
   class M10 todo
 ```
 
@@ -62,7 +61,7 @@ flowchart BT
 | T-005 | SQLite（WAL）与事件落库；另含总线 `initialSeq`、订阅队列上限、`DiagnosticsSource` 移入 types、modules.md 公共字段措辞 | 2 | 基础层开发 | 已合入 | #19 | `95cd3f3` |
 | T-006 | 预算台账 recordCost / budgetState | 3 | 基础层开发 | 已合入 | #23 | `14c1698` |
 | T-007 | 脱敏函数 redact（light / full） | 3 | 基础层开发 | 已合入 | #6 | `4f20ce0` |
-| T-008 | 项目导入与提示词模板 importProject / promptTemplate | 3 | 基础层开发 | 未开始 | — | — |
+| T-008 | 项目导入与提示词模板 importProject / promptTemplate | 3 | 基础层开发 | 已合入 | #52 | `633ca0a` |
 | T-009 | 工作区 createWorktree / cleanup | 4 | 基础层开发 | 已合入 | #7 | `cdb1ed7` |
 | T-010 | 受限文件工具 read / write / edit / glob / grep | 4 | 基础层开发 | 已合入 | #32 | `ece21a5` |
 | T-011 | 三级权限与写入范围申请 applyPermissions（含权限清单写入接口）；grep 防回溯、`.env.example` 只读、工具定义深冻结、模块 2 `listPrRounds` | 2、4 | 基础层开发 | 已合入 | #44 | `97c0872` |
@@ -104,12 +103,14 @@ flowchart BT
 | T-051 | 模块 4 统一不安全 glob 判定 `isUnsafeGlob`：登记清单、越界写申请、收批准时拒绝 `..` / `.` / 绝对路径等写法 | 4 | 基础层开发 | 已合入 | #48 | `8520898` |
 | T-052 | 模块 4 `applyPermissions`：不安全的 ro 条目原位改成 deny（不再丢弃），不安全的 rw 照旧丢掉 | 4 | 基础层开发 | 已合入 | #49 | `2f48868` |
 | T-053 | 模块 8：越界写申请任一路径含通配字符（`* ? [ ] { } ( ) ! + @`）整条拒绝（不调 9 的 `extendScope`、不写回、不发 `write_scope_granted`），防止字面名 `docs/**` 被批成整个目录可写 | 8 | 编排层开发 | 已合入 | #51 | `2bea5bf` |
+| T-054 | 模块 4 越界写申请：路径带通配字符直接拒绝、不发申请（T-053 的纵深防御） | 4 | 基础层开发 | 已合入 | #53 | `33a38e0` |
 | T-055 | 模块 2：`tickets` 加可空 JSON 列 `fields`（v3 迁移），`saveTicket` 可带 `fields`（原样往返不脱敏，不传不覆盖）；新增 `getTicket`、`listTickets`（写入方和只读连接都有）；`listProjects` 带上 `name` | 2 | 基础层开发 | 待评审 | #? | |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单。
 
 ### 已知缺口
 
+- 模块 2 / 11（T-055）：需求单 `fields` 按设计原样存取、不脱敏，诊断包导出永远不能原样带上 `fields`。
 - 模块 9（T-039）：大写入范围的单等锁时没有防饿死，可能一直被小范围的单抢先。
 - 模块 9（T-039）：`priority: deferred` 只看闲时开关，不看预算紧张程度。
 - 模块 8（T-038）：接口变更说明（interface notes）v1 不持久化：只在进程内存和预算暂停的 `ResumeToken.interface_notes` 里，进程重启后还没带给编码池的说明会丢。

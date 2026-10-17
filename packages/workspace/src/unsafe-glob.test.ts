@@ -187,4 +187,58 @@ describe("越界写申请", () => {
     );
     expect(b.published).toBe(0);
   });
+
+  it("T-054：字面名为 docs/** 或 ** 的文件不发申请，直接拒绝，之后 docs 下其他文件仍不可写", async () => {
+    for (const file_path of ["docs/**", "**"]) {
+      const { reg } = quietRegistry();
+      const b = bus(["**"]);
+      const t = createTools({
+        ticket_id: "T-w",
+        worktree_path: ws,
+        permission_list: [{ glob: "src/**", level: "rw" }],
+        registry: reg,
+        scope_requests: { bus: b, ctx },
+      });
+      const r = await t.write({ file_path, content: "x" });
+      expect(code(r)).toBe("FS_PERMISSION_DENIED");
+      expect(r.ok ? "" : r.message).toContain("wildcard");
+      expect(b.published).toBe(0);
+      expect(reg.get("T-w")).toEqual([{ glob: "src/**", level: "rw" }]);
+      expect(existsSync(join(ws, file_path))).toBe(false);
+    }
+  });
+
+  it.each(["*", "?", "[", "]", "{", "}", "(", ")", "!", "+", "@"])(
+    "T-054：路径带 %j 不发申请",
+    async (ch) => {
+      const { reg } = quietRegistry();
+      const b = bus(["**"]);
+      const t = createTools({
+        ticket_id: "T-c",
+        worktree_path: ws,
+        permission_list: [{ glob: "src/**", level: "rw" }],
+        registry: reg,
+        scope_requests: { bus: b, ctx },
+      });
+      expect(code(await t.write({ file_path: `docs/a${ch}b.md`, content: "x" }))).toBe(
+        "FS_PERMISSION_DENIED",
+      );
+      expect(b.published).toBe(0);
+    },
+  );
+
+  it("T-054：普通具体路径照常申请并在批准后写入", async () => {
+    const { reg } = quietRegistry();
+    const b = bus(["docs/x.md"]);
+    const t = createTools({
+      ticket_id: "T-ok",
+      worktree_path: ws,
+      permission_list: [{ glob: "src/**", level: "rw" }],
+      registry: reg,
+      scope_requests: { bus: b, ctx },
+    });
+    const r = await t.write({ file_path: "docs/x.md", content: "x" });
+    expect(r.ok).toBe(true);
+    expect(b.published).toBe(1);
+  });
 });
