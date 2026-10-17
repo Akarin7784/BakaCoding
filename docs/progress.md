@@ -149,7 +149,7 @@ flowchart BT
 | T-098 | 模块 3：配置校验与 JSON 解析错误不带原值 | 3 | 基础层开发 | 已合入 | #111 | `cb4e55e` |
 | T-099 | 模块 3：价格表、语言清单、项目路径、提示词模板的错误不带原值和完整路径（`loadPricing` 失败抛 `ConfigError`、`loadLanguageManifests` 抛 `ProjectImportError`；读不到只报文件名和错误码，坏 JSON 只报行列号，校验错误同 `validate`；`importProject`、`promptTemplate` 不再拼完整路径和 `String(e)`）。main `824119c`，测试 87 个文件 / 1765 个 | 3 | 基础层开发 | 已合入 | #113 | `824119c` |
 | T-100 | 模块 12 界面跟进项，并入 UI-03 一起做 | 12 | 界面与诊断开发 | 待开发 | — | — |
-| T-103 | 模块 6：合并重试幂等。本地 `merge` 在锁内读到 target 后先查 head 是否已被 target 包含，是则直接记 merged（`merge_sha` 取把 head 带进 target 的那个提交：快进为 head，非快进为当时的合并提交），不再 commit-tree、不动 target；GitHub `merge` 推分支前先查远程 PR，已合入则不推不 PUT，fetch、快进本地 target 后记 merged（`merge_sha` 用 `merge_commit_sha`），PUT 回 405 / 409 时也回查；接口不变，modules.md §6 同步。来源：编排层分析 2026-10-18，preview.1 之前 | 6 | 执行层开发 | 待评审 | 待填 | — |
+| T-103 | 模块 6：合并重试幂等。本地 `merge` 在锁内读到 target 后先查 head 是否已被 target 包含，是则直接记 merged（`merge_sha` 取把 head 带进 target 的那个提交：快进为 head，非快进为当时的合并提交），不再 commit-tree、不动 target；GitHub `merge` 推分支前先查远程 PR，已合入则不推不 PUT，fetch、快进本地 target 后记 merged（`merge_sha` 用 `merge_commit_sha`），PUT 回 405 / 409 时也回查；接口不变，modules.md §6 同步。来源：编排层分析 2026-10-18，preview.1 之前 | 6 | 执行层开发 | 待评审 | #117 | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
