@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
+import { gitEnv } from "./git-env.js";
 
 const run = promisify(execFile);
 
@@ -19,7 +20,11 @@ export interface WorktreeInfo {
 }
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
-  const { stdout } = await run("git", args, { cwd, maxBuffer: 16 * 1024 * 1024 });
+  const { stdout } = await run("git", args, {
+    cwd,
+    env: gitEnv(),
+    maxBuffer: 16 * 1024 * 1024,
+  });
   return stdout.trim();
 }
 
@@ -73,22 +78,12 @@ export async function ensureExcludeLines(
     });
     return { line: rule.line, forms };
   });
-  let commonDir: string;
-  try {
-    const root = await git(resolve(dir), "rev-parse", "--show-toplevel");
-    commonDir = resolve(root, await git(root, "rev-parse", "--git-common-dir"));
-  } catch {
-    return false;
-  }
-  const exclude = join(commonDir, "info", "exclude");
+  const loc = await locateExclude(dir);
+  if (loc === null) return false;
+  const { exclude, commonDir } = loc;
   await mkdir(join(commonDir, "info"), { recursive: true });
   const cur = existsSync(exclude) ? await readFile(exclude, "utf8") : "";
-  const have = new Set(
-    cur.split(/\r?\n/).flatMap((l) => {
-      const n = normalizeIgnoreLine(l);
-      return n === null ? [] : [n];
-    }),
-  );
+  const have = excludeSet(cur);
   const add: string[] = [];
   for (const r of rules) {
     if (r.forms.some((f) => have.has(f))) continue;
@@ -98,6 +93,38 @@ export async function ensureExcludeLines(
   if (add.length === 0) return true;
   await appendFile(exclude, `${cur && !cur.endsWith("\n") ? "\n" : ""}${add.join("\n")}\n`);
   return true;
+}
+
+async function locateExclude(dir: string): Promise<{ exclude: string; commonDir: string } | null> {
+  let commonDir: string;
+  try {
+    const root = await git(resolve(dir), "rev-parse", "--show-toplevel");
+    commonDir = resolve(root, await git(root, "rev-parse", "--git-common-dir"));
+  } catch {
+    return null;
+  }
+  return { exclude: join(commonDir, "info", "exclude"), commonDir };
+}
+
+function excludeSet(text: string): Set<string> {
+  return new Set(
+    text.split(/\r?\n/).flatMap((l) => {
+      const n = normalizeIgnoreLine(l);
+      return n === null ? [] : [n];
+    }),
+  );
+}
+
+/**
+ * 只读检查 dir 所在仓库的 exclude 是否已覆盖整个 `/.bakacoding/`（T-086，给 checkRepo 用）；
+ * 不是 git 仓库返回 null，不写任何文件。
+ */
+export async function isBakacodingIgnored(dir: string): Promise<boolean | null> {
+  const loc = await locateExclude(dir);
+  if (loc === null) return null;
+  const cur = existsSync(loc.exclude) ? await readFile(loc.exclude, "utf8") : "";
+  const have = excludeSet(cur);
+  return [IGNORE_LINE, ...COVERING_LINES].some((l) => have.has(normalizeIgnoreLine(l)!));
 }
 
 /**
