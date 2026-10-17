@@ -12,6 +12,12 @@
   },
   "dependencies": {
     "@bakacoding/config-budget": "workspace:*",
-    "@bakacoding/types": "workspace:*"
+    "@bakacoding/types": "workspace:*",
+    "better-sqlite3": "^11.10.0"
+  },
+  "devDependencies": {
+    "@bakacoding/event-bus": "workspace:*",
+    "@bakacoding/pr": "workspace:*",
+    "@types/better-sqlite3": "^9.6.0"
   }
 }

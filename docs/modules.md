@@ -10,7 +10,7 @@
 
 **依赖规则**：用到事件总线（发布或订阅）不算模块之间的依赖，只有直接调用才算。
 
-**共享类型包** `@bakacoding/types`：只依赖 zod，放事件类型、常量和 zod schema（含 `permission_list`、`LedgerStore`、`call()` 的 `ctx`、diff 结构）。所有模块包都依赖它；它不是功能模块，依赖它不算模块之间的依赖，图中不画。
+**共享类型包** `@bakacoding/types`：只依赖 zod，放事件类型、常量和 zod schema（含 `permission_list`、`LedgerStore`、`DiagnosticsSource`、`call()` 的 `ctx`、diff 结构）。所有模块包都依赖它；它不是功能模块，依赖它不算模块之间的依赖，图中不画。
 
 | 层 | 模块 |
 | --- | --- |
@@ -82,7 +82,7 @@ graph BT
 ### 0. 事件总线
 - **职责**：进程内的发布和订阅，所有模块都可以用。只负责传递事件，不落库（落库由 2 订阅完成）。
 - **对外接口（草案）**：`publish(event)`、`subscribe(type | "*", handler)`；事件公共字段见「事件清单」，事件类型和 schema 在 `@bakacoding/types`。
-- **语义**：进程内异步分发；支持 `*` 通配订阅；span 由发布方生成，`trace_id` 按需求生成。
+- **语义**：进程内异步分发；支持 `*` 通配订阅；span 由发布方生成，`trace_id` 按需求生成；发布时用 zod 校验，失败不分发、不占序号；`seq` 由总线分配，`createEventBus({ initialSeq })` 指定起点；每个订阅者按发布顺序串行收到事件，积压超过 `maxQueue`（默认 10000）时告警但不丢；handler 出错交给 `onHandlerError`，回调自身出错兜底 `console.error`。
 - **依赖**：无。
 - **对应章节**：PD §12、§14（事件可追溯）。
 - **配置字段**：无。
@@ -96,7 +96,7 @@ graph BT
 
 ### 2. 存储与事件日志
 - **职责**：SQLite（WAL），单一写入者加租约，配合幂等键，支持重启恢复；保存 PR 记录（按轮次）、主管的项目决策记忆、合并结果、基线 commit 与上下文包；从 0 用 `*` 通配订阅全部事件并落库，每条带 `trace_id`、`span_id`、`parent_span_id`（含「调用完成」写调用日志）；收到「项目已创建」后建群记录；保存项目群消息和主管待办指标；落库前调用 3 的脱敏函数做轻脱敏；完整提示词和输出保留 30 天，过期只留摘要和统计，「收进评测集」的单永久保留。
-- **对外接口（草案）**：`queryEvents(filter)`、`savePrRecord(round)`、`query(filter)`、`markForEvalSet(ticket_id)`、`purgeExpired()`；实现 `@bakacoding/types` 的 `LedgerStore`，启动时注入给 3（3 不因此依赖 2）；台账条目 `LedgerEntry` 用 `event_id`（对应的 `call_completed` 事件）做幂等键，按 UTC 日期汇总。
+- **对外接口（草案）**：`openStorage({ path, retention_days })` 打开库（拿不到写入租约时报 `StorageLeaseError`）；`attach(bus)` 用 `*` 订阅落库；`nextSeq()`（传给总线 `initialSeq`）；`queryEvents(filter)`、`savePrRecord(round)`、`prStore()`（实现 6 的 `PrStore`，`kind` 单独存、缺了拒写）、`saveTicket(ticket)`、`saveMergeResult(ticket_id, result)`、`query(filter)`、`saveDecision` / `listDecisions`、`registerRequirement(requirement_id, project_id)`、`markForEvalSet(ticket_id)`、`purgeExpired()`；`diagnosticsSource()` 实现 `@bakacoding/types` 的 `DiagnosticsSource`，启动时注入给 11；实现 `@bakacoding/types` 的 `LedgerStore`，启动时注入给 3（3 不因此依赖 2）；台账条目 `LedgerEntry` 用 `event_id`（对应的 `call_completed` 事件）做幂等键，按 UTC 日期汇总。
 - **依赖**：3（脱敏函数、保留期配置）。
 - **对应章节**：PD §7、§12、§14、§16。
 - **配置字段**：`diagnostics.retention_days`。
@@ -171,7 +171,7 @@ graph BT
   - `scope` 是按 `kind` 区分的联合类型：`ticket` / `requirement` / `time_range`；`time_range` 两端都包含，用 ISO 8601 UTC 时间。
   - 数据源通过 `deps` 注入：接口 `DiagnosticsSource` 定义在 `@bakacoding/types`（与 `LedgerStore` 放在一起），模块 2 写适配器实现，不为诊断单独加查询接口。
   - 人工补填的 `eval_task` 由 `deps.eval_tasks` 传入，它是外部读入的数据，不算导出选项。
-  - v1 按项目过滤由数据源负责，事件不加 `project_id`；多项目共用一个库时再单独提。
+  - v1 按项目过滤由数据源负责：事件公共字段不加 `project_id`（`project_created`、`group_message` 的 `payload` 本来就带）；2 落库时记下需求所属项目，按项目过滤在存储层完成。多项目共用一个库时再单独提。
 - **依赖**：2、3（可与编排层并行开发）。
 - **对应章节**：PD §14、§18。
 - **配置字段**：`diagnostics.retention_days`（间接）。
@@ -187,7 +187,7 @@ graph BT
 
 事件经 0 事件总线发布和订阅，2 订阅全部事件并落库。名称和字段均为**草案**，字段只列设计文档或外部来源有依据的内容。
 
-**公共字段**（每个事件都带，放在事件顶层）：`type`、`trace_id`、`span_id`、`parent_span_id`、`ts`（ISO 8601 UTC 时间，必须以 `Z` 结尾）、单调递增的 `seq`，以及 `event_id`、`requirement_id`、`ticket_id`（可为 `null`）。`requirement_id` 只有项目级事件可以为 `null`，目前只有「项目已创建」`project_created`；其他事件传 `null` 时校验报错（T-020）。各事件自己的字段放进 `payload`，下表「字段」列即 `payload` 的内容。事件类型和 zod schema 在 `@bakacoding/types`。金额（如 `cost`）一律整数微美元。
+**公共字段**（每个事件都带，放在事件顶层）：`type`、`trace_id`、`span_id`、`parent_span_id`、`ts`（ISO 8601 UTC 时间，必须以 `Z` 结尾）、单调递增的 `seq`（由 0 分配，重启时从库里最大 `seq` + 1 接着编），以及 `event_id`、`requirement_id`、`ticket_id`。`ticket_id` 可为 `null`（没有单号的事件）；`requirement_id` 必填，只有项目级事件可以为 `null`，目前只有「项目已创建」`project_created`，其他事件传 `null` 时校验报错（T-020）。各事件自己的字段放进 `payload`，下表「字段」列即 `payload` 的内容。事件类型和 zod schema 在 `@bakacoding/types`。金额（如 `cost`）一律整数微美元。
 
 **角色取值**：事件里的 `role` 取 `supervisor` / `reviewer` / `sub_agent` / `coder`。`reviewer` 指单个评审成员，对应配置 `roles.review_board.members[]` 中的一项；`review_board` 指整个评审组（评审池成员加分配规则），不作为事件角色出现。其余三个与 `roles.supervisor`、`roles.sub_agent`、`roles.coder` 一一对应。一个需求对应一条 trace，每张单是其中一个 span。命名向 OpenTelemetry GenAI 约定靠拢，但该约定仍处于 Development 阶段，只做映射，不直接采用（https://opentelemetry.io/docs/specs/semconv/gen-ai/ ）。
 
