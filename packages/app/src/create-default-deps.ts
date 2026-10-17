@@ -15,7 +15,7 @@ import {
 import { createCoderPool } from "@bakacoding/coder-pool";
 import { createEventBus, type EventBus } from "@bakacoding/event-bus";
 import { createModelGateway } from "@bakacoding/model-gateway";
-import { createPrProvider, type PrProvider } from "@bakacoding/pr";
+import { createPrProvider, INTEGRATION_BRANCH, type PrProvider } from "@bakacoding/pr";
 import {
   createReviewPool,
   createRoundAssignmentStore,
@@ -80,6 +80,33 @@ async function gitRevParse(repoRoot: string, rev: string): Promise<string> {
     maxBuffer: 1024 * 1024,
   });
   return stdout.trim();
+}
+
+/** 基线分支：和 6 的 LocalPrProvider / GithubPrProvider 建集成分支用的一致（默认 main） */
+const BASE_BRANCH = "main";
+
+async function refExists(repoRoot: string, ref: string): Promise<boolean> {
+  try {
+    await run("git", ["show-ref", "--verify", "--quiet", ref], { cwd: repoRoot });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * T-079：9 / 10 的 targetHead = 合入目标（集成分支）当前的提交，不是仓库检出的 HEAD。
+ * 集成分支还没建（新仓库第一张单合入前）时退回基线分支 main，和 6 建分支的起点一致（T-076）；
+ * 仓库里连 main 都没有时才退回检出的 HEAD。
+ */
+export async function integrationTargetHead(repoRoot: string): Promise<string> {
+  const ref = `refs/heads/${INTEGRATION_BRANCH}`;
+  if (await refExists(repoRoot, ref)) return gitRevParse(repoRoot, `${ref}^{commit}`);
+  const base = `refs/heads/${BASE_BRANCH}`;
+  if (await refExists(repoRoot, base)) return gitRevParse(repoRoot, `${base}^{commit}`);
+  // 连 main 都没有（默认分支叫 master 等）：退回检出的 HEAD，保持启动不挂；
+  // 这种仓库 6 合入时 ensureBranch(..., "main") 本来也会失败，属已知限制
+  return gitRevParse(repoRoot, "HEAD");
 }
 
 /**
@@ -214,7 +241,7 @@ export async function createDefaultDeps(
       cleanup: (path) => worktrees.cleanup(path),
     },
     worktreeRoot,
-    targetHead: () => gitRevParse(worktrees.repoRoot, "HEAD"),
+    targetHead: () => integrationTargetHead(worktrees.repoRoot),
     notifyUser: opts.notifyUser,
     listFiles: async (_project_id, commit) => {
       const { stdout } = await run("git", ["ls-tree", "-r", "--name-only", commit], {
