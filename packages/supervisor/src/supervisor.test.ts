@@ -1,3 +1,4 @@
+import type { StoredTicket } from "@bakacoding/storage";
 import type { CallCtx, EventOf } from "@bakacoding/types";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -7,7 +8,7 @@ import {
   type SupervisorDeps,
 } from "./index.js";
 
-type Row = Parameters<SupervisorDeps["storage"]["saveTicket"]>[0];
+type Row = StoredTicket;
 type Published = Parameters<SupervisorDeps["publish"]>[0];
 
 const TEMPLATE = "你是主管（桩模板）";
@@ -30,7 +31,7 @@ const splitOut = (tickets: unknown[], summary = "按模块拆成两张") =>
 function setup(
   opts: {
     outputs?: string[];
-    projects?: { project_id: string; name?: string | null }[];
+    projects?: { project_id: string; name: string }[];
     files?: string[];
     rows?: Row[];
   } = {},
@@ -71,7 +72,11 @@ function setup(
       return TEMPLATE;
     },
     storage: {
-      listProjects: () => opts.projects ?? [{ project_id: "demo-1234", name: "demo" }],
+      listProjects: () =>
+        (opts.projects ?? [{ project_id: "demo-1234", name: "demo" }]).map((p) => ({
+          ...p,
+          created_at: "2026-10-17T00:00:00.000Z",
+        })),
       listDecisions: (project_id) => decisions.filter((d) => d.project_id === project_id),
       saveDecision: (d) => {
         const row = { decision_id: `d${decisions.length}`, ts: "t", ...d };
@@ -81,16 +86,33 @@ function setup(
       registerRequirement: (r, p) => {
         requirements.push([r, p]);
       },
+      // 与 2 的 T-055 语义一致：同步；不带 fields 保留原值、{} 清空；getTicket 不存在为 undefined；
+      // listTickets 按 created_at、ticket_id 升序
       saveTicket: (t) => {
-        rows.set(t.ticket_id, t);
+        const { fields, ...rest } = t;
+        const prev = rows.get(t.ticket_id);
+        rows.set(t.ticket_id, {
+          ...rest,
+          fields: fields === undefined ? (prev?.fields ?? null) : structuredClone(fields),
+        });
       },
-      getTicket: (tid) => rows.get(tid),
-      listTickets: (f) =>
-        [...rows.values()].filter(
-          (r) =>
-            (!f.project_id || r.project_id === f.project_id) &&
-            (!f.status || r.status === f.status),
-        ),
+      getTicket: (tid) => {
+        const r = rows.get(tid);
+        return r ? structuredClone(r) : undefined;
+      },
+      listTickets: (f = {}) =>
+        [...rows.values()]
+          .filter(
+            (r) =>
+              (f.project_id === undefined || r.project_id === f.project_id) &&
+              (f.requirement_id === undefined || r.requirement_id === f.requirement_id) &&
+              (f.status === undefined || r.status === f.status),
+          )
+          .sort(
+            (a, b) =>
+              a.created_at.localeCompare(b.created_at) || a.ticket_id.localeCompare(b.ticket_id),
+          )
+          .map((r) => structuredClone(r)),
     },
     enqueue: (t) => {
       enqueued.push(t);
@@ -251,15 +273,18 @@ describe("split", () => {
       status: "pending",
       decomposition_summary: "按模块拆成两张",
       permission_list: [],
+      created_at: "2026-10-17T10:00:00.000Z",
+    });
+    expect(saved.fields).toEqual({
       write_scope: ["lib/b/**"],
+      interfaces: [{ file: "lib/b/index.ts", symbol: "useA" }],
       depends_on: [a!.ticket_id],
       priority: "deferred",
       kind: null,
       origin: "split",
-      created_at: "2026-10-17T10:00:00.000Z",
       trace: { trace_id: b!.trace_id, span_id: b!.span_id, parent_span_id: b!.parent_span_id },
     });
-    expect(t.rows.get(a!.ticket_id)!.kind).toBe("dependency");
+    expect(t.rows.get(a!.ticket_id)!.fields).toMatchObject({ kind: "dependency" });
     // 入队：依赖在前
     expect(t.enqueued.map((e) => e.ticket_id)).toEqual([a!.ticket_id, b!.ticket_id]);
     expect(t.enqueued[1]).toMatchObject({ depends_on: [a!.ticket_id] });
@@ -425,7 +450,10 @@ describe("createManualTicket", () => {
     });
     expect(tk).toMatchObject({ write_scope: ["**"], origin: "manual", interfaces: [] });
     expect(t.enqueued.map((e) => e.ticket_id)).toEqual([tk.ticket_id]);
-    expect(t.rows.get(tk.ticket_id)).toMatchObject({ origin: "manual", write_scope: ["**"] });
+    expect(t.rows.get(tk.ticket_id)!.fields).toMatchObject({
+      origin: "manual",
+      write_scope: ["**"],
+    });
     const warn = t.published.find((e) => e.type === "ticket_warning");
     expect(warn).toMatchObject({
       ticket_id: tk.ticket_id,
@@ -499,34 +527,45 @@ describe("loadTicket", () => {
     expect(await t.sup.loadTicket("nope")).toBeUndefined();
   });
 
-  it("旧数据（结构化字段为 null）：trace 用需求号兜底，不带 write_scope", async () => {
-    const t = setup({
-      rows: [
-        {
-          ticket_id: "old-1",
-          project_id: "demo-1234",
-          requirement_id: "req-old",
-          created_at: "t",
-          ticket_text: "旧单",
-          base_commit: "abc1234",
-          permission_list: [],
-          context_snippets: [],
-          write_scope: null,
-          trace: null,
-          kind: null,
-        },
-      ],
-    });
-    expect(await t.sup.loadTicket("old-1")).toEqual({
-      ticket_id: "old-1",
+  it("fields 为 null（旧数据 / 损坏）或不合格式：返回 undefined 并记警告，不按 ** 兜底", async () => {
+    const base = {
       project_id: "demo-1234",
       requirement_id: "req-old",
-      trace_id: "req-old",
-      span_id: "old-1",
-      parent_span_id: null,
+      created_at: "2026-10-01T00:00:00.000Z",
       ticket_text: "旧单",
       base_commit: "abc1234",
       permission_list: [],
+      context_snippets: [],
+    };
+    const t = setup({
+      rows: [
+        { ...base, ticket_id: "old-1", fields: null },
+        { ...base, ticket_id: "old-2", fields: { write_scope: [] } },
+        { ...base, ticket_id: "old-3", fields: {} },
+      ],
+    });
+    const warns: string[] = [];
+    t.deps.logger = { warn: (m) => warns.push(m) };
+    const sup = createSupervisor(t.deps);
+    for (const id of ["old-1", "old-2", "old-3"]) expect(await sup.loadTicket(id)).toBeUndefined();
+    expect(warns).toHaveLength(3);
+    expect(warns[0]).toMatch(/old-1 没有结构化字段.*需要重拆或人工处理/);
+    expect(warns[1]).toMatch(/old-2 结构化字段不合格式/);
+  });
+
+  it("8 回写权限清单（saveTicket 不带 fields）不冲掉结构化字段", async () => {
+    const t = setup({ outputs: [splitOut([ticketJson()])] });
+    const r = await t.sup.split({ project_id: "demo-1234", text: "x" });
+    const row = t.rows.get(r.tickets[0]!.ticket_id)!;
+    const rest: Partial<typeof row> = { ...row };
+    delete rest.fields;
+    t.deps.storage.saveTicket({
+      ...(rest as Omit<typeof row, "fields">),
+      permission_list: [{ glob: "lib/a/**", level: "rw" }],
+    });
+    expect(await t.sup.loadTicket(row.ticket_id)).toMatchObject({
+      write_scope: ["lib/a/**"],
+      permission_list: [{ glob: "lib/a/**", level: "rw" }],
     });
   });
 });
@@ -563,34 +602,6 @@ describe("start", () => {
     ]);
     stop();
     expect(t.hasHandler()).toBe(false);
-  });
-
-  it("2 不给项目名时用 project_created 里记下的名字", async () => {
-    const t = setup({
-      projects: [{ project_id: "app-1" }, { project_id: "web-2" }],
-      outputs: [JSON.stringify({ intent: "requirement", reply: "好" }), splitOut([ticketJson()])],
-    });
-    t.sup.start();
-    await t.fire({
-      type: "project_created",
-      event_id: "e",
-      seq: 1,
-      ts: "2026-10-17T10:00:00.000Z",
-      trace_id: "t",
-      span_id: "s",
-      parent_span_id: null,
-      requirement_id: null,
-      ticket_id: null,
-      payload: {
-        project_id: "web-2",
-        name: "官网",
-        language: "typescript",
-        has_github_remote: false,
-      },
-    });
-    const reply = await t.sup.chat({ text: "给官网加个页脚" });
-    expect(reply).toMatchObject({ kind: "dispatched", project_id: "web-2" });
-    expect(reply.text).toContain("按项目「官网」处理");
   });
 });
 
@@ -633,6 +644,67 @@ describe("chat", () => {
     expect(r2).toMatchObject({ kind: "dispatched", project_id: "web-2" });
     expect(t.prompts).toHaveLength(2); // 第二条不再做意图判断
     expect(t.prompts[1]).toContain('kind="requirement">\n加个登录页\n');
+  });
+
+  describe("追问项目后的回复：只用项目名认领暂存需求，其余内容按新消息处理", () => {
+    const projects = [
+      { project_id: "app-1", name: "应用" },
+      { project_id: "web-2", name: "官网" },
+    ];
+
+    it("回复里顺带提了新需求：两条都处理，不丢", async () => {
+      const t = setup({
+        projects,
+        outputs: [req, splitOut([ticketJson()]), req, splitOut([ticketJson()])],
+      });
+      expect((await t.sup.chat({ text: "加个登录页" })).kind).toBe("ask_project");
+      const r = await t.sup.chat({ text: "官网。另外给应用加个搜索框" });
+      expect(t.prompts).toHaveLength(4);
+      expect(t.prompts[1]).toContain('kind="requirement">\n加个登录页\n');
+      // 新消息里去掉了认领用的项目名
+      expect(t.prompts[2]).toContain('kind="user_message">\n另外给应用加个搜索框\n');
+      expect(t.prompts[3]).toContain('kind="requirement">\n另外给应用加个搜索框\n');
+      expect(r.kind).toBe("dispatched");
+      expect(r.project_id).toBe("web-2");
+      expect(r.ticket_ids).toHaveLength(2);
+      expect(r.text).toContain("按项目「官网」处理");
+      expect(r.text).toContain("按项目「应用」处理");
+      expect(t.enqueued).toHaveLength(2);
+    });
+
+    it("回复只有项目名和虚词：只认领，不多调模型", async () => {
+      for (const text of ["官网", "就是官网吧。", "官网项目", "web-2"]) {
+        const t = setup({ projects, outputs: [req, splitOut([ticketJson()])] });
+        await t.sup.chat({ text: "加个登录页" });
+        const r = await t.sup.chat({ text });
+        expect(r.kind, text).toBe("dispatched");
+        expect(t.prompts, text).toHaveLength(2);
+      }
+    });
+
+    it("界面传了 project_id 认领：不加说明；剩下的虚词不当新消息", async () => {
+      const t = setup({ projects, outputs: [req, splitOut([ticketJson()])] });
+      await t.sup.chat({ text: "加个登录页" });
+      const r = await t.sup.chat({ text: "这个", project_id: "web-2" });
+      expect(r).toMatchObject({ kind: "dispatched", project_id: "web-2" });
+      expect(r.text).not.toContain("按项目");
+      expect(t.prompts).toHaveLength(2);
+    });
+
+    it("新内容没说项目：认领后再追问，新需求进暂存，下一条接着处理", async () => {
+      const t = setup({
+        projects,
+        outputs: [req, splitOut([ticketJson()]), req, splitOut([ticketJson()])],
+      });
+      await t.sup.chat({ text: "加个登录页" });
+      const r = await t.sup.chat({ text: "官网，再加个页脚" });
+      expect(r.kind).toBe("ask_project");
+      expect(r.ticket_ids).toHaveLength(1);
+      expect(t.enqueued).toHaveLength(1);
+      const r2 = await t.sup.chat({ text: "应用" });
+      expect(r2).toMatchObject({ kind: "dispatched", project_id: "app-1" });
+      expect(t.prompts.at(-1)).toContain('kind="requirement">\n再加个页脚\n');
+    });
   });
 
   it("多个项目：界面传了 project_id 不加说明；原文提到项目名时加说明", async () => {

@@ -1,9 +1,9 @@
 import type { Config } from "@bakacoding/config-budget";
 import type { ModelGateway } from "@bakacoding/model-gateway";
 import type { SchedulerTicket } from "@bakacoding/scheduler";
-import type { Decision, TicketInput } from "@bakacoding/storage";
+import type { Storage } from "@bakacoding/storage";
 import type { SubAgentTicket } from "@bakacoding/sub-agent";
-import type { ESCALATION_REASONS, EventOf, TicketStatus, Trace } from "@bakacoding/types";
+import type { ESCALATION_REASONS, EventOf } from "@bakacoding/types";
 
 export type MaybePromise<T> = T | Promise<T>;
 
@@ -111,23 +111,6 @@ export interface TicketValidationError {
   message: string;
 }
 
-/** 需求单结构化字段（存储小单约定：tickets 表可选 JSON 列，旧数据读出为 null）。 */
-interface TicketStructuredFields {
-  write_scope?: string[] | null;
-  interfaces?: InterfaceDecl[] | null;
-  depends_on?: string[] | null;
-  priority?: "normal" | "deferred" | null;
-  kind?: "dependency" | null;
-  origin?: TicketOrigin | null;
-  trace?: Trace | null;
-}
-
-/** getTicket / listTickets 读出的一行（只列 10 用到的字段）。 */
-type StoredTicketRow = Pick<
-  TicketInput,
-  "ticket_id" | "project_id" | "requirement_id" | "ticket_text" | "base_commit" | "permission_list"
-> & { status?: TicketStatus | null } & TicketStructuredFields;
-
 type PublishOf<K extends "group_message" | "ticket_warning"> = Omit<EventOf<K>, "seq">;
 
 export interface SupervisorDeps {
@@ -138,21 +121,19 @@ export interface SupervisorDeps {
   /** 3 的 promptTemplate（T-008）；10 不带默认模板 */
   promptTemplate: (role: "supervisor") => MaybePromise<string>;
   /**
-   * 2 的存取。`saveTicket` / `getTicket` / `listTickets` 的结构化字段按存储小单的约定（T-055 待合）；
-   * `listProjects` 的 `name` 可选（2 现在只给 project_id，缺名字时用 project_created 里记下的或 project_id）。
+   * 2 的存取（T-055，全部同步）。结构化字段（write_scope、interfaces、depends_on、priority、kind、origin、trace）
+   * 写在 `saveTicket` 的 `fields` 里；`fields` 为 null（旧数据或损坏）或不合 10 的格式时，10 按「没有结构化字段」处理。
    */
-  storage: {
-    listProjects(): MaybePromise<readonly { project_id: string; name?: string | null }[]>;
-    listDecisions(project_id: string): MaybePromise<readonly Decision[]>;
-    saveDecision(d: { project_id: string; content: string }): MaybePromise<Decision>;
-    registerRequirement(requirement_id: string, project_id: string): MaybePromise<void>;
-    saveTicket(ticket: TicketInput & TicketStructuredFields): MaybePromise<void>;
-    getTicket(ticket_id: string): MaybePromise<StoredTicketRow | undefined | null>;
-    listTickets(filter: {
-      project_id?: string;
-      status?: TicketStatus;
-    }): MaybePromise<readonly StoredTicketRow[]>;
-  };
+  storage: Pick<
+    Storage,
+    | "listProjects"
+    | "listDecisions"
+    | "saveDecision"
+    | "registerRequirement"
+    | "saveTicket"
+    | "getTicket"
+    | "listTickets"
+  >;
   /** 9 的 enqueue */
   enqueue: (ticket: SchedulerTicket) => unknown;
   /** 0：只发 group_message 与 ticket_warning（10 自己填 event_id、ts） */

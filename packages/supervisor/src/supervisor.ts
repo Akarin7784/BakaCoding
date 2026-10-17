@@ -1,14 +1,14 @@
 // T-040：模块 10 主管——chat / split / 手动单 / loadTicket / 项目导入告知。
 import { randomBytes, randomUUID } from "node:crypto";
 import type { SchedulerTicket } from "@bakacoding/scheduler";
+import type { StoredTicket } from "@bakacoding/storage";
 import type { SubAgentTicket } from "@bakacoding/sub-agent";
 import { untrustedNotice, wrapUntrusted, type CallCtx, type Trace } from "@bakacoding/types";
 import { isUnsafeGlob } from "@bakacoding/workspace";
 import {
-  CHAT_FORMAT,
   ChatOutputSchema,
+  OUTPUT_SPEC,
   parseOutput,
-  SPLIT_FORMAT,
   SplitOutputSchema,
   type SplitOutput,
 } from "./output.js";
@@ -24,6 +24,7 @@ import {
   type TicketValidationError,
   type UserMessage,
 } from "./types.js";
+import { decodeFields, encodeFields } from "./fields.js";
 import { directoryChecker, findCycle, topoOrder, validateWriteScope } from "./validate.js";
 
 /** 拆单 3 次都不合法（包内用，chat 据此回 split_failed）。 */
@@ -44,6 +45,34 @@ function formatErrors(errors: readonly TicketValidationError[]): string {
     .join("\n");
 }
 
+/** 去掉项目名 / id 之后判断剩下的是不是一条独立的消息：去掉标点、空白和常见虚词后至少 2 个字符。 */
+const FILLER = /项目|就是|是|就|用|吧|的|那个|这个|呢|啊|哦|嗯|好|选/g;
+function meaningful(text: string): boolean {
+  return text.replace(/[\p{P}\p{S}\s]/gu, "").replace(FILLER, "").length >= 2;
+}
+
+/** 从用户原文里去掉认领用的项目名和 project_id（忽略大小写），再去掉首尾标点空白。 */
+function stripProject(text: string, project: { project_id: string; name: string }): string {
+  let out = text;
+  for (const token of [project.project_id, project.name]) {
+    if (token.length < 2) continue;
+    const re = new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+    out = out.replace(re, " ");
+  }
+  return out.replace(/^[\p{P}\p{S}\s]+|[\p{P}\p{S}\s]+$/gu, "").replace(/\s{2,}/g, " ");
+}
+
+/** 认领暂存需求 + 处理同一条消息里的新内容：文字拼接，单号合并；新内容还要追问项目时以追问为准。 */
+function mergeReplies(first: ChatReply, second: ChatReply): ChatReply {
+  const ticket_ids = [...(first.ticket_ids ?? []), ...(second.ticket_ids ?? [])];
+  return {
+    ...first,
+    text: `${first.text}\n\n${second.text}`,
+    kind: second.kind === "ask_project" ? "ask_project" : first.kind,
+    ...(ticket_ids.length ? { ticket_ids } : {}),
+  };
+}
+
 const MAX_FILES_IN_PROMPT = 500;
 const MAX_FEEDBACK_DETAIL = 2000;
 
@@ -58,8 +87,6 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   const logger = deps.logger ?? {
     warn: (m: string, d?: unknown) => console.warn(`[supervisor] ${m}`, d ?? ""),
   };
-  /** project_created 里记下的项目名（2 的 listProjects 现在不给名字） */
-  const names = new Map<string, string>();
   /** 追问项目时暂存的需求（1:1 历史 v1 不持久化，只在本进程） */
   let pending: { text: string; kind: "requirement" | "decision" } | undefined;
 
@@ -70,12 +97,25 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       .slice(0, 12) || "x";
   const nonce = () => randomBytes(8).toString("hex");
 
-  async function projects(): Promise<ProjectInfo[]> {
-    const rows = await deps.storage.listProjects();
-    return rows.map((r) => ({
+  function projects(): ProjectInfo[] {
+    return deps.storage.listProjects().map((r) => ({
       project_id: r.project_id,
-      name: r.name || names.get(r.project_id) || r.project_id,
+      name: r.name || r.project_id,
     }));
+  }
+
+  /** 原文里最先出现的项目（项目名或 id，忽略大小写）；用于认领暂存需求 */
+  function firstMentioned(text: string, list: ProjectInfo[]): ProjectInfo | undefined {
+    const t = text.toLowerCase();
+    let best: { p: ProjectInfo; at: number } | undefined;
+    for (const p of list) {
+      for (const token of [p.project_id, p.name]) {
+        if (token.length < 2) continue;
+        const at = t.indexOf(token.toLowerCase());
+        if (at >= 0 && (!best || at < best.at)) best = { p, at };
+      }
+    }
+    return best?.p;
   }
 
   /** 用户原文里字面提到的项目（项目名或 project_id，忽略大小写）；恰好一个才算 */
@@ -103,7 +143,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   }
 
   /** 已有单：用来解析 depends_on、续编单号、沿用需求的 trace */
-  async function existing(project_id: string) {
+  function existing(project_id: string) {
     return deps.storage.listTickets({ project_id });
   }
 
@@ -121,11 +161,16 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     return max + 1;
   }
 
-  function requirementTrace(
-    rows: readonly { requirement_id: string; trace?: Trace | null }[],
-    requirement_id: string,
-  ): Trace {
-    const prev = rows.find((r) => r.requirement_id === requirement_id && r.trace)?.trace;
+  function requirementTrace(rows: readonly StoredTicket[], requirement_id: string): Trace {
+    let prev: Trace | undefined;
+    for (const r of rows) {
+      if (r.requirement_id !== requirement_id) continue;
+      const f = decodeFields(r.fields);
+      if (f.ok) {
+        prev = f.fields.trace;
+        break;
+      }
+    }
     if (prev)
       return {
         trace_id: prev.trace_id,
@@ -138,10 +183,10 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   /** 落库 → 入队（依赖在前）→ 每张单一条派单群消息 */
   async function persistAndDispatch(tickets: SupervisorTicket[], summary: string | undefined) {
     const first = tickets[0]!;
-    await deps.storage.registerRequirement(first.requirement_id, first.project_id);
+    deps.storage.registerRequirement(first.requirement_id, first.project_id);
     const created_at = nowIso();
     for (const t of tickets) {
-      await deps.storage.saveTicket({
+      deps.storage.saveTicket({
         ticket_id: t.ticket_id,
         project_id: t.project_id,
         requirement_id: t.requirement_id,
@@ -152,13 +197,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         base_commit: t.base_commit,
         permission_list: [],
         context_snippets: [],
-        write_scope: t.write_scope,
-        interfaces: t.interfaces,
-        depends_on: t.depends_on,
-        priority: t.priority,
-        kind: t.kind ?? null,
-        origin: t.origin,
-        trace: { trace_id: t.trace_id, span_id: t.span_id, parent_span_id: t.parent_span_id },
+        fields: encodeFields(t),
       });
     }
     for (const t of tickets) {
@@ -270,7 +309,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     knownIds: readonly string[],
     n: string,
   ): string {
-    const parts = [template.trim(), SPLIT_FORMAT, untrustedNotice(n)];
+    const parts = [template.trim(), OUTPUT_SPEC.split, untrustedNotice(n)];
     parts.push(wrapUntrusted(`项目：${project.name}（${project.project_id}）`, "project", n));
     parts.push(
       wrapUntrusted(
@@ -307,11 +346,11 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   }
 
   async function split(req: SplitRequest): Promise<SplitResult> {
-    const list = await projects();
+    const list = projects();
     const project = list.find((p) => p.project_id === req.project_id);
     if (!project) throw new Error(`项目不存在：${req.project_id}`);
     const requirement_id = req.requirement_id ?? `req-${shortId()}`;
-    const rows = await existing(req.project_id);
+    const rows = existing(req.project_id);
     const knownIds = rows.map((r) => r.ticket_id);
     const known = new Set(knownIds);
     const root = requirementTrace(rows, requirement_id);
@@ -387,7 +426,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   async function createManualTicket(input: ManualTicketInput): Promise<SupervisorTicket> {
     if (input.origin !== "manual" && input.origin !== "test")
       throw new Error(`手动单的 origin 只能是 manual 或 test：${String(input.origin)}`);
-    const list = await projects();
+    const list = projects();
     if (!list.some((p) => p.project_id === input.project_id))
       throw new Error(`项目不存在：${input.project_id}`);
     if (!input.ticket_text?.trim()) throw new Error("ticket_text 不能为空");
@@ -395,7 +434,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     const ws = validateWriteScope(input.write_scope, { origin: input.origin });
     if (!ws.ok) errors.push(...ws.errors);
     checkInterfaces("manual", input.interfaces ?? [], errors);
-    const rows = await existing(input.project_id);
+    const rows = existing(input.project_id);
     const known = new Set(rows.map((r) => r.ticket_id));
     for (const d of input.depends_on ?? [])
       if (!known.has(d))
@@ -449,15 +488,19 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     return ticket;
   }
 
+  /**
+   * 从 2 还原单子。`fields` 为 null（旧数据、库里损坏）或不合格式时返回 undefined 并记警告：
+   * 不按整仓 `**` 兜底续跑（那等于把写权限放宽到整个仓库），交给调用方按「单不存在」处理（8 会报错、9 转上报）。
+   */
   async function loadTicket(ticket_id: string): Promise<SubAgentTicket | undefined> {
-    const row = await deps.storage.getTicket(ticket_id);
+    const row = deps.storage.getTicket(ticket_id);
     if (!row) return undefined;
-    let trace = row.trace ?? undefined;
-    if (!trace) {
-      // 旧数据没有 trace：用需求号兜底，保证 8 / 9 能继续发事件
-      logger.warn(`单 ${ticket_id} 没有落库的 trace，用 requirement_id 兜底`);
-      trace = { trace_id: row.requirement_id, span_id: ticket_id, parent_span_id: null };
+    const f = decodeFields(row.fields);
+    if (!f.ok) {
+      logger.warn(`单 ${ticket_id} ${f.reason}，不能续跑，需要重拆或人工处理`);
+      return undefined;
     }
+    const { trace, write_scope, kind } = f.fields;
     return {
       ticket_id: row.ticket_id,
       project_id: row.project_id,
@@ -468,15 +511,14 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       ticket_text: row.ticket_text,
       base_commit: row.base_commit,
       permission_list: row.permission_list,
-      ...(row.write_scope && row.write_scope.length ? { write_scope: row.write_scope } : {}),
-      ...(row.kind === "dependency" ? { kind: "dependency" as const } : {}),
+      write_scope,
+      ...(kind === "dependency" ? { kind: "dependency" as const } : {}),
     };
   }
 
   function start(): () => void {
     return deps.subscribe("project_created", (e) => {
       const p = e.payload;
-      names.set(p.project_id, p.name);
       void Promise.resolve(
         deps.notifyUser({
           text: `项目「${p.name}」已导入（${p.project_id}），语言：${p.language}，GitHub 远程：${p.has_github_remote ? "有" : "无"}。提需求时说明是哪个项目即可。`,
@@ -522,7 +564,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   ): Promise<ChatReply> {
     if (kind === "decision") {
       const content = (decision ?? text).trim();
-      await deps.storage.saveDecision({ project_id: project.project_id, content });
+      deps.storage.saveDecision({ project_id: project.project_id, content });
       return {
         kind: "decision_saved",
         text: `${note}已记下这条项目决策：${content}`,
@@ -542,24 +584,45 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   }
 
   async function chat(msg: UserMessage): Promise<ChatReply> {
-    const list = await projects();
+    const list = projects();
     const explicit = msg.project_id ? list.find((p) => p.project_id === msg.project_id) : undefined;
-    const named = explicit ?? mentioned(msg.text, list);
-    const requirement_id = `req-${shortId()}`;
+    // 有暂存需求时按最先提到的项目认领（回复里可能顺带给另一个项目提新需求）
+    const named = explicit ?? (pending ? firstMentioned(msg.text, list) : undefined);
 
-    // 上一条在等项目：这条说清了项目就接着处理暂存的需求
+    // 上一条在等项目：只用这条里的项目名（或界面传的 project_id）认领暂存的需求，
+    // 其余内容当一条新消息处理，不丢掉用户顺带提的新需求
     if (pending && named) {
       const p = pending;
       pending = undefined;
-      return act(p.kind, p.text, p.kind === "decision" ? p.text : null, named, "", requirement_id);
+      const first = await act(
+        p.kind,
+        p.text,
+        p.kind === "decision" ? p.text : null,
+        named,
+        explicit ? "" : `按项目「${named.name}」处理。`,
+        `req-${shortId()}`,
+      );
+      const rest = stripProject(msg.text, named);
+      if (!meaningful(rest)) return first;
+      const second = await handle(
+        { ...msg, text: rest, ...(explicit ? { project_id: explicit.project_id } : {}) },
+        list,
+      );
+      return mergeReplies(first, second);
     }
     pending = undefined;
+    return handle(msg, list);
+  }
 
+  async function handle(msg: UserMessage, list: ProjectInfo[]): Promise<ChatReply> {
+    const explicit = msg.project_id ? list.find((p) => p.project_id === msg.project_id) : undefined;
+    const named = explicit ?? mentioned(msg.text, list);
+    const requirement_id = `req-${shortId()}`;
     const n = nonce();
     const template = await deps.promptTemplate("supervisor");
     const prompt = [
       template.trim(),
-      CHAT_FORMAT,
+      OUTPUT_SPEC.chat,
       untrustedNotice(n),
       wrapUntrusted(
         list.map((p) => `- ${p.name}（${p.project_id}）`).join("\n") || "（暂无项目）",
