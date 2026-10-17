@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- BakaCoding 应用图标。机器人头像取自 lucide「bot」（ISC License, Copyright (c) Lucide Icons and Contributors）。 -->
+  <!-- 底色 #2784d5 = 渲染端 index.css 的 color-accent oklch(0.6 0.15 250)。 -->
+  <rect width="256" height="256" rx="56" fill="#2784d5"/>
+  <g transform="translate(32 32) scale(8)" fill="none" stroke="#fff" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 8V4H8"/>
+    <rect width="16" height="12" x="4" y="8" rx="2"/>
+    <path d="M2 14h2"/>
+    <path d="M20 14h2"/>
+    <path d="M15 13v2"/>
+    <path d="M9 13v2"/>
+  </g>
+</svg>

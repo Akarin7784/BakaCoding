@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <!-- 24/32px 简化版：去掉两侧耳朵，线条对齐像素网格。源自 lucide「bot」（ISC）。 -->
+  <rect width="24" height="24" rx="5" fill="#2784d5"/>
+  <g fill="none" stroke="#fff" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter">
+    <path d="M12 10V5H8"/>
+    <rect width="14" height="10" x="5" y="9" rx="1"/>
+  </g>
+  <rect x="8" y="12" width="2" height="3" fill="#fff"/>
+  <rect x="14" y="12" width="2" height="3" fill="#fff"/>
+</svg>
