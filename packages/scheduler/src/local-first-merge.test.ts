@@ -27,7 +27,13 @@ const git = async (cwd: string, ...args: string[]) =>
 /** 同组合根 integrationTargetHead（T-079）：集成分支有就读它，没有退回 main；不读检出的 HEAD */
 async function targetHead(cwd: string): Promise<string> {
   try {
-    return await git(cwd, "rev-parse", "--verify", "-q", `refs/heads/${INTEGRATION_BRANCH}^{commit}`);
+    return await git(
+      cwd,
+      "rev-parse",
+      "--verify",
+      "-q",
+      `refs/heads/${INTEGRATION_BRANCH}^{commit}`,
+    );
   } catch {
     return git(cwd, "rev-parse", "--verify", "refs/heads/main^{commit}");
   }

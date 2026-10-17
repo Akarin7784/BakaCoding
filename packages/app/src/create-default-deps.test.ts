@@ -7,7 +7,11 @@ import { ConfigError, getConfig } from "@bakacoding/config-budget";
 import { openStorage, type Storage } from "@bakacoding/storage";
 import { afterEach, describe, expect, it } from "vitest";
 import { assemble, type App } from "./assemble.js";
-import { createDefaultDeps, integrationTargetHead, PrNotWiredError } from "./create-default-deps.js";
+import {
+  createDefaultDeps,
+  integrationTargetHead,
+  PrNotWiredError,
+} from "./create-default-deps.js";
 
 const examplePath = fileURLToPath(new URL("../../../config/models.example.json", import.meta.url));
 const pricingPath = fileURLToPath(new URL("../../../config/pricing.json", import.meta.url));
