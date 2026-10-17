@@ -23,7 +23,12 @@ import {
   type ReviewPrSource,
 } from "@bakacoding/review-pool";
 import type { Storage } from "@bakacoding/storage";
-import { PermissionRegistry, WorktreeManager, WORKTREES_DIR } from "@bakacoding/workspace";
+import {
+  PermissionRegistry,
+  withGitWriteLock,
+  WorktreeManager,
+  WORKTREES_DIR,
+} from "@bakacoding/workspace";
 import type { AppDeps } from "./assemble.js";
 
 const run = promisify(execFile);
@@ -229,6 +234,8 @@ export async function createDefaultDeps(
         store,
         repo: worktrees.repoRoot,
         baseBranch: BASE_BRANCH,
+        // T-094：合并落到 target 那段与合入后清理、建 / 删 worktree 共用 4 的进程内 git 写锁
+        gitWriteLock: (fn) => withGitWriteLock(worktrees.repoRoot, fn),
         publish,
         eventContext,
         // 缺 GITHUB_TOKEN → createPrProvider 走本地模式，不抛

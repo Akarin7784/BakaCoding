@@ -101,6 +101,7 @@ interface Opts {
   /** T-094：4 的 cleanupMerged 替身 */
   cleanupMerged?: AppDeps["worktrees"]["cleanupMerged"];
   logger?: AppDeps["logger"];
+  cleanupSweepTimeoutMs?: number;
 }
 
 async function start(o: Opts) {
@@ -142,6 +143,9 @@ async function start(o: Opts) {
     notifyUser: o.notifyUser ?? (() => {}),
     scheduler: { dispatch_poll_ms: 0, ...o.scheduler },
     logger: o.logger ?? { warn: () => {} },
+    ...(o.cleanupSweepTimeoutMs !== undefined
+      ? { cleanupSweepTimeoutMs: o.cleanupSweepTimeoutMs }
+      : {}),
   });
   apps.push(app);
   return { app, created };
@@ -1465,8 +1469,9 @@ describe("T-094：重启补清理已合入单的 worktree / 分支", () => {
       },
       logger: { warn: (m) => void warns.push(m) },
     });
+    // 后台跑：等它跑完
+    await vi.waitFor(() => expect(warns.some((w) => w.includes("T-B"))).toBe(true));
     expect(calls.sort()).toEqual(["T-A:bakacoding/integration", "T-B:bakacoding/integration"]);
-    expect(warns.some((w) => w.includes("T-B"))).toBe(true);
     expect(app.takeOver.merged).toEqual(expect.arrayContaining(["T-A", "T-B", "T-C"]));
   });
 
@@ -1482,6 +1487,78 @@ describe("T-094：重启补清理已合入单的 worktree / 分支", () => {
       logger: { warn: (m) => void warns.push(m) },
     });
     expect(app.takeOver.merged).toEqual(["T-A"]);
-    expect(warns.some((w) => w.includes("重启补清理"))).toBe(true);
+    await vi.waitFor(() => expect(warns.some((w) => w.includes("重启补清理"))).toBe(true));
+  });
+
+  /** 仓库里给每张单留一个 worktree 目录残留 */
+  function leftovers(worktreeRoot: string, storage: Storage, ids: string[]) {
+    for (const id of ids) {
+      mkdirSync(join(worktreeRoot, `${id}-r0`), { recursive: true });
+      saveTicket(storage, id, "merged", fields());
+    }
+  }
+
+  it("后台跑：清理挂起时 assemble 照常返回，定时 sync 照常开", async () => {
+    const { storage, worktreeRoot } = setup();
+    leftovers(worktreeRoot, storage, ["T-A"]);
+    let started = false;
+    const { app } = await start({
+      storage,
+      worktreeRoot,
+      pr: fakePr().pr,
+      cleanupMerged: () => {
+        started = true;
+        return new Promise(() => {});
+      },
+    });
+    await vi.waitFor(() => expect(started).toBe(true));
+    expect(app.takeOver.merged).toEqual(["T-A"]);
+    expect(app.scheduler.syncState()).toBeTruthy();
+  });
+
+  it("整轮总超时：到点不再开始新的单，只警告一次", async () => {
+    const { storage, worktreeRoot } = setup();
+    leftovers(worktreeRoot, storage, ["T-A", "T-B"]);
+    const calls: string[] = [];
+    const warns: string[] = [];
+    await start({
+      storage,
+      worktreeRoot,
+      pr: fakePr().pr,
+      cleanupSweepTimeoutMs: 50,
+      cleanupMerged: (id) => {
+        calls.push(id);
+        return new Promise(() => {});
+      },
+      logger: { warn: (m) => void warns.push(m) },
+    });
+    await vi.waitFor(() => expect(warns.some((w) => w.includes("整轮超时"))).toBe(true));
+    expect(calls).toEqual(["T-A"]);
+    expect(warns.filter((w) => w.includes("整轮超时"))).toHaveLength(1);
+  });
+
+  it("app.stop() 后不再开始新的单、不再警告", async () => {
+    const { storage, worktreeRoot } = setup();
+    leftovers(worktreeRoot, storage, ["T-A", "T-B"]);
+    const calls: string[] = [];
+    const warns: string[] = [];
+    let fail!: (e: Error) => void;
+    const { app } = await start({
+      storage,
+      worktreeRoot,
+      pr: fakePr().pr,
+      cleanupMerged: (id) => {
+        calls.push(id);
+        return new Promise((_, rej) => (fail = rej));
+      },
+      logger: { warn: (m) => void warns.push(m) },
+    });
+    await vi.waitFor(() => expect(calls).toEqual(["T-A"]));
+    app.stop();
+    fail(new Error("停机后才失败"));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(calls).toEqual(["T-A"]);
+    // 测试仓库不是 git 仓库，停机前已有一条「读本地分支失败」；停机后的失败不再警告
+    expect(warns.filter((w) => w.includes("T-A") || w.includes("T-B"))).toEqual([]);
   });
 });
