@@ -26,6 +26,11 @@ export interface PrProvider {
   readonly kind: "local" | "github";
   /** 在 worktree 当前分支上 git apply + commit，返回新提交 sha。 */
   commitPatch(ticket_id: string, worktree_path: string, patch: string): Promise<string>;
+  /**
+   * 把 worktree 里的全部改动（git add -A，含新增和删除）提交到当前分支，返回新提交 sha。
+   * worktree 必须对应一条未结束的 ticket 记录且当前分支一致；没有改动抛 NoChangesError。
+   */
+  commitWorktree(ticket_id: string, worktree_path: string): Promise<string>;
   open(ticket_id: string, worktree_path: string, branch: string): Promise<string>;
   /**
    * 把集成分支作为一条 PR 记录打开（默认 INTEGRATION_BRANCH → main）。分支不存在时从 target 建出；
@@ -37,6 +42,11 @@ export interface PrProvider {
   /** 冲突不抛错，返回 { merged: false, conflict: true }，由模块 9 决定复投。 */
   merge(pr_id: string, target: string): Promise<MergeResult>;
   checks(pr_id: string): Promise<CheckResult[]>;
+  /**
+   * 由 BakaCoding 关闭 PR：记录标 closed，写 closed_by: "bakacoding" 和 close_reason；不发上报。
+   * 已 merged 抛错；已 closed 幂等。GitHub 实现有 remote 时同时关闭远程 PR。
+   */
+  close(pr_id: string, reason: string): Promise<void>;
   /** 把远端状态同步回本地记录，返回状态有变化的记录；本地实现永远返回 []。 */
   sync(): Promise<SyncChange[]>;
 }

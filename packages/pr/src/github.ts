@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { EscalatedSchema, type Diff, type EventOf, type PrStatus } from "@bakacoding/types";
 import { git, GitError } from "./git.js";
-import { LocalPrProvider, PrNotFoundError, type LocalPrProviderOptions } from "./local.js";
+import {
+  LocalPrProvider,
+  PrAlreadyMergedError,
+  PrNotFoundError,
+  type LocalPrProviderOptions,
+} from "./local.js";
 import {
   INTEGRATION_BRANCH,
   type CheckResult,
@@ -192,6 +197,38 @@ export class GithubPrProvider implements PrProvider {
     return this.local.commitPatch(ticket_id, worktree_path, patch);
   }
 
+  commitWorktree(ticket_id: string, worktree_path: string): Promise<string> {
+    return this.local.commitWorktree(ticket_id, worktree_path);
+  }
+
+  /**
+   * 先把本地记录标成 closed（closed_by: bakacoding），再关远程 PR，这样并发的 sync 不会误报为用户手动关闭。
+   * 远程关闭失败时本地已是 closed，重复调用会再试一次 PATCH（GitHub 上关闭已关闭的 PR 无副作用）。
+   */
+  async close(pr_id: string, reason: string): Promise<void> {
+    const rec = await this.mustGet(pr_id);
+    if (rec.status === "merged") throw new PrAlreadyMergedError(pr_id);
+    // 用户在 GitHub 上关的（sync 同步来的）：已是 closed，幂等
+    if (rec.status === "closed" && rec.closed_by !== "bakacoding") return;
+    let cur = rec;
+    if (rec.status !== "closed") {
+      cur = {
+        ...rec,
+        status: "closed",
+        closed_by: "bakacoding",
+        close_reason: reason,
+        updated_ts: this.now().toISOString(),
+      };
+      await this.store.put(cur);
+    }
+    if (!cur.remote) return;
+    const op = "PATCH /pulls/{n}";
+    const res = await this.request(op, cur, "PATCH", `/pulls/${cur.remote.number}`, {
+      state: "closed",
+    });
+    if (!res.ok) throw await this.apiError(op, res);
+  }
+
   diff(pr_id: string): Promise<Diff> {
     return this.local.diff(pr_id);
   }
@@ -303,17 +340,22 @@ export class GithubPrProvider implements PrProvider {
     const changes: SyncChange[] = [];
     const records = (await this.store.list()).map(assertPrRecord);
     for (const rec of records) {
+      if (rec.closed_by === "bakacoding") continue;
       if (!rec.remote || (rec.status !== "open" && rec.status !== "conflict")) continue;
       const op = "GET /pulls/{n}";
       const res = await this.request(op, rec, "GET", `/pulls/${rec.remote.number}`);
       if (!res.ok) throw await this.apiError(op, res);
       const pull = (await res.json()) as GhPull;
       if (pull.state !== "closed") continue;
-      const from: PrStatus = rec.status;
+      // 请求期间可能被 close() 改过：以最新记录为准，BakaCoding 自己关的不当成用户手动关闭
+      const latest = await this.mustGet(rec.pr_id);
+      if (latest.closed_by === "bakacoding") continue;
+      if (latest.status !== "open" && latest.status !== "conflict") continue;
+      const from: PrStatus = latest.status;
       const ts = this.now().toISOString();
       if (pull.merged || pull.merged_at) {
         const merged_into = pull.base?.ref ?? rec.base_branch;
-        const next: PrRecord = { ...rec, status: "merged", merged_into, updated_ts: ts };
+        const next: PrRecord = { ...latest, status: "merged", merged_into, updated_ts: ts };
         if (pull.merge_commit_sha) next.merge_sha = pull.merge_commit_sha;
         await this.store.put(next);
         this.logger.warn(
@@ -321,7 +363,7 @@ export class GithubPrProvider implements PrProvider {
         );
         changes.push({ pr_id: rec.pr_id, from, to: "merged" });
       } else {
-        await this.store.put({ ...rec, status: "closed", updated_ts: ts });
+        await this.store.put({ ...latest, status: "closed", updated_ts: ts });
         await this.escalate(rec, `GitHub PR #${rec.remote.number}：用户在 GitHub 手动关闭`);
         changes.push({ pr_id: rec.pr_id, from, to: "closed" });
       }

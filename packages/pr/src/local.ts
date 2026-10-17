@@ -1,6 +1,6 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { DiffSchema, type Diff, type DiffFile } from "@bakacoding/types";
 import { git, GitError } from "./git.js";
 import {
@@ -10,7 +10,7 @@ import {
   type MergeResult,
   type PrProvider,
 } from "./provider.js";
-import { assertPrRecord, type PrRecord, type PrStore } from "./store.js";
+import { assertPrRecord, type PrRecord, type PrStore, type TicketPrRecord } from "./store.js";
 
 export interface LocalPrProviderOptions {
   store: PrStore;
@@ -48,6 +48,33 @@ const STATUS: Record<string, DiffFile["status"]> = {
   T: "modified",
   C: "added",
 };
+
+/** commitWorktree：worktree 里没有任何改动。 */
+export class NoChangesError extends Error {
+  constructor(
+    readonly ticket_id: string,
+    readonly worktree_path: string,
+  ) {
+    super(`${ticket_id} 的 worktree 没有改动可提交：${worktree_path}`);
+    this.name = "NoChangesError";
+  }
+}
+
+/** commitWorktree：找不到对应的 ticket 记录，或当前分支与记录不符。 */
+export class WorktreeMismatchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WorktreeMismatchError";
+  }
+}
+
+/** close：已合并的记录不能关闭。 */
+export class PrAlreadyMergedError extends Error {
+  constructor(pr_id: string) {
+    super(`PR 已合并，不能关闭：${pr_id}`);
+    this.name = "PrAlreadyMergedError";
+  }
+}
 
 export class LocalPrProvider implements PrProvider {
   readonly kind = "local" as const;
@@ -103,6 +130,59 @@ export class LocalPrProvider implements PrProvider {
       await rm(dir, { recursive: true, force: true });
     }
     return (await git(worktree_path, ["rev-parse", "HEAD"])).stdout.trim();
+  }
+
+  async commitWorktree(ticket_id: string, worktree_path: string): Promise<string> {
+    const wt = resolve(worktree_path);
+    const rec = (await this.store.list())
+      .map(assertPrRecord)
+      .filter(
+        (r): r is TicketPrRecord =>
+          r.kind === "ticket" &&
+          r.ticket_id === ticket_id &&
+          resolve(r.worktree_path) === wt &&
+          (r.status === "open" || r.status === "conflict"),
+      )
+      .at(-1);
+    if (!rec)
+      throw new WorktreeMismatchError(`${ticket_id} 在 ${worktree_path} 没有未结束的 PR 记录`);
+    const cur = await git(worktree_path, ["symbolic-ref", "-q", "--short", "HEAD"], {
+      allowCodes: [1],
+    });
+    if (cur.code !== 0 || cur.stdout.trim() !== rec.branch)
+      throw new WorktreeMismatchError(
+        `${ticket_id} 的 worktree 当前分支是 ${cur.stdout.trim() || "（分离 HEAD）"}，记录里是 ${rec.branch}`,
+      );
+    await git(worktree_path, ["add", "-A"]);
+    const staged = await git(worktree_path, ["diff", "--cached", "--quiet"], { allowCodes: [1] });
+    if (staged.code === 0) throw new NoChangesError(ticket_id, worktree_path);
+    try {
+      await git(worktree_path, ["commit", "-q", "-m", `${ticket_id}: apply worktree changes`], {
+        env: this.identityEnv(),
+      });
+    } catch (err) {
+      // 提交失败（含 hook 拒绝）：撤回暂存，工作区文件原样保留
+      await git(worktree_path, ["reset", "-q"]).catch(() => undefined);
+      const e = err as GitError;
+      throw new CommitPatchError(
+        `${ticket_id} 提交失败：${[e.stdout, e.stderr].join("\n").trim()}`,
+        e,
+      );
+    }
+    return (await git(worktree_path, ["rev-parse", "HEAD"])).stdout.trim();
+  }
+
+  async close(pr_id: string, reason: string): Promise<void> {
+    const rec = await this.mustGet(pr_id);
+    if (rec.status === "merged") throw new PrAlreadyMergedError(pr_id);
+    if (rec.status === "closed") return;
+    await this.store.put({
+      ...rec,
+      status: "closed",
+      closed_by: "bakacoding",
+      close_reason: reason,
+      updated_ts: this.now().toISOString(),
+    });
   }
 
   async open(ticket_id: string, worktree_path: string, branch: string): Promise<string> {
