@@ -1,0 +1,87 @@
+{
+  "$schema_version": "bakacoding.pricing.v1",
+  "currency": "USD",
+  "unit": "micro_usd_per_1m_tokens",
+  "source": {
+    "url": "https://api-docs.deepseek.com/quick_start/pricing",
+    "accessed_at": "2026-10-16T23:05:12Z",
+    "quote": "PRICING (2) | 1M INPUT TOKENS (CACHE HIT) | OFF-PEAK | $0.003 | $0.022 | PEAK | $0.006 | $0.044 | 1M INPUT TOKENS (CACHE MISS) | OFF-PEAK | $0.15 | $0.66 | PEAK | $0.3 | $1.32 | 1M OUTPUT TOKENS | OFF-PEAK | $0.6 | $1.98 | PEAK | $1.2 | $3.96 (columns: deepseek-flash, deepseek-v4-pro). (2) Off-peak rates are half of the peak rates. Peak hours are 01:00 - 04:00 and 06:00 - 10:00 UTC, Monday through Friday, excluding Chinese public holidays. All other hours are off-peak, including weekends and Chinese public holidays in full.",
+    "note": "调休上班的周末（make-up working weekends）按闲时计：官方原文高峰仅限 'Monday through Friday'，因此周六、周日即使为调休上班日也视为 off-peak。"
+  },
+  "models": {
+    "deepseek-flash": {
+      "peak": {
+        "input_cache_hit": 6000,
+        "input_cache_miss": 300000,
+        "output": 1200000
+      },
+      "offpeak": {
+        "input_cache_hit": 3000,
+        "input_cache_miss": 150000,
+        "output": 600000
+      }
+    },
+    "deepseek-v4-pro": {
+      "peak": {
+        "input_cache_hit": 44000,
+        "input_cache_miss": 1320000,
+        "output": 3960000
+      },
+      "offpeak": {
+        "input_cache_hit": 22000,
+        "input_cache_miss": 660000,
+        "output": 1980000
+      }
+    }
+  },
+  "peak_hours_utc": [
+    ["01:00", "04:00"],
+    ["06:00", "10:00"]
+  ],
+  "peak_weekdays": ["Mon", "Tue", "Wed", "Thu", "Fri"],
+  "cn_public_holidays": [
+    {
+      "year": 2026,
+      "source": {
+        "title": "国务院办公厅关于2026年部分节假日安排的通知（国办发明电〔2025〕7号）",
+        "url": "https://www.gov.cn/zhengce/zhengceku/202511/content_7047091.htm",
+        "accessed_at": "2026-10-16T23:05:12Z"
+      },
+      "dates": [
+        "2026-01-01",
+        "2026-01-02",
+        "2026-01-03",
+        "2026-02-15",
+        "2026-02-16",
+        "2026-02-17",
+        "2026-02-18",
+        "2026-02-19",
+        "2026-02-20",
+        "2026-02-21",
+        "2026-02-22",
+        "2026-02-23",
+        "2026-04-04",
+        "2026-04-05",
+        "2026-04-06",
+        "2026-05-01",
+        "2026-05-02",
+        "2026-05-03",
+        "2026-05-04",
+        "2026-05-05",
+        "2026-06-19",
+        "2026-06-20",
+        "2026-06-21",
+        "2026-09-25",
+        "2026-09-26",
+        "2026-09-27",
+        "2026-10-01",
+        "2026-10-02",
+        "2026-10-03",
+        "2026-10-04",
+        "2026-10-05",
+        "2026-10-06",
+        "2026-10-07"
+      ]
+    }
+  ]
+}
