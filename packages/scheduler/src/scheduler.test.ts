@@ -2400,6 +2400,42 @@ describe("T-041b adopt 写状态失败回滚", () => {
     );
     expect(s.status("A")).toBe("merge_queued");
   });
+
+  it("#65 评审：回滚撤掉 PR 映射——同一张单之后换新 PR 接回，旧 pr_id 不再映射到这张单", async () => {
+    const h = harness();
+    const s = await started(h);
+    const set = h.deps.tickets.setStatus;
+    let fail = true;
+    h.deps.tickets.setStatus = (t, st) => {
+      if (fail && t === "A") throw new Error("写库失败");
+      return set(t, st);
+    };
+    await expect(
+      s.adopt(ticket("A", { write_scope: ["src/**"], depends_on: ["Z"] }), {
+        pr_id: "pr-A-old",
+        head_sha: SHA("b"),
+        worktree_path: wt("A"),
+      }),
+    ).rejects.toThrow(/写库失败/);
+    fail = false;
+    expect(
+      await s.adopt(ticket("A", { write_scope: ["src/**"], depends_on: ["Z"] }), {
+        pr_id: "pr-A-new",
+        head_sha: SHA("c"),
+        worktree_path: wt("A"),
+      }),
+    ).toBe("adopted");
+    // 新 PR 照常映射到 A
+    expect(s.eventContext({ pr_id: "pr-A-new", ticket_id: null })).toMatchObject({
+      requirement_id: "req-1",
+      span_id: "span-A",
+    });
+    // 旧 PR 的映射已撤掉：A 重新登记后也查不回 A（映射残留的话这里会拿到 A 的上下文）
+    expect(s.eventContext({ pr_id: "pr-A-old", ticket_id: null })).toMatchObject({
+      requirement_id: "unattributed:pr-A-old",
+      trace_id: "unattributed:pr-A-old",
+    });
+  });
 });
 
 describe("T-041b replaceDependency", () => {

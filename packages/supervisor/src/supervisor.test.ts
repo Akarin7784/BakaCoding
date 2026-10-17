@@ -1070,10 +1070,31 @@ describe("T-041b 需求原文", () => {
     });
     expect(EventSchema.parse({ ...tw[0], seq: 1 })).toBeTruthy();
     expect(tw[0]!.payload.detail).toContain(r.tickets[1]!.ticket_id);
-    // 正好 20000 不截断、不警告
+    // 正好 20000 码点不截断、不警告（#65 评审：用 U+FFFF 以上的字符，UTF-16 是 40000 个单元，按单元计数会误截）
     const t2 = setup({ outputs: [splitOut([ticketJson()])] });
-    await t2.sup.split({ project_id: "demo-1234", text: "a".repeat(20000) });
+    const exact = "😀".repeat(20000);
+    const r2 = await t2.sup.split({ project_id: "demo-1234", text: exact });
+    expect(
+      (t2.rows.get(r2.tickets[0]!.ticket_id)!.fields as { requirement_text: string })
+        .requirement_text,
+    ).toBe(exact);
     expect(t2.published.filter((e) => e.type === "ticket_warning")).toEqual([]);
+  });
+  it("20001 个 U+FFFF 以上的字符：按码点截成正好 20000 个（不切半个代理对），发 requirement_truncated 报原长 20001", async () => {
+    const t = setup({ outputs: [splitOut([ticketJson()])] });
+    const r = await t.sup.split({ project_id: "demo-1234", text: "𠀀".repeat(20001) });
+    const stored = (t.rows.get(r.tickets[0]!.ticket_id)!.fields as { requirement_text: string })
+      .requirement_text;
+    expect(stored).toBe("𠀀".repeat(20000));
+    expect(Array.from(stored)).toHaveLength(20000);
+    expect(stored.length).toBe(40000);
+    const tw = t.published.filter((e) => e.type === "ticket_warning");
+    expect(tw).toHaveLength(1);
+    expect(tw[0]).toMatchObject({
+      ticket_id: r.tickets[0]!.ticket_id,
+      payload: { code: "requirement_truncated" },
+    });
+    expect(tw[0]!.payload.detail).toContain("需求原文 20001 字符");
   });
   it("手动单的需求原文是 ticket_text", async () => {
     const t = setup();
