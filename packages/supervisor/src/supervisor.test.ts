@@ -1482,3 +1482,118 @@ describe("T-041b 重启接管补跑", () => {
     expect(t.notified.slice(n).filter((x) => /没有接回|排在后面/.test(x.text))).toEqual([]);
   });
 });
+
+describe("T-041c 高风险 PR 裁决", () => {
+  async function hrSetup() {
+    const t = await escalationSetup();
+    const calls: string[] = [];
+    let fail: Error | undefined;
+    t.deps.highRisk = {
+      release: (id) => {
+        calls.push(`release:${id}`);
+        if (fail) throw fail;
+        return "released";
+      },
+      reject: (id, detail) => {
+        calls.push(`reject:${id}:${detail}`);
+        if (fail) throw fail;
+      },
+    };
+    t.sup = createSupervisor(t.deps);
+    t.sup.start();
+    return { t, calls, failWith: (e: Error | undefined) => (fail = e) };
+  }
+  const held = (ticket_id: string, pr_id: string, cause: "submit" | "adopt" | "resubmit") => ({
+    ticket_id,
+    pr_id,
+    requirement_id: "req-1",
+    cause,
+  });
+
+  it("highRiskHeld：按 cause 写不同的通知（重启后写明放行不保存、要再放行；换新 PR 写明要重新裁决），同一 PR 只通知一次；记进 pendingHighRisk", async () => {
+    const { t } = await hrSetup();
+    const before = t.notified.length;
+    await t.sup.highRiskHeld(held("req-1-1", "pr-1", "submit"));
+    await t.sup.highRiskHeld(held("req-1-1", "pr-1", "submit"));
+    expect(t.notified.length - before).toBe(1);
+    expect(t.notified.at(-1)!.text).toMatch(
+      /req-1-1 的 PR pr-1 改动了依赖清单.*等你放行或拒绝.*不会合入/,
+    );
+    expect(t.notified.at(-1)!.project_id).toBe("demo-1234");
+    await t.sup.highRiskHeld(held("req-1-1", "pr-2", "resubmit"));
+    expect(t.notified.at(-1)!.text).toMatch(/换了新 PR pr-2.*重新扣/);
+    await t.sup.highRiskHeld(held("req-1-2", "pr-3", "adopt"));
+    expect(t.notified.at(-1)!.text).toMatch(/重启后.*pr-3.*放行不跨重启保存.*再放行一次/);
+    expect(t.sup.pendingHighRisk()).toEqual([
+      { ticket_id: "req-1-1", pr_id: "pr-2" },
+      { ticket_id: "req-1-2", pr_id: "pr-3" },
+    ]);
+    // 已到终态的单自动去掉
+    t.rows.get("req-1-2")!.status = "merged";
+    expect(t.sup.pendingHighRisk()).toEqual([{ ticket_id: "req-1-1", pr_id: "pr-2" }]);
+  });
+
+  it("decideHighRisk：转调 9 的 release / reject，成功后移出待裁决；出错返回 ok: false 不抛；没注入 highRisk 返回 ok: false", async () => {
+    const { t, calls, failWith } = await hrSetup();
+    await t.sup.highRiskHeld(held("req-1-1", "pr-1", "submit"));
+    await t.sup.highRiskHeld(held("req-1-2", "pr-2", "submit"));
+    expect(await t.sup.decideHighRisk("req-1-1", "release")).toEqual({ ok: true });
+    expect(await t.sup.decideHighRisk("req-1-2", "reject", "  不要这个依赖 ")).toEqual({
+      ok: true,
+    });
+    expect(await t.sup.decideHighRisk("req-1-2", "reject")).toEqual({ ok: true });
+    expect(calls).toEqual([
+      "release:req-1-1",
+      "reject:req-1-2:不要这个依赖",
+      "reject:req-1-2:用户拒绝",
+    ]);
+    expect(t.sup.pendingHighRisk()).toEqual([]);
+    failWith(new Error("单 X 不在合并队列里等裁决"));
+    expect(await t.sup.decideHighRisk("req-1-1", "release")).toEqual({
+      ok: false,
+      error: "单 X 不在合并队列里等裁决",
+    });
+    // 不调模型
+    expect(t.deps.call).toHaveBeenCalledTimes(1);
+    delete t.deps.highRisk;
+    const bare = createSupervisor(t.deps);
+    expect(await bare.decideHighRisk("req-1-1", "release")).toMatchObject({ ok: false });
+  });
+
+  it("escalated(high_risk_rejected)：不重拆、不关 PR，写 escalation_handled 交用户，移出待裁决", async () => {
+    const { t } = await hrSetup();
+    await t.sup.highRiskHeld(held("req-1-1", "pr-1", "submit"));
+    await t.fireEscalated(esc("req-1-1", "high_risk_rejected", "不要这个依赖"));
+    expect(t.closes).toEqual([]);
+    expect(t.deps.call).toHaveBeenCalledTimes(1);
+    expect(markers(t, "req-1-1").escalation_handled).toMatchObject({
+      action: "notify_user",
+      reason: "high_risk_rejected",
+    });
+    expect(t.notified.at(-1)!.text).toMatch(/高风险 PR 被拒绝.*不重拆/);
+    expect(t.sup.pendingHighRisk()).toEqual([]);
+  });
+
+  it("backpressurePaused：通知写明暂停原因、待合并 PR 数和其中等裁决的高风险 PR 数", async () => {
+    const { t } = await hrSetup();
+    await t.sup.backpressurePaused({
+      reasons: ["pending_pr_limit"],
+      pending_prs: { total: 5, limit: 4, high_risk_held: 3 },
+    });
+    expect(t.notified.at(-1)!.text).toBe(
+      "已暂停派新单：待合并 PR 超过上限。待合并的 PR 共 5 张（上限 4），其中 3 张是等你裁决的高风险 PR（放行或拒绝后会腾出名额）。在途的单照常编码、合并，恢复后自动继续派单。",
+    );
+    await t.sup.backpressurePaused({
+      reasons: ["pending_pr_limit"],
+      pending_prs: { total: 5, limit: 4, high_risk_held: 0 },
+    });
+    expect(t.notified.at(-1)!.text).toMatch(/其中 0 张是等你裁决的高风险 PR。/);
+    await t.sup.backpressurePaused({
+      reasons: ["daily_budget"],
+      pending_prs: { total: 1, limit: 4, high_risk_held: 0 },
+    });
+    expect(t.notified.at(-1)!.text).toMatch(
+      /^已暂停派新单：当日预算用完。待合并的 PR 共 1 张（上限 4）。/,
+    );
+  });
+});

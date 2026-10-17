@@ -203,6 +203,14 @@ export interface SupervisorDeps {
     setTimeout: (fn: () => void, ms: number) => unknown;
     clearTimeout: (handle: unknown) => void;
   };
+  /**
+   * 可选（T-041c，提案 S5）：9 的高风险闸门。`release` 接 9 的 `releaseHighRisk`，`reject` 接 `rejectHighRisk`；
+   * `decideHighRisk` 转调它们。不注入时 `decideHighRisk` 返回 `{ ok: false }`（单独使用 10 的场景）。
+   */
+  highRisk?: {
+    release(ticket_id: string): MaybePromise<"released" | "already">;
+    reject(ticket_id: string, detail: string): MaybePromise<void>;
+  };
   /** 集成分支 HEAD，作为新单基线 */
   targetHead: (project_id: string) => MaybePromise<string>;
   /** 可选：基线上的文件清单，用作拆单上下文和判断「裸目录」 */
@@ -249,6 +257,21 @@ export interface TakeOverReport {
   failed: { ticket_id: string; error: string }[];
 }
 
+/** 9 扣住高风险单时的通知（T-041c，N3；同 9 的 `HighRiskHeldInfo`，10 不依赖 9 的类型）。 */
+export interface HighRiskHeldInput {
+  ticket_id: string;
+  pr_id: string;
+  requirement_id: string;
+  /** submit：评审通过刚交进合并队列；adopt：重启接管接回（放行不保存）；resubmit：放行后冲突复投换了新 PR */
+  cause: "submit" | "adopt" | "resubmit";
+}
+
+/** 反压暂停时 9 给的状态（T-041c，取 9 的 `BackpressureState` 里用得到的字段）。 */
+export interface BackpressurePausedInput {
+  reasons: readonly string[];
+  pending_prs: { total: number; limit: number; high_risk_held: number };
+}
+
 export interface Supervisor {
   chat(message: UserMessage): Promise<ChatReply>;
   split(request: SplitRequest): Promise<SplitResult>;
@@ -263,4 +286,26 @@ export interface Supervisor {
    * （9 重启后不认识它们，留着会一直 waiting）。
    */
   takeOver(): Promise<TakeOverReport>;
+  /**
+   * 高风险 PR 裁决（T-041c，提案 S7、Q4 b）：只由用户做，不调模型。转调 `deps.highRisk`；
+   * 出错（没注入、单不在等裁决、PR 已合入等）返回 `{ ok: false, error }`，不抛。
+   * 拒绝时 9 关 PR 并发 `escalated(high_risk_rejected)`，10 按上报处理（不重拆，交用户）。
+   */
+  decideHighRisk(
+    ticket_id: string,
+    decision: "release" | "reject",
+    detail?: string,
+  ): Promise<{ ok: true } | { ok: false; error: string }>;
+  /**
+   * 9 扣住高风险单（T-041c，N3）：组合根接 9 的 `onHighRiskHeld`。通知用户（同一 PR 在本进程只通知一次；
+   * 重启后重新扣住、放行后换了新 PR 都会写明），记进待裁决清单。
+   */
+  highRiskHeld(info: HighRiskHeldInput): Promise<void>;
+  /** 等用户裁决的高风险单（T-041c，N3；T-042 主管待办、T-062 界面用）。已到终态的单自动去掉。 */
+  pendingHighRisk(): { ticket_id: string; pr_id: string }[];
+  /**
+   * 反压暂停派单（T-041c，Q-7）：组合根接 9 的 `onBackpressurePaused`。通知用户暂停原因，
+   * 并写明待合并 PR 里有几张是被高风险闸门扣着、等用户裁决的。
+   */
+  backpressurePaused(state: BackpressurePausedInput): Promise<void>;
 }

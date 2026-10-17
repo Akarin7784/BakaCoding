@@ -28,6 +28,8 @@ import {
   type SplitRequest,
   type SplitResult,
   type Supervisor,
+  type BackpressurePausedInput,
+  type HighRiskHeldInput,
   type SupervisorDeps,
   type SupervisorTicket,
   type TakeOverReport,
@@ -158,6 +160,17 @@ const REASON_TEXT: Record<EscalationReason, string> = {
   budget_exceeded: "本单预算用完",
   internal_error: "内部出错",
   merged_but: "已合入集成分支，但之后的收尾出错",
+  high_risk_rejected: "高风险 PR 被拒绝",
+};
+
+/** 反压暂停原因的中文（T-041c，通知用户用；9 的 BackpressureReason）。 */
+const BACKPRESSURE_TEXT: Record<string, string> = {
+  review_backlog_pause: "评审积压",
+  review_backlog_halve: "评审积压（并发减半）",
+  review_backlog_recovering: "评审积压回落中",
+  supervisor_backlog: "主管待办积压",
+  pending_pr_limit: "待合并 PR 超过上限",
+  daily_budget: "当日预算用完",
 };
 
 interface ProjectInfo {
@@ -792,6 +805,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       });
       return "notify_user";
     }
+    pendingHR.delete(id); // 上报了就不再等高风险裁决（T-041c）
     handledHere.add(id);
     const row = deps.storage.getTicket(id);
     if (NOTIFY_ONLY_REASONS.has(reason) || !row) {
@@ -828,6 +842,8 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         // 已重拆次数 ≥ 上限时不再重拆（Q-C）
         action = resplitsDone(row.requirement_id) >= limit ? "resplit_limit" : "resplit";
       }
+    } else if (reason === "high_risk_rejected") {
+      why = "这张单的高风险 PR 已按你的决定拒绝并关闭，不重拆；需要的话请重新提需求或手动建单。";
     } else {
       why = "这类上报不重拆，交给你决定。";
     }
@@ -1449,5 +1465,89 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     return act(out.intent, msg.text, out.decision, project, note, requirement_id);
   }
 
-  return { chat, split, start, createManualTicket, loadTicket, takeOver };
+  // ---------- 高风险 PR 裁决（T-041c） ----------
+
+  /** 等用户裁决的高风险单：单号 → 当前被扣的 PR */
+  const pendingHR = new Map<string, { pr_id: string; requirement_id: string }>();
+  /** 已通知过的「单号 + PR」（同一 PR 在本进程只通知一次） */
+  const heldNotifiedHR = new Set<string>();
+
+  function pendingHighRisk(): { ticket_id: string; pr_id: string }[] {
+    const out: { ticket_id: string; pr_id: string }[] = [];
+    for (const [ticket_id, v] of [...pendingHR]) {
+      const st = deps.storage.getTicket(ticket_id)?.status;
+      if (st === "merged" || st === "escalated") {
+        pendingHR.delete(ticket_id);
+        continue;
+      }
+      out.push({ ticket_id, pr_id: v.pr_id });
+    }
+    return out;
+  }
+
+  async function highRiskHeld(info: HighRiskHeldInput): Promise<void> {
+    const key = `${info.ticket_id}\u0000${info.pr_id}`;
+    if (heldNotifiedHR.has(key)) return;
+    heldNotifiedHR.add(key);
+    pendingHR.set(info.ticket_id, { pr_id: info.pr_id, requirement_id: info.requirement_id });
+    const row = deps.storage.getTicket(info.ticket_id);
+    const id = info.ticket_id;
+    const lead =
+      info.cause === "adopt"
+        ? `重启后，单 ${id} 的高风险 PR ${info.pr_id} 重新扣在合并队列里：放行不跨重启保存，如果重启前你已经放行，需要再放行一次。`
+        : info.cause === "resubmit"
+          ? `单 ${id} 放行后因合并冲突重做，换了新 PR ${info.pr_id}，新的改动你还没看过，已重新扣在合并队列里。`
+          : `单 ${id} 的 PR ${info.pr_id} 改动了依赖清单 / 锁文件（或有改名的文件），属于高风险 PR，已扣在合并队列里。`;
+    await notify(
+      `${lead}等你放行或拒绝；不处理就一直扣着，不会合入。（v1 界面里还没有放行 / 拒绝的按钮，入口在后续版本提供。）`,
+      {
+        ...(row ? { project_id: row.project_id } : {}),
+        requirement_id: info.requirement_id,
+      },
+    );
+  }
+
+  async function decideHighRisk(
+    ticket_id: string,
+    decision: "release" | "reject",
+    detail?: string,
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    if (!deps.highRisk) return { ok: false, error: "没有接上调度器的高风险闸门" };
+    try {
+      if (decision === "release") await deps.highRisk.release(ticket_id);
+      else await deps.highRisk.reject(ticket_id, detail?.trim() || "用户拒绝");
+      pendingHR.delete(ticket_id);
+      return { ok: true };
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      logger.warn(`高风险裁决（${decision}）单 ${ticket_id} 失败`, err);
+      return { ok: false, error: error.slice(0, 500) };
+    }
+  }
+
+  async function backpressurePaused(state: BackpressurePausedInput): Promise<void> {
+    const reasons = state.reasons.map((r) => BACKPRESSURE_TEXT[r] ?? r).join("、") || "反压";
+    const p = state.pending_prs;
+    const held =
+      p.high_risk_held > 0 || state.reasons.includes("pending_pr_limit")
+        ? `，其中 ${p.high_risk_held} 张是等你裁决的高风险 PR${p.high_risk_held > 0 ? "（放行或拒绝后会腾出名额）" : ""}`
+        : "";
+    await notify(
+      `已暂停派新单：${reasons}。待合并的 PR 共 ${p.total} 张（上限 ${p.limit}）${held}。在途的单照常编码、合并，恢复后自动继续派单。`,
+      {},
+    );
+  }
+
+  return {
+    chat,
+    split,
+    start,
+    createManualTicket,
+    loadTicket,
+    takeOver,
+    decideHighRisk,
+    highRiskHeld,
+    pendingHighRisk,
+    backpressurePaused,
+  };
 }
