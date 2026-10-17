@@ -7,7 +7,10 @@ import { promisify } from "node:util";
 const run = promisify(execFile);
 
 export const WORKTREES_DIR = ".bakacoding/worktrees";
-const IGNORE_LINE = "/.bakacoding/worktrees/";
+/** 排除整个 .bakacoding/（worktree、数据库等运行数据都在这里），T-078。 */
+const IGNORE_LINE = "/.bakacoding/";
+/** 已等价覆盖整个目录的写法；旧版写的 `/.bakacoding/worktrees/` 不算，需补新行。 */
+const COVERING_LINES = new Set(["/.bakacoding/", ".bakacoding/", "/.bakacoding", ".bakacoding"]);
 const TICKET_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 export interface WorktreeInfo {
@@ -34,7 +37,7 @@ export class WorktreeManager {
     return new WorktreeManager(await git(resolve(dir), "rev-parse", "--show-toplevel"));
   }
 
-  /** 把 worktree 目录写进 .git/info/exclude（不改用户跟踪的 .gitignore）。 */
+  /** 把整个 `.bakacoding/` 写进 .git/info/exclude（不改用户跟踪的 .gitignore）；幂等，旧行保留。 */
   async ensureIgnored(): Promise<void> {
     const commonDir = resolve(
       this.repoRoot,
@@ -43,10 +46,7 @@ export class WorktreeManager {
     const exclude = join(commonDir, "info", "exclude");
     await mkdir(join(commonDir, "info"), { recursive: true });
     const cur = existsSync(exclude) ? await readFile(exclude, "utf8") : "";
-    if (
-      cur.split(/\r?\n/).some((l) => l.trim() === IGNORE_LINE || l.trim() === `${WORKTREES_DIR}/`)
-    )
-      return;
+    if (cur.split(/\r?\n/).some((l) => COVERING_LINES.has(l.trim()))) return;
     await appendFile(exclude, `${cur && !cur.endsWith("\n") ? "\n" : ""}${IGNORE_LINE}\n`);
   }
 
