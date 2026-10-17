@@ -20,11 +20,17 @@ const ProviderSchema = z
       .string()
       .regex(/^env:[A-Z0-9_]+$/)
       .describe("凭据引用，只允许 env:VAR；key 本身不写进配置"),
+    request_timeout_ms: PosInt.optional().describe(
+      "单次 HTTP 请求超时（含读完响应体），不填默认 600000（10 分钟）；超时按连接错误重试",
+    ),
     models: z.record(
       z
         .object({
           expected_display_name: z.string().min(1).optional(),
           thinking_enabled: z.boolean().default(true),
+          max_tokens: PosInt.optional().describe(
+            "单次请求的输出上限；不填就不传，用服务端默认值（预算预占时按能力表的 default_max_tokens 估）",
+          ),
         })
         .strict()
         .describe("不含 effort 映射：思考档位映射以模块 1 服务商能力表为准"),
