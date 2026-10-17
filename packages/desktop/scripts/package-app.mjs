@@ -6,8 +6,8 @@
 //
 // 原生模块：rebuild:electron 不能从 Linux 交叉编译 Windows 版，所以用 better-sqlite3 官方预编译包。
 // better-sqlite3 目前没有 Electron 44（ABI 149）的预编译包；最新带 Electron 预编译的是 12.12.0，
-// 最高到 electron-v148（Electron 43）。因此打包用 Electron 43（PACKAGE_ELECTRON），
-// .node 的 ABI 与打进去的 Electron 一致。12.12.0 的 lib/ 与 npm 上的 12.11.1 逐字节相同（只升级了 SQLite），
+// 最高到 electron-v148（Electron 43）。因此本包的 electron 固定为 43.8.0（开发、rebuild:electron 和打包同一版本，
+// 脚本会检查），.node 的 ABI 与打进去的 Electron 一致；上游出了 ABI 149 预编译再升。12.12.0 的 lib/ 与 npm 上的 12.11.1 逐字节相同（只升级了 SQLite），
 // 12.12.0 没发到 npm，所以从 GitHub 的 tag 源码包取 lib/ 和 package.json。
 //
 // 打包内容：dist-electron（主进程已把 @bakacoding/* 等全部打进 main.js，只有 better-sqlite3 外置）、
@@ -33,6 +33,14 @@ if (platform !== "win32" && platform !== "linux") throw new Error(`不支持的�
 const pkgDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(path.join(pkgDir, "package.json"));
 const pkg = JSON.parse(readFileSync(path.join(pkgDir, "package.json"), "utf8"));
+const installedElectron = JSON.parse(
+  readFileSync(require.resolve("electron/package.json"), "utf8"),
+).version;
+if (installedElectron !== PACKAGE_ELECTRON || pkg.devDependencies?.electron !== PACKAGE_ELECTRON) {
+  throw new Error(
+    `开发用 Electron（${installedElectron}，package.json ${pkg.devDependencies?.electron}）和打包用 ${PACKAGE_ELECTRON} 不一致`,
+  );
+}
 const releaseDir = path.join(pkgDir, "release");
 const cacheDir = path.join(releaseDir, "cache");
 const stage = path.join(releaseDir, `stage-${platform}`);

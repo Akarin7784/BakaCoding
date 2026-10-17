@@ -125,6 +125,7 @@ flowchart BT
 | T-068 | 模块 3：`redact` 10 万字符输入的耗时上限从 500ms 放宽到 2s（和 T-062 诊断用例一致）；以 main 旧正则为基准的邮箱随机对比提高比对下限（≥320），另按含 2 个及以上 `.`（≥140）、含 `-`（≥75）分开计数各设下限 | 3 | 基础层开发 | 已合入 | #77 | `37a99b3` |
 | T-069 | 模块 6：check-runs 翻页以 total_count 为准，不再遇到本页不足 100 条就停 | 6 | 执行层开发 | 已合入 | #76 | `4e518fd` |
 | T-070 | 模块 10：高风险待裁决不计入主管待办（去掉与 9 `pending_pr_limit` 的反压双计） | 10 | 编排层开发 | 已合入 | #75 | `61716e3` |
+| T-073 | 模块 12 打包：Windows x64 免安装 zip（electron-builder，`package:win` / `package:linux`），版本 1.0.0-preview；`electron` 固定 43.8.0（ABI 148），better-sqlite3 用 12.12.0 官方 electron-v148 预编译包，原生模块 asarUnpack | 12 | 界面与诊断开发 | 待评审 | — | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
@@ -188,6 +189,7 @@ flowchart BT
 - 已解决（T-066）：7 / 10 发 `review_backlog` / `supervisor_backlog` 时 `requirement_id` / `ticket_id` 为 null，trace 新开。
 - 模块 12（T-067）：测试没锁住脱敏顺序（先把环境变量里的密钥值替换成 `[REDACTED:变量名]`，再跑 `redact(text, "light")`），也没锁住 `serveSyncState` 的 `clearInterval`。定时器要等应用退出才停，关窗口时不停；没有窗口时会跳过，没有危害。不开单。
 - 模块 6（T-069）：响应里没有 `total_count` 时没有测试，代码会在当页停止翻页。不开单。
+- 模块 12（T-073）：桌面端暂用 Electron 43.8.0（better-sqlite3 尚无 Electron 44/ABI 149 预编译），上游出了再升。
 
 ### 不对应需求单的 PR
 
