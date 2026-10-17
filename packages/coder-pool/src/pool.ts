@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
 import {
   buildSystemPrefix,
   buildTicketMessage,
   FILE_TOOL_DEFINITIONS,
+  FINISH_RETRY_PROMPT,
   parseFinish,
 } from "./prefix.js";
 import {
@@ -49,21 +51,21 @@ function renderResult(r: ToolResult): string {
 export function createCoderPool(deps: CoderPoolDeps): CoderPool {
   const isBudgetExceeded = deps.isBudgetExceeded ?? defaultIsBudgetExceeded;
   const maxFeedback = deps.maxFeedbackChars ?? DEFAULT_MAX_FEEDBACK_CHARS;
-  // 同一项目只拼一次，保证每单拿到同一个字符串（逐字节相同）
-  const prefixes = new Map<string, Promise<string>>();
+  // 按项目缓存公共前缀，键是模板 + 架构约束的内容哈希：内容没变就复用同一个字符串
+  // （逐字节相同，保住前缀缓存）；模板或约束变了就重拼
+  const prefixes = new Map<string, { hash: string; system: string }>();
 
-  function systemPrefix(project_id: string): Promise<string> {
-    let p = prefixes.get(project_id);
-    if (!p) {
-      p = (async () =>
-        buildSystemPrefix(
-          await deps.promptTemplate("coder"),
-          await deps.architectureConstraints(project_id),
-        ))();
-      p.catch(() => prefixes.delete(project_id));
-      prefixes.set(project_id, p);
-    }
-    return p;
+  async function systemPrefix(project_id: string): Promise<string> {
+    const template = await deps.promptTemplate("coder");
+    const constraints = [...(await deps.architectureConstraints(project_id))];
+    const hash = createHash("sha256")
+      .update(JSON.stringify([template, constraints]))
+      .digest("hex");
+    const cached = prefixes.get(project_id);
+    if (cached && cached.hash === hash) return cached.system;
+    const system = buildSystemPrefix(template, constraints);
+    prefixes.set(project_id, { hash, system });
+    return system;
   }
 
   async function runTicket(input: RunTicketInput): Promise<RunTicketResult> {
@@ -83,6 +85,8 @@ export function createCoderPool(deps: CoderPoolDeps): CoderPool {
     const changed: string[] = [];
     const ctx = { ...input.ctx, role: "coder" as const };
     let lastText = "";
+    /** 上一轮结束回复解析不了、已追加格式提示时的那条原文 */
+    let unparsed: string | undefined;
 
     for (let turn = 0; turn < maxTurns; turn++) {
       let res;
@@ -112,8 +116,20 @@ export function createCoderPool(deps: CoderPoolDeps): CoderPool {
       if (res.tool_calls.length === 0) {
         const fin = parseFinish(res.content);
         if (fin) return { status: fin.status, summary: fin.summary, changed_files: changed };
-        return { status: "done", summary: res.content.trim(), changed_files: changed };
+        if (unparsed !== undefined)
+          // 已经要求过一次格式，仍解析不了：按放弃处理，summary 放原文
+          return {
+            status: "gave_up",
+            summary: res.content.trim() || unparsed.trim(),
+            changed_files: changed,
+          };
+        // 解析不了：追加一条格式提示让模型再回一轮（计入 max_turns）
+        unparsed = res.content;
+        messages.push({ role: "user", content: FINISH_RETRY_PROMPT });
+        continue;
       }
+      // 模型又调了工具：照常继续，之后的结束回复重新计
+      unparsed = undefined;
 
       // 工具调用按顺序串行执行，结果（含拒绝和错误）原样交还模型
       for (const call of res.tool_calls) {

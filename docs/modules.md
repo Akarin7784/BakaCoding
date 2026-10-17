@@ -122,14 +122,14 @@ graph BT
 - **对外接口（草案）**：`createCoderPool(deps) → { runTicket, prefix }`。
   - `runTicket({ ticket, prompt, worktree_path, permission_list, effort, feedback?, ctx }) → { status: "done" | "gave_up" | "turn_limit" | "budget_exceeded", summary, changed_files }`，不返回补丁。
   - 5-1 提交由调用方调 6 的 `commitWorktree`，5 自己不提交；`changed_files` 是 `write` / `edit` 成功过的文件（相对 worktree，按首次修改顺序）。
-  - 5-2 `prompt` 是 8 写好的需求单部分；5 只拼公共前缀（`promptTemplate("coder")` + 结束协议 + 项目架构约束作系统提示，加五个工具定义），同一项目只拼一次、逐字节相同。`feedback`（上一轮评审理由、冲突文件或上一轮 diff）截断后标注为不可信输入，接在需求单后面，不动前缀。
+  - 5-2 `prompt` 是 8 写好的需求单部分；5 只拼公共前缀（`promptTemplate("coder")` + 结束协议 + 项目架构约束作系统提示，加五个工具定义）。前缀按项目缓存、按内容哈希失效：每次 `runTicket` 都取模板和架构约束，对内容算 sha256，哈希没变就复用缓存的前缀（逐字节相同），变了就重拼。`feedback`（上一轮评审理由、冲突文件或上一轮 diff）先按码点截断再转义，包在 `<feedback>` 区块里并标注为不可信输入，接在需求单后面，不动前缀；内容里的 `<feedback` / `</feedback`（含大小写、空白、带属性、缺 `>` 的变体）把 `<` 转成 `&lt;`，不能提前闭合区块。
   - 5-3 不收 `attempt`：`effort` 由 8 算好传入，复投次数由 8 计；`ctx.is_resubmit` 由 8 填，5 原样传给 1（`role` 为 `coder`，`provider` / `model` 取 `roles.coder`）。
   - 5-4 worktree 由 8/9 管，5 只用传进来的 `worktree_path`，不建不清。
   - 5-5 越界写由 4 自己发 `write_scope_requested`、9 回复，5 不加回调；工具返回的拒绝和错误（含 `FS_*` 错误码、未知工具、工具抛错）原样作为工具结果交还模型。
   - 5-6 没有 `slots()`，5 不设并发上限。
   - 5-7 5 不发事件，调用记录靠 1 的 `call_completed`。
   - 5-8 每次调模型算一轮，到 `pipeline.max_turns`（默认 40）仍未结束返回 `turn_limit`。
-  - 结束：模型不再调工具时，最后一条回复是 `{"status":"done"|"gave_up","summary":"…"}`（```json 代码块优先）；解析不了按 `done`、summary 用原文。1 报预算耗尽（调用抛错，默认看 `error.code === "BUDGET_EXCEEDED"`，可注入判断）时返回 `budget_exceeded`；其他错误照常抛出。
+  - 结束：模型不再调工具时，最后一条回复是 `{"status":"done"|"gave_up","summary":"…"}`（```json 代码块优先）；解析不了时追加一条 user 消息要求按约定格式再回一轮（计入 `max_turns`）：再回的一轮解析成功就按它返回，仍解析不了返回 `gave_up`、summary 放原文；那一轮如果又调了工具就照常继续，之后的结束回复重新计；格式提示那轮碰到 `max_turns` 仍返回 `turn_limit`。1 报预算耗尽（调用抛错，默认看 `error.code === "BUDGET_EXCEEDED"`，可注入判断）时返回 `budget_exceeded`；其他错误照常抛出。
   - 多轮工具调用：1 的 `call(role, provider, model, effort, prompt, ctx)` 只收一个字符串，不够用，5 暂定义最小注入接口 `chat({ role, provider, model, effort, system, tools, messages, ctx }) → { content, tool_calls }`，待与 1 对接。
 - **依赖**：1、3、4（未合入前都以注入方式接入）。
 - **对应章节**：PD §5、§8。
