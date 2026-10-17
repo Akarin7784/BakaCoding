@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`adc43ba` · main 上测试：47 个测试文件、915 个测试全部通过 · 更新日期：2026-10-17（UTC+8）
+> 上次更新时 main：`694bddb` · main 上测试：48 个测试文件、933 个测试全部通过 · 更新日期：2026-10-17（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -92,7 +92,7 @@ flowchart BT
 | T-038 | 模块 8 补充：8 是 `write_scope_requested` 唯一答复方（不安全路径直接拒，范围内直接批，范围外交 9 新增的 `extendScope`；所有批准都先发 `write_scope_granted` 再写回需求单记录，`recordGrantedScope` 改为内部）、订阅 `interface_changed`（`onInterfaceChanged` / `attach`，说明作不可信反馈带给下一次编码，在手的单交出前重审、不计复投，`ResumeToken.interface_notes`）、依赖类单标高风险（`DEPENDENCY_MANIFEST_GLOBS`、需求单 `kind: "dependency"`，`high_risk` 带给 7 / 9 / 结果，模块 7 加 `ReviewInput.high_risk?`）；9 的 `merged_but` 保持 `merged` 并发 `escalated(merged_but)`；8 / 9 的 `isUnsafeGlob` / `isUnsafeScope` 转调模块 4（`@deprecated`）；`clampPermissionList` 不安全的 rw 丢掉、ro 改 deny | 8、9、7 | 编排层开发 | 已合入 | #50 | `ad58693` |
 | T-039 | 模块 9 调度器：入队与依赖排序、写入范围锁与独占区、写入范围申请回复、编码槽位、闲时 `deferred`（读 T-035 的反压信号）；另含：预算续跑接派单闸门、冲突复投传 sha 基线、后台出错不覆盖终态、8 的 `reReview` 重启后读 2 的 PR 记录、worktree 根目录软链接逃逸测试、`stop()` 的取消信号经 8 传给 5/7 | 9、8 | 编排层开发 | 已合入 | #45 | `501853a` |
 | T-040 | 模块 10 主管：`chat` / `split`（接口声明必填、决策记忆、项目创建告知用户） | 10 | 编排层开发 | 已合入 | #56 | `79bc488` |
-| T-041a | 模块 10 组装根 `@bakacoding/app`（8 / 9 / 10 共用一条总线）、重启接管 `takeOver`（派单沿用已开的 PR；已在合并队列的单经模块 9 新增的 `adopt` 接回；`fields_invalid` 的单不接回、只发一次警告） | 10、9 | 编排层开发 | 待评审 | — | — |
+| T-041a | 模块 10 组装根 `@bakacoding/app`（8 / 9 / 10 共用一条总线）、重启接管 `takeOver`（派单沿用已开的 PR；已在合并队列的单经模块 9 新增的 `adopt` 接回；`fields_invalid` 的单不接回、只发一次警告） | 10、9 | 编排层开发 | 已合入 | #62 | `694bddb` |
 | T-041b | 模块 10 上报处理和重拆（重拆最多 2 次，`budget_exceeded` 直接交用户；含模块 9 `replaceDependency`、重拆关旧 PR、写入范围空格条目） | 10、9 | 编排层开发 | 未开始 | — | — |
 | T-041c | 模块 10 高风险 PR 裁决（含模块 9 高风险闸门） | 10、9 | 编排层开发 | 未开始 | — | — |
 | T-042 | 模块 10 集成分支审查与合入 main、主管待办指标 | 10 | 编排层开发 | 未开始 | — | — |
