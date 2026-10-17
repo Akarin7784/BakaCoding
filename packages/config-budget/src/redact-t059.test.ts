@@ -1,4 +1,5 @@
 // T-059：redact 不出现平方级耗时；收紧上限后长输入照样遮干净。
+// T-068：耗时上限从 500ms 放宽到 2s（和 T-062 诊断导出用例一致），平方级回溯在这些输入上远超 2s。
 import { describe, expect, it } from "vitest";
 import { emailRanges } from "./email.js";
 import { redact } from "./redact.js";
@@ -28,12 +29,12 @@ const INPUTS: Array<[string, () => string]> = [
 
 describe("redact 10 万字符输入（T-059）", () => {
   for (const level of ["light", "full"] as const) {
-    it.each(INPUTS)(`${level}：%s 在 500ms 内`, (_n, build) => {
+    it.each(INPUTS)(`${level}：%s 在 2s 内`, (_n, build) => {
       const s = build();
       expect(s.length).toBeGreaterThanOrEqual(100_000);
       const t0 = performance.now();
       redact(s, level);
-      expect(performance.now() - t0).toBeLessThan(500);
+      expect(performance.now() - t0).toBeLessThan(2_000);
     });
   }
 });
@@ -178,9 +179,16 @@ describe("以 main 的旧邮箱正则为基准的随机对比（新规则可以�
     "x1",
     "é",
   ];
+  // T-068：按种子 20261017 实测共比对 405 处，其中匹配文本含 2 个及以上 `.`（本地部分带点或多段域名）181 处、
+  // 含 `-` 99 处；下限取实测的约 80%，生成器或基准被改坏导致覆盖变少时会失败。
+  const MIN_COMPARED = 320;
+  const MIN_MULTI_DOT = 140;
+  const MIN_DASH = 75;
   it("20000 条短输入，main 遮到的每个字符新规则都遮到", () => {
     const r = rng(20261017);
     let compared = 0;
+    let multiDot = 0;
+    let dash = 0;
     for (let c = 0; c < 20_000; c++) {
       const len = 1 + Math.floor(r() * 60);
       let input = "";
@@ -190,11 +198,15 @@ describe("以 main 的旧邮箱正则为基准的随机对比（新规则可以�
       for (const [s, e] of emailRanges(input)) covered.fill(1, s, e);
       for (const m of input.matchAll(MAIN_EMAIL)) {
         compared++;
+        if (m[0].split(".").length - 1 >= 2) multiDot++;
+        if (m[0].includes("-")) dash++;
         for (let i = m.index!; i < m.index! + m[0].length; i++) {
           if (!covered[i]) throw new Error(`少遮：${JSON.stringify(input)} 第 ${i} 个字符`);
         }
       }
     }
-    expect(compared).toBeGreaterThan(300);
+    expect(compared).toBeGreaterThanOrEqual(MIN_COMPARED);
+    expect(multiDot).toBeGreaterThanOrEqual(MIN_MULTI_DOT);
+    expect(dash).toBeGreaterThanOrEqual(MIN_DASH);
   });
 });

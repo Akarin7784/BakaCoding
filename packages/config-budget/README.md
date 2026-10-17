@@ -52,7 +52,7 @@
 
 ## 脱敏与凭据检查（T-059）
 
-- `redact(text, "light" | "full")`：light 遮 key / token / Bearer / env 密钥 / 邮箱 / 私钥 / URL 凭据；full 另遮 home 路径、IP、内网主机名。所有规则都是线性的（重复次数有上限，或改成逐段扫描），10 万字符的输入在 500ms 内。
+- `redact(text, "light" | "full")`：light 遮 key / token / Bearer / env 密钥 / 邮箱 / 私钥 / URL 凭据；full 另遮 home 路径、IP、内网主机名。所有规则都是线性的（重复次数有上限，或改成逐段扫描），10 万字符的输入在 2s 内（T-068 由 500ms 放宽）。
   - `url_credentials` 与 `isCredentialUrl` 同一套判定，只遮凭据那一段（userinfo、`?` / `#` 之后；解析不了的遮 `://` 之后全部）。
   - `github_token`（`ghp_` / `gho_` / `ghu_` / `ghs_` / `ghr_`、`github_pat_`）和 `gitlab_token`（`glpat-`）不管前面紧挨着什么都遮。
   - 邮箱逐个 `@` 扫（实现在包内的 `src/email.ts`）：向左按 `[A-Za-z0-9._%+-]` 扩到上一处匹配或上一个 `@`；向右按 `[A-Za-z0-9.-]` 扩，再扫域名里每个 `.`，后面跟 2 个及以上字母、字母后不是 `[A-Za-z0-9_]` 的算一个结束位置，取最后一个（和 main 旧正则的结束位置一致，左边可能多遮）；不设长度上限。测试里有以 main 旧正则为基准的固定种子随机对比，只许多遮。
