@@ -216,7 +216,7 @@ BakaCoding 帮个人开发者推进大型软件工程。核心是 **Flash 编码
 ```bash
 pnpm install          # 安装依赖（better-sqlite3 需要编译原生模块）
 pnpm build            # tsc -b，构建所有包
-pnpm typecheck        # 只做类型检查
+pnpm typecheck        # tsc -b，类型检查（会写出 dist；根目录对 project references 不能加 --noEmit）
 pnpm test             # vitest run，跑全部测试
 pnpm lint             # eslint
 pnpm format:check     # prettier 检查格式
