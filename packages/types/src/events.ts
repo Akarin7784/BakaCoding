@@ -14,7 +14,11 @@ export const EventCommonSchema = TraceSchema.extend({
 });
 
 /** 不属于任何需求的项目级事件：只有这些事件的 `requirement_id` 可以为 null。 */
-export const PROJECT_LEVEL_EVENT_TYPES = ["project_created", "review_backlog", "supervisor_backlog"] as const;
+export const PROJECT_LEVEL_EVENT_TYPES = [
+  "project_created",
+  "review_backlog",
+  "supervisor_backlog",
+] as const;
 export type ProjectLevelEventType = (typeof PROJECT_LEVEL_EVENT_TYPES)[number];
 
 const ev = <T extends string, P extends z.ZodRawShape>(type: T, payload: P) =>
@@ -128,12 +132,11 @@ export const InterfaceChangedSchema = ev("interface_changed", {
   summary: z.string(),
   affected_ticket_ids: z.array(Id),
 }).extend({ ticket_id: Id.describe("合并成功的单号，必填") });
-/** T-042：进程级待办，无所属需求；requirement_id 可为 null（仍允许旧发布方带需求号） */
+/** 项目级积压指标（T-066 / T-042 Q-3）：requirement_id / ticket_id 可为 null，trace 新开。 */
 export const SupervisorBacklogSchema = projectEv("supervisor_backlog", {
   pending: z.number().int().nonnegative(),
   capacity: z.number().int().nonnegative(),
 });
-/** T-042：评审积压改为项目级；requirement_id 可为 null（7 仍可带本单 ctx） */
 export const ReviewBacklogSchema = projectEv("review_backlog", {
   pending: z.number().int().nonnegative(),
   capacity: z.number().int().nonnegative(),

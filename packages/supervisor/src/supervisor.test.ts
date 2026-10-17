@@ -1625,12 +1625,34 @@ describe("T-041c 高风险 PR 裁决", () => {
       pr_id: "pr-1",
       pr_url: "https://github.com/o/r/pull/1",
       reasons: ["dependency_file"],
-      files: files.slice(0, 20).map((f) => f.path),
+      files: files.slice(0, 20).map((f) => ({ path: f.path })),
       files_more: 2,
       held_at: expect.stringMatching(/^\d{4}-\d\d-\d\dT/),
     });
     expect(list[1]).toMatchObject({ reasons: ["diff_unavailable"], files: [], files_more: 0 });
     expect(list[1]).not.toHaveProperty("pr_url");
+  });
+
+  it("pendingHighRisk（T-065）：package.json 改名成 x.json，命中文件带结构化的 old_path；通知里写明原路径", async () => {
+    const { t } = await hrSetup();
+    await t.sup.highRiskHeld(
+      held("req-1-1", "pr-1", "submit", {
+        diff_files: [
+          { path: "x.json", old_path: "package.json", status: "renamed" },
+          { path: "src/b.ts", old_path: "src/a.ts", status: "renamed" },
+        ],
+      }),
+    );
+    const [p] = t.sup.pendingHighRisk();
+    expect(p).toMatchObject({
+      reasons: ["dependency_file"],
+      files: [{ path: "x.json", old_path: "package.json" }],
+      files_more: 0,
+    });
+    expect(t.notified.at(-1)!.text).toMatch(/涉及文件：x\.json（原 package\.json）。/);
+    // 返回的是拷贝：改了不影响下次
+    p!.files[0]!.old_path = "改坏";
+    expect(t.sup.pendingHighRisk()[0]!.files[0]!.old_path).toBe("package.json");
   });
 
   it("pendingHighRisk 同步、只读内存：PR / 9 的任何调用都抛错时照样同步返回（不是 Promise）", async () => {

@@ -300,6 +300,26 @@ describe("PermissionList / Diff / Ledger", () => {
     };
     expect(DiffSchema.parse(d)).toEqual(d);
     expect(DiffSchema.safeParse({ ...d, base_sha: "XYZ" }).success).toBe(false);
+    const renamed = {
+      ...d,
+      files: [
+        {
+          path: "x.json",
+          old_path: "package.json",
+          status: "renamed" as const,
+          additions: 0,
+          deletions: 0,
+          patch: "",
+        },
+      ],
+    };
+    expect(DiffSchema.parse(renamed)).toEqual(renamed);
+    expect(
+      DiffSchema.safeParse({
+        ...d,
+        files: [{ ...d.files[0], old_path: "" }],
+      }).success,
+    ).toBe(false);
   });
   it("LedgerEntry", () => {
     expect(
@@ -325,7 +345,7 @@ describe("requirement_id 可空规则（T-020）", () => {
     type: "project_created",
     payload: { project_id: "p1", name: "demo", language: "typescript", has_github_remote: false },
   };
-  it("项目级事件允许 requirement_id 为 null（T-020 / T-042）", () => {
+  it("项目级事件允许 requirement_id 为 null（含 review_backlog / supervisor_backlog，T-066）", () => {
     expect(PROJECT_LEVEL_EVENT_TYPES).toEqual([
       "project_created",
       "review_backlog",
@@ -337,23 +357,26 @@ describe("requirement_id 可空规则（T-020）", () => {
     const supervisor = {
       ...common,
       type: "supervisor_backlog",
-      payload: { pending: 0, capacity: 10 },
+      payload: { pending: 0, capacity: 5 },
     };
-    expect(EventSchema.safeParse({ ...review, requirement_id: null }).success).toBe(true);
-    expect(EventSchema.safeParse({ ...supervisor, requirement_id: null }).success).toBe(true);
-    // 旧发布方仍可带需求号
-    expect(EventSchema.safeParse(review).success).toBe(true);
+    expect(
+      EventSchema.safeParse({ ...review, requirement_id: null, ticket_id: null }).success,
+    ).toBe(true);
+    expect(
+      EventSchema.safeParse({ ...supervisor, requirement_id: null, ticket_id: null }).success,
+    ).toBe(true);
   });
   it("非项目级事件 requirement_id 为 null 时校验报错", () => {
-    for (const t of EVENT_TYPES.filter((t) => !(PROJECT_LEVEL_EVENT_TYPES as readonly string[]).includes(t))) {
+    const projectLevel = new Set(PROJECT_LEVEL_EVENT_TYPES);
+    for (const t of EVENT_TYPES.filter((t) => !projectLevel.has(t as never))) {
       const shape = EventSchema.options.find((o) => o.shape.type.value === t)!.shape;
       expect(shape.requirement_id.safeParse(null).success, t).toBe(false);
     }
   });
-  it("类型上：项目级事件 requirement_id 是 string | null，其他是 string", () => {
+  it("类型上：项目级事件的 requirement_id 是 string | null，其他事件是 string", () => {
     expectTypeOf<EventOf<"project_created">["requirement_id"]>().toEqualTypeOf<string | null>();
     expectTypeOf<EventOf<"review_backlog">["requirement_id"]>().toEqualTypeOf<string | null>();
     expectTypeOf<EventOf<"supervisor_backlog">["requirement_id"]>().toEqualTypeOf<string | null>();
-    expectTypeOf<EventOf<"escalated">["requirement_id"]>().toEqualTypeOf<string>();
+    expectTypeOf<EventOf<"call_completed">["requirement_id"]>().toEqualTypeOf<string>();
   });
 });

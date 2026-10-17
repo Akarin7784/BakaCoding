@@ -10,6 +10,22 @@
     "types": ["vite/client"]
   },
   "include": ["src"],
-  "references": [{ "path": "../config-budget" }, { "path": "../storage" }, { "path": "../types" }],
+  "references": [
+    {
+      "path": "../config-budget"
+    },
+    {
+      "path": "../storage"
+    },
+    {
+      "path": "../types"
+    },
+    {
+      "path": "../app"
+    },
+    {
+      "path": "../supervisor"
+    }
+  ],
   "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
 }

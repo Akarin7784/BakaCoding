@@ -2822,18 +2822,15 @@ describe("T-064 定时 sync + 独占区域大小写 + adopt 已合入", () => {
 
   it("N6：Package.json / 子目录 PACKAGE.JSON 的代表路径经 isDependencyFile 判独占（T-065 合入后不区分大小写）", async () => {
     const { isDependencyFile } = await import("@bakacoding/sub-agent");
-    // 当前 main 的 isDependencyFile 区分大小写；N6 直接调它，两边规则保持一致
+    // T-065 已合入：isDependencyFile 不区分大小写；N6 直接复用，两边一致
+    expect(isDependencyFile("Package.json")).toBe(true);
+    expect(isDependencyFile("apps/web/PACKAGE.JSON")).toBe(true);
     expect(inExclusiveZone("package.json", DEFAULT_EXCLUSIVE_ZONES)).toBe(true);
+    expect(inExclusiveZone("Package.json", DEFAULT_EXCLUSIVE_ZONES)).toBe(true);
+    expect(inExclusiveZone("apps/web/PACKAGE.JSON", DEFAULT_EXCLUSIVE_ZONES)).toBe(true);
     expect(inExclusiveZone("apps/web/package.json", DEFAULT_EXCLUSIVE_ZONES)).toBe(true);
     expect(inExclusiveZone("docs/package.json.md", DEFAULT_EXCLUSIVE_ZONES)).toBe(false);
     expect(inExclusiveZone("src/**", DEFAULT_EXCLUSIVE_ZONES)).toBe(false);
-    // 与 isDependencyFile 一致：若 8 认 Package.json，9 也认
-    expect(inExclusiveZone("Package.json", DEFAULT_EXCLUSIVE_ZONES)).toBe(
-      isDependencyFile("Package.json"),
-    );
-    expect(inExclusiveZone("apps/web/PACKAGE.JSON", DEFAULT_EXCLUSIVE_ZONES)).toBe(
-      isDependencyFile("apps/web/PACKAGE.JSON"),
-    );
   });
 
   it("N6：两张写入范围分别是 package.json 与 **/package.json 的单不能同时持锁", async () => {
@@ -2938,9 +2935,7 @@ describe("T-064 定时 sync + 独占区域大小写 + adopt 已合入", () => {
     const h = harness();
     h.deps.holdHighRisk = true;
     h.deps.prRecord = async (pr_id) =>
-      pr_id === "pr-1"
-        ? { status: "merged", merge_sha: "ab".repeat(20) }
-        : undefined;
+      pr_id === "pr-1" ? { status: "merged", merge_sha: "ab".repeat(20) } : undefined;
     const s = await started(h);
     await s.enqueue(ticket("T-1", { write_scope: ["a.ts"] }));
     await s.submit({
@@ -2955,7 +2950,9 @@ describe("T-064 定时 sync + 独占区域大小写 + adopt 已合入", () => {
     const applied = await s.sync();
     expect(applied.map((c) => c.to)).toEqual(["merged"]);
     expect(s.status("T-1")).toBe("merged");
-    expect(h.statuses.filter(([t, st]) => t === "T-1" && st === "merged").length).toBeGreaterThan(0);
+    expect(h.statuses.filter(([t, st]) => t === "T-1" && st === "merged").length).toBeGreaterThan(
+      0,
+    );
     const ic = h.published.filter((e) => e.type === "interface_changed");
     expect(ic.length).toBe(1);
     s.stop();
@@ -2964,14 +2961,17 @@ describe("T-064 定时 sync + 独占区域大小写 + adopt 已合入", () => {
   it("B2：adopt already_merged → merged，合法 sha 发 interface_changed；无 sha 不发", async () => {
     const h = harness();
     const s = await started(h);
-    const r1 = await s.adopt(ticket("T-1", { write_scope: ["a.ts"], interfaces: [{ file: "a.ts", symbol: "x" }] }), {
-      pr_id: "pr-m",
-      head_sha: SHA("b"),
-      worktree_path: "/wt/T-1-r0",
-      base_commit: SHA("a"),
-      already_merged: true,
-      merge_sha: "cd".repeat(20),
-    });
+    const r1 = await s.adopt(
+      ticket("T-1", { write_scope: ["a.ts"], interfaces: [{ file: "a.ts", symbol: "x" }] }),
+      {
+        pr_id: "pr-m",
+        head_sha: SHA("b"),
+        worktree_path: "/wt/T-1-r0",
+        base_commit: SHA("a"),
+        already_merged: true,
+        merge_sha: "cd".repeat(20),
+      },
+    );
     expect(r1).toBe("merged");
     expect(s.status("T-1")).toBe("merged");
     expect(h.published.filter((e) => e.type === "interface_changed").length).toBe(1);

@@ -39,15 +39,27 @@ export interface PrProvider {
   openIntegration(branch?: string, target?: string): Promise<string>;
   /** 集成记录未结束时每次现算：base_sha = merge-base(target, branch)，head_sha = branch 当前 HEAD。 */
   diff(pr_id: string): Promise<Diff>;
-  /** 冲突不抛错，返回 { merged: false, conflict: true }，由模块 9 决定复投。 */
-  merge(pr_id: string, target: string): Promise<MergeResult>;
+  /**
+   * 冲突不抛错，返回 { merged: false, conflict: true }，由模块 9 决定复投。
+   * `opts.expected_head`（可选，T-066）：合并前校验分支 HEAD；不一致抛 ExpectedHeadMismatchError。
+   * GitHub 实现把该值作为 merge API 的 `sha`；本地实现用 `rev-parse` 比对。
+   */
+  merge(pr_id: string, target: string, opts?: { expected_head?: string }): Promise<MergeResult>;
+  /**
+   * 读 CI 结果。GitHub：翻页拉齐全部 check-runs，并合并 commit status（combined statuses）。
+   * 本地实现永远返回空数组。
+   */
   checks(pr_id: string): Promise<CheckResult[]>;
   /**
    * 由 BakaCoding 关闭 PR：记录标 closed，写 closed_by: "bakacoding" 和 close_reason；不发上报。
    * 已 merged 抛错；已 closed 幂等。GitHub 实现有 remote 时同时关闭远程 PR。
    */
   close(pr_id: string, reason: string): Promise<void>;
-  /** 把远端状态同步回本地记录，返回状态有变化的记录；本地实现永远返回 []。 */
+  /**
+   * 把远端状态同步回本地记录，返回状态有变化的记录；本地实现永远返回 []。
+   * GitHub：中途出错时，若已收集到变化，抛 SyncPartialError（带 `changes`），调用方应先应用再处理 cause；
+   * 无已收集变化则抛原始错误。
+   */
   sync(): Promise<SyncChange[]>;
 }
 
@@ -63,4 +75,34 @@ export interface SyncChange {
 export type GetSecret = (name: string) => string | undefined | Promise<string | undefined>;
 export interface Logger {
   warn(message: string): void;
+}
+
+/** sync() 中途出错但已落库部分变化（T-066 B1）。调用方应先应用 `changes`，再按 `cause` 处理错误。 */
+export class SyncPartialError extends Error {
+  readonly changes: SyncChange[];
+  override readonly cause: unknown;
+  constructor(changes: SyncChange[], cause: unknown) {
+    const n = changes.length;
+    const msg =
+      cause instanceof Error
+        ? `sync 中途出错，已收集 ${n} 条变化：${cause.message}`
+        : `sync 中途出错，已收集 ${n} 条变化：${String(cause)}`;
+    super(msg);
+    this.name = "SyncPartialError";
+    this.changes = changes;
+    this.cause = cause;
+  }
+}
+
+/** merge() 的 expected_head 与当前分支 HEAD 不一致（T-066 C1）。 */
+export class ExpectedHeadMismatchError extends Error {
+  readonly code = "expected_head_mismatch" as const;
+  constructor(
+    readonly pr_id: string,
+    readonly expected: string,
+    readonly actual: string,
+  ) {
+    super(`PR ${pr_id} 的 head 与 expected_head 不一致：期望 ${expected}，实际 ${actual}`);
+    this.name = "ExpectedHeadMismatchError";
+  }
 }

@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`ff2fc4f` · main 上测试：51 个测试文件、1324 个测试全部通过 · 更新日期：2026-10-17（UTC+8）
+> 上次更新时 main：`080f6b8` · main 上测试：54 个测试文件、1388 个测试全部通过 · 更新日期：2026-10-17（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -37,8 +37,8 @@ flowchart BT
   classDef doing fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef done fill:#dcfce7,stroke:#16a34a,color:#14532d
 
-  class M0,M1,M2,M3,M4,M5,M6,M7,M8,M9,M11,M12,T done
-  class M10 doing
+  class M0,M1,M2,M3,M4,M5,M6,M7,M8,M9,M11,T done
+  class M10,M12 doing
 ```
 
 图例：绿色 = 已完成，黄色 = 进行中，灰色 = 未开始。
@@ -115,9 +115,11 @@ flowchart BT
 | T-058 | 模块 2：prStore 凭据检查收窄，`ssh://git@`、`https://user@` 放行；`user:token@`（含 `%3A`、无斜杠、嵌在文字里）、像 token 或长串十六进制 / base64 的用户名（任何 scheme）、查询参数和 `#` 片段里的 token 照样整条拒写；顺带 T-057 的三个小点（正常读到后清掉警告记录、`warn` 抛错不影响读取、注释归位）；`closed_by` 早已在 `PR_STRUCTURAL_FIELDS` 里，补一条测试锁住，接口不变 | 2 | 基础层开发 | 已合入 | #58 | `adc43ba` |
 | T-059 | 模块 3：带凭据 URL 的判断抽成模块 3 导出的 `isCredentialUrl`，2 的 prStore 拒写和 `redact` 的 `url_credentials` 规则共用，两边和 11 跑同一份 `CREDENTIAL_CASES`；`ghp_` / `github_pat_` / `glpat-` 任何位置都遮；`redact` 去掉平方级回溯（邮箱、内网主机名、env 变量名、私钥、IPv6 加上限或改线性扫描），超长主机名照样遮；接口新增 `isCredentialUrl`、`credentialUrlRanges`、`CREDENTIAL_CASES` | 3 | 基础层开发 | 已合入 | #63 | `61f5af3` |
 | T-060 | 模块 11 端到端回归：改用模块 3 的 `CREDENTIAL_CASES`，应拒的用例把带凭据文本放进上报详情和群消息，断言导出的诊断包里任何文件都找不到密文、事件确实在包里；应放行的用例详情里不出现 `[REDACTED:url_credentials]`；清单非空；40 位十六进制用户名判为 `url_credentials`；5 种 10 万字符详情的导出各在 500ms 内 | 11 | 界面与诊断开发 | 已合入 | #64 | `4c739e8` |
+| T-063 | 模块 12 / 组合根：`createDefaultDeps` 按仓库组装默认 AppDeps；`acquireWriterLock`（writer.lock）；桌面主进程 `startBackend` 接线 assemble/takeOver，失败退回只读；`backend:status` / `supervisor:notify` 缓冲；假数据 `main_merge` 改为 `supervisor` | 12、组合根 | 界面与诊断开发 | 已合入 | #69 | `5459682` |
 | T-062 | 模块 12：高风险 PR 放行和拒绝的界面与 IPC（接 pendingHighRisk / decideHighRisk，stale_pr 时提示「PR 已更新，请重新查看」）；警告列表最多显示约 50 条，其余显示 +N；detail 截断，按单号加警告码去重；requirement_truncated / pr_close_failed 配中文文案；诊断导出补按需求、按时间段两种范围的拒绝用例和 include_full_repo，耗时上限放宽到 2s | 12 | 界面与诊断开发 | 未开始 | — | — |
-| T-064 | 模块 9：定时 sync() 加限流退避 + 对账；拒绝只关指定 PR；adopt 发现已合入按手动合入；独占区用 isDependencyFile | 9、10、组合根 | 编排层开发 | 开发中 | — | — |
-| T-065 | 模块 6 / types：DiffFile 加可选 old_path，6 用 git diff -M 时填上旧路径，isDependencyFile 新旧路径都检查；之后把 041c 的改名兜底（renamed 一律当高风险）收窄成只看依赖文件 | 6、8 | 执行层开发 | 未开始 | — | — |
+| T-064 | 模块 9：定时 sync() 加限流退避 + 对账；拒绝只关指定 PR；adopt 发现已合入按手动合入；独占区用 isDependencyFile | 9、10、组合根 | 编排层开发 | 已合入 | #70 | `080f6b8` |
+| T-065 | 模块 6 / types：DiffFile 加可选 old_path，6 用 git diff -M 时填上旧路径；模块 8 `isHighRiskDiffFile` 新旧路径都检查，041c 的改名兜底（renamed 一律当高风险）收窄成只看依赖文件（没有 old_path 的改名仍算）；依赖文件名不区分大小写（仍按整个文件名匹配）；模块 10 高风险证据的命中文件改成 `{ path, old_path? }` | 6、8、10 | 执行层开发 | 已合入 | #67 | `e5c17b5` |
+| T-066 | 模块 6：sync 中途出错也带出已收集变化；close PATCH 失败时 GET 远程状态（已合入不记 closed）；merge 加可选 expected_head；checks 翻页并读 commit status；模块 7 发 review_backlog/supervisor_backlog 时 requirement_id、ticket_id 写 null，trace 新开 | 6、7 | 执行层开发 | 已合入 | #68 | `a51e022` |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
@@ -148,7 +150,10 @@ flowchart BT
 - 模块 9 / 10（T-041c，Q-4）：放行只在进程内，不跨重启；重启后重新扣住、通知用户再放行一次。
 - 模块 9（T-041c，Q-7）：被扣着的高风险单一直占着写入范围锁（依赖清单属于独占区域，会挡住别的依赖类单），也算进 `pending_prs`，扣多了会触发反压暂停（暂停通知里写明其中几张在等裁决）。
 - 已解决（T-064）：9 有定时 `sync()`（默认 60s）+ 对账；GitHub 上手动合并 / 关闭被扣的 PR 一轮内生效。
-- 模块 8 / 组合根（T-041c）：6 的 DiffFile 没有旧路径，改名的文件一律按高风险（T-065 收窄）；重启补判取 diff 出错也按高风险，可能误扣。
+- 模块 8 / 组合根（T-041c）：重启补判取 diff 出错也按高风险，可能误扣。
+- 已解决（T-065）：6 的 DiffFile 带 `old_path` 后，8 / 组合根带 `old_path` 的改名只在新旧路径有一个是依赖文件时才算高风险，不再一律算；没有 `old_path` 的改名（旧数据）仍按兜底算高风险。
+- 模块 6 / 8（T-065）：6 用 `git diff -M`、不带 `-C`，复制检测用不到（复制出来的文件按 `added` 报、不带 `old_path`，原文件还在，不影响高风险判定）；`DiffFile.status` 也没有 `copied`。
+- 已解决（T-064 N6 + T-065）：9 的 `inExclusiveZone` 经 8 的 `isDependencyFile`；T-065 合入后依赖文件名不区分大小写，`Package.json` 也算独占区域。
 - 模块 10（T-041c）：高风险通知「同一 PR 只通知一次」、待裁决清单 `pendingHighRisk()` 都只在进程内，重启后重新通知一次。
 - 模块 10（T-041c）：拒绝后关 PR 失败（`high_risk_close.state = unconfirmed`）的重试只在进程内；重启后不接着重试，PR 可能一直开着，要用户到 GitHub 上关。
 - 模块 9（T-041c，v1 接受）：依赖文件按文件名匹配后，任意子目录的 `package.json` / 锁文件都算独占区域，碰到它们的单不能并行（monorepo 各子包改依赖的单只能排队），并发降低。
@@ -157,7 +162,7 @@ flowchart BT
 - 组合根（T-041a → T-041b）：依赖已上报（未被取代）或 `fields_invalid` 的单，T-041b 起重启时进 `held`、通知用户一次；依赖接管失败（`failed`）的单仍不进 `held`，9 不认识它，依赖它的单会一直 `waiting`。
 - 模块 9（T-041a）：`adopt` 接回的单复投数是估的：评审复投数从 0 记起（9 只用它报上报的 `resubmit_counts`，8 的复投上限按事件日志算），冲突复投数按 worktree 轮次估。
 - 组合根（T-041a）：`fields_invalid` 的「只通知一次」只在同一进程内去重；每次重启都会再发一条 `ticket_warning(fields_invalid)`，跨重启去重由桌面端做（T-062，按单号 + 警告码去重）。
-- 组合根（T-041a）：一次组装对应一个仓库；12 的主进程还没接 `assemble`（另开单）。
+- 组合根（T-041a / T-063）：一次组装对应一个仓库（v1）；T-063 起 12 的主进程已接 `assemble`。
 - 组合根（T-041a）：派单查当前 PR 用 2 的 `prStore().list()` 全量过滤，PR 记录多时偏慢（v1 可接受）。
 - 已解决（T-053）：中途写入范围申请里的路径曾按 glob 原样批准，文件名本身带通配符（如 `docs/**`）会批成整个目录可写；现在申请路径带通配字符一律拒绝。
 - 已解决（T-038）：合并成功后收尾出错（`merged_but`）不再把 `merged` 改成 `escalated`，状态保持 `merged` 并另发 `escalated(merged_but)`。
@@ -167,14 +172,15 @@ flowchart BT
 - 模块 9（T-064，Q-4）：定时同步失败只进 `syncState()` / `onError`，不通知用户；桌面端接上 `syncState()` 之前界面上看不到同步失败。
 - 模块 9（T-064，Q-5）：还在 8 手里（没 `submit`）的单的 PR 被用户在 GitHub 合入 / 关闭时，9 不处理，等 8 交出后由合并报错上报。
 - 模块 9（T-064，Q-2）：账号级限流窗口只挡定时同步，不挡合并循环和显式 `sync()`。
-- 模块 9（T-064，Q-7 / N6）：独占区域对依赖文件走 8 的 `isDependencyFile`；T-065 合入前 `Package.json` 仍匹配不上（8 区分大小写）；合入后不区分大小写自动生效。在不区分大小写的文件系统上，非依赖文件只有大小写不同时仍可能被并行写。
-- 模块 6（B1 / B4，归 T-066 / 执行层）：sync 中途出错会吞掉已写进库的变化（9 对账兜住）；close 碰上远程已合入可能误标 closed。
+- 模块 9（T-064，Q-7）：独占区域只对依赖文件走 `isDependencyFile` 不区分大小写；在不区分大小写的文件系统上，非依赖文件只有大小写不同时仍可能被并行写。
+- 已解决（T-066）：6 的 sync 中途出错也带出已收集变化；close PATCH 失败时 GET 远程（已合入不误标 closed）。
 - 模块 10（T-064，Q-8）：关 PR 的重试仍然只在进程内。
 
-- 模块 10 / 6（T-042 / C1）：合入 main 前只重取 head 缩小窗口；6 的 `merge` 加 `expected_head` 归 T-066，未落地前仍有竞态。
+- 已解决（T-066 + T-042）：6 的 `merge` 已支持 `expected_head`；10 的 `mergeMain` 合入时传入当前 head。
+- 模块 9（T-042）：`sync` 抛 `SyncPartialError` 时先应用 `changes` 再按 `cause` 做限流退避 / 鉴权停定时同步。
 - 模块 10（T-042，Q-5）：高风险待裁决同时计入 9 的 `high_risk_held` 与主管待办，可能双计触发反压（接受）。
 - 模块 10（T-042）：`INTEGRATION_DIFF_MAX_CODEPOINTS` = 200000，没有实测依据。
-- 模块 7（T-042 / T-066）：`review_backlog` 类型已允许 `requirement_id` 为 null，7 仍带本单 ctx 发；改发 null 归 T-066。
+- 已解决（T-066）：7 / 10 发 `review_backlog` / `supervisor_backlog` 时 `requirement_id` / `ticket_id` 为 null，trace 新开。
 
 ### 不对应需求单的 PR
 
