@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`18ad5c1` · main 上测试：81 个测试文件、1688 个测试全部通过 · 更新日期：2026-10-18（UTC+8）
+> 上次更新时 main：`74e547a` · main 上测试：82 个测试文件、1705 个测试全部通过 · 更新日期：2026-10-18（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -144,6 +144,7 @@ flowchart BT
 | T-096 | 组合根 `app.stop()` 改成返回 `Promise<void>`，等 `scheduler.stop()` 等异步收尾结束后再关库（现在 `assemble.ts:597` 是同步的，不等 promise）；属于 app 接口改动，接口先在群里报；桌面端 switcher 已统一 `await backend.stop()`，不用再改。来源：蓝色大肥鱼评审 #95。排在 T-084、T-085 之后，不阻塞 UI-03 和发版 | 组合根 / 9 | 编排层开发 | 待开工 | — | — |
 | T-097 | 模块 4、6 现有的 `git()` 调用改用 T-086 的 `gitEnv()`，不再继承 `GIT_` 开头的环境变量（T-094 #101 已知缺口）；模块 4 归基础层、模块 6 归执行层，两边各开一个 PR，都补「设了 `GIT_DIR` 不影响目标仓库」的测试。依赖 #97 合入。模块 4 顺带：worktree.ts git() 加超时、repo.test GIT_AUTHOR_* 用例改为断言提交作者取自仓库配置、注明 gitEnv 仅用于本地仓库操作。来源：蓝色大肥鱼 2026-10-18 | 4 / 6 | 基础层开发、执行层开发 | 部分合入（模块 4 已合，模块 6 待执行层） | #105 | `356e158` |
 | T-084 | 组合根：仓库没准备好时启动报明确原因。新增 `RepoNotReadyError`（`code: "no_commits" \| "no_main"`，`no_main` 带当前分支名 `current`，分离 HEAD 时缺省；`message` 中文、不含路径；code 与 4 的 `checkRepo()`（T-086）一致），经 `@bakacoding/app` 导出；`createDefaultDeps` 最先检查（早于密钥检查，失败时不建总线和 9 / 10）；`integrationTargetHead` 去掉退回检出 HEAD 的一档，集成分支和 main 都没有就抛错，只有 master 的仓库启动即进只读，不再等到第一张单合入才失败；8 / 9 / 10 接口不变，桌面端显示原因留给 UI-03；组合根和桌面端测试的临时仓库改用 `git init -b main`；仓库检查和 `targetHead` 调的 git 子进程 env 先剔掉外部所有 `GIT_*` 变量再加 `GIT_TERMINAL_PROMPT=0` / `LC_ALL=C`（#97 评审，用模块 4 的 `gitEnv()`，超时用 `REPO_GIT_TIMEOUT_MS`）；README 已知限制、modules.md 组合根同步。main `18ad5c1`，测试 81 个文件 / 1688 个 | 组合根 | 编排层开发 | 已合入 | #107 | `18ad5c1` |
+| T-087 | 模块 3：`writeConfig(path, config)` 校验后原子写入 `models.json`（同目录临时文件 + rename，2 空格缩进、末尾换行），拒绝像密钥的键和值（`redact` light 规则 + 等于当前环境变量密钥），错误不含值和路径，只能写 `models.json`；经 `@bakacoding/app` 再导出；modules.md 同步。main `74e547a`，测试 82 个文件 / 1705 个 | 3 | 基础层开发 | 已合入 | #98 | `74e547a` |
 | UI-02 | 模块 12 新布局骨架（`docs/ui-design.md` §2）：左栏 260 / 收起 56（偏好持久化，< 1024 自动收起）、内容区正文最大宽 760、右面板 360 默认关（「概览」暂放原右侧边栏内容，「动态」空壳；< 1200 改覆盖式抽屉）；无边框窗口（Windows / Linux `titleBarOverlay` 保留系统窗口按钮，自绘拖拽区），最小 960×640；新增 IPC `window:theme` 把主题偏好同步到 `nativeTheme.themeSource`、刷新标题栏按钮颜色；全局快捷键 Ctrl+N / K / , / B / .；设置改为弹窗，Command 面板壳子；现有主管对话、项目群、未归属、设置都挂进新骨架，骨架不新增主按钮 | 12 | 界面与诊断开发 | 待评审 | #103 | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
