@@ -219,15 +219,126 @@ export class StorageSeqConflictError extends Error {
 /** 模块 6 允许的 PR 记录类型。 */
 export const PR_RECORD_KINDS = ["ticket", "integration"] as const;
 
-const CREDENTIAL_URL = /^[a-z][a-z0-9+.-]*:\/\/[^/\s@]+@/i;
+/** 带 scheme 的 URL（`https://`、`ssh://` 等）；SSH 简写 `git@host:o/r.git` 和路径不算。 */
+const SCHEME_URL = /^[a-z][a-z0-9+.-]*:\/\//i;
+/** 嵌在文字里的带 scheme 的 URL，逐个检查。 */
+const EMBEDDED_URL = /[a-z][a-z0-9+.-]{0,31}:\/\/[^\s"'<>]+/gi;
+/** 解析失败时的保守兜底（T-058 之前的规则）：`scheme://` 后面紧跟 `xxx@` 就当带凭据。 */
+const LEGACY_CREDENTIAL_URL = /^[a-z][a-z0-9+.-]*:\/\/[^/\s@]+@/i;
+/** `hasEmbeddedUserinfoPassword` 里找 `scheme:` 的起点：前面不能紧挨着 scheme 字符，每段只匹配一次。 */
+const EMBEDDED_SCHEME = /(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*:/gi;
+const USERINFO_STOP = /[\s/\\@]/;
+
+/**
+ * 整个字符串里任何位置出现 `scheme:` 后接 `user:pass@`（斜杠、反斜杠可有可无、个数不限）都算，
+ * 用来拦 `https:/\user:tok@h`、`https:user:tok@h`、嵌在文字里的 URL 这类 URL 解析器认不全的写法。
+ * 线性扫描，不设长度上限（#58 评审：限长的正则会漏掉超长用户名或密码）。
+ */
+function hasEmbeddedUserinfoPassword(v: string): boolean {
+  if (!v.includes("@")) return false;
+  const n = v.length;
+  // stop[i]：从 i 起第一个空白、斜杠、反斜杠或 @ 的位置。
+  const stop = new Int32Array(n + 1);
+  stop[n] = n;
+  for (let i = n - 1; i >= 0; i--) stop[i] = USERINFO_STOP.test(v[i]!) ? i : stop[i + 1]!;
+  for (const m of v.matchAll(EMBEDDED_SCHEME)) {
+    let q = m.index + m[0].length;
+    while (q < n && (v[q] === "/" || v[q] === "\\")) q++;
+    const e = stop[q]!;
+    if (v[e] !== "@") continue;
+    const c = v.indexOf(":", q);
+    if (c > q && c < e) return true;
+  }
+  return false;
+}
+/** 用户名本身像 token（任何 scheme 都查，如 `https://ghp_xxx@`、`ssh://ghp_xxx@`）。 */
+const TOKEN_LIKE_USER =
+  /^(gh[pousr]_|github_pat_|glpat-|xox[abposr]-|sk-|x-access-token$|oauth2$)/i;
+/** http(s) 只放行这种普通用户名（GitHub 用户名规则的宽松版）。 */
+const PLAIN_WEB_USER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,38}$/;
+/** 20 个字符及以上、全是十六进制或全是 base64 字符的用户名，当作没有前缀的 token。 */
+const HEX_ONLY = /^[0-9a-f]+$/i;
+const BASE64_ONLY = /^[A-Za-z0-9+/=_-]+$/;
+/** 查询参数名像凭据（值非空时整条拒写）。 */
+const CREDENTIAL_QUERY_KEY =
+  /^(access[_-]?token|token|private[_-]?token|auth[_-]?token|id[_-]?token|refresh[_-]?token|api[_-]?key|apikey|key|secret|client[_-]?secret|password|passwd|pwd|auth|sig|signature|x-amz-signature|x-amz-credential|x-amz-security-token|x-goog-signature|x-goog-credential)$/i;
+
+function safeDecode(s: string): string {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+}
+
+/** 一组 `k=v` 参数里有没有像凭据的键且值非空；键末尾的 `[]` / `[0]` 先去掉。 */
+function hasCredentialParam(params: URLSearchParams): boolean {
+  for (const [k, val] of params) {
+    const key = k.replace(/(\[[^\]]*\])+$/, "");
+    if (val !== "" && CREDENTIAL_QUERY_KEY.test(key)) return true;
+  }
+  return false;
+}
+
+/** 单个带 scheme 的 URL 是否带凭据。 */
+function isCredentialSingleUrl(v: string): boolean {
+  let u: URL;
+  try {
+    u = new URL(v);
+  } catch {
+    return LEGACY_CREDENTIAL_URL.test(v);
+  }
+  if (u.password !== "") return true;
+  if (u.username !== "") {
+    const raw = u.username;
+    const user = safeDecode(raw);
+    if (user.includes(":")) return true;
+    if (TOKEN_LIKE_USER.test(user)) return true;
+    if (user.length >= 20 && (HEX_ONLY.test(user) || BASE64_ONLY.test(user))) return true;
+    const web = u.protocol === "http:" || u.protocol === "https:";
+    if (web && !PLAIN_WEB_USER.test(raw)) return true;
+  }
+  if (hasCredentialParam(u.searchParams)) return true;
+  if (u.hash.length > 1) {
+    const frag = u.hash.slice(1);
+    if (hasCredentialParam(new URLSearchParams(frag))) return true;
+    const q = frag.indexOf("?");
+    if (q >= 0 && hasCredentialParam(new URLSearchParams(frag.slice(q + 1)))) return true;
+  }
+  return false;
+}
+
+/**
+ * T-058：判断一个字符串是不是（或里面有没有）「带凭据的 URL」。宁可误拒，不能漏放。
+ * - 先 trim；整个字符串里任何位置出现 `scheme:` 后接 `user:pass@` 都算。
+ * - 字符串本身和嵌在里面的每个 `scheme://…` 逐个检查：
+ *   - userinfo 里有密码，或解码后的用户名里有 `:`（`%3A`）算；
+ *   - 用户名像 token（`ghp_…`、`github_pat_…`、`glpat-…`、`x-access-token`、`oauth2` 等，任何 scheme）算；
+ *   - 用户名 20 个字符及以上且全是十六进制或全是 base64 字符算；
+ *   - http(s) 的用户名不符合 `^[A-Za-z0-9][A-Za-z0-9._-]{0,38}$` 算；`https://eva@`、`ssh://git@` 放行；
+ *   - 查询参数或 `#` 后面的参数里有 `token` / `access_token` / `api_key` / `sig` 等且值非空算，键末尾的 `[]` 先去掉。
+ * - SSH 简写（`git@github.com:o/r.git`）和本地路径不算；URL 解析不了的按旧规则保守判断。
+ */
+function isCredentialUrl(input: string): boolean {
+  const v = input.trim();
+  // 全文搜索都是线性的：userinfo 检查是线性扫描，嵌入 URL 的 scheme 限长（#58 评审）。
+  if (hasEmbeddedUserinfoPassword(v)) return true;
+  if (SCHEME_URL.test(v) && isCredentialSingleUrl(v)) return true;
+  if (v.includes("://")) {
+    for (const m of v.matchAll(EMBEDDED_URL)) {
+      if (isCredentialSingleUrl(m[0])) return true;
+    }
+  }
+  return false;
+}
 
 function isStructuralPrField(k: string): boolean {
   return PR_STRUCTURAL_FIELDS.has(k) || k.endsWith("_ts") || k.endsWith("_at");
 }
 
-/** 返回第一个「带凭据的 URL」所在路径；SSH 地址（git@host:o/r.git）和含 @ 的路径不算。 */
+/** 返回第一个「带凭据的 URL」所在路径（规则见 `isCredentialUrl`）。 */
 function findCredentialUrl(v: unknown, path: string): string | undefined {
-  if (typeof v === "string") return CREDENTIAL_URL.test(v) ? path : undefined;
+  if (typeof v === "string") return isCredentialUrl(v) ? path : undefined;
   if (Array.isArray(v)) {
     for (let i = 0; i < v.length; i++) {
       const r = findCredentialUrl(v[i], `${path}[${i}]`);
@@ -773,17 +884,27 @@ function open(options: StorageOptions, ro: boolean): Storage {
     });
   });
 
-  /** 读 `tickets.fields`：损坏的 JSON 或不是普通对象时读成 null 并记警告，不让一行坏数据拖垮整个读取。 */
   /** 已经警告过 fields 损坏的单号：同一个连接里同一单号只警告一次（T-057）。 */
   const warnedFields = new Set<string>();
   function warnFieldsOnce(ticket_id: string, message: string): void {
     if (warnedFields.has(ticket_id)) return;
     warnedFields.add(ticket_id);
-    logger.warn(message);
+    try {
+      logger.warn(message);
+    } catch {
+      /* logger 自己出错也不能让读取抛错 */
+    }
   }
 
+  /**
+   * 读 `tickets.fields`：损坏的 JSON 或不是普通对象时读成 null 并记警告，不让一行坏数据拖垮整个读取。
+   * 正常读到时把单号从「已警告」集合里移掉，修好后再坏还会再报一次。
+   */
   function decodeFields(ticket_id: string, raw: unknown): TicketFields | null {
-    if (raw == null) return null;
+    if (raw == null) {
+      warnedFields.delete(ticket_id);
+      return null;
+    }
     let v: unknown;
     try {
       v = JSON.parse(raw as string);
@@ -798,6 +919,7 @@ function open(options: StorageOptions, ro: boolean): Storage {
       warnFieldsOnce(ticket_id, `[storage] 需求单 ${ticket_id} 的 fields 不是对象，按 null 读出`);
       return null;
     }
+    warnedFields.delete(ticket_id);
     return v as TicketFields;
   }
 
@@ -873,7 +995,7 @@ function open(options: StorageOptions, ro: boolean): Storage {
       );
     }
     // 结构字段（分支、sha、路径、remote、时间等）既不检查也不改写，6 靠它们做 merge / diff / sync；
-    // 唯一例外：URL 里带凭据（https://token@... / https://user:pass@...）时整条拒写。
+    // 唯一例外：URL 里带凭据（user:pass@、像 token 的用户名、查询参数里的 token 等，见 isCredentialUrl）时整条拒写。
     // 其余字段视为自由文本做轻脱敏（现在还没有，以后加 title、body 时生效）。
     const stored: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(record)) {
