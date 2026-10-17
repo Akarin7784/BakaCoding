@@ -121,9 +121,12 @@ function computeStats(tickets: TicketRecord[]): DiagStats {
   return stats;
 }
 
-/** 完整仓库里默认排除的 .env 类文件：任何一段路径是 `.env` 或 `.env.*`。 */
+/**
+ * 默认不进包的 .env 类文件（完整仓库和上下文片段都适用）：
+ * 任何一段路径是 `.env`、`.env.*`、`.envrc` 或 `.envrc.*`，大小写不敏感。
+ */
 export function isEnvFile(path: string): boolean {
-  return path.split(/[\\/]/).some((seg) => /^\.env(?:\..+)?$/.test(seg));
+  return path.split(/[\\/]/).some((seg) => /^\.env(?:rc)?(?:\..+)?$/i.test(seg));
 }
 
 class RawFiles {
@@ -164,6 +167,7 @@ export async function buildPackage(opts: ExportOptions, deps: ExportDeps): Promi
   const r = new FullRedactor();
   const raw = new RawFiles(r);
   const costs = costsFromEvents(events);
+  let excluded_context_env_files = 0;
 
   const tickets: DiagTicket[] = records.map((t) => {
     const tid = t.ticket_id;
@@ -178,9 +182,12 @@ export async function buildPackage(opts: ExportOptions, deps: ExportDeps): Promi
         };
         return { ...rd, diff, diff_file };
       });
-    const context_files = t.context_snippets.map((f) =>
-      raw.add(["raw", tid, "context", f.path], f.content),
-    );
+    // .env 类上下文文件整个不进包，只计数。
+    const context_files: string[] = [];
+    for (const f of t.context_snippets) {
+      if (isEnvFile(f.path)) excluded_context_env_files += 1;
+      else context_files.push(raw.add(["raw", tid, "context", f.path], f.content));
+    }
     const evalTask = deps.eval_tasks?.[tid];
     const ticket: DiagTicket = {
       ticket_id: tid,
@@ -239,6 +246,7 @@ export async function buildPackage(opts: ExportOptions, deps: ExportDeps): Promi
     created_at,
     redaction: "full" as const,
     excluded_env_files,
+    excluded_context_env_files,
     stats: computeStats(records),
   });
   // files 列表同样是写进 zip 的条目名，不再二次脱敏。

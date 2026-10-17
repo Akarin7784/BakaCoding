@@ -4,7 +4,7 @@ import { buildPackage, PACKAGE_FILES } from "./build.js";
 import { safeZipPath } from "./redaction.js";
 import { readZip, writeZip, type ZipEntry } from "./zip.js";
 import {
-  DIAG_SCHEMA,
+  READABLE_DIAG_SCHEMAS,
   type DiagManifest,
   type DiagPackage,
   type ExportDeps,
@@ -32,7 +32,7 @@ export function packageToZip(pkg: DiagPackage): Buffer {
   return writeZip(entries, new Date(pkg.manifest.created_at));
 }
 
-/** 从 zip 字节读回诊断包；schema 不是 bakacoding-diag/v1 时报错。 */
+/** 从 zip 字节读回诊断包；接受 bakacoding-diag/v1 和 v1.1，其他 schema 报错。 */
 export function zipToPackage(buf: Buffer): DiagPackage {
   const entries = new Map(readZip(buf).map((e) => [e.name, e.data.toString("utf8")]));
   const get = (name: string): string => {
@@ -41,7 +41,7 @@ export function zipToPackage(buf: Buffer): DiagPackage {
     return v;
   };
   const manifest = JSON.parse(get(PACKAGE_FILES.manifest)) as DiagManifest;
-  if (manifest.schema !== DIAG_SCHEMA) {
+  if (!(READABLE_DIAG_SCHEMAS as readonly string[]).includes(manifest.schema)) {
     throw new Error(`不支持的诊断包 schema：${String(manifest.schema)}`);
   }
   const fixed = new Set<string>(Object.values(PACKAGE_FILES));
