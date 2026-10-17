@@ -259,6 +259,7 @@ export async function createDefaultDeps(
         worktrees.cleanupMerged(ticket_id, { merged_into, remote: "origin" }),
     },
     worktreeRoot,
+    repoRoot: worktrees.repoRoot,
     targetHead: () => integrationTargetHead(worktrees.repoRoot, BASE_BRANCH),
     notifyUser: opts.notifyUser,
     listFiles: async (_project_id, commit) => {

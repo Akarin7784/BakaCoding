@@ -93,6 +93,11 @@ export interface AppDeps {
   worktrees: SchedulerDeps["worktrees"];
   /** 4 的 worktree 根目录 `<repo>/.bakacoding/worktrees` */
   worktreeRoot: string;
+  /**
+   * T-094：4 的仓库根（`WorktreeManager.repoRoot`）。重启补清理读本地 `bakacoding/*` 分支用；
+   * 不给就只按 worktree 目录找残留（只剩分支的单留到合入后清理或下次给了再清）。
+   */
+  repoRoot?: string;
   /** 集成分支当前 HEAD（9 的合并日志起点、10 的新单基线）。v1 一次组装对应一个仓库 */
   targetHead: () => MaybePromise<string>;
   /** 10 的 1:1 出口 */
@@ -423,7 +428,7 @@ export async function assemble(deps: AppDeps): Promise<App> {
       .filter((r) => r.status === "merged")
       .map((r) => r.ticket_id);
     if (!merged.length) return;
-    const repo = dirname(dirname(deps.worktreeRoot));
+    const repo = deps.repoRoot;
     const ids = new Set<string>();
     const NAME = /^(.+)-r\d+$/;
     try {
@@ -434,19 +439,20 @@ export async function assemble(deps: AppDeps): Promise<App> {
     } catch {
       // 目录不在：没有 worktree
     }
-    try {
-      const { stdout } = await promisify(execFile)(
-        "git",
-        ["for-each-ref", "--format=%(refname)", "refs/heads/bakacoding/"],
-        { cwd: repo, encoding: "utf8", env: gitEnv(), timeout: REPO_GIT_TIMEOUT_MS },
-      );
-      for (const ref of stdout.split("\n")) {
-        const m = /^refs\/heads\/bakacoding\/(.+)-r\d+$/.exec(ref.trim());
-        if (m) ids.add(m[1]!);
+    if (repo !== undefined)
+      try {
+        const { stdout } = await promisify(execFile)(
+          "git",
+          ["for-each-ref", "--format=%(refname)", "refs/heads/bakacoding/"],
+          { cwd: repo, encoding: "utf8", env: gitEnv(), timeout: REPO_GIT_TIMEOUT_MS },
+        );
+        for (const ref of stdout.split("\n")) {
+          const m = /^refs\/heads\/bakacoding\/(.+)-r\d+$/.exec(ref.trim());
+          if (m) ids.add(m[1]!);
+        }
+      } catch (err) {
+        warn("重启补清理：读本地分支失败，只按 worktree 目录清", err);
       }
-    } catch (err) {
-      warn("重启补清理：读本地分支失败，只按 worktree 目录清", err);
-    }
     const into = scheduler.target;
     for (const id of merged) {
       if (!ids.has(id)) continue;

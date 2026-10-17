@@ -103,6 +103,8 @@ interface Opts {
   cleanupMerged?: AppDeps["worktrees"]["cleanupMerged"];
   logger?: AppDeps["logger"];
   cleanupSweepTimeoutMs?: number;
+  /** T-094：4 的仓库根 */
+  repoRoot?: string;
 }
 
 async function start(o: Opts) {
@@ -140,6 +142,7 @@ async function start(o: Opts) {
       ...(o.cleanupMerged ? { cleanupMerged: o.cleanupMerged } : {}),
     },
     worktreeRoot: o.worktreeRoot,
+    ...(o.repoRoot !== undefined ? { repoRoot: o.repoRoot } : {}),
     targetHead: () => HEAD,
     notifyUser: o.notifyUser ?? (() => {}),
     scheduler: { dispatch_poll_ms: 0, ...o.scheduler },
@@ -1631,6 +1634,7 @@ describe("T-094：重启补清理已合入单的 worktree / 分支", () => {
     const { app } = await start({
       storage,
       worktreeRoot,
+      repoRoot: repo,
       pr: fakePr().pr,
       cleanupMerged: async (id, into) => {
         calls.push(`${id}:${into}`);
@@ -1646,18 +1650,68 @@ describe("T-094：重启补清理已合入单的 worktree / 分支", () => {
   });
 
   it("仓库不是 git 仓库时只警告、照常启动", async () => {
-    const { storage, worktreeRoot } = setup();
+    const { root, storage, worktreeRoot } = setup();
     saveTicket(storage, "T-A", "merged", fields());
     const warns: string[] = [];
     const { app } = await start({
       storage,
       worktreeRoot,
+      repoRoot: join(root, "repo"),
       pr: fakePr().pr,
       cleanupMerged: async () => ({ errors: [] }),
       logger: { warn: (m) => void warns.push(m) },
     });
     expect(app.takeOver.merged).toEqual(["T-A"]);
     await vi.waitFor(() => expect(warns.some((w) => w.includes("重启补清理"))).toBe(true));
+  });
+
+  it("读分支用显式传入的 repoRoot，不从 worktreeRoot 推；不给 repoRoot 时只按 worktree 目录找", async () => {
+    const { root, storage } = setup();
+    const repo = join(root, "elsewhere");
+    mkdirSync(repo);
+    const g = (...a: string[]) => execFileSync("git", a, { cwd: repo, encoding: "utf8" });
+    g("init", "-q", "-b", "main");
+    g("config", "user.email", "t@example.com");
+    g("config", "user.name", "t");
+    writeFileSync(join(repo, "a.txt"), "a\n");
+    g("add", "a.txt");
+    g("commit", "-qm", "init");
+    g("branch", "bakacoding/T-B-r0"); // 只剩分支
+    // worktreeRoot 故意不在 repo 下面
+    const worktreeRoot = join(root, "wt-root");
+    mkdirSync(join(worktreeRoot, "T-A-r0"), { recursive: true }); // 只剩目录
+    saveTicket(storage, "T-A", "merged", fields());
+    saveTicket(storage, "T-B", "merged", fields());
+
+    const calls: string[] = [];
+    await start({
+      storage,
+      worktreeRoot,
+      repoRoot: repo,
+      pr: fakePr().pr,
+      cleanupMerged: async (id) => {
+        calls.push(id);
+        return { errors: [] };
+      },
+    });
+    await vi.waitFor(() => expect(calls.sort()).toEqual(["T-A", "T-B"]));
+
+    const calls2: string[] = [];
+    const warns: string[] = [];
+    await start({
+      storage,
+      worktreeRoot,
+      pr: fakePr().pr,
+      cleanupMerged: async (id) => {
+        calls2.push(id);
+        return { errors: [] };
+      },
+      logger: { warn: (m) => void warns.push(m) },
+    });
+    await vi.waitFor(() => expect(calls2).toEqual(["T-A"]));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(calls2).toEqual(["T-A"]);
+    expect(warns).toEqual([]);
   });
 
   /** 仓库里给每张单留一个 worktree 目录残留 */
