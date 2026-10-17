@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { EscalatedSchema, type Diff, type EventOf, type PrStatus } from "@bakacoding/types";
-import { git, GitError } from "./git.js";
+import { git, GitError, withGitSignal } from "./git.js";
 import {
   LocalPrProvider,
   mergeCommitContaining,
@@ -68,6 +68,8 @@ export interface GithubPrProviderOptions extends LocalPrProviderOptions {
   logger?: Logger;
   /** git 远程名，默认 origin */
   remote?: string;
+  /** 每条远程 git（fetch / push / ls-remote）的超时，默认 REMOTE_GIT_TIMEOUT_MS；0 不限时（T-110） */
+  remoteGitTimeoutMs?: number;
   /** 每个 GitHub REST 请求的超时（含读响应体），默认 GITHUB_REQUEST_TIMEOUT_MS；0 不限时（T-102a） */
   requestTimeoutMs?: number;
 }
@@ -219,6 +221,7 @@ export class GithubPrProvider implements PrProvider {
   /** T-094：本地快进 target 那段持 git 写锁（见 LocalPrProviderOptions.gitWriteLock） */
   private readonly gitWriteLock: GitWriteLock;
   private readonly requestTimeoutMs: number;
+  private readonly remoteGitTimeoutMs: number | undefined;
 
   constructor(opts: GithubPrProviderOptions) {
     this.local = new LocalPrProvider(opts);
@@ -235,6 +238,7 @@ export class GithubPrProvider implements PrProvider {
     this.now = opts.now ?? (() => new Date());
     this.gitWriteLock = opts.gitWriteLock ?? ((fn) => fn());
     this.requestTimeoutMs = opts.requestTimeoutMs ?? GITHUB_REQUEST_TIMEOUT_MS;
+    this.remoteGitTimeoutMs = opts.remoteGitTimeoutMs;
   }
 
   commitPatch(
@@ -243,7 +247,9 @@ export class GithubPrProvider implements PrProvider {
     patch: string,
     opts?: PrCallOptions,
   ): Promise<string> {
-    return this.local.commitPatch(ticket_id, worktree_path, patch, opts);
+    return withGitSignal(opts?.signal, async () => {
+      return this.local.commitPatch(ticket_id, worktree_path, patch, opts);
+    });
   }
 
   /**
@@ -255,10 +261,12 @@ export class GithubPrProvider implements PrProvider {
     worktree_path: string,
     opts?: PrCallOptions,
   ): Promise<string> {
-    const sha = await this.local.commitWorktree(ticket_id, worktree_path, opts);
-    const rec = await this.openTicketRecord(ticket_id, worktree_path);
-    if (rec) await this.publishTicket(rec, opts?.signal);
-    return sha;
+    return withGitSignal(opts?.signal, async () => {
+      const sha = await this.local.commitWorktree(ticket_id, worktree_path, opts);
+      const rec = await this.openTicketRecord(ticket_id, worktree_path);
+      if (rec) await this.publishTicket(rec, opts?.signal);
+      return sha;
+    });
   }
 
   /**
@@ -267,37 +275,39 @@ export class GithubPrProvider implements PrProvider {
    * T-066 B4：PATCH 失败时 GET 远程；若已合入则改回 merged（清 closed_by），抛 PrAlreadyMergedError，不把合入记成 closed。
    */
   async close(pr_id: string, reason: string, opts?: PrCallOptions): Promise<void> {
-    const signal = opts?.signal;
-    if (signal?.aborted) throw abortReason(signal);
-    const rec = await this.mustGet(pr_id);
-    if (rec.status === "merged") throw new PrAlreadyMergedError(pr_id);
-    // 用户在 GitHub 上关的（sync 同步来的）：已是 closed，幂等
-    if (rec.status === "closed" && rec.closed_by !== "bakacoding") return;
-    let cur = rec;
-    if (rec.status !== "closed") {
-      cur = {
-        ...rec,
-        status: "closed",
-        closed_by: "bakacoding",
-        close_reason: reason,
-        updated_ts: this.now().toISOString(),
-      };
-      await this.store.put(cur);
-    }
-    if (!cur.remote) return;
-    const op = "PATCH /pulls/{n}";
-    const res = await this.request(
-      op,
-      cur,
-      "PATCH",
-      `/pulls/${cur.remote.number}`,
-      { state: "closed" },
-      signal,
-    );
-    if (!res.ok) {
-      await this.recoverMergedAfterCloseFail(cur, signal);
-      throw await this.apiError(op, res);
-    }
+    return withGitSignal(opts?.signal, async () => {
+      const signal = opts?.signal;
+      if (signal?.aborted) throw abortReason(signal);
+      const rec = await this.mustGet(pr_id);
+      if (rec.status === "merged") throw new PrAlreadyMergedError(pr_id);
+      // 用户在 GitHub 上关的（sync 同步来的）：已是 closed，幂等
+      if (rec.status === "closed" && rec.closed_by !== "bakacoding") return;
+      let cur = rec;
+      if (rec.status !== "closed") {
+        cur = {
+          ...rec,
+          status: "closed",
+          closed_by: "bakacoding",
+          close_reason: reason,
+          updated_ts: this.now().toISOString(),
+        };
+        await this.store.put(cur);
+      }
+      if (!cur.remote) return;
+      const op = "PATCH /pulls/{n}";
+      const res = await this.request(
+        op,
+        cur,
+        "PATCH",
+        `/pulls/${cur.remote.number}`,
+        { state: "closed" },
+        signal,
+      );
+      if (!res.ok) {
+        await this.recoverMergedAfterCloseFail(cur, signal);
+        throw await this.apiError(op, res);
+      }
+    });
   }
 
   /** PATCH close 失败后 GET 远程：已合入则本地改回 merged，抛 PrAlreadyMergedError。 */
@@ -315,6 +325,8 @@ export class GithubPrProvider implements PrProvider {
         signal,
       );
     } catch {
+      // T-110：取消不吞，原样抛 signal.reason（记录保持已写的 closed）
+      if (signal?.aborted) throw abortReason(signal);
       return; // GET 也失败（限流等）：保留 closed，让调用方按原错误重试
     }
     if (!getRes.ok) return;
@@ -344,7 +356,9 @@ export class GithubPrProvider implements PrProvider {
   }
 
   diff(pr_id: string, opts?: PrCallOptions): Promise<Diff> {
-    return this.local.diff(pr_id, opts);
+    return withGitSignal(opts?.signal, async () => {
+      return this.local.diff(pr_id, opts);
+    });
   }
 
   /**
@@ -357,9 +371,11 @@ export class GithubPrProvider implements PrProvider {
     branch: string,
     opts?: PrCallOptions,
   ): Promise<string> {
-    const pr_id = await this.local.open(ticket_id, worktree_path, branch, opts);
-    await this.ensureRemoteIntegration();
-    return pr_id;
+    return withGitSignal(opts?.signal, async () => {
+      const pr_id = await this.local.open(ticket_id, worktree_path, branch, opts);
+      await this.ensureRemoteIntegration();
+      return pr_id;
+    });
   }
 
   async openIntegration(
@@ -367,14 +383,22 @@ export class GithubPrProvider implements PrProvider {
     target: string = "main",
     opts?: PrCallOptions,
   ): Promise<string> {
-    const pr_id = await this.local.openIntegration(branch, target, opts);
-    const rec = await this.mustGet(pr_id);
-    if (rec.remote) return pr_id;
-    // 集成分支要先在远程存在（单张 PR 以它为 base）；比 target 没有新提交时先不开 PR，merge 时补开
-    await this.push(this.repo, branch);
-    if (await this.hasCommits(this.repo, branch, target))
-      await this.attachPull(pr_id, branch, target, `集成分支 ${branch} → ${target}`, opts?.signal);
-    return pr_id;
+    return withGitSignal(opts?.signal, async () => {
+      const pr_id = await this.local.openIntegration(branch, target, opts);
+      const rec = await this.mustGet(pr_id);
+      if (rec.remote) return pr_id;
+      // 集成分支要先在远程存在（单张 PR 以它为 base）；比 target 没有新提交时先不开 PR，merge 时补开
+      await this.push(this.repo, branch);
+      if (await this.hasCommits(this.repo, branch, target))
+        await this.attachPull(
+          pr_id,
+          branch,
+          target,
+          `集成分支 ${branch} → ${target}`,
+          opts?.signal,
+        );
+      return pr_id;
+    });
   }
 
   async merge(
@@ -382,86 +406,92 @@ export class GithubPrProvider implements PrProvider {
     target: string,
     opts?: { expected_head?: string; signal?: AbortSignal },
   ): Promise<MergeResult> {
-    const signal = opts?.signal;
-    if (signal?.aborted) throw abortReason(signal);
-    let rec = await this.mustGet(pr_id);
-    if (rec.status === "merged" || rec.status === "closed")
-      throw new Error(`PR 已${rec.status === "merged" ? "合并" : "关闭"}：${pr_id}`);
-    if (!rec.remote) rec = await this.backfillRemote(rec, signal);
-    if (!rec.remote)
-      throw new Error(
-        `PR 还没有对应的 GitHub PR（分支 ${rec.branch} 比 base 没有新提交）：${pr_id}`,
-      );
-    const base = rec.kind === "ticket" ? INTEGRATION_BRANCH : rec.base_branch;
-    if (target !== base)
-      throw new Error(`GitHub PR #${rec.remote.number} 的 base 是 ${base}，不能合入 ${target}`);
-    const cwd = cwdOf(rec);
-    const head = await revParse(cwd, rec.branch);
-    if (opts?.expected_head !== undefined && opts.expected_head !== head)
-      throw new ExpectedHeadMismatchError(pr_id, opts.expected_head, head);
-    // T-103：重试幂等。上次 PUT merge 已成功、但没来得及记 merged（中断、重启后重合）：先查远程 PR，
-    // 已合入就直接记已合入，不再推分支（GitHub 可能已自动删了分支，再推会把它建回来）、不再 PUT
-    const already = await this.mergedPull(rec, signal);
-    if (already) return this.finishMerged(rec, already, target, head);
-    // 原地复投的新提交只在本地：合并前先推上去（只推本单分支，不强推），再用 sha 校验
-    await this.pushForMerge(rec, cwd);
-    // T-066 C1：有 expected_head 时把它作为 GitHub merge 的 sha；否则用当前 HEAD
-    const mergeSha = opts?.expected_head ?? head;
+    return withGitSignal(opts?.signal, async () => {
+      const signal = opts?.signal;
+      if (signal?.aborted) throw abortReason(signal);
+      let rec = await this.mustGet(pr_id);
+      if (rec.status === "merged" || rec.status === "closed")
+        throw new Error(`PR 已${rec.status === "merged" ? "合并" : "关闭"}：${pr_id}`);
+      if (!rec.remote) rec = await this.backfillRemote(rec, signal);
+      if (!rec.remote)
+        throw new Error(
+          `PR 还没有对应的 GitHub PR（分支 ${rec.branch} 比 base 没有新提交）：${pr_id}`,
+        );
+      const base = rec.kind === "ticket" ? INTEGRATION_BRANCH : rec.base_branch;
+      if (target !== base)
+        throw new Error(`GitHub PR #${rec.remote.number} 的 base 是 ${base}，不能合入 ${target}`);
+      const cwd = cwdOf(rec);
+      const head = await revParse(cwd, rec.branch);
+      if (opts?.expected_head !== undefined && opts.expected_head !== head)
+        throw new ExpectedHeadMismatchError(pr_id, opts.expected_head, head);
+      // T-103：重试幂等。上次 PUT merge 已成功、但没来得及记 merged（中断、重启后重合）：先查远程 PR，
+      // 已合入就直接记已合入，不再推分支（GitHub 可能已自动删了分支，再推会把它建回来）、不再 PUT
+      const already = await this.mergedPull(rec, signal);
+      if (already) return this.finishMerged(rec, already, target, head);
+      // 原地复投的新提交只在本地：合并前先推上去（只推本单分支，不强推），再用 sha 校验
+      await this.pushForMerge(rec, cwd);
+      // T-066 C1：有 expected_head 时把它作为 GitHub merge 的 sha；否则用当前 HEAD
+      const mergeSha = opts?.expected_head ?? head;
 
-    const op = "PUT /pulls/{n}/merge";
-    const res = await this.request(
-      op,
-      rec,
-      "PUT",
-      `/pulls/${rec.remote.number}/merge`,
-      { sha: mergeSha, merge_method: "merge" },
-      signal,
-    );
-    if (res.status === 405 || res.status === 409) {
-      const message = await this.responseMessage(res);
-      // T-103：GitHub 对已合入的 PR 再 PUT merge 回 405；回查一次，已合入（含查完 PR 到 PUT 之间被合入）按已合入处理
-      // 回查用同一个 signal；回查超时 / 中止直接抛出，不判冲突也不判 merge_blocked（T-102a）
-      const merged = await this.mergedPull(rec, signal);
-      if (merged) return this.finishMerged(rec, merged, target, head);
-      await this.fetchRemote();
-      const conflicted_files = await this.conflictedFiles(
-        this.repo,
-        `${this.remote}/${target}`,
-        head,
+      const op = "PUT /pulls/{n}/merge";
+      const res = await this.request(
+        op,
+        rec,
+        "PUT",
+        `/pulls/${rec.remote.number}/merge`,
+        { sha: mergeSha, merge_method: "merge" },
+        signal,
       );
-      if (conflicted_files.length > 0) {
-        await this.store.put({ ...rec, status: "conflict", updated_ts: this.now().toISOString() });
-        return { merged: false, conflict: true, conflicted_files };
+      if (res.status === 405 || res.status === 409) {
+        const message = await this.responseMessage(res);
+        // T-103：GitHub 对已合入的 PR 再 PUT merge 回 405；回查一次，已合入（含查完 PR 到 PUT 之间被合入）按已合入处理
+        // 回查用同一个 signal；回查超时 / 中止直接抛出，不判冲突也不判 merge_blocked（T-102a）
+        const merged = await this.mergedPull(rec, signal);
+        if (merged) return this.finishMerged(rec, merged, target, head);
+        await this.fetchRemote();
+        const conflicted_files = await this.conflictedFiles(
+          this.repo,
+          `${this.remote}/${target}`,
+          head,
+        );
+        if (conflicted_files.length > 0) {
+          await this.store.put({
+            ...rec,
+            status: "conflict",
+            updated_ts: this.now().toISOString(),
+          });
+          return { merged: false, conflict: true, conflicted_files };
+        }
+        // 没有文本冲突却被拒：分支保护 / 必需的 check 未通过等，复投解决不了；6 不上报，由 9 上报
+        const detail = `GitHub 拒绝合并 PR #${rec.remote.number}（HTTP ${res.status}，${op}），本地无文本冲突，可能是分支保护或必需的 check 未通过${message ? `：${message}` : ""}`;
+        return {
+          merged: false,
+          conflict: false,
+          reason: "merge_blocked",
+          detail: this.scrub(detail),
+        };
       }
-      // 没有文本冲突却被拒：分支保护 / 必需的 check 未通过等，复投解决不了；6 不上报，由 9 上报
-      const detail = `GitHub 拒绝合并 PR #${rec.remote.number}（HTTP ${res.status}，${op}），本地无文本冲突，可能是分支保护或必需的 check 未通过${message ? `：${message}` : ""}`;
-      return {
-        merged: false,
-        conflict: false,
-        reason: "merge_blocked",
-        detail: this.scrub(detail),
-      };
-    }
-    if (!res.ok) throw await this.apiError(op, res);
-    const body = (await res.json()) as { sha?: string };
-    const oldTarget = await revParse(this.repo, target).catch(() => undefined);
-    await this.fetchRemote();
-    const sha = body.sha ?? (await revParse(this.repo, `${this.remote}/${target}`));
-    await this.advanceLocal(target, `${this.remote}/${target}`);
-    const base_sha =
-      rec.kind === "integration" && oldTarget
-        ? (await git(this.repo, ["merge-base", oldTarget, head])).stdout.trim()
-        : rec.base_sha;
-    await this.store.put({
-      ...rec,
-      base_sha,
-      head_sha: head,
-      status: "merged",
-      merged_into: target,
-      merge_sha: sha,
-      updated_ts: this.now().toISOString(),
+      if (!res.ok) throw await this.apiError(op, res);
+      const body = (await res.json()) as { sha?: string };
+      const oldTarget = await revParse(this.repo, target).catch(() => undefined);
+      await this.fetchRemote();
+      const sha = body.sha ?? (await revParse(this.repo, `${this.remote}/${target}`));
+      await this.advanceLocal(target, `${this.remote}/${target}`);
+      const base_sha =
+        rec.kind === "integration" && oldTarget
+          ? (await git(this.repo, ["merge-base", oldTarget, head])).stdout.trim()
+          : rec.base_sha;
+      await this.store.put({
+        ...rec,
+        base_sha,
+        head_sha: head,
+        status: "merged",
+        merged_into: target,
+        merge_sha: sha,
+        updated_ts: this.now().toISOString(),
+      });
+      return { merged: true, sha, fast_forward: sha === head };
     });
-    return { merged: true, sha, fast_forward: sha === head };
   }
 
   /** GET 远程 PR；已合入返回它，未合入（或没有 remote）返回 undefined。限流 / 鉴权照旧抛错。 */
@@ -519,22 +549,24 @@ export class GithubPrProvider implements PrProvider {
   }
 
   async checks(pr_id: string, opts?: PrCallOptions): Promise<CheckResult[]> {
-    const signal = opts?.signal;
-    if (signal?.aborted) throw abortReason(signal);
-    const rec = await this.mustGet(pr_id);
-    const live = rec.status === "open" || rec.status === "conflict";
-    const sha = live ? await revParse(cwdOf(rec), rec.branch) : rec.head_sha;
-    // 评审读 CI 要用已推上去的 head：本单分支的本地 HEAD 还没推（上次 push / 开 PR 失败）就先补做，
-    // 补做失败直接抛错，不拿远程没有的 sha 去查（查到空结果会被当成没配 CI）
-    if (
-      live &&
-      rec.kind === "ticket" &&
-      (!rec.remote || (await this.remoteHead(rec.branch)) !== sha)
-    )
-      await this.publishTicket(rec, signal);
-    const runs = await this.fetchAllCheckRuns(rec, sha, signal);
-    const statuses = await this.fetchCommitStatuses(rec, sha, signal);
-    return [...runs, ...statuses];
+    return withGitSignal(opts?.signal, async () => {
+      const signal = opts?.signal;
+      if (signal?.aborted) throw abortReason(signal);
+      const rec = await this.mustGet(pr_id);
+      const live = rec.status === "open" || rec.status === "conflict";
+      const sha = live ? await revParse(cwdOf(rec), rec.branch) : rec.head_sha;
+      // 评审读 CI 要用已推上去的 head：本单分支的本地 HEAD 还没推（上次 push / 开 PR 失败）就先补做，
+      // 补做失败直接抛错，不拿远程没有的 sha 去查（查到空结果会被当成没配 CI）
+      if (
+        live &&
+        rec.kind === "ticket" &&
+        (!rec.remote || (await this.remoteHead(rec.branch)) !== sha)
+      )
+        await this.publishTicket(rec, signal);
+      const runs = await this.fetchAllCheckRuns(rec, sha, signal);
+      const statuses = await this.fetchCommitStatuses(rec, sha, signal);
+      return [...runs, ...statuses];
+    });
   }
 
   /**
@@ -640,56 +672,58 @@ export class GithubPrProvider implements PrProvider {
    * 已落库的变化不会在下次 sync 再报（记录已非 open），调用方须先应用 error.changes。
    */
   async sync(opts?: PrCallOptions): Promise<SyncChange[]> {
-    const signal = opts?.signal;
-    if (signal?.aborted) throw abortReason(signal);
-    const changes: SyncChange[] = [];
-    try {
-      const records = (await this.store.list()).map(assertPrRecord);
-      for (const rec of records) {
-        if (rec.closed_by === "bakacoding") continue;
-        if (!rec.remote || (rec.status !== "open" && rec.status !== "conflict")) continue;
-        const op = "GET /pulls/{n}";
-        const res = await this.request(
-          op,
-          rec,
-          "GET",
-          `/pulls/${rec.remote.number}`,
-          undefined,
-          signal,
-        );
-        if (!res.ok) throw await this.apiError(op, res);
-        const pull = (await res.json()) as GhPull;
-        if (pull.state !== "closed") continue;
-        // 请求期间可能被 close() 改过：以最新记录为准，BakaCoding 自己关的不当成用户手动关闭
-        const latest = await this.mustGet(rec.pr_id);
-        if (latest.closed_by === "bakacoding") continue;
-        if (latest.status !== "open" && latest.status !== "conflict") continue;
-        const from: PrStatus = latest.status;
-        const ts = this.now().toISOString();
-        if (pull.merged || pull.merged_at) {
-          const merged_into = pull.base?.ref ?? rec.base_branch;
-          const next: PrRecord = { ...latest, status: "merged", merged_into, updated_ts: ts };
-          if (pull.merge_commit_sha) next.merge_sha = pull.merge_commit_sha;
-          await this.store.put(next);
-          this.logger.warn(
-            `[bakacoding/pr] 同步差异：${rec.pr_id}（GitHub PR #${rec.remote.number}）在 GitHub 上被手动合并，本地 ${from} → merged`,
+    return withGitSignal(opts?.signal, async () => {
+      const signal = opts?.signal;
+      if (signal?.aborted) throw abortReason(signal);
+      const changes: SyncChange[] = [];
+      try {
+        const records = (await this.store.list()).map(assertPrRecord);
+        for (const rec of records) {
+          if (rec.closed_by === "bakacoding") continue;
+          if (!rec.remote || (rec.status !== "open" && rec.status !== "conflict")) continue;
+          const op = "GET /pulls/{n}";
+          const res = await this.request(
+            op,
+            rec,
+            "GET",
+            `/pulls/${rec.remote.number}`,
+            undefined,
+            signal,
           );
-          const change: SyncChange = { pr_id: rec.pr_id, from, to: "merged" };
-          if (pull.merge_commit_sha) change.merge_sha = pull.merge_commit_sha;
-          changes.push(change);
-        } else {
-          await this.store.put({ ...latest, status: "closed", updated_ts: ts });
-          // 先记变化再上报：escalate 抛错时这条变化仍随 SyncPartialError.changes 带出
-          changes.push({ pr_id: rec.pr_id, from, to: "closed" });
-          await this.escalate(rec, `GitHub PR #${rec.remote.number}：用户在 GitHub 手动关闭`);
+          if (!res.ok) throw await this.apiError(op, res);
+          const pull = (await res.json()) as GhPull;
+          if (pull.state !== "closed") continue;
+          // 请求期间可能被 close() 改过：以最新记录为准，BakaCoding 自己关的不当成用户手动关闭
+          const latest = await this.mustGet(rec.pr_id);
+          if (latest.closed_by === "bakacoding") continue;
+          if (latest.status !== "open" && latest.status !== "conflict") continue;
+          const from: PrStatus = latest.status;
+          const ts = this.now().toISOString();
+          if (pull.merged || pull.merged_at) {
+            const merged_into = pull.base?.ref ?? rec.base_branch;
+            const next: PrRecord = { ...latest, status: "merged", merged_into, updated_ts: ts };
+            if (pull.merge_commit_sha) next.merge_sha = pull.merge_commit_sha;
+            await this.store.put(next);
+            this.logger.warn(
+              `[bakacoding/pr] 同步差异：${rec.pr_id}（GitHub PR #${rec.remote.number}）在 GitHub 上被手动合并，本地 ${from} → merged`,
+            );
+            const change: SyncChange = { pr_id: rec.pr_id, from, to: "merged" };
+            if (pull.merge_commit_sha) change.merge_sha = pull.merge_commit_sha;
+            changes.push(change);
+          } else {
+            await this.store.put({ ...latest, status: "closed", updated_ts: ts });
+            // 先记变化再上报：escalate 抛错时这条变化仍随 SyncPartialError.changes 带出
+            changes.push({ pr_id: rec.pr_id, from, to: "closed" });
+            await this.escalate(rec, `GitHub PR #${rec.remote.number}：用户在 GitHub 手动关闭`);
+          }
         }
+        return changes;
+      } catch (err) {
+        if (err instanceof SyncPartialError) throw err;
+        if (changes.length > 0) throw new SyncPartialError(changes, err);
+        throw err;
       }
-      return changes;
-    } catch (err) {
-      if (err instanceof SyncPartialError) throw err;
-      if (changes.length > 0) throw new SyncPartialError(changes, err);
-      throw err;
-    }
+    });
   }
 
   // ---- 内部 ----
@@ -758,6 +792,7 @@ export class GithubPrProvider implements PrProvider {
       await git(this.repo, ["ls-remote", this.remote, `refs/heads/${branch}`], {
         env: GIT_ENV,
         remote: true,
+        ...this.remoteTimeout(),
       })
     ).stdout;
     return out.trim().split(/\s+/)[0] || undefined;
@@ -803,6 +838,7 @@ export class GithubPrProvider implements PrProvider {
       await git(this.repo, ["ls-remote", "--heads", this.remote, ref], {
         env: GIT_ENV,
         remote: true,
+        ...this.remoteTimeout(),
       })
     ).stdout;
     if (out.trim()) return;
@@ -838,11 +874,16 @@ export class GithubPrProvider implements PrProvider {
     await git(cwd, ["push", "-q", this.remote, `refs/heads/${branch}:refs/heads/${branch}`], {
       env: GIT_ENV,
       remote: true,
+      ...this.remoteTimeout(),
     });
   }
 
   private async fetchRemote(): Promise<void> {
-    await git(this.repo, ["fetch", "-q", this.remote], { env: GIT_ENV, remote: true });
+    await git(this.repo, ["fetch", "-q", this.remote], {
+      env: GIT_ENV,
+      remote: true,
+      ...this.remoteTimeout(),
+    });
   }
 
   /** 把本地分支快进到远端；被 checkout 时只在干净的 worktree 里 ff-only，否则记日志不动。 */
@@ -883,6 +924,11 @@ export class GithubPrProvider implements PrProvider {
       { allowCodes: [1] },
     );
     return mt.code === 1 ? mt.stdout.split("\n").filter(Boolean).slice(1) : [];
+  }
+
+  /** 远程 git 的超时选项（T-110）：没配时用 git() 的默认 REMOTE_GIT_TIMEOUT_MS。 */
+  private remoteTimeout(): { timeoutMs?: number } {
+    return this.remoteGitTimeoutMs === undefined ? {} : { timeoutMs: this.remoteGitTimeoutMs };
   }
 
   private async request(

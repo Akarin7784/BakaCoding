@@ -21,7 +21,9 @@ export function notifyError(text: string, detail: string = text): void {
   toastError(text, {
     action: {
       label: COPY_DETAIL,
-      onClick: () => {
+      // sonner 点了 action 默认会关掉这条 toast（200ms 后卸载）；错误提示要留着，复制后也不关（T-109）
+      onClick: (event) => {
+        event.preventDefault();
         void copyText(detail).then((ok) => {
           if (ok) toast("已复制");
         });

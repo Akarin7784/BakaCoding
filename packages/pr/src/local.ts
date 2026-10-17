@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DiffSchema, type Diff, type DiffFile } from "@bakacoding/types";
-import { git, GitError } from "./git.js";
+import { git, GitError, withGitSignal } from "./git.js";
 import {
   INTEGRATION_BRANCH,
   ExpectedHeadMismatchError,
@@ -127,32 +127,34 @@ export class LocalPrProvider implements PrProvider {
     patch: string,
     opts?: PrCallOptions,
   ): Promise<string> {
-    if (opts?.signal?.aborted) throw abortReason(opts.signal);
-    const dir = await mkdtemp(join(tmpdir(), "bc-patch-"));
-    const file = join(dir, "change.patch");
-    try {
-      await writeFile(file, patch.endsWith("\n") ? patch : `${patch}\n`);
-      await git(worktree_path, ["apply", "--index", "--whitespace=nowarn", file]);
+    return withGitSignal(opts?.signal, async () => {
+      if (opts?.signal?.aborted) throw abortReason(opts.signal);
+      const dir = await mkdtemp(join(tmpdir(), "bc-patch-"));
+      const file = join(dir, "change.patch");
       try {
-        await git(worktree_path, ["commit", "-m", `${ticket_id}: apply patch`], {
-          env: this.identityEnv(),
-          timeoutMs: 0,
-        });
-      } catch (err) {
-        // 提交失败（含 hook 拒绝）：撤回补丁，不留提交，错误信息带上 hook 输出
-        await git(worktree_path, ["apply", "-R", "--index", "--whitespace=nowarn", file]).catch(
-          () => undefined,
-        );
-        const e = err as GitError;
-        throw new CommitPatchError(
-          `${ticket_id} 提交失败：${[e.stdout, e.stderr].join("\n").trim()}`,
-          e,
-        );
+        await writeFile(file, patch.endsWith("\n") ? patch : `${patch}\n`);
+        await git(worktree_path, ["apply", "--index", "--whitespace=nowarn", file]);
+        try {
+          await git(worktree_path, ["commit", "-m", `${ticket_id}: apply patch`], {
+            env: this.identityEnv(),
+            timeoutMs: 0,
+          });
+        } catch (err) {
+          // 提交失败（含 hook 拒绝）：撤回补丁，不留提交，错误信息带上 hook 输出
+          await git(worktree_path, ["apply", "-R", "--index", "--whitespace=nowarn", file]).catch(
+            () => undefined,
+          );
+          const e = err as GitError;
+          throw new CommitPatchError(
+            `${ticket_id} 提交失败：${[e.stdout, e.stderr].join("\n").trim()}`,
+            e,
+          );
+        }
+      } finally {
+        await rm(dir, { recursive: true, force: true });
       }
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-    return (await git(worktree_path, ["rev-parse", "HEAD"])).stdout.trim();
+      return (await git(worktree_path, ["rev-parse", "HEAD"])).stdout.trim();
+    });
   }
 
   async commitWorktree(
@@ -160,58 +162,62 @@ export class LocalPrProvider implements PrProvider {
     worktree_path: string,
     opts?: PrCallOptions,
   ): Promise<string> {
-    if (opts?.signal?.aborted) throw abortReason(opts.signal);
-    const wt = resolve(worktree_path);
-    const rec = (await this.store.list())
-      .map(assertPrRecord)
-      .filter(
-        (r): r is TicketPrRecord =>
-          r.kind === "ticket" &&
-          r.ticket_id === ticket_id &&
-          resolve(r.worktree_path) === wt &&
-          (r.status === "open" || r.status === "conflict"),
-      )
-      .at(-1);
-    if (!rec)
-      throw new WorktreeMismatchError(`${ticket_id} 在 ${worktree_path} 没有未结束的 PR 记录`);
-    const cur = await git(worktree_path, ["symbolic-ref", "-q", "--short", "HEAD"], {
-      allowCodes: [1],
-    });
-    if (cur.code !== 0 || cur.stdout.trim() !== rec.branch)
-      throw new WorktreeMismatchError(
-        `${ticket_id} 的 worktree 当前分支是 ${cur.stdout.trim() || "（分离 HEAD）"}，记录里是 ${rec.branch}`,
-      );
-    await git(worktree_path, ["add", "-A"]);
-    const staged = await git(worktree_path, ["diff", "--cached", "--quiet"], { allowCodes: [1] });
-    if (staged.code === 0) throw new NoChangesError(ticket_id, worktree_path);
-    try {
-      await git(worktree_path, ["commit", "-q", "-m", `${ticket_id}: apply worktree changes`], {
-        env: this.identityEnv(),
-        timeoutMs: 0,
+    return withGitSignal(opts?.signal, async () => {
+      if (opts?.signal?.aborted) throw abortReason(opts.signal);
+      const wt = resolve(worktree_path);
+      const rec = (await this.store.list())
+        .map(assertPrRecord)
+        .filter(
+          (r): r is TicketPrRecord =>
+            r.kind === "ticket" &&
+            r.ticket_id === ticket_id &&
+            resolve(r.worktree_path) === wt &&
+            (r.status === "open" || r.status === "conflict"),
+        )
+        .at(-1);
+      if (!rec)
+        throw new WorktreeMismatchError(`${ticket_id} 在 ${worktree_path} 没有未结束的 PR 记录`);
+      const cur = await git(worktree_path, ["symbolic-ref", "-q", "--short", "HEAD"], {
+        allowCodes: [1],
       });
-    } catch (err) {
-      // 提交失败（含 hook 拒绝）：撤回暂存，工作区文件原样保留
-      await git(worktree_path, ["reset", "-q"]).catch(() => undefined);
-      const e = err as GitError;
-      throw new CommitPatchError(
-        `${ticket_id} 提交失败：${[e.stdout, e.stderr].join("\n").trim()}`,
-        e,
-      );
-    }
-    return (await git(worktree_path, ["rev-parse", "HEAD"])).stdout.trim();
+      if (cur.code !== 0 || cur.stdout.trim() !== rec.branch)
+        throw new WorktreeMismatchError(
+          `${ticket_id} 的 worktree 当前分支是 ${cur.stdout.trim() || "（分离 HEAD）"}，记录里是 ${rec.branch}`,
+        );
+      await git(worktree_path, ["add", "-A"]);
+      const staged = await git(worktree_path, ["diff", "--cached", "--quiet"], { allowCodes: [1] });
+      if (staged.code === 0) throw new NoChangesError(ticket_id, worktree_path);
+      try {
+        await git(worktree_path, ["commit", "-q", "-m", `${ticket_id}: apply worktree changes`], {
+          env: this.identityEnv(),
+          timeoutMs: 0,
+        });
+      } catch (err) {
+        // 提交失败（含 hook 拒绝）：撤回暂存，工作区文件原样保留
+        await git(worktree_path, ["reset", "-q"]).catch(() => undefined);
+        const e = err as GitError;
+        throw new CommitPatchError(
+          `${ticket_id} 提交失败：${[e.stdout, e.stderr].join("\n").trim()}`,
+          e,
+        );
+      }
+      return (await git(worktree_path, ["rev-parse", "HEAD"])).stdout.trim();
+    });
   }
 
   async close(pr_id: string, reason: string, opts?: PrCallOptions): Promise<void> {
-    if (opts?.signal?.aborted) throw abortReason(opts.signal);
-    const rec = await this.mustGet(pr_id);
-    if (rec.status === "merged") throw new PrAlreadyMergedError(pr_id);
-    if (rec.status === "closed") return;
-    await this.store.put({
-      ...rec,
-      status: "closed",
-      closed_by: "bakacoding",
-      close_reason: reason,
-      updated_ts: this.now().toISOString(),
+    return withGitSignal(opts?.signal, async () => {
+      if (opts?.signal?.aborted) throw abortReason(opts.signal);
+      const rec = await this.mustGet(pr_id);
+      if (rec.status === "merged") throw new PrAlreadyMergedError(pr_id);
+      if (rec.status === "closed") return;
+      await this.store.put({
+        ...rec,
+        status: "closed",
+        closed_by: "bakacoding",
+        close_reason: reason,
+        updated_ts: this.now().toISOString(),
+      });
     });
   }
 
@@ -221,26 +227,28 @@ export class LocalPrProvider implements PrProvider {
     branch: string,
     opts?: PrCallOptions,
   ): Promise<string> {
-    if (opts?.signal?.aborted) throw abortReason(opts.signal);
-    const head = await this.revParse(worktree_path, branch);
-    const base = (await git(worktree_path, ["merge-base", this.baseBranch, head])).stdout.trim();
-    const existing = (await this.store.list()).length;
-    const pr_id = `local-${ticket_id}-${existing + ++this.seq}`;
-    const ts = this.now().toISOString();
-    await this.store.put({
-      kind: "ticket",
-      pr_id,
-      ticket_id,
-      worktree_path,
-      branch,
-      base_branch: this.baseBranch,
-      base_sha: base,
-      head_sha: head,
-      status: "open",
-      created_ts: ts,
-      updated_ts: ts,
+    return withGitSignal(opts?.signal, async () => {
+      if (opts?.signal?.aborted) throw abortReason(opts.signal);
+      const head = await this.revParse(worktree_path, branch);
+      const base = (await git(worktree_path, ["merge-base", this.baseBranch, head])).stdout.trim();
+      const existing = (await this.store.list()).length;
+      const pr_id = `local-${ticket_id}-${existing + ++this.seq}`;
+      const ts = this.now().toISOString();
+      await this.store.put({
+        kind: "ticket",
+        pr_id,
+        ticket_id,
+        worktree_path,
+        branch,
+        base_branch: this.baseBranch,
+        base_sha: base,
+        head_sha: head,
+        status: "open",
+        created_ts: ts,
+        updated_ts: ts,
+      });
+      return pr_id;
     });
-    return pr_id;
   }
 
   openIntegration(
@@ -248,10 +256,12 @@ export class LocalPrProvider implements PrProvider {
     target: string = "main",
     opts?: PrCallOptions,
   ): Promise<string> {
-    if (opts?.signal?.aborted) return Promise.reject(abortReason(opts.signal));
-    const run = this.integrationLock.then(() => this.openIntegrationLocked(branch, target));
-    this.integrationLock = run.catch(() => undefined);
-    return run;
+    return withGitSignal(opts?.signal, async () => {
+      if (opts?.signal?.aborted) return Promise.reject(abortReason(opts.signal));
+      const run = this.integrationLock.then(() => this.openIntegrationLocked(branch, target));
+      this.integrationLock = run.catch(() => undefined);
+      return run;
+    });
   }
 
   private async openIntegrationLocked(branch: string, target: string): Promise<string> {
@@ -291,68 +301,70 @@ export class LocalPrProvider implements PrProvider {
   }
 
   async diff(pr_id: string, opts?: PrCallOptions): Promise<Diff> {
-    if (opts?.signal?.aborted) throw abortReason(opts.signal);
-    const rec = await this.mustGet(pr_id);
-    const live = rec.status === "open" || rec.status === "conflict";
-    // T-094：已结束的单张 PR，worktree 可能已被合入后清理删掉，改在主仓库里算（提交对象仍在）
-    let cwd = cwdOf(rec);
-    if (!live && rec.kind === "ticket" && !existsSync(cwd) && this.repo) cwd = this.repo;
-    let head = live ? await this.revParse(cwd, rec.branch) : rec.head_sha;
-    // 集成分支会一直前进：未结束时 base 也现算
-    let base =
-      live && rec.kind === "integration"
-        ? (await git(cwd, ["merge-base", rec.base_branch, head])).stdout.trim()
-        : rec.base_sha;
-    // T-094：已合入但记录的 base / head 提交取不到（分支删掉后对象不可达、被 gc）时，
-    // 改用记录的合并提交，算 <merge>^1..<merge>；合并提交也取不到就照旧由 git 报错
-    if (
-      rec.status === "merged" &&
-      rec.merge_sha &&
-      !((await this.hasCommit(cwd, base)) && (await this.hasCommit(cwd, head))) &&
-      (await this.hasCommit(cwd, `${rec.merge_sha}^1`))
-    ) {
-      base = await this.revParse(cwd, `${rec.merge_sha}^1`);
-      head = await this.revParse(cwd, rec.merge_sha);
-    }
-    const range = [base, head];
-    const ns = (await git(cwd, ["diff", "-M", "--name-status", "-z", ...range])).stdout;
-    const num = (await git(cwd, ["diff", "-M", "--numstat", "-z", ...range])).stdout;
-
-    const entries: { status: DiffFile["status"]; path: string; old?: string }[] = [];
-    const t = ns.split("\0");
-    for (let i = 0; i < t.length && t[i];) {
-      const code = t[i++]!.charAt(0);
-      if (code === "R" || code === "C") {
-        const old = t[i++]!;
-        entries.push({ status: STATUS[code]!, path: t[i++]!, old });
-      } else {
-        entries.push({ status: STATUS[code] ?? "modified", path: t[i++]! });
+    return withGitSignal(opts?.signal, async () => {
+      if (opts?.signal?.aborted) throw abortReason(opts.signal);
+      const rec = await this.mustGet(pr_id);
+      const live = rec.status === "open" || rec.status === "conflict";
+      // T-094：已结束的单张 PR，worktree 可能已被合入后清理删掉，改在主仓库里算（提交对象仍在）
+      let cwd = cwdOf(rec);
+      if (!live && rec.kind === "ticket" && !existsSync(cwd) && this.repo) cwd = this.repo;
+      let head = live ? await this.revParse(cwd, rec.branch) : rec.head_sha;
+      // 集成分支会一直前进：未结束时 base 也现算
+      let base =
+        live && rec.kind === "integration"
+          ? (await git(cwd, ["merge-base", rec.base_branch, head])).stdout.trim()
+          : rec.base_sha;
+      // T-094：已合入但记录的 base / head 提交取不到（分支删掉后对象不可达、被 gc）时，
+      // 改用记录的合并提交，算 <merge>^1..<merge>；合并提交也取不到就照旧由 git 报错
+      if (
+        rec.status === "merged" &&
+        rec.merge_sha &&
+        !((await this.hasCommit(cwd, base)) && (await this.hasCommit(cwd, head))) &&
+        (await this.hasCommit(cwd, `${rec.merge_sha}^1`))
+      ) {
+        base = await this.revParse(cwd, `${rec.merge_sha}^1`);
+        head = await this.revParse(cwd, rec.merge_sha);
       }
-    }
+      const range = [base, head];
+      const ns = (await git(cwd, ["diff", "-M", "--name-status", "-z", ...range])).stdout;
+      const num = (await git(cwd, ["diff", "-M", "--numstat", "-z", ...range])).stdout;
 
-    const counts = new Map<string, { a: number; d: number }>();
-    const n = num.split("\0");
-    for (let i = 0; i < n.length && n[i];) {
-      const [a, d, p] = n[i++]!.split("\t");
-      const path = p === "" ? (i++, n[i++]!) : p!; // 重命名：空路径后跟 old\0new
-      counts.set(path, { a: a === "-" ? 0 : Number(a), d: d === "-" ? 0 : Number(d) });
-    }
+      const entries: { status: DiffFile["status"]; path: string; old?: string }[] = [];
+      const t = ns.split("\0");
+      for (let i = 0; i < t.length && t[i];) {
+        const code = t[i++]!.charAt(0);
+        if (code === "R" || code === "C") {
+          const old = t[i++]!;
+          entries.push({ status: STATUS[code]!, path: t[i++]!, old });
+        } else {
+          entries.push({ status: STATUS[code] ?? "modified", path: t[i++]! });
+        }
+      }
 
-    const files: DiffFile[] = [];
-    for (const e of entries) {
-      const paths = e.old ? [e.old, e.path] : [e.path];
-      const patch = (await git(cwd, ["diff", "-M", ...range, "--", ...paths])).stdout;
-      const c = counts.get(e.path) ?? { a: 0, d: 0 };
-      files.push({
-        path: e.path,
-        status: e.status,
-        additions: c.a,
-        deletions: c.d,
-        patch,
-        ...(e.old ? { old_path: e.old } : {}),
-      });
-    }
-    return DiffSchema.parse({ base_sha: base, head_sha: head, files });
+      const counts = new Map<string, { a: number; d: number }>();
+      const n = num.split("\0");
+      for (let i = 0; i < n.length && n[i];) {
+        const [a, d, p] = n[i++]!.split("\t");
+        const path = p === "" ? (i++, n[i++]!) : p!; // 重命名：空路径后跟 old\0new
+        counts.set(path, { a: a === "-" ? 0 : Number(a), d: d === "-" ? 0 : Number(d) });
+      }
+
+      const files: DiffFile[] = [];
+      for (const e of entries) {
+        const paths = e.old ? [e.old, e.path] : [e.path];
+        const patch = (await git(cwd, ["diff", "-M", ...range, "--", ...paths])).stdout;
+        const c = counts.get(e.path) ?? { a: 0, d: 0 };
+        files.push({
+          path: e.path,
+          status: e.status,
+          additions: c.a,
+          deletions: c.d,
+          patch,
+          ...(e.old ? { old_path: e.old } : {}),
+        });
+      }
+      return DiffSchema.parse({ base_sha: base, head_sha: head, files });
+    });
   }
 
   /**
@@ -366,12 +378,14 @@ export class LocalPrProvider implements PrProvider {
     target: string,
     opts?: { expected_head?: string; signal?: AbortSignal },
   ): Promise<MergeResult> {
-    if (opts?.signal?.aborted) return Promise.reject(abortReason(opts.signal));
-    // 同一实例内串行（T-076）：两张单同时合入同一 target 时，后一张基于前一张的结果，
-    // 不因 update-ref 旧值校验失败而报错，也不互相覆盖
-    const run = this.mergeLock.then(() => this.mergeLocked(pr_id, target, opts));
-    this.mergeLock = run.catch(() => undefined);
-    return run;
+    return withGitSignal(opts?.signal, async () => {
+      if (opts?.signal?.aborted) return Promise.reject(abortReason(opts.signal));
+      // 同一实例内串行（T-076）：两张单同时合入同一 target 时，后一张基于前一张的结果，
+      // 不因 update-ref 旧值校验失败而报错，也不互相覆盖
+      const run = this.mergeLock.then(() => this.mergeLocked(pr_id, target, opts));
+      this.mergeLock = run.catch(() => undefined);
+      return run;
+    });
   }
 
   private async mergeLocked(
@@ -495,14 +509,18 @@ export class LocalPrProvider implements PrProvider {
   }
 
   async checks(pr_id: string, opts?: PrCallOptions): Promise<CheckResult[]> {
-    if (opts?.signal?.aborted) throw abortReason(opts.signal);
-    await this.mustGet(pr_id);
-    return [];
+    return withGitSignal(opts?.signal, async () => {
+      if (opts?.signal?.aborted) throw abortReason(opts.signal);
+      await this.mustGet(pr_id);
+      return [];
+    });
   }
 
   async sync(opts?: PrCallOptions): Promise<SyncChange[]> {
-    if (opts?.signal?.aborted) throw abortReason(opts.signal);
-    return [];
+    return withGitSignal(opts?.signal, async () => {
+      if (opts?.signal?.aborted) throw abortReason(opts.signal);
+      return [];
+    });
   }
 
   /**

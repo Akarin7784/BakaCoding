@@ -23,7 +23,7 @@ import {
   type EscalatedInput,
   type PrRecord,
 } from "./index.js";
-import { git } from "./git.js";
+import { git, GitTimeoutError, withGitSignal } from "./git.js";
 
 const TOKEN = "fake-token-for-tests-0123456789";
 const ENV = {
@@ -1642,5 +1642,171 @@ describe("请求级超时与 signal（T-102a）", () => {
     const r = await pr.merge(id, INTEGRATION_BRANCH);
     expect(r).toEqual({ merged: true, sha: head, fast_forward: true });
     expect(await store.get(id)).toMatchObject({ status: "merged", merge_sha: head });
+  });
+});
+
+describe("T-110：回查与关闭时的取消、远程 git 超时", () => {
+  /** 命中的请求挂住，直到 init.signal 中止（按 reason reject）；其余转给 gh。 */
+  function hanging(match: (method: string, path: string, n: number) => boolean) {
+    const seen = new Map<string, number>();
+    return async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const path = new URL(String(input)).pathname.replace(/^\/repos\/acme\/widget/, "");
+      const method = init?.method ?? "GET";
+      const key = `${method} ${path}`;
+      const n = (seen.get(key) ?? 0) + 1;
+      seen.set(key, n);
+      if (method === "PUT" && path.endsWith("/merge"))
+        return new Response(JSON.stringify({ message: "Pull Request is not mergeable" }), {
+          status: 405,
+        });
+      if (method === "PATCH") return new Response("{}", { status: 500 });
+      if (!match(method, path, n)) return gh.fetch(input, init);
+      const signal = init?.signal;
+      return new Promise<Response>((_, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason as Error), { once: true });
+      });
+    };
+  }
+
+  it("405 回查时外部 abort：抛 reason（回查用的是调用方的 signal），记录仍是 open，不判 merge_blocked", async () => {
+    await pr.openIntegration();
+    const { id } = await ticketPr("T-110a");
+    const p = provider({
+      fetch: hanging((m, path, n) => m === "GET" && path === "/pulls/1" && n >= 2),
+    });
+    const ctl = new AbortController();
+    const reason = new Error("stop");
+    const run = p.merge(id, INTEGRATION_BRANCH, { signal: ctl.signal });
+    setTimeout(() => ctl.abort(reason), 50);
+    await expect(run).rejects.toBe(reason);
+    expect((await store.get(id))?.status).toBe("open");
+    expect(events).toEqual([]);
+  });
+
+  it("close：PATCH 失败后回查 GET 时外部 abort，原样抛 reason，不吞掉；记录保持已写的 closed", async () => {
+    const { id } = await ticketPr("T-110b", { from: "main" });
+    const p = provider({ fetch: hanging((m) => m === "GET") });
+    const ctl = new AbortController();
+    const reason = new Error("stop");
+    const run = p.close(id, "r", { signal: ctl.signal });
+    setTimeout(() => ctl.abort(reason), 50);
+    await expect(run).rejects.toBe(reason);
+    expect(await store.get(id)).toMatchObject({ status: "closed", closed_by: "bakacoding" });
+  });
+
+  async function hangRemote() {
+    await git(repo, ["config", "protocol.ext.allow", "always"]);
+    await git(repo, ["remote", "set-url", "origin", "ext::sh -c sleep% 30"]);
+  }
+
+  it("commitWorktree 的 push 超时：抛 GitTimeoutError，本地提交保留", async () => {
+    await pr.openIntegration();
+    const branch = "feat/T-110c";
+    const wt = join(root, "wt-T-110c");
+    await git(repo, ["worktree", "add", "-q", "-b", branch, wt, INTEGRATION_BRANCH]);
+    const id = await pr.open("T-110c", wt, branch);
+    await hangRemote();
+    await writeFile(join(wt, "c.txt"), "c\n");
+    const p = provider({ remoteGitTimeoutMs: 300 });
+    const before = await rev(wt, "HEAD");
+    await expect(p.commitWorktree("T-110c", wt)).rejects.toBeInstanceOf(GitTimeoutError);
+    expect(await rev(wt, "HEAD")).not.toBe(before);
+    expect((await store.get(id))?.status).toBe("open");
+  });
+
+  it("远程 git 收到外部 signal 立刻 kill，抛 reason（signal 经方法一路带到 git）", async () => {
+    await pr.openIntegration();
+    const branch = "feat/T-110d";
+    const wt = join(root, "wt-T-110d");
+    await git(repo, ["worktree", "add", "-q", "-b", branch, wt, INTEGRATION_BRANCH]);
+    await pr.open("T-110d", wt, branch);
+    await hangRemote();
+    await writeFile(join(wt, "d.txt"), "d\n");
+    const p = provider({ remoteGitTimeoutMs: 0 });
+    const ctl = new AbortController();
+    const reason = new Error("stop");
+    const t = Date.now();
+    const run = p.commitWorktree("T-110d", wt, { signal: ctl.signal });
+    setTimeout(() => ctl.abort(reason), 300);
+    await expect(run).rejects.toBe(reason);
+    expect(Date.now() - t).toBeLessThan(5_000);
+  });
+});
+
+describe("T-110：signal 不跨调用串（AsyncLocalStorage）", () => {
+  /** 让 store 的某个方法停在闸门前，直到 release()。 */
+  function gate<K extends "get" | "put">(key: K, times: number) {
+    let release!: () => void;
+    const open = new Promise<void>((r) => (release = r));
+    const orig = store[key].bind(store) as (...a: unknown[]) => Promise<unknown>;
+    let waiting = 0;
+    let arrived!: () => void;
+    const all = new Promise<void>((r) => (arrived = r));
+    (store as unknown as Record<string, unknown>)[key] = async (...a: unknown[]) => {
+      if (waiting < times) {
+        if (++waiting === times) arrived();
+        await open;
+      }
+      return orig(...a);
+    };
+    return { release, all };
+  }
+
+  it("本地：两个 diff 并发，一个带 signal 一个不带；只中止前者，后者正常完成", async () => {
+    const local = new LocalPrProvider({ store, repo, author: { name: "t", email: "t@t" } });
+    await git(repo, ["branch", INTEGRATION_BRANCH, "main"]);
+    const a = await ticketBranch("T-110e");
+    const b = await ticketBranch("T-110f");
+    const idA = await local.open("T-110e", a.wt, a.branch);
+    const idB = await local.open("T-110f", b.wt, b.branch);
+    const g = gate("get", 2);
+    const ctl = new AbortController();
+    const reason = new Error("stop A");
+    const pa = local.diff(idA, { signal: ctl.signal });
+    const pb = local.diff(idB);
+    await g.all;
+    ctl.abort(reason);
+    g.release();
+    await expect(pa).rejects.toBe(reason);
+    expect((await pb).files.map((f) => f.path)).toEqual(["T-110f.txt"]);
+  });
+
+  it("GitHub：两个 open 并发，各自不同 signal；只中止一个，另一个正常完成", async () => {
+    await pr.openIntegration();
+    const mk = async (t: string) => {
+      const branch = `feat/${t}`;
+      const wt = join(root, `wt-${t}`);
+      await git(repo, ["worktree", "add", "-q", "-b", branch, wt, INTEGRATION_BRANCH]);
+      return { wt, branch };
+    };
+    const a = await mk("T-110g");
+    const b = await mk("T-110h");
+    const g = gate("put", 2);
+    const ca = new AbortController();
+    const cb = new AbortController();
+    const reason = new Error("stop A");
+    const pa = pr.open("T-110g", a.wt, a.branch, { signal: ca.signal });
+    const pb = pr.open("T-110h", b.wt, b.branch, { signal: cb.signal });
+    await g.all;
+    ca.abort(reason);
+    g.release();
+    await expect(pa).rejects.toBe(reason);
+    await expect(pb).resolves.toMatch(/^local-T-110h-/);
+    expect(cb.signal.aborted).toBe(false);
+  });
+
+  it("嵌套：外层调用的 signal 在内层没传 signal 的公开方法里仍然生效", async () => {
+    const local = new LocalPrProvider({ store, repo, author: { name: "t", email: "t@t" } });
+    await git(repo, ["branch", INTEGRATION_BRANCH, "main"]);
+    const a = await ticketBranch("T-110i");
+    const id = await local.open("T-110i", a.wt, a.branch);
+    const g = gate("get", 1);
+    const ctl = new AbortController();
+    const reason = new Error("outer");
+    const p = withGitSignal(ctl.signal, () => local.diff(id));
+    await g.all;
+    ctl.abort(reason);
+    g.release();
+    await expect(p).rejects.toBe(reason);
   });
 });
