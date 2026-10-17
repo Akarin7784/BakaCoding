@@ -72,6 +72,7 @@ Node.js + TypeScript 本机协调服务，React + TypeScript 界面，Electron �
 - [整体设计](docs/product-design.md)（[在线版](https://akarin7784.github.io/BakaCoding/)）
 - [分析与设计（详细版）](docs/bakacoding-analysis-and-design.md)
 - [功能模块](docs/modules.md)
+- [总开发进度](docs/progress.md)
 - [设计决策与待办](docs/bakacoding-design-backlog.md)
 - [Flash 并发研究](docs/bakacoding-flash-concurrency-research.md) · [设计评审](docs/bakacoding-plan-review.md)
 
