@@ -3,7 +3,8 @@ import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { cleanupMergedWorktrees, isGitLockError, withGitWriteLock } from "./cleanup.js";
+import { cleanupMergedWorktrees, isGitLockError } from "./cleanup.js";
+import { withGitWriteLock } from "./git-lock.js";
 import { WorktreeManager } from "./worktree.js";
 
 let repo: string;

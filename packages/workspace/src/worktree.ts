@@ -5,10 +5,10 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import {
   cleanupMergedWorktrees,
-  withGitWriteLock,
   type CleanupMergedOptions,
   type CleanupMergedResult,
 } from "./cleanup.js";
+import { withGitWriteLock } from "./git-lock.js";
 
 const run = promisify(execFile);
 
