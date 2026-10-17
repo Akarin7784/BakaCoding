@@ -4,7 +4,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, ipcMain, nativeTheme } from "electron";
 import { resolveRepoDbPath, resolveRepoPath, startBackend } from "./backend.js";
-import { serveBackend, serveHighRisk, serveReader, serveSyncState } from "./ipc.js";
+import {
+  serveBackend,
+  serveHighRisk,
+  serveReader,
+  serveSupervisorChat,
+  serveSyncState,
+} from "./ipc.js";
 import { openEventReader } from "./reader.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -75,12 +81,14 @@ if (!gotLock) {
     );
     const stopBackendIpc = serveBackend(ipcMain, backend, sink);
     const stopSyncState = serveSyncState(ipcMain, backend, sink);
+    const stopSupervisorChat = serveSupervisorChat(ipcMain, backend);
 
     app.on("will-quit", () => {
       stopReader();
       stopBackendIpc();
       stopHighRisk();
       stopSyncState();
+      stopSupervisorChat();
       reader.close();
       void backend.stop();
     });
