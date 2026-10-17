@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`a7401c1` · main 上测试：59 个测试文件、1413 个测试全部通过 · 更新日期：2026-10-17（UTC+8）
+> 上次更新时 main：`d4f3c9e` · main 上测试：63 个测试文件、1438 个测试全部通过 · 更新日期：2026-10-17（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -39,7 +39,7 @@ flowchart BT
 
   class M0,M1,M2,M3,M4,M5,M6,M7,M8,M9,M11,T done
   class M10 done
-  class M12 doing
+  class M12 done
 ```
 
 图例：绿色 = 已完成，黄色 = 进行中，灰色 = 未开始。
@@ -121,8 +121,8 @@ flowchart BT
 | T-064 | 模块 9：定时 sync() 加限流退避 + 对账；拒绝只关指定 PR；adopt 发现已合入按手动合入；独占区用 isDependencyFile | 9、10、组合根 | 编排层开发 | 已合入 | #70 | `080f6b8` |
 | T-065 | 模块 6 / types：DiffFile 加可选 old_path，6 用 git diff -M 时填上旧路径；模块 8 `isHighRiskDiffFile` 新旧路径都检查，041c 的改名兜底（renamed 一律当高风险）收窄成只看依赖文件（没有 old_path 的改名仍算）；依赖文件名不区分大小写（仍按整个文件名匹配）；模块 10 高风险证据的命中文件改成 `{ path, old_path? }` | 6、8、10 | 执行层开发 | 已合入 | #67 | `e5c17b5` |
 | T-066 | 模块 6：sync 中途出错也带出已收集变化；close PATCH 失败时 GET 远程状态（已合入不记 closed）；merge 加可选 expected_head；checks 翻页并读 commit status；模块 7 发 review_backlog/supervisor_backlog 时 requirement_id、ticket_id 写 null，trace 新开 | 6、7 | 执行层开发 | 已合入 | #68 | `a51e022` |
-| T-067 | 模块 12：接 syncState()（状态展示 + 鉴权停 / 限流提示） | 12 | 界面与诊断开发 | 未开始 | — | — |
-| T-069 | 模块 6：check-runs 翻页以 total_count 为准，不再遇到本页不足 100 条就停 | 6 | 执行层开发 | 待评审 | — | — |
+| T-067 | 模块 12：接 syncState()（状态展示 + 鉴权停 / 限流提示）；IPC `sync:state` / `sync:state-update`，错误信息脱敏 + 截断，只读返回不可用 | 12 | 界面与诊断开发 | 已合入 | #74 | `d4f3c9e` |
+| T-069 | 模块 6：check-runs 翻页以 total_count 为准，不再遇到本页不足 100 条就停 | 6 | 执行层开发 | 待评审 | #76 | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
@@ -172,7 +172,7 @@ flowchart BT
 - 已解决（T-048，#47）：写入范围重叠判断展开花括号（`src/{a,b}.ts` 与 `src/a.ts` 算重叠），独占区域按多个代表路径判断（`src/**/*.json` 命中 `**/package.json`）。
 
 - 模块 9（T-064）：定时同步只在进程内；重启后 `takeOver` 结束、`startSyncLoop` 之后才开始，停机期间变化在第一轮补上。
-- 模块 9（T-064，Q-4）：定时同步失败只进 `syncState()` / `onError`，不通知用户；桌面端接上 `syncState()` 之前界面上看不到同步失败。
+- 已解决（T-067）：模块 9（T-064，Q-4）定时同步失败只进 `syncState()` / `onError`、不通知用户；桌面端已经 IPC `sync:state` 显示同步状态，鉴权停 / 限流 / 连续失败在界面上可见（仍不推通知）。
 - 模块 9（T-064，Q-5）：还在 8 手里（没 `submit`）的单的 PR 被用户在 GitHub 合入 / 关闭时，9 不处理，等 8 交出后由合并报错上报。
 - 模块 9（T-064，Q-2）：账号级限流窗口只挡定时同步，不挡合并循环和显式 `sync()`。
 - 模块 9（T-064，Q-7）：独占区域只对依赖文件走 `isDependencyFile` 不区分大小写；在不区分大小写的文件系统上，非依赖文件只有大小写不同时仍可能被并行写。
