@@ -1,7 +1,5 @@
 // T-063：按仓库组装默认 AppDeps（只建对象，不 takeOver、不 dispatch）。
-import { execFile } from "node:child_process";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import {
   ConfigError,
   createBudget,
@@ -24,31 +22,14 @@ import {
 } from "@bakacoding/review-pool";
 import type { Storage } from "@bakacoding/storage";
 import {
-  gitEnv,
   PermissionRegistry,
-  REPO_GIT_TIMEOUT_MS,
   withGitWriteLock,
   WorktreeManager,
   WORKTREES_DIR,
 } from "@bakacoding/workspace";
 import type { AppDeps } from "./assemble.js";
 import { RepoNotReadyError } from "./repo-not-ready.js";
-
-const run = promisify(execFile);
-
-/**
- * 仓库检查 / targetHead 用的 git 调用（T-084）：cwd 为仓库，env 用模块 4 的 `gitEnv()`
- * （剔掉继承来的所有 `GIT_*`，再加 `GIT_TERMINAL_PROMPT=0`、`LC_ALL=C`），
- * 外部的 `GIT_DIR` / `GIT_WORK_TREE` 等不会把检查带到别的仓库；超时同模块 4 的 `REPO_GIT_TIMEOUT_MS`。
- */
-function repoGit(repoRoot: string, args: string[]): Promise<{ stdout: string }> {
-  return run("git", args, {
-    cwd: repoRoot,
-    env: gitEnv(),
-    timeout: REPO_GIT_TIMEOUT_MS,
-    maxBuffer: 1024 * 1024,
-  });
-}
+import { repoGit } from "./repo-git.js";
 
 export interface CreateDefaultDepsOpts {
   repoRoot: string;
@@ -107,6 +88,9 @@ async function gitRevParse(repoRoot: string, rev: string): Promise<string> {
  * GitHub 模式 github.ts 里另写死 "main"，与此一致。发版后改为自动识别仓库默认分支。
  */
 const BASE_BRANCH = "main";
+
+/** T-101：`listFiles`（`git ls-tree -r --name-only`）的输出缓冲上限 */
+const LIST_FILES_MAX_BUFFER = 16 * 1024 * 1024;
 
 async function refExists(repoRoot: string, ref: string): Promise<boolean> {
   try {
@@ -319,10 +303,14 @@ export async function createDefaultDeps(
     targetHead: () => integrationTargetHead(worktrees.repoRoot, BASE_BRANCH),
     notifyUser: opts.notifyUser,
     listFiles: async (_project_id, commit) => {
-      const { stdout } = await run("git", ["ls-tree", "-r", "--name-only", commit], {
-        cwd: worktrees.repoRoot,
-        maxBuffer: 16 * 1024 * 1024,
-      });
+      // T-101：走 repoGit（gitEnv + 超时）；大仓库文件清单可能超过默认 1 MiB，单独放到 16 MiB
+      const { stdout } = await repoGit(
+        worktrees.repoRoot,
+        ["ls-tree", "-r", "--name-only", commit],
+        {
+          maxBuffer: LIST_FILES_MAX_BUFFER,
+        },
+      );
       return stdout.split("\n").filter((l) => l.length > 0);
     },
     architectureConstraints: async () => [],
