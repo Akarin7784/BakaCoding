@@ -5,5 +5,6 @@ export const MODULE_NAME = "@bakacoding/pr" as const;
 export * from "./provider.js";
 export * from "./store.js";
 export * from "./local.js";
+export * from "./github.js";
 export { createPrProvider, type CreatePrProviderOptions } from "./factory.js";
 export { GitError } from "./git.js";

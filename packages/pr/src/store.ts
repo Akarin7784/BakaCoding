@@ -13,6 +13,8 @@ interface PrRecordBase {
   status: PrStatus;
   merged_into?: string;
   merge_sha?: string;
+  /** GitHub 实现开出的真 PR；本地实现不写 */
+  remote?: { number: number; url: string };
   /** 以 Z 结尾的 UTC 时间 */
   created_ts: string;
   updated_ts: string;
@@ -35,6 +37,21 @@ export interface IntegrationPrRecord extends PrRecordBase {
 /** 本地 PR 记录，按 kind 区分。 */
 export type PrRecord = TicketPrRecord | IntegrationPrRecord;
 export type PrRecordKind = PrRecord["kind"];
+
+/** 从 store 读到的记录不带合法 kind（ticket / integration）。 */
+export class InvalidPrRecordError extends Error {
+  constructor(pr_id: string) {
+    super(`PR 记录缺少合法的 kind：${pr_id}`);
+    this.name = "InvalidPrRecordError";
+  }
+}
+
+/** 校验 store 返回的记录带合法 kind；不默认当成任何一种记录。 */
+export function assertPrRecord(r: PrRecord): PrRecord {
+  const kind = (r as { kind?: unknown }).kind;
+  if (kind !== "ticket" && kind !== "integration") throw new InvalidPrRecordError(r.pr_id);
+  return r;
+}
 
 /** 由模块 2 实现；本包只依赖这个接口。 */
 export interface PrStore {

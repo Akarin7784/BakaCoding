@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PrStatusSchema } from "@bakacoding/types";
-import { resetGithubWarningForTests } from "./factory.js";
 import { chmod } from "node:fs/promises";
 import { createPrProvider, InMemoryPrStore, LocalPrProvider, PrNotFoundError } from "./index.js";
 import { git } from "./git.js";
@@ -96,7 +95,7 @@ describe("open / diff", () => {
     const wt = await worktree("feat/c");
     const id = await pr.open("T-3", wt, "feat/c");
     expect(await pr.checks(id)).toEqual([]);
-    await expect(pr.sync()).resolves.toBeUndefined();
+    await expect(pr.sync()).resolves.toEqual([]);
   });
 });
 
@@ -210,19 +209,25 @@ describe("commitPatch 与 hook", () => {
   });
 });
 
-describe("createPrProvider", () => {
-  beforeEach(() => resetGithubWarningForTests());
+describe("createPrProvider（本地分支）", () => {
   it("无 GITHUB_TOKEN 返回本地实现，不警告", async () => {
     const logger = { warn: vi.fn() };
-    const p = await createPrProvider({ store, getSecret: () => undefined, logger });
-    expect(p.kind).toBe("local");
+    const p = await createPrProvider({ store, repo, getSecret: () => undefined, logger });
+    expect(p).toBeInstanceOf(LocalPrProvider);
     expect(logger.warn).not.toHaveBeenCalled();
   });
-  it("有 token：返回本地实现，每进程只警告一次", async () => {
-    const logger = { warn: vi.fn() };
-    const p = await createPrProvider({ store, getSecret: () => "x", logger });
-    await createPrProvider({ store, getSecret: () => "x", logger });
-    expect(p).toBeInstanceOf(LocalPrProvider);
-    expect(logger.warn).toHaveBeenCalledTimes(1);
+  it("getSecret 抛错（未设置）按读不到处理", async () => {
+    const p = await createPrProvider({
+      store,
+      repo,
+      getSecret: () => {
+        throw new Error("缺少环境变量 GITHUB_TOKEN");
+      },
+    });
+    expect(p.kind).toBe("local");
+  });
+  it("有 token 但没有 origin：本地实现", async () => {
+    const p = await createPrProvider({ store, repo, getSecret: () => "x" });
+    expect(p.kind).toBe("local");
   });
 });
