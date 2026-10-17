@@ -13,3 +13,4 @@ export {
 } from "./guard.js";
 export type { ResolvedPath } from "./guard.js";
 export * from "./repo.js";
+export { gitEnv } from "./git-env.js";

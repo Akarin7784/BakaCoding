@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { isProtectedPath } from "./guard.js";
 import { ensureBakacodingIgnored, isBakacodingIgnored } from "./worktree.js";
+import { gitEnv } from "./git-env.js";
 
 /** 每次 git 调用的默认超时。 */
 export const REPO_GIT_TIMEOUT_MS = 30_000;
@@ -86,9 +87,7 @@ interface GitResult {
   stdout: string;
 }
 
-const GIT_ENV = { GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" };
-
-function runGit(cwd: string, args: string[], o: GitOpts): Promise<GitResult> {
+function runGit(cwd: string, step: string, args: string[], o: GitOpts): Promise<GitResult> {
   return new Promise((resolvePromise, reject) => {
     const child = execFile(
       "git",
@@ -97,11 +96,10 @@ function runGit(cwd: string, args: string[], o: GitOpts): Promise<GitResult> {
         cwd,
         timeout: o.timeout_ms,
         maxBuffer: 64 * 1024 * 1024,
-        env: { ...process.env, ...GIT_ENV, ...o.env },
+        env: gitEnv(o.env),
         windowsHide: true,
       },
       (err, stdout) => {
-        const step = args.find((a) => !a.startsWith("-") && !a.includes("=")) ?? "git";
         if (err) {
           const e = err as NodeJS.ErrnoException & { killed?: boolean; signal?: string };
           if (e.killed || e.signal === "SIGTERM") return reject(new RepoFixError("timeout", step));
@@ -117,17 +115,21 @@ function runGit(cwd: string, args: string[], o: GitOpts): Promise<GitResult> {
   });
 }
 
-async function gitOk(cwd: string, args: string[], o: GitOpts): Promise<string> {
-  const r = await runGit(cwd, args, o);
+async function gitOk(cwd: string, step: string, args: string[], o: GitOpts): Promise<string> {
+  const r = await runGit(cwd, step, args, o);
   if (r.code !== 0) {
-    const step = args.find((a) => !a.startsWith("-") && !a.includes("=")) ?? "git";
     throw new RepoFixError("git_failed", step);
   }
   return r.stdout;
 }
 
-async function gitTry(cwd: string, args: string[], o: GitOpts): Promise<string | null> {
-  const r = await runGit(cwd, args, o);
+async function gitTry(
+  cwd: string,
+  step: string,
+  args: string[],
+  o: GitOpts,
+): Promise<string | null> {
+  const r = await runGit(cwd, step, args, o);
   return r.code === 0 ? r.stdout.trim() : null;
 }
 
@@ -143,24 +145,33 @@ async function isDir(p: string): Promise<boolean> {
   }
 }
 
+/** detail 里展示的分支名上限（字符）。`current` 字段仍给完整分支名。 */
+const BRANCH_DETAIL_MAX = 100;
+const shortBranch = (b: string) =>
+  b.length > BRANCH_DETAIL_MAX ? `${b.slice(0, BRANCH_DETAIL_MAX - 1)}…` : b;
+
 /** dir 自己就是仓库根（不是外层仓库的子目录）时返回真实路径，否则 null。 */
 async function ownRepoRoot(dir: string, o: GitOpts): Promise<string | null> {
   if (!(await isDir(dir))) return null;
-  const top = await gitTry(dir, ["rev-parse", "--show-toplevel"], o);
+  const top = await gitTry(dir, "rev-parse", ["rev-parse", "--show-toplevel"], o);
   if (top === null) return null;
   const [a, b] = await Promise.all([realpath(dir), realpath(top)]);
   return a === b ? b : null;
 }
 
 const hasCommit = async (root: string, o: GitOpts) =>
-  (await gitTry(root, ["rev-parse", "--verify", "-q", "HEAD^{commit}"], o)) !== null;
+  (await gitTry(root, "rev-parse", ["rev-parse", "--verify", "-q", "HEAD^{commit}"], o)) !== null;
 const hasMain = async (root: string, o: GitOpts) =>
-  (await gitTry(root, ["rev-parse", "--verify", "-q", `refs/heads/${MAIN_BRANCH}^{commit}`], o)) !==
-  null;
+  (await gitTry(
+    root,
+    "rev-parse",
+    ["rev-parse", "--verify", "-q", `refs/heads/${MAIN_BRANCH}^{commit}`],
+    o,
+  )) !== null;
 const currentBranch = async (root: string, o: GitOpts) =>
-  (await gitTry(root, ["symbolic-ref", "--short", "-q", "HEAD"], o)) || null;
+  (await gitTry(root, "symbolic-ref", ["symbolic-ref", "--short", "-q", "HEAD"], o)) || null;
 const configured = async (root: string, key: string, o: GitOpts) =>
-  !!(await gitTry(root, ["config", "--get", key], o));
+  !!(await gitTry(root, "config", ["config", "--get", key], o));
 
 /**
  * 逐项检查 dir（T-086）：是 Git 仓库（dir 本身是仓库根）、至少一次提交、有 main 分支、`.bakacoding/` 已忽略。
@@ -197,7 +208,7 @@ export async function checkRepo(dir: string, options?: RepoOptions): Promise<Rep
         code: "no_main",
         detail:
           branch && branch !== MAIN_BRANCH
-            ? `没找到 main 分支（当前是 ${branch}）`
+            ? `没找到 main 分支（当前是 ${shortBranch(branch)}）`
             : "没找到 main 分支",
         ...(branch && branch !== MAIN_BRANCH ? { current: branch } : {}),
       };
@@ -244,11 +255,11 @@ export async function initRepo(
   if (await ownRepoRoot(abs, o)) throw new RepoFixError("repo_exists");
   await mkdir(abs, { recursive: true });
   // 不依赖 git 2.28 的 `-b`：先 init，再把未出生的 HEAD 指到 main。
-  await gitOk(abs, ["init", "-q"], o);
-  await gitOk(abs, ["symbolic-ref", "HEAD", `refs/heads/${MAIN_BRANCH}`], o);
+  await gitOk(abs, "init", ["init", "-q"], o);
+  await gitOk(abs, "symbolic-ref", ["symbolic-ref", "HEAD", `refs/heads/${MAIN_BRANCH}`], o);
   if (init.identity) {
-    await gitOk(abs, ["config", "--local", "user.name", init.identity.name.trim()], o);
-    await gitOk(abs, ["config", "--local", "user.email", init.identity.email.trim()], o);
+    await gitOk(abs, "config", ["config", "--local", "user.name", init.identity.name.trim()], o);
+    await gitOk(abs, "config", ["config", "--local", "user.email", init.identity.email.trim()], o);
   }
   await ensureBakacodingIgnored(abs);
 }
@@ -276,6 +287,7 @@ async function requireRoot(dir: string, o: GitOpts): Promise<string> {
 async function listFiles(root: string, o: GitOpts): Promise<InitialCommitFiles> {
   const out = await gitOk(
     root,
+    "-c",
     ["-c", "core.quotepath=false", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
     o,
   );
@@ -318,8 +330,8 @@ export async function initialCommit(
   const root = await requireRoot(dir, o);
   if (await hasCommit(root, o)) throw new RepoFixError("has_commits");
   if (what.identity) {
-    await gitOk(root, ["config", "--local", "user.name", what.identity.name.trim()], o);
-    await gitOk(root, ["config", "--local", "user.email", what.identity.email.trim()], o);
+    await gitOk(root, "config", ["config", "--local", "user.name", what.identity.name.trim()], o);
+    await gitOk(root, "config", ["config", "--local", "user.email", what.identity.email.trim()], o);
   }
   if (!(await configured(root, "user.name", o)) || !(await configured(root, "user.email", o)))
     throw new RepoFixError("no_identity");
@@ -336,20 +348,20 @@ export async function initialCommit(
   try {
     const env = { GIT_INDEX_FILE: join(tmp, "index") };
     if (files.length > 0) {
-      await gitOk(root, ["update-index", "--add", "-z", "--stdin"], {
+      await gitOk(root, "update-index", ["update-index", "--add", "-z", "--stdin"], {
         ...o,
         env,
         input: files.map((f) => `${f}\0`).join(""),
       });
     }
-    const tree = (await gitOk(root, ["write-tree"], { ...o, env })).trim();
+    const tree = (await gitOk(root, "write-tree", ["write-tree"], { ...o, env })).trim();
     const commit = (
-      await gitOk(root, ["commit-tree", tree, "-m", INITIAL_COMMIT_MESSAGE], o)
+      await gitOk(root, "commit-tree", ["commit-tree", tree, "-m", INITIAL_COMMIT_MESSAGE], o)
     ).trim();
     // 旧值写空串：main 已存在就失败，不覆盖。
-    await gitOk(root, ["update-ref", `refs/heads/${MAIN_BRANCH}`, commit, ""], o);
-    await gitOk(root, ["symbolic-ref", "HEAD", `refs/heads/${MAIN_BRANCH}`], o);
-    await gitOk(root, ["read-tree", "HEAD"], o);
+    await gitOk(root, "update-ref", ["update-ref", `refs/heads/${MAIN_BRANCH}`, commit, ""], o);
+    await gitOk(root, "symbolic-ref", ["symbolic-ref", "HEAD", `refs/heads/${MAIN_BRANCH}`], o);
+    await gitOk(root, "read-tree", ["read-tree", "HEAD"], o);
     return { commit };
   } finally {
     await rm(tmp, { recursive: true, force: true });
@@ -369,8 +381,9 @@ export async function createMainBranch(
   if (!(await hasCommit(root, o))) throw new RepoFixError("no_commits");
   if (await hasMain(root, o)) throw new RepoFixError("main_exists");
   const from =
-    (await currentBranch(root, o)) ?? (await gitOk(root, ["rev-parse", "HEAD"], o)).trim();
-  const head = (await gitOk(root, ["rev-parse", "HEAD^{commit}"], o)).trim();
-  await gitOk(root, ["update-ref", `refs/heads/${MAIN_BRANCH}`, head, ""], o);
+    (await currentBranch(root, o)) ??
+    (await gitOk(root, "rev-parse", ["rev-parse", "HEAD"], o)).trim();
+  const head = (await gitOk(root, "rev-parse", ["rev-parse", "HEAD^{commit}"], o)).trim();
+  await gitOk(root, "update-ref", ["update-ref", `refs/heads/${MAIN_BRANCH}`, head, ""], o);
   return { from };
 }

@@ -6,6 +6,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -31,6 +32,8 @@ const ISOLATE = {
   GIT_COMMITTER_NAME: undefined,
   GIT_COMMITTER_EMAIL: undefined,
   EMAIL: undefined,
+  HOME: undefined,
+  XDG_CONFIG_HOME: undefined,
 };
 const git = (...a: string[]) =>
   execFileSync("git", a, { cwd: dir, encoding: "utf8", env: process.env }).trim();
@@ -57,6 +60,10 @@ beforeEach(() => {
   base = realpathSync(mkdtempSync(join(tmpdir(), "bc-repo-")));
   dir = join(base, "proj");
   mkdirSync(dir);
+  // 库里的 git 会剔掉 GIT_CONFIG_GLOBAL 等变量，靠空 HOME 隔离全局配置。
+  process.env.HOME = join(base, "home");
+  process.env.XDG_CONFIG_HOME = join(base, "home", ".config");
+  mkdirSync(process.env.HOME);
 });
 afterEach(() => {
   rmSync(base, { recursive: true, force: true });
@@ -312,5 +319,105 @@ describe("超时", () => {
     } finally {
       process.env.PATH = path;
     }
+  });
+});
+
+describe("git 环境变量隔离（gitEnv）", () => {
+  const other = () => {
+    const o = join(base, "other");
+    mkdirSync(o);
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: o });
+    return o;
+  };
+  const otherGit = (o: string, ...a: string[]) =>
+    execFileSync("git", a, { cwd: o, encoding: "utf8", env: process.env }).trim();
+
+  it("设了 GIT_DIR / GIT_WORK_TREE：检查和写入都只作用于目标目录", async () => {
+    const o = other();
+    process.env.GIT_DIR = join(o, ".git");
+    process.env.GIT_WORK_TREE = o;
+    try {
+      expect((await checkRepo(dir)).items[0]).toMatchObject({ ok: false, code: "not_git" });
+      await initRepo(dir, { identity: { name: "Eva", email: "eva@example.com" } });
+      writeFileSync(join(dir, "README.md"), "x\n");
+      await initialCommit(dir, { files: ["README.md"] });
+    } finally {
+      delete process.env.GIT_DIR;
+      delete process.env.GIT_WORK_TREE;
+    }
+    expect(git("ls-tree", "-r", "--name-only", "HEAD")).toBe("README.md");
+    expect(() => otherGit(o, "rev-parse", "--verify", "-q", "HEAD")).toThrow();
+    expect(() => otherGit(o, "config", "--local", "user.name")).toThrow();
+  });
+
+  it("设了 GIT_INDEX_FILE：不写那个索引，提交照常", async () => {
+    git("init", "-q", "-b", "main");
+    ident();
+    writeFileSync(join(dir, "README.md"), "x\n");
+    const idx = join(base, "foreign-index");
+    process.env.GIT_INDEX_FILE = idx;
+    try {
+      await initialCommit(dir, { files: ["README.md"] });
+    } finally {
+      delete process.env.GIT_INDEX_FILE;
+    }
+    expect(existsSync(idx)).toBe(false);
+    expect(git("ls-tree", "-r", "--name-only", "HEAD")).toBe("README.md");
+  });
+
+  it("设了 GIT_AUTHOR_* / GIT_COMMITTER_* 也照样报 no_identity", async () => {
+    git("init", "-q", "-b", "main");
+    const keys = [
+      "GIT_AUTHOR_NAME",
+      "GIT_AUTHOR_EMAIL",
+      "GIT_COMMITTER_NAME",
+      "GIT_COMMITTER_EMAIL",
+    ];
+    for (const k of keys) process.env[k] = k.endsWith("EMAIL") ? "env@example.com" : "env";
+    try {
+      expect(await code(initialCommit(dir, { empty: true }))).toBe("no_identity");
+      expect((await checkRepo(dir)).identity).toEqual({ name: false, email: false });
+    } finally {
+      for (const k of keys) delete process.env[k];
+    }
+  });
+});
+
+describe("边界情况", () => {
+  it("在外层仓库的子目录里 initRepo：建一个嵌套仓库，外层不动", async () => {
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: base });
+    await initRepo(dir);
+    expect(existsSync(join(dir, ".git"))).toBe(true);
+    expect((await checkRepo(dir)).items[0]).toEqual({ id: "git", ok: true });
+    expect(
+      execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: dir, encoding: "utf8" }).trim(),
+    ).toBe(dir);
+    expect(() =>
+      execFileSync("git", ["rev-parse", "--verify", "-q", "HEAD"], { cwd: base, stdio: "ignore" }),
+    ).toThrow();
+  });
+
+  it.skipIf(process.platform === "win32")("符号链接只提交链接本身，不提交目标内容", async () => {
+    git("init", "-q", "-b", "main");
+    ident();
+    const outside = join(base, "outside-secret.txt");
+    writeFileSync(outside, "TOP-SECRET-CONTENT\n");
+    symlinkSync(outside, join(dir, "link.txt"));
+    const files = await listInitialCommitFiles(dir);
+    expect(files.include).toContain("link.txt");
+    await initialCommit(dir, { files: ["link.txt"] });
+    expect(git("ls-tree", "HEAD", "link.txt")).toMatch(/^120000 blob /);
+    expect(git("cat-file", "-p", "HEAD:link.txt")).toBe(outside);
+  });
+
+  it("detail 里的分支名截断到 100 字符以内，current 给完整名", async () => {
+    const long = `feature/${"x".repeat(150)}`;
+    git("init", "-q", "-b", long);
+    const r = await checkRepo(dir);
+    const main = r.items[2]!;
+    expect(main.current).toBe(long);
+    expect(main.detail).not.toContain(long);
+    const shown = /当前是 (.*)）/.exec(main.detail ?? "")![1]!;
+    expect(shown.length).toBeLessThanOrEqual(100);
   });
 });

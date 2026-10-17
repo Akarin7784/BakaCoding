@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
+import { gitEnv } from "./git-env.js";
 
 const run = promisify(execFile);
 
@@ -19,7 +20,11 @@ export interface WorktreeInfo {
 }
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
-  const { stdout } = await run("git", args, { cwd, maxBuffer: 16 * 1024 * 1024 });
+  const { stdout } = await run("git", args, {
+    cwd,
+    env: gitEnv(),
+    maxBuffer: 16 * 1024 * 1024,
+  });
   return stdout.trim();
 }
 
