@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -254,14 +255,27 @@ export class LocalPrProvider implements PrProvider {
 
   async diff(pr_id: string): Promise<Diff> {
     const rec = await this.mustGet(pr_id);
-    const cwd = cwdOf(rec);
     const live = rec.status === "open" || rec.status === "conflict";
-    const head = live ? await this.revParse(cwd, rec.branch) : rec.head_sha;
+    // T-094：已结束的单张 PR，worktree 可能已被合入后清理删掉，改在主仓库里算（提交对象仍在）
+    let cwd = cwdOf(rec);
+    if (!live && rec.kind === "ticket" && !existsSync(cwd) && this.repo) cwd = this.repo;
+    let head = live ? await this.revParse(cwd, rec.branch) : rec.head_sha;
     // 集成分支会一直前进：未结束时 base 也现算
-    const base =
+    let base =
       live && rec.kind === "integration"
         ? (await git(cwd, ["merge-base", rec.base_branch, head])).stdout.trim()
         : rec.base_sha;
+    // T-094：已合入但记录的 base / head 提交取不到（分支删掉后对象不可达、被 gc）时，
+    // 改用记录的合并提交，算 <merge>^1..<merge>；合并提交也取不到就照旧由 git 报错
+    if (
+      rec.status === "merged" &&
+      rec.merge_sha &&
+      !((await this.hasCommit(cwd, base)) && (await this.hasCommit(cwd, head))) &&
+      (await this.hasCommit(cwd, `${rec.merge_sha}^1`))
+    ) {
+      base = await this.revParse(cwd, `${rec.merge_sha}^1`);
+      head = await this.revParse(cwd, rec.merge_sha);
+    }
     const range = [base, head];
     const ns = (await git(cwd, ["diff", "-M", "--name-status", "-z", ...range])).stdout;
     const num = (await git(cwd, ["diff", "-M", "--numstat", "-z", ...range])).stdout;
@@ -446,6 +460,12 @@ export class LocalPrProvider implements PrProvider {
     const r = await this.store.get(pr_id);
     if (!r) throw new PrNotFoundError(pr_id);
     return assertPrRecord(r);
+  }
+
+  private async hasCommit(cwd: string, rev: string): Promise<boolean> {
+    return (
+      (await git(cwd, ["cat-file", "-e", `${rev}^{commit}`], { allowCodes: [1, 128] })).code === 0
+    );
   }
 
   private async revParse(cwd: string, rev: string): Promise<string> {
