@@ -126,6 +126,7 @@ flowchart BT
 | T-069 | 模块 6：check-runs 翻页以 total_count 为准，不再遇到本页不足 100 条就停 | 6 | 执行层开发 | 已合入 | #76 | `4e518fd` |
 | T-070 | 模块 10：高风险待裁决不计入主管待办（去掉与 9 `pending_pr_limit` 的反压双计） | 10 | 编排层开发 | 已合入 | #75 | `61716e3` |
 | T-071 | 模块 12：桌面端接入主管对话，新增 IPC `supervisor:chat` 转给 10 的 `chat()`；渲染全部 5 种回复（answer / ask_project / decision_saved / dispatched / split_failed）；只读 / 未接线 / chat() 抛错返回 ok:false，原因脱敏 + 截断后显示；等待中禁用发送，一次只发一条 | 12 | 界面与诊断开发 | 待评审 | #79 | — |
+| T-072 | 模块 12：导入项目入口（检查 config/models.json、config/pricing.json，缺了要明确提示）；「导出」接上 11 诊断包导出（完整脱敏）；只读设置页（当前仓库、环境变量已设 / 未设、本地 / GitHub 模式） | 12 | 界面与诊断开发 | 未开始 | — | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
