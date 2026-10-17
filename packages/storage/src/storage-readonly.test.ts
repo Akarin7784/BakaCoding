@@ -156,7 +156,9 @@ describe("T-026 只读打开", () => {
     raw.pragma("user_version = 1");
     raw.close();
     expect(() => openStorageReadonly({ path })).toThrow(StorageVersionError);
-    expect(() => openStorageReadonly({ path })).toThrow(/v1.*需要 v2.*先用写入方/);
+    expect(() => openStorageReadonly({ path })).toThrow(
+      new RegExp(`v1.*需要 v${MIGRATIONS.length}.*先用写入方`),
+    );
     const d = new Database(path, { readonly: true });
     expect(d.pragma("user_version", { simple: true })).toBe(1);
     d.close();

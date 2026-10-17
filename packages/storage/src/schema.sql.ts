@@ -207,4 +207,6 @@ export const MIGRATIONS: Migration[] = [
     }
     db.exec("CREATE UNIQUE INDEX events_seq_unique ON events(seq)");
   },
+  /* v3（T-055）：需求单的结构化字段（write_scope、interfaces、depends_on 等），JSON，可为空 */
+  `ALTER TABLE tickets ADD COLUMN fields TEXT;`,
 ];
