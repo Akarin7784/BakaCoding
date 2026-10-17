@@ -1,5 +1,6 @@
 // T-071：10 的 chat() 回复在 1:1 里的展示文案。switch 穷举 ChatReply.kind，10 新增 kind 时这里编译不过。
 import type { ChatReply, ChatReplyKind } from "../../shared/api.js";
+import { failureText } from "../../shared/error-text.js";
 
 export type ChatTone = "normal" | "ask" | "ok" | "error";
 
@@ -40,5 +41,5 @@ export const CHAT_REASON_PREVIEW = 500;
 export function chatFailureText(reason: string): string {
   const r =
     reason.length > CHAT_REASON_PREVIEW ? `${reason.slice(0, CHAT_REASON_PREVIEW)}…` : reason;
-  return `发送失败：${r}`;
+  return failureText("发送失败", r);
 }

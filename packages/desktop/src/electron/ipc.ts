@@ -22,7 +22,7 @@ import {
   isSymlinkTarget,
   type ProjectSettingsDeps,
 } from "./project-settings-ipc.js";
-import { sanitizeErrorName, sanitizeSyncErrorMessage } from "./sync-state.js";
+import { errorDetail, sanitizeSyncErrorMessage } from "./sync-state.js";
 import type { EventReader } from "./reader.js";
 
 /**
@@ -237,6 +237,18 @@ export function serveProjectSettings(ipc: IpcMainLike, deps: ProjectSettingsDeps
   });
 
   ipc.handle(IPC_CHANNELS.diagnosticsExport, async () => {
+    const st = deps.backend.status();
+    if (st.mode === "readonly") {
+      // 只读时先拒绝，不弹保存框
+      return {
+        ok: false,
+        reason: sanitizeSyncErrorMessage(
+          st.reason ? `只读模式：${st.reason}` : "只读模式：后端未接线",
+          deps.env,
+          EXPORT_REASON_MAX,
+        ),
+      } satisfies DesktopExportResult;
+    }
     const at = now();
     const target = await deps.pickSavePath(path.join(deps.downloadsDir, defaultExportName(at)));
     if (!target)
@@ -259,10 +271,10 @@ export function serveProjectSettings(ipc: IpcMainLike, deps: ProjectSettingsDeps
         path: await deps.backend.exportDiagnostics(target, at),
       } satisfies DesktopExportResult;
     } catch (e) {
-      const msg = e instanceof Error ? `${sanitizeErrorName(e.name)}：${e.message}` : String(e);
+      // 前缀「导出失败：」由界面加，这里只给原因
       return {
         ok: false,
-        reason: sanitizeSyncErrorMessage(`导出失败：${msg}`, deps.env, EXPORT_REASON_MAX),
+        reason: sanitizeSyncErrorMessage(errorDetail(e), deps.env, EXPORT_REASON_MAX),
       } satisfies DesktopExportResult;
     }
   });

@@ -1,7 +1,7 @@
 // T-071：主管 1:1 对话的主进程侧——把 10 的 chat() 包成不抛过 IPC 的结果，失败原因脱敏截断。
 import type { ChatReply, UserMessage } from "@bakacoding/supervisor";
 import type { DesktopChatResult } from "../shared/api.js";
-import { sanitizeErrorName, sanitizeSyncErrorMessage } from "./sync-state.js";
+import { errorDetail, sanitizeSyncErrorMessage } from "./sync-state.js";
 
 /** ok:false 时 reason 的上限（与同步错误同一套脱敏：先换密钥值，再 light，最后截断）。 */
 export const CHAT_REASON_MAX = 2000;
@@ -43,9 +43,7 @@ export async function runSupervisorChat(
     const reply = await chat({ ...message, text });
     return { ok: true, reply };
   } catch (e) {
-    const name = sanitizeErrorName(e instanceof Error ? e.name : "Error");
-    const msg = e instanceof Error ? e.message : String(e);
-    return { ok: false, reason: sanitizeChatReason(`主管回复失败（${name}）：${msg}`, env) };
+    return { ok: false, reason: sanitizeChatReason(`主管回复失败：${errorDetail(e)}`, env) };
   }
 }
 

@@ -1,5 +1,6 @@
 // T-067：9 的定时同步状态（syncState()）在界面上的文案。
 import type { DesktopSyncState } from "../../shared/api.js";
+import { stripErrorNoise } from "../../shared/error-text.js";
 
 export const SYNC_AUTH_STOPPED_HINT = "鉴权失败，同步已停止，请检查 GITHUB_TOKEN";
 
@@ -65,7 +66,9 @@ export function describeSyncState(
       ? `${formatClock(state.next_at)}（${formatDuration(nextMs)}后）`
       : null;
   const errorDetail = state.last_error
-    ? `${state.last_error.name}：${state.last_error.message}`
+    ? state.last_error.name === "Error"
+      ? stripErrorNoise(state.last_error.message)
+      : `${state.last_error.name}：${stripErrorNoise(state.last_error.message)}`
     : null;
 
   if (state.disabled_reason === "auth") {

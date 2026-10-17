@@ -11,6 +11,7 @@ import { useDesktopData } from "./data/useDesktopData";
 import { usePendingHighRisk } from "./data/usePendingHighRisk";
 import { useSyncState } from "./data/useSyncState";
 import { useProjectActions } from "./data/useProjectActions";
+import { useBackendReadonly } from "./data/useBackendReadonly";
 import { SettingsPanel } from "./components/SettingsPanel";
 import * as mock from "./mock/data";
 import type {
@@ -57,6 +58,7 @@ export function App(props: AppProps) {
   const highRisk = usePendingHighRisk(api, props.pendingHighRisk ?? []);
   const syncState = useSyncState(api, props.syncState ?? null);
   const actions = useProjectActions(api, props.onReload);
+  const backendReadonly = useBackendReadonly(api);
 
   const [selection, setSelection] = useState<Selection>({ kind: "supervisor" });
   const [sidebarOpen, setSidebarOpen] = useState(false); // 默认关闭
@@ -115,7 +117,11 @@ export function App(props: AppProps) {
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <HighRiskPanel items={panelItems} onDecide={highRisk.decide} />
           {selection.kind === "unattributed" ? (
-            <UnattributedPanel escalations={unattributed} warnings={unattributedWarnings} />
+            <UnattributedPanel
+              escalations={unattributed}
+              warnings={unattributedWarnings}
+              readonly={backendReadonly}
+            />
           ) : actions.settingsOpen ? (
             <SettingsPanel
               settings={actions.settings}
@@ -140,6 +146,7 @@ export function App(props: AppProps) {
                 view={current}
                 calls={flashCalls}
                 sidebarOpen={sidebarOpen}
+                readonly={backendReadonly}
                 onToggleSidebar={() => setSidebarOpen((o) => !o)}
               />
               {/* 选中项目时也能和主管说话，消息带上这个项目（T-072） */}

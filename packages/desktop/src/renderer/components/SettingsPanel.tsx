@@ -35,7 +35,9 @@ export function SettingsPanel({
           <ArrowLeft strokeWidth={1.5} />
           返回
         </Button>
-        <span className="text-sm font-medium">设置（只读）</span>
+        <span className="text-sm font-medium" data-testid="settings-title">
+          {settings?.mode === "readonly" ? "设置（只读）" : "设置"}
+        </span>
       </header>
       <div className="space-y-5 overflow-y-auto px-4 py-4 text-sm">
         {error && (
