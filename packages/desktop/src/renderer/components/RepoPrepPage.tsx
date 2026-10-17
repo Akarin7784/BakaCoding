@@ -454,7 +454,7 @@ function CommitBody({
       {missing.length > 0 && (
         <section aria-label="Git 身份" data-testid="identity-form" className="flex flex-col gap-2">
           <h3 className="font-medium">
-            {missing.length === 2 ? "还没设置 Git 身份" : `还没设置${IDENTITY_LABEL[missing[0]!]}`}
+            {missing.length === 2 ? "还没设置 Git 身份" : `还没设置 ${IDENTITY_LABEL[missing[0]!]}`}
           </h3>
           {missing.map((f) => (
             <label key={f} className="flex flex-col gap-1">

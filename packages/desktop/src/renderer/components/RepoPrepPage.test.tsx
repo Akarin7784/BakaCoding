@@ -234,7 +234,7 @@ describe("项目准备页（UI-03a）", () => {
     fireEvent.click(await screen.findByRole("button", { name: "创建首次提交" }));
     const dlg = await screen.findByRole("dialog");
     const form = await within(dlg).findByTestId("identity-form");
-    expect(form.textContent).toContain("还没设置Git 邮箱");
+    expect(form.textContent).toContain("还没设置 Git 邮箱");
     expect(within(dlg).queryByLabelText("Git 用户名")).toBeNull();
     expect(dlg.textContent).not.toContain("git config");
     const submit = within(dlg).getByRole("button", { name: "提交 2 个文件" }) as HTMLButtonElement;
