@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { cleanupMergedWorktrees, isGitLockError } from "./cleanup.js";
+import { cleanupGitEnv, cleanupMergedWorktrees, isGitLockError } from "./cleanup.js";
 import { withGitWriteLock } from "./git-lock.js";
 import { WorktreeManager } from "./worktree.js";
 
@@ -171,6 +171,53 @@ describe("cleanupMergedWorktrees（T-094）", () => {
     } finally {
       rmSync(notRepo, { recursive: true, force: true });
     }
+  });
+
+  it("设了 GIT_DIR / GIT_INDEX_FILE 也不会动到别的仓库，目标仓库照常清理", async () => {
+    const other = realpathSync(mkdtempSync(join(tmpdir(), "bc-clean-other-")));
+    const og = (...a: string[]) => execFileSync("git", a, { cwd: other, encoding: "utf8" }).trim();
+    try {
+      og("init", "-q", "-b", "main");
+      og("config", "user.email", "t@example.com");
+      og("config", "user.name", "t");
+      writeFileSync(join(other, "o.txt"), "o\n");
+      og("add", ".");
+      og("commit", "-qm", "init");
+      og("branch", INT);
+      og("branch", "bakacoding/T-9-r0"); // 同名分支，已包含在集成分支里
+      const m = await WorktreeManager.open(repo);
+      const r0 = await m.createWorktree("T-9", "HEAD", 0);
+      const saved = { dir: process.env.GIT_DIR, idx: process.env.GIT_INDEX_FILE };
+      process.env.GIT_DIR = join(other, ".git");
+      process.env.GIT_INDEX_FILE = join(other, ".git", "index");
+      let res;
+      try {
+        res = await cleanupMergedWorktrees(repo, "T-9", { merged_into: INT, ...fast });
+      } finally {
+        if (saved.dir === undefined) delete process.env.GIT_DIR;
+        else process.env.GIT_DIR = saved.dir;
+        if (saved.idx === undefined) delete process.env.GIT_INDEX_FILE;
+        else process.env.GIT_INDEX_FILE = saved.idx;
+      }
+      expect(res.errors).toEqual([]);
+      expect(res.removed_worktrees).toEqual([r0.path]);
+      expect(res.deleted_branches).toEqual(["bakacoding/T-9-r0"]);
+      expect(hasBranch("bakacoding/T-9-r0")).toBe(false);
+      expect(og("branch", "--list", "bakacoding/T-9-r0")).not.toBe("");
+      expect(og("status", "--porcelain")).toBe("");
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  it("cleanupGitEnv 剔掉所有 GIT_ 变量，只留自己加的", () => {
+    const env = cleanupGitEnv({
+      PATH: "/bin",
+      GIT_DIR: "/x",
+      git_work_tree: "/y",
+      GIT_CONFIG_COUNT: "1",
+    });
+    expect(env).toEqual({ PATH: "/bin", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" });
   });
 
   it("不删受管目录以外的 worktree", async () => {

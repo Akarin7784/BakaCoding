@@ -39,8 +39,28 @@ export interface CleanupMergedResult {
 
 export const DEFAULT_CLEANUP_RETRY_DELAYS_MS: readonly number[] = [500, 2000, 5000];
 
+/**
+ * 清理用的 git 环境（T-094）：先剔掉 process.env 里所有 `GIT_` 开头的变量（GIT_DIR、GIT_INDEX_FILE、
+ * GIT_WORK_TREE 等会把命令带到别的仓库），再显式加上自己要的：不弹凭据提示、英文输出（认锁文件错误靠
+ * stderr 文案）。配置项一律用 `-c` 只作用于单条命令。T-086（#97）的 gitEnv() 合入后由基础层换成它。
+ */
+export function cleanupGitEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(base)) {
+    if (k.toUpperCase().startsWith("GIT_")) continue;
+    env[k] = v;
+  }
+  env.GIT_TERMINAL_PROMPT = "0";
+  env.LC_ALL = "C";
+  return env;
+}
+
 async function defaultGit(cwd: string, args: string[]): Promise<string> {
-  const { stdout } = await run("git", args, { cwd, maxBuffer: 16 * 1024 * 1024 });
+  const { stdout } = await run("git", args, {
+    cwd,
+    env: cleanupGitEnv(),
+    maxBuffer: 16 * 1024 * 1024,
+  });
   return stdout.trim();
 }
 
