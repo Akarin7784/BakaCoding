@@ -247,6 +247,9 @@ export async function createDefaultDeps(
     worktrees: {
       create: (ticket_id, base, round) => worktrees.createWorktree(ticket_id, base, round),
       cleanup: (path) => worktrees.cleanup(path),
+      // T-094：合入后清理；另认 origin/<目标分支>（GitHub 模式本地集成分支可能没快进），只读不删远程
+      cleanupMerged: (ticket_id, merged_into) =>
+        worktrees.cleanupMerged(ticket_id, { merged_into, remote: "origin" }),
     },
     worktreeRoot,
     targetHead: () => integrationTargetHead(worktrees.repoRoot, BASE_BRANCH),

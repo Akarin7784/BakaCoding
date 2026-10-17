@@ -3,6 +3,7 @@
 import { isTicketActive } from "./active-tickets.js";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
+import { readdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { promisify } from "node:util";
 import type { Budget, Config } from "@bakacoding/config-budget";
@@ -10,6 +11,7 @@ import type { CoderPool } from "@bakacoding/coder-pool";
 import { createEventBus, type EventBus } from "@bakacoding/event-bus";
 import type { ModelGateway } from "@bakacoding/model-gateway";
 import {
+  INTEGRATION_BRANCH,
   PrAlreadyMergedError,
   type EventContextFn,
   type PrProvider,
@@ -49,7 +51,7 @@ import {
   type TakeOverReport,
 } from "@bakacoding/supervisor";
 import type { DiffFile, EventOf, ReviewResult, TicketStatus } from "@bakacoding/types";
-import { isUnsafeGlob, type ScopeBus } from "@bakacoding/workspace";
+import { cleanupGitEnv, isUnsafeGlob, type ScopeBus } from "@bakacoding/workspace";
 
 export type MaybePromise<T> = T | Promise<T>;
 
@@ -354,6 +356,54 @@ export async function assemble(deps: AppDeps): Promise<App> {
     return null;
   }
 
+  /**
+   * T-094：找出还留着 worktree（`<worktreeRoot>/<id>-r<n>`）或分支（`bakacoding/<id>-r<n>`）、
+   * 且 2 里已是 merged 的单，逐张调 4 的 cleanupMerged。git 调用剔掉 GIT_ 环境变量。从不抛错。
+   */
+  async function sweepMergedLeftovers(): Promise<void> {
+    const cleanupMerged = deps.worktrees.cleanupMerged;
+    if (typeof cleanupMerged !== "function") return;
+    try {
+      const repo = dirname(dirname(deps.worktreeRoot));
+      const ids = new Set<string>();
+      const NAME = /^(.+)-r\d+$/;
+      try {
+        for (const name of await readdir(deps.worktreeRoot)) {
+          const m = NAME.exec(name);
+          if (m) ids.add(m[1]!);
+        }
+      } catch {
+        // 目录不在：没有 worktree
+      }
+      const { stdout } = await promisify(execFile)(
+        "git",
+        ["for-each-ref", "--format=%(refname)", "refs/heads/bakacoding/"],
+        { cwd: repo, encoding: "utf8", env: cleanupGitEnv() },
+      );
+      for (const ref of stdout.split("\n")) {
+        const m = /^refs\/heads\/bakacoding\/(.+)-r\d+$/.exec(ref.trim());
+        if (m) ids.add(m[1]!);
+      }
+      if (!ids.size) return;
+      const into = deps.scheduler?.target ?? INTEGRATION_BRANCH;
+      for (const row of storage.listTickets()) {
+        if (row.status !== "merged" || !ids.has(row.ticket_id)) continue;
+        try {
+          const r = await cleanupMerged.call(deps.worktrees, row.ticket_id, into);
+          const errs = r && Array.isArray(r.errors) ? r.errors : [];
+          if (errs.length)
+            logger.warn(
+              `重启补清理：${row.ticket_id} 没清干净：${errs.map((e) => `${e.target}（${e.message}）`).join("；")}`,
+            );
+        } catch (err) {
+          logger.warn(`重启补清理：${row.ticket_id} 失败`, err);
+        }
+      }
+    } catch (err) {
+      logger.warn("重启补清理失败", err);
+    }
+  }
+
   const supervisor = createSupervisor({
     call: deps.call,
     getConfig: () => config,
@@ -584,6 +634,9 @@ export async function assemble(deps: AppDeps): Promise<App> {
     logger.warn(
       `重启接管：${takeOver.failed.length} 张单没接回：${takeOver.failed.map((f) => `${f.ticket_id}（${f.error}）`).join("；")}`,
     );
+  // T-094：重启补清理（接管后、定时 sync 前）：上次停机前已合入、但 worktree / 分支还留着的单补清一次。
+  // 失败只警告，不阻塞启动
+  await sweepMergedLeftovers();
   // T-064 N2：takeOver 之后才开定时 sync，避免接回前把手动合入的变化丢掉（B2）
   scheduler.startSyncLoop();
 
