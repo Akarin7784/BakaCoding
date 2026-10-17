@@ -3,7 +3,10 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme } from "electron";
+import * as configBudget from "@bakacoding/config-budget";
 import { SECRET_MARKER_FILE } from "@bakacoding/config-budget";
+import { checkRepo, ensureExcludeLines, writeConfig } from "@bakacoding/app";
+import { configFixHandlers, configTemplateDir, writePricingFrom } from "./config-fix.js";
 import { lastRepoForStart, resolveRepoDbPath, startBackend, type RepoSource } from "./backend.js";
 import {
   notifyAppQuitting,
@@ -181,6 +184,19 @@ if (!gotLock) {
       repoRoot: () => backend.repoRoot(),
       repoSource: () => backend.status().repoSource,
       reconnect: () => backend.reconnect(),
+      // T-113：生成配置；模板在 exe 旁边的 config-templates/（开发时用仓库根的 config/）
+      config: configFixHandlers({
+        repoRoot: () => backend.repoRoot(),
+        repoSource: () => backend.status().repoSource,
+        reconnect: () => backend.reconnect(),
+        argv: process.argv,
+        env: process.env,
+        templateDir: configTemplateDir(app.isPackaged, process.execPath, here),
+        checkRepo: (root) => checkRepo(root),
+        writeConfig,
+        writePricing: writePricingFrom(configBudget),
+        ensureExcludeLines,
+      }),
     });
     // UI-03b：密钥项与测试连接；标记文件放 userData（不在仓库里），值只交给 3
     const stopSecretProvider = serveSecretProvider(ipcMain, {

@@ -26,7 +26,12 @@ import {
 } from "./backend.js";
 import { BackendSwitcher } from "./backend-switcher.js";
 import type { IpcMainLike } from "./ipc.js";
-import { checkProjectDir, repoLockedBy, REPO_LOCKED_REASON } from "./project-import.js";
+import {
+  checkProjectDir,
+  inspectConfig,
+  repoLockedBy,
+  REPO_LOCKED_REASON,
+} from "./project-import.js";
 import { inside } from "./project-settings-ipc.js";
 import { copyExclusive, NotifyBuffer } from "./backend.js";
 import type { App } from "@bakacoding/app";
@@ -142,24 +147,31 @@ describe("checkProjectDir（T-072）", () => {
     expect(checkProjectDir(repo({ git: false }), env)).toEqual({ ok: true, notGit: true });
   });
 
-  it("缺配置文件：missing 列出并写中文原因；不是 git 仓库不算缺（UI-03b）", () => {
-    const r = checkProjectDir(repo({ git: false, models: false, pricing: false }), env);
-    expect(r).toEqual({
-      ok: false,
-      missing: ["config/models.json", "config/pricing.json"],
-      reason: "缺少 config/models.json；缺少 config/pricing.json",
+  it("T-113：缺配置文件不再拦导入，带 configNeedsPrep（导入后在准备页「生成配置」）", () => {
+    const r = repo({ git: false, models: false, pricing: false });
+    expect(checkProjectDir(r, env)).toEqual({ ok: true, notGit: true, configNeedsPrep: true });
+    expect(inspectConfig(r, env)).toEqual({
+      models: "missing",
+      pricing: "missing",
+      models_external: false,
+      errors: [],
     });
-    const r2 = checkProjectDir(repo({ pricing: false }), env);
-    expect(r2.ok === false && r2.missing).toEqual(["config/pricing.json"]);
+    const r2 = repo({ pricing: false });
+    expect(checkProjectDir(r2, env)).toEqual({ ok: true, configNeedsPrep: true });
+    expect(inspectConfig(r2, env)).toMatchObject({ models: "ok", pricing: "missing" });
   });
 
-  it("models.json 不合法 / pricing.json 坏：用 3 的 validate / loadPricing，错误脱敏", () => {
+  it("models.json 不合法 / pricing.json 坏：照样导入；inspectConfig 用 3 的 validate / loadPricing，错误脱敏", () => {
     const r = repo();
     writeFileSync(join(r, "config", "models.json"), JSON.stringify({ token: FAKE_GH }));
     writeFileSync(join(r, "config", "pricing.json"), `{"x": "${FAKE_DS}"}`);
-    const c = checkProjectDir(r, { DEEPSEEK_API_KEY: FAKE_DS });
-    expect(c.ok).toBe(false);
-    if (c.ok) return;
+    expect(checkProjectDir(r, { DEEPSEEK_API_KEY: FAKE_DS })).toEqual({
+      ok: true,
+      configNeedsPrep: true,
+    });
+    const ic = inspectConfig(r, { DEEPSEEK_API_KEY: FAKE_DS });
+    expect(ic).toMatchObject({ models: "invalid", pricing: "invalid", models_external: false });
+    const c = { reason: ic.errors.join("\n") };
     expect(c.reason).toContain("config/models.json");
     expect(c.reason).toContain("config/pricing.json 校验失败");
     expect(c.reason).not.toContain(FAKE_DS);
@@ -470,8 +482,9 @@ describe("project:import / diagnostics:export / settings:get IPC（T-072）", ()
     const c2 = deps({ pickDirectory: async () => bad });
     serveProjectSettings(ipc2, c2.d);
     const r2 = await invoke2<{ ok: boolean; missing?: string[] }>(IPC_CHANNELS.projectImport);
-    expect(r2.missing).toEqual(["config/models.json"]);
-    expect(c2.backend.switchTo).not.toHaveBeenCalled();
+    // T-113：缺 config/models.json 不再拦导入（导入后在准备页生成）
+    expect(r2.missing).toBeUndefined();
+    expect(c2.backend.switchTo).toHaveBeenCalledWith(path.resolve(bad));
 
     const good = repo();
     const { ipc: ipc3, invoke: invoke3, handlers } = fakeIpc();
@@ -963,23 +976,24 @@ describe("评审跟进（T-072 #82）", () => {
   it("BAKACODING_CONFIG 为空串：当没设，查仓库里的 config/models.json", () => {
     const r = repo({ models: false });
     const c = checkProjectDir(r, { ...env, BAKACODING_CONFIG: "" });
-    expect(c).toEqual({
-      ok: false,
-      missing: ["config/models.json"],
-      reason: "缺少 config/models.json",
+    // T-113：仓库里的 models.json 缺了能在准备页生成，不拦导入
+    expect(c).toEqual({ ok: true, configNeedsPrep: true });
+    expect(inspectConfig(r, { ...env, BAKACODING_CONFIG: "" })).toMatchObject({
+      models: "missing",
+      models_external: false,
     });
   });
 });
 
-describe("T-100：导入检查的 JSON / 价格表错误不带原文和路径", () => {
+describe("T-100（T-113 起在 inspectConfig）：配置的 JSON / 价格表错误不带原文和路径", () => {
   const MARK = "MARKER_raw_text_q9";
 
   it("models.json 坏 JSON 有位置：只报行列号，不拼 Node 的 message", () => {
     const r = repo();
     writeFileSync(join(r, "config", "models.json"), `{\n  "${MARK}": 1 "b": 2}`);
-    const c = checkProjectDir(r, env);
-    expect(c.ok).toBe(false);
-    if (c.ok) return;
+    // T-113：本仓库的配置坏了不再拦导入，错误改在准备页「模型配置」项里给（inspectConfig）
+    expect(checkProjectDir(r, env)).toEqual({ ok: true, configNeedsPrep: true });
+    const c = { reason: inspectConfig(r, env).errors.join("\n") };
     expect(c.reason).toContain("config/models.json 不是合法 JSON（第 2 行第 ");
     expect(c.reason).not.toContain("position");
     expect(c.reason).not.toContain("Expected");
@@ -989,9 +1003,9 @@ describe("T-100：导入检查的 JSON / 价格表错误不带原文和路径", 
   it("models.json 坏 JSON 没有位置：只说不是合法 JSON，原文片段不出现", () => {
     const r = repo();
     writeFileSync(join(r, "config", "models.json"), `{\n  "a": ${MARK} }`);
-    const c = checkProjectDir(r, env);
-    expect(c.ok).toBe(false);
-    if (c.ok) return;
+    // T-113：本仓库的配置坏了不再拦导入，错误改在准备页「模型配置」项里给（inspectConfig）
+    expect(checkProjectDir(r, env)).toEqual({ ok: true, configNeedsPrep: true });
+    const c = { reason: inspectConfig(r, env).errors.join("\n") };
     expect(c.reason).toContain("config/models.json 不是合法 JSON");
     expect(c.reason).not.toContain(MARK);
     expect(c.reason).not.toContain("Unexpected");
@@ -1001,9 +1015,9 @@ describe("T-100：导入检查的 JSON / 价格表错误不带原文和路径", 
     const r = repo();
     rmSync(join(r, "config", "models.json"));
     mkdirSync(join(r, "config", "models.json"));
-    const c = checkProjectDir(r, env);
-    expect(c.ok).toBe(false);
-    if (c.ok) return;
+    // T-113：本仓库的配置坏了不再拦导入，错误改在准备页「模型配置」项里给（inspectConfig）
+    expect(checkProjectDir(r, env)).toEqual({ ok: true, configNeedsPrep: true });
+    const c = { reason: inspectConfig(r, env).errors.join("\n") };
     expect(c.reason).toContain("config/models.json 读取失败（EISDIR）");
     expect(c.reason).not.toContain("illegal operation");
     expect(c.reason).not.toContain(r);
@@ -1012,9 +1026,9 @@ describe("T-100：导入检查的 JSON / 价格表错误不带原文和路径", 
   it("pricing.json 坏：直接用 3 的 ConfigError 各条（只有文件名和行列号），不带原文和完整路径", () => {
     const r = repo();
     writeFileSync(join(r, "config", "pricing.json"), `{\n  "a": ${MARK} }`);
-    const c = checkProjectDir(r, env);
-    expect(c.ok).toBe(false);
-    if (c.ok) return;
+    // T-113：本仓库的配置坏了不再拦导入，错误改在准备页「模型配置」项里给（inspectConfig）
+    expect(checkProjectDir(r, env)).toEqual({ ok: true, configNeedsPrep: true });
+    const c = { reason: inspectConfig(r, env).errors.join("\n") };
     expect(c.reason).toContain("config/pricing.json 校验失败：价格表 pricing.json 不是合法 JSON");
     expect(c.reason).not.toContain("配置校验失败：\n");
     expect(c.reason).not.toContain(MARK);
@@ -1171,9 +1185,14 @@ describe("导入不是 Git 仓库的文件夹（UI-03b）", () => {
     expect(saveLastRepo).toHaveBeenCalledWith(path.resolve(b));
   });
 
-  it("project:import IPC：非 Git 又缺配置仍然拒绝，不切换", async () => {
+  it("T-113：project:import IPC：非 Git 又缺配置也导入，进准备页（不再拒绝）", async () => {
     const b = repo({ git: false, pricing: false });
-    const switchTo = vi.fn();
+    const switchTo = vi.fn(async () => ({
+      ok: false as const,
+      switched: true as const,
+      needsPrep: true as const,
+      reason: "这个文件夹还不是 Git 仓库",
+    }));
     const { ipc, invoke } = fakeIpc();
     serveProjectSettings(ipc, {
       backend: {
@@ -1192,8 +1211,8 @@ describe("导入不是 Git 仓库的文件夹（UI-03b）", () => {
     });
     await expect(invoke(IPC_CHANNELS.projectImport)).resolves.toMatchObject({
       ok: false,
-      missing: ["config/pricing.json"],
+      needsPrep: true,
     });
-    expect(switchTo).not.toHaveBeenCalled();
+    expect(switchTo).toHaveBeenCalledWith(path.resolve(b));
   });
 });

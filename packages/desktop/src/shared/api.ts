@@ -57,6 +57,8 @@ export const IPC_CHANNELS = {
   repoInitialCommit: "bakacoding:repo:initial-commit",
   /** invoke：从当前分支新建 main（UI-03a，4 的 createMainBranch）；成功后自动 backend:reconnect。 */
   repoCreateMain: "bakacoding:repo:create-main",
+  /** invoke（T-113）：生成配置——缺的或不合法的 config/models.json、config/pricing.json 用安装包模板生成；成功后自动 backend:reconnect。 */
+  repoInitConfig: "bakacoding:repo:init-config",
   /** invoke（UI-03b，UI-07 复用）：密钥状态 / 保存 / 清除，接 3 的 secretStatus / setUserSecret / clearUserSecret。 */
   secretStatus: "bakacoding:secret:status",
   secretSet: "bakacoding:secret:set",
@@ -188,6 +190,20 @@ export interface DesktopRepoCheck {
   identity: { name: boolean; email: boolean };
 }
 
+/** 单个配置文件的状态（T-113）：ok / 不存在 / 内容不合法（读不到、不是 JSON、校验不过都算 invalid）。 */
+export type DesktopConfigFileState = "ok" | "missing" | "invalid";
+
+/**
+ * 准备页「生成配置」项（T-113）。models_external：models.json 用的是 `--config` / BAKACODING_CONFIG 指定的文件，
+ * 准备页不生成它；errors 是脱敏后的字段错误（不含配置值和路径），最多 MAX_CONFIG_ERRORS 条。
+ */
+export interface DesktopConfigCheck {
+  models: DesktopConfigFileState;
+  pricing: DesktopConfigFileState;
+  models_external: boolean;
+  errors: string[];
+}
+
 /** Git 身份：只写进本仓库 .git/config。 */
 /** UI-03b（接 T-108）：可以只给 name 或只给 email，至少一项；只写本仓库 .git/config。 */
 export interface DesktopGitIdentity {
@@ -217,9 +233,50 @@ export interface DesktopRepoFixFailure {
   reason: string;
 }
 
+/** repo:init-config 的参数（T-113）：要写 models.json 时 daily_micro_usd 必填；要覆盖不合法的文件时 confirm_overwrite 必须为 true。 */
+export interface DesktopInitConfigRequest {
+  daily_micro_usd?: number;
+  confirm_overwrite?: boolean;
+}
+
+/** repo:init-config 失败码（T-113）：reason 是 shared/config-text.ts 的固定文案；errors 只在 verify_failed / write_failed 时给（已脱敏）。 */
+export interface DesktopConfigFixFailure {
+  ok: false;
+  code:
+    | "cwd_repo"
+    | "not_git"
+    | "nested_repo"
+    | "external_config"
+    | "invalid_budget"
+    | "confirm_required"
+    | "unsafe_path"
+    | "template_missing"
+    | "unavailable"
+    | "write_failed"
+    | "verify_failed"
+    | "failed";
+  reason: string;
+  errors?: string[];
+}
+
+/**
+ * repo:init-config 成功（T-113）：written 是这次写了的文件；backups 是备份文件名（只给文件名，不带路径）；
+ * excluded：生成的文件和备份已写进 .git/info/exclude（不提交进仓库）。
+ */
+export type DesktopConfigFixResult =
+  | {
+      ok: true;
+      written: ("models" | "pricing")[];
+      backups: string[];
+      excluded: boolean;
+      reload: DesktopReloadResult;
+    }
+  | DesktopConfigFixFailure;
+
 /** `folder`：仓库根的最后一级文件夹名（basename，不带上级路径），给准备页标题和确认框显示。 */
 export type DesktopRepoCheckResult =
-  { ok: true; check: DesktopRepoCheck; folder: string } | DesktopRepoFixFailure;
+  | { ok: true; check: DesktopRepoCheck; folder: string; config?: DesktopConfigCheck }
+  | DesktopRepoFixFailure;
 
 /** 首次提交会带上的文件（相对仓库根、posix 分隔符）与默认排除的文件。 */
 export type DesktopRepoFilesResult =
@@ -342,6 +399,8 @@ export interface BakaDesktopApi {
   initialCommit?(req: DesktopInitialCommitRequest): Promise<DesktopRepoFixResult>;
   /** 从当前分支新建 main（UI-03a）。 */
   createMainBranch?(): Promise<DesktopRepoFixResult>;
+  /** 生成配置（T-113）。 */
+  initConfig?(req: DesktopInitConfigRequest): Promise<DesktopConfigFixResult>;
   /** 密钥状态（UI-03b）：只回是否已设、来源、末 4 位，绝不回值。 */
   secretStatus?(name: DesktopSecretName): Promise<DesktopSecretStatusResult>;
   /** 保存密钥（UI-03b）：值只经这一次调用传到主进程，主进程绝不回传。 */

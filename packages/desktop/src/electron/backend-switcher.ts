@@ -18,7 +18,9 @@ export type SwitchResult =
 export function needsRepoPrep(st: BackendStatus): boolean {
   if (st.mode !== "readonly" || !st.error) return false;
   const { name, code } = st.error;
-  if (code === "not_git") return true;
+  // T-113：嵌套仓库（给提示）和本仓库缺配置 / 配置不合法（「生成配置」）也进准备页
+  if (code === "not_git" || code === "nested_repo") return true;
+  if (code === "config_missing" || code === "config_invalid") return true;
   return name === "RepoNotReadyError" && (code === "no_commits" || code === "no_main");
 }
 

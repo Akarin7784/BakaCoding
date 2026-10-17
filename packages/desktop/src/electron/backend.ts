@@ -46,10 +46,17 @@ import { backendErrorDetail } from "./backend-error.js";
 import { sanitizeReloadReason } from "./backend-switcher.js";
 import { errorDetail, toDesktopSyncState, unavailableSyncState } from "./sync-state.js";
 
+import { CONFIG_ENV, configFixable, inspectConfig, resolveConfigPath } from "./config-inspect.js";
+import {
+  CONFIG_INVALID_REASON,
+  CONFIG_MISSING_REASON,
+  NESTED_REPO_REASON,
+} from "../shared/config-text.js";
+
+export { CONFIG_ENV, resolveConfigPath } from "./config-inspect.js";
+
 /** 仓库路径：`--repo` > BAKACODING_REPO > 上次导入 > cwd */
 export const REPO_ENV = "BAKACODING_REPO";
-/** 配置路径：`--config` > BAKACODING_CONFIG > `<repo>/config/models.json` */
-export const CONFIG_ENV = "BAKACODING_CONFIG";
 
 export type BackendMode = "live" | "readonly";
 
@@ -253,21 +260,6 @@ export function resolveRepoPath(
   return resolveRepoSource(argv, env, cwd, lastRepo).root;
 }
 
-export function resolveConfigPath(
-  argv: readonly string[],
-  env: Readonly<Record<string, string | undefined>>,
-  repoRoot: string,
-): string {
-  let fromArg: string | undefined;
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i]!;
-    if (a.startsWith("--config=")) fromArg = a.slice("--config=".length);
-    else if (a === "--config" && argv[i + 1] !== undefined) fromArg = argv[i + 1];
-  }
-  const p = fromArg || env[CONFIG_ENV] || path.join("config", "models.json");
-  return path.isAbsolute(p) ? p : path.resolve(repoRoot, p);
-}
-
 /** `--db` / BAKACODING_DB_PATH > `<repo>/.bakacoding/bakacoding.db`（相对路径相对 repo） */
 export function resolveRepoDbPath(
   argv: readonly string[],
@@ -344,6 +336,14 @@ function takeOverCounts(r: TakeOverReport): NonNullable<BackendStatus["takeOver"
 
 /** 不是 Git 仓库时的只读原因（UI-03，对应 4 的 checkRepo `not_git`）：固定文案，不透出 git 原始输出。 */
 export const NOT_GIT_REASON = "这个文件夹还不是 Git 仓库";
+
+/** 准备页能处理的启动失败的固定原因（T-113） */
+const PREP_REASON = {
+  not_git: NOT_GIT_REASON,
+  nested_repo: NESTED_REPO_REASON,
+  config_missing: CONFIG_MISSING_REASON,
+  config_invalid: CONFIG_INVALID_REASON,
+} as const;
 /** 只读原因 / 日志里错误信息的上限 */
 export const BACKEND_LOG_DETAIL_MAX = 500;
 
@@ -529,15 +529,30 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
   /**
    * 启动错误先用 4 的 checkRepo 看是不是「不是 Git 仓库」（只读检查；查不了就按原样处理）。
    * UI-03a：缺配置 / 配置坏 / 缺密钥（ConfigError）也先查——不是 Git 仓库时按准备页的顺序先报 not_git。
+   * T-113：嵌套仓库（接 T-114 的 nested_repo）同样先报；再是 ConfigError 里本仓库配置缺了 / 不合法
+   * （准备页「生成配置」能修的）报 config_missing / config_invalid。缺密钥等别的 ConfigError 照旧。
    */
-  const isNotGitFailure = async (e: unknown): Promise<boolean> => {
-    if (e instanceof StorageLeaseError || isRepoNotReady(e)) return false;
+  const prepFailure = async (
+    e: unknown,
+  ): Promise<"not_git" | "nested_repo" | "config_missing" | "config_invalid" | null> => {
+    if (e instanceof StorageLeaseError || isRepoNotReady(e)) return null;
     try {
       const r = await (opts.checkRepo ?? checkRepoDefault)(repoRoot);
       const git = r.items.find((i) => i.id === "git");
-      return !!git && !git.ok && git.code === "not_git";
+      const code = git && !git.ok ? (git.code as string | undefined) : undefined;
+      if (code === "not_git" || code === "nested_repo") return code;
     } catch {
-      return false;
+      /* 查不了就不按 git 归类 */
+    }
+    if (!(e instanceof ConfigError)) return null;
+    try {
+      const c = inspectConfig(repoRoot, env, argv, opts.pricingPath);
+      if (!configFixable(c)) return null;
+      return c.models === "missing" || c.pricing === "missing"
+        ? "config_missing"
+        : "config_invalid";
+    } catch {
+      return null;
     }
   };
 
@@ -596,10 +611,11 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
       mode = "live";
       reason = undefined;
     } catch (e) {
-      if (await isNotGitFailure(e)) {
-        // UI-03：不是 Git 仓库——git 的原始报错（可能带路径）不进横幅、详情和日志
-        reason = NOT_GIT_REASON;
-        startError = { name: "Error", message: NOT_GIT_REASON, code: "not_git" };
+      const prep = await prepFailure(e);
+      if (prep) {
+        // UI-03：不是 Git 仓库——git 的原始报错（可能带路径）不进横幅、详情和日志；T-113 的三类同样只给固定文案
+        reason = PREP_REASON[prep];
+        startError = { name: "Error", message: reason, code: prep };
       } else {
         reason = readonlyReasonFromError(e, repoRoot, env);
         startError = backendErrorDetail(e, repoRoot, env);

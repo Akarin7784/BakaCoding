@@ -6,10 +6,13 @@ import { join } from "node:path";
 import { initialCommit } from "@bakacoding/app";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { IPC_CHANNELS, type DesktopRepoFixResult } from "../shared/api.js";
+import { NESTED_REPO_REASON } from "../shared/config-text.js";
 import { serveRepoFix, type IpcMainLike } from "./ipc.js";
 import {
   CWD_REPO_REASON,
   isSafeRelPath,
+  NESTED_REPO_FAILURE,
+  repoFixHandlers,
   parseIdentity,
   parseInitialCommit,
   repoFixFailure,
@@ -493,5 +496,94 @@ describe("仓库来源是当前工作目录时拒绝写操作（UI-03a 评审 B1
     expect(repoFolderName("C:\\Users\\eva\\proj\\")).toBe("proj");
     expect(repoFolderName("/srv/my-app/")).toBe("my-app");
     expect(repoFolderName("x".repeat(400))).toHaveLength(255);
+  });
+});
+
+describe("T-113：嵌套仓库与生成配置（接 T-114）", () => {
+  const nestedCheck = async () =>
+    ({
+      items: [{ id: "git", ok: false, code: "nested_repo", detail: "x" }],
+      current_branch: null,
+      identity: { name: false, email: false },
+    }) as never;
+
+  it("repo:init：checkRepo 说嵌套时主进程先拒绝，不调 4 的 initRepo、不 reconnect", async () => {
+    const initRepo = vi.fn(async () => {});
+    const reconnect = vi.fn(async () => ({ state: "reloaded" as const }));
+    const h = repoFixHandlers({
+      repoRoot: () => "/r",
+      repoSource: () => "last_import",
+      reconnect,
+      fns: { checkRepo: nestedCheck, initRepo },
+    });
+    await expect(h.init({})).resolves.toEqual(NESTED_REPO_FAILURE);
+    expect(NESTED_REPO_FAILURE.reason).toBe(NESTED_REPO_REASON);
+    expect(initRepo).not.toHaveBeenCalled();
+    expect(reconnect).not.toHaveBeenCalled();
+  });
+
+  it("repo:check：git 项过了才带 config；没过（含嵌套）不带", async () => {
+    const config = {
+      inspect: vi.fn(() => ({
+        models: "missing" as const,
+        pricing: "ok" as const,
+        models_external: false,
+        errors: [],
+      })),
+      initConfig: vi.fn(),
+    };
+    const okCheck = async () =>
+      ({
+        items: [{ id: "git", ok: true }],
+        current_branch: "main",
+        identity: { name: true, email: true },
+      }) as never;
+    const base = {
+      repoRoot: () => "/r/proj",
+      repoSource: () => "last_import" as const,
+      reconnect: async () => ({ state: "reloaded" as const }),
+      config,
+    };
+    await expect(
+      repoFixHandlers({ ...base, fns: { checkRepo: okCheck } }).check(),
+    ).resolves.toMatchObject({
+      ok: true,
+      config: { models: "missing" },
+    });
+    const nested = await repoFixHandlers({ ...base, fns: { checkRepo: nestedCheck } }).check();
+    expect(nested.ok && "config" in nested).toBe(false);
+    expect(config.inspect).toHaveBeenCalledTimes(1);
+  });
+
+  it("repo:init-config：来源是 cwd 拒绝；没接配置处理（旧组装）回 unavailable；否则原样交给 config-fix", async () => {
+    const initConfig = vi.fn(async () => ({
+      ok: true as const,
+      written: [],
+      backups: [],
+      excluded: false,
+      reload: { state: "reloaded" as const },
+    }));
+    const base = {
+      repoRoot: () => "/r",
+      reconnect: async () => ({ state: "reloaded" as const }),
+    };
+    const cwd = repoFixHandlers({
+      ...base,
+      repoSource: () => "cwd",
+      config: { inspect: vi.fn(), initConfig },
+    });
+    await expect(cwd.initConfig({ daily_micro_usd: 1 })).resolves.toMatchObject({
+      code: "cwd_repo",
+    });
+    expect(initConfig).not.toHaveBeenCalled();
+    const none = repoFixHandlers({ ...base, repoSource: () => "arg" });
+    await expect(none.initConfig({})).resolves.toMatchObject({ code: "unavailable" });
+    const h = repoFixHandlers({
+      ...base,
+      repoSource: () => "arg",
+      config: { inspect: vi.fn(), initConfig },
+    });
+    await h.initConfig({ daily_micro_usd: 3 });
+    expect(initConfig).toHaveBeenCalledWith({ daily_micro_usd: 3 });
   });
 });
