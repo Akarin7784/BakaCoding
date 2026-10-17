@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { EffortSchema, IsoUtcSchema, MicroUsdSchema, RoleSchema, TraceSchema } from "./common.js";
+import { TicketStatusSchema } from "./ticket.js";
 
 const Id = z.string().min(1);
 
@@ -180,6 +181,16 @@ export const TicketWarningSchema = ev("ticket_warning", {
   detail: z.string(),
 }).extend({ ticket_id: Id.describe("出警告的单号，必填") });
 
+/**
+ * 需求单状态变更（T-085）：组合根在 `tickets.setStatus` 写库成功、且状态真的变了之后发一条；
+ * 同状态重复写、写库失败、新建单子都不发。`from` 为 null 表示旧记录没有状态。单级事件，ticket_id 必须非 null。
+ */
+export const TicketStatusChangedSchema = ev("ticket_status_changed", {
+  project_id: Id,
+  from: TicketStatusSchema.nullable(),
+  to: TicketStatusSchema,
+}).extend({ ticket_id: Id.describe("状态变化的单号，必填") });
+
 export const EventSchema = z.discriminatedUnion("type", [
   ProjectCreatedSchema,
   CallCompletedSchema,
@@ -192,6 +203,7 @@ export const EventSchema = z.discriminatedUnion("type", [
   ReviewBacklogSchema,
   GroupMessageSchema,
   TicketWarningSchema,
+  TicketStatusChangedSchema,
 ]);
 export type BakaEvent = z.infer<typeof EventSchema>;
 export type EventType = BakaEvent["type"];

@@ -8,7 +8,7 @@ import { getConfig } from "@bakacoding/config-budget";
 import type { CoderPool } from "@bakacoding/coder-pool";
 import { GithubRateLimitError, type PrProvider, type TicketPrRecord } from "@bakacoding/pr";
 import { openStorage, type Storage, type TicketFields } from "@bakacoding/storage";
-import type { BakaEvent, TicketStatus } from "@bakacoding/types";
+import { EventSchema, type BakaEvent, type TicketStatus } from "@bakacoding/types";
 import { requestWriteScope } from "@bakacoding/workspace";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { assemble, type App, type AppDeps } from "./index.js";
@@ -17,6 +17,7 @@ import {
   currentTicketPr,
   judgeHighRiskOnTakeover,
   lastEscalationFrom,
+  storageTicketStatus,
 } from "./assemble.js";
 
 const examplePath = fileURLToPath(new URL("../../../config/models.example.json", import.meta.url));
@@ -1434,6 +1435,175 @@ describe("T-064 B2：adopt 发现已合入的 PR", () => {
     const { app } = await start({ storage, worktreeRoot, pr });
     expect(app.takeOver.failed.some((f) => f.ticket_id === "req-1-3")).toBe(true);
     expect(app.takeOver.merged).not.toContain("req-1-3");
+  });
+});
+
+describe("T-085 storageTicketStatus：ticket_status_changed", () => {
+  type Published = Parameters<Parameters<typeof storageTicketStatus>[2]>[0];
+  function harness(o: { saveThrows?: boolean; publishRejects?: boolean } = {}) {
+    const { storage } = setup();
+    const published: Published[] = [];
+    const warns: string[] = [];
+    let n = 0;
+    const store = {
+      getTicket: (id: string) => storage.getTicket(id),
+      saveTicket: (t: Parameters<Storage["saveTicket"]>[0]) => {
+        if (o.saveThrows) throw new Error("磁盘满了");
+        storage.saveTicket(t);
+      },
+    };
+    const tickets = storageTicketStatus(
+      store,
+      (m) => warns.push(m),
+      async (e) => {
+        if (o.publishRejects) throw new Error("总线校验失败");
+        published.push(e);
+      },
+      () => `sp-${++n}`,
+    );
+    return { storage, tickets, published, warns };
+  }
+
+  it("每次真正的迁移只发一条，from / to、单号、需求号、trace 正确；同状态重复写不发", () => {
+    const { storage, tickets, published } = harness();
+    saveTicket(storage, "T-1", "pending", fields());
+    const path: TicketStatus[] = [
+      "coding",
+      "coding",
+      "in_review",
+      "resubmitting",
+      "in_review",
+      "merge_queued",
+      "merge_queued",
+      "conflict",
+      "re_reviewing",
+      "merge_queued",
+      "merged",
+      "merged",
+    ];
+    for (const s of path) tickets.setStatus("T-1", s);
+    expect(statusOf(storage, "T-1")).toBe("merged");
+    expect(published.map((e) => [e.payload.from, e.payload.to])).toEqual([
+      ["pending", "coding"],
+      ["coding", "in_review"],
+      ["in_review", "resubmitting"],
+      ["resubmitting", "in_review"],
+      ["in_review", "merge_queued"],
+      ["merge_queued", "conflict"],
+      ["conflict", "re_reviewing"],
+      ["re_reviewing", "merge_queued"],
+      ["merge_queued", "merged"],
+    ]);
+    expect(published[0]).toEqual({
+      type: "ticket_status_changed",
+      trace_id: "tr-r",
+      span_id: "sp-1",
+      parent_span_id: "sp-t",
+      requirement_id: "req-1",
+      ticket_id: "T-1",
+      payload: { project_id: PROJECT, from: "pending", to: "coding" },
+    });
+    // 都是合法事件
+    for (const e of published)
+      expect(
+        EventSchema.safeParse({ ...e, event_id: "e", seq: 0, ts: "2026-10-18T00:00:00.000Z" })
+          .success,
+      ).toBe(true);
+  });
+
+  it("状态没变的重复写不发（pending → pending）", () => {
+    const { storage, tickets, published } = harness();
+    saveTicket(storage, "T-1", "pending", fields());
+    tickets.setStatus("T-1", "pending");
+    tickets.setStatus("T-1", "pending");
+    expect(published).toEqual([]);
+  });
+
+  it("写库抛错：错误照抛、不发事件", () => {
+    const { storage, tickets, published } = harness({ saveThrows: true });
+    saveTicket(storage, "T-1", "pending", fields());
+    expect(() => tickets.setStatus("T-1", "coding")).toThrow("磁盘满了");
+    expect(published).toEqual([]);
+    expect(statusOf(storage, "T-1")).toBe("pending");
+  });
+
+  it("找不到单：照旧记警告、跳过，不发事件", () => {
+    const { tickets, published, warns } = harness();
+    tickets.setStatus("T-x", "coding");
+    expect(published).toEqual([]);
+    expect(warns).toEqual(["写状态 coding 时找不到需求单 T-x，跳过"]);
+  });
+
+  it("旧记录没有状态时 from 为 null；fields 缺失时 trace 退回 requirement_id", () => {
+    const { storage, tickets, published } = harness();
+    storage.saveTicket({
+      ticket_id: "T-old",
+      project_id: PROJECT,
+      requirement_id: "req-9",
+      created_at: "2026-10-17T08:00:00Z",
+      ticket_text: "旧单",
+      base_commit: HEAD,
+      permission_list: [],
+      context_snippets: [],
+    });
+    tickets.setStatus("T-old", "coding");
+    expect(published).toEqual([
+      expect.objectContaining({
+        trace_id: "req-9",
+        parent_span_id: null,
+        requirement_id: "req-9",
+        ticket_id: "T-old",
+        payload: { project_id: PROJECT, from: null, to: "coding" },
+      }),
+    ]);
+  });
+
+  it("发布失败只记警告：状态照写、setStatus 不抛", async () => {
+    const { storage, tickets, warns } = harness({ publishRejects: true });
+    saveTicket(storage, "T-1", "pending", fields());
+    expect(() => tickets.setStatus("T-1", "coding")).not.toThrow();
+    expect(statusOf(storage, "T-1")).toBe("coding");
+    await vi.waitFor(() =>
+      expect(warns).toEqual(["单 T-1 发 ticket_status_changed（pending → coding）失败"]),
+    );
+  });
+});
+
+describe("T-085 组合根：8 / 9 写状态都发 ticket_status_changed", () => {
+  it("E2E：新单 pending → coding → in_review → merge_queued → merged，每次迁移一条、落库；新建单子不发", async () => {
+    const { storage, worktreeRoot } = setup();
+    const { pr } = fakePr();
+    const { app } = await start({ storage, worktreeRoot, pr });
+    await createProject(app);
+    const t = await app.supervisor.createManualTicket({
+      project_id: PROJECT,
+      ticket_text: "在 lib/a 下加 x",
+      origin: "manual",
+      write_scope: ["lib/a/**"],
+      interfaces: [],
+    });
+    await vi.waitFor(() => expect(statusOf(storage, t.ticket_id)).toBe("merged"), {
+      timeout: 5000,
+    });
+    await app.scheduler.idle();
+    const evs = () =>
+      storage
+        .queryEvents({ ticket_id: t.ticket_id, types: ["ticket_status_changed"] })
+        .filter((e) => e.type === "ticket_status_changed")
+        .sort((a, b) => a.seq - b.seq);
+    await vi.waitFor(() => expect(evs().at(-1)?.payload).toMatchObject({ to: "merged" }));
+    // coding / in_review 由 8 写，merged 由 9 写；merge_queued 8、9 都会写，第二次同状态不发
+    expect(evs().map((e) => [e.payload.from, e.payload.to])).toEqual([
+      ["pending", "coding"],
+      ["coding", "in_review"],
+      ["in_review", "merge_queued"],
+      ["merge_queued", "merged"],
+    ]);
+    for (const e of evs()) {
+      expect(e.requirement_id).toBe(t.requirement_id);
+      expect(e.payload.project_id).toBe(PROJECT);
+    }
+    expect(storage.health().ingest_failures ?? 0).toBe(0);
   });
 });
 

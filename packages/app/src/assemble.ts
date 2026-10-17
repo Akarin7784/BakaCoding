@@ -2,13 +2,14 @@
 // 不是功能模块：在编排层之上、12 之下（modules.md「组合根」一节）。
 import { isTicketActive } from "./active-tickets.js";
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { promisify } from "node:util";
 import type { Budget, Config } from "@bakacoding/config-budget";
 import type { CoderPool } from "@bakacoding/coder-pool";
-import { createEventBus, type EventBus } from "@bakacoding/event-bus";
+import { createEventBus, type EventBus, type PublishInput } from "@bakacoding/event-bus";
 import type { ModelGateway } from "@bakacoding/model-gateway";
 import {
   PrAlreadyMergedError,
@@ -49,7 +50,13 @@ import {
   type SupervisorDeps,
   type TakeOverReport,
 } from "@bakacoding/supervisor";
-import type { DiffFile, EventOf, ReviewResult, TicketStatus } from "@bakacoding/types";
+import {
+  TraceSchema,
+  type DiffFile,
+  type EventOf,
+  type ReviewResult,
+  type TicketStatus,
+} from "@bakacoding/types";
 import { gitEnv, isUnsafeGlob, REPO_GIT_TIMEOUT_MS, type ScopeBus } from "@bakacoding/workspace";
 
 export type MaybePromise<T> = T | Promise<T>;
@@ -129,10 +136,18 @@ export interface App {
   stop(): void;
 }
 
-/** 9 / 8 写 TicketStatus：读回整行、只换 status（不带 fields，2 保留原值）。 */
-function storageTicketStatus(
+/**
+ * 9 / 8 写 TicketStatus：读回整行、只换 status（不带 fields，2 保留原值）。
+ * T-085：写库成功、且状态真的变了（`row.status !== status`）之后发一条 `ticket_status_changed`；
+ * 同状态重复写、写库抛错、找不到单都不发。8 和 9 都经这里写状态，所以事件只在这一处发。
+ * 发事件不等订阅者（seq 在调用时就已分配，顺序与写库一致）；发布失败只记警告，不影响状态写入。
+ * trace 取单子 fields 里主管拆单时开的 span（在它下面开子 span）；fields 缺失或损坏时退回 trace_id = requirement_id。
+ */
+export function storageTicketStatus(
   storage: Pick<Storage, "getTicket" | "saveTicket">,
-  warn: (m: string) => void,
+  warn: (m: string, detail?: unknown) => void,
+  publish: (e: PublishInput<EventOf<"ticket_status_changed">>) => Promise<unknown>,
+  newId: () => string = randomUUID,
 ) {
   return {
     setStatus(ticket_id: string, status: TicketStatus): void {
@@ -144,6 +159,29 @@ function storageTicketStatus(
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { fields: _fields, ...rest } = row;
       storage.saveTicket({ ...rest, status });
+      const from = row.status ?? null;
+      if (from === status) return;
+      const parsed = TraceSchema.safeParse(
+        row.fields && typeof row.fields === "object" ? row.fields["trace"] : undefined,
+      );
+      const parent = parsed.success
+        ? parsed.data
+        : { trace_id: row.requirement_id, span_id: null, parent_span_id: null };
+      const fail = (err: unknown) =>
+        warn(`单 ${ticket_id} 发 ticket_status_changed（${from ?? "null"} → ${status}）失败`, err);
+      try {
+        publish({
+          type: "ticket_status_changed",
+          trace_id: parent.trace_id,
+          span_id: newId(),
+          parent_span_id: parent.span_id,
+          requirement_id: row.requirement_id,
+          ticket_id: row.ticket_id,
+          payload: { project_id: row.project_id, from, to: status },
+        }).catch(fail);
+      } catch (err) {
+        fail(err);
+      }
     },
   };
 }
@@ -320,7 +358,12 @@ export async function assemble(deps: AppDeps): Promise<App> {
   unsubs.push(storage.attach(bus, { onError: (e) => onError(e, "storage.attach") }));
 
   const store = storage.prStore<PrRecord>() as PrStore;
-  const tickets = storageTicketStatus(storage, (m) => logger.warn(m));
+  const tickets = storageTicketStatus(
+    storage,
+    (m, d) => logger.warn(m, d),
+    (e) => bus.publish(e),
+    deps.newId,
+  );
   const granted = eventLogGrantedScopes(storage);
   const publish = (e: Parameters<EventBus["publish"]>[0]) => bus.publish(e);
 
