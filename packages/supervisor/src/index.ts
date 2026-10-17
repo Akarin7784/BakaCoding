@@ -11,6 +11,7 @@ export {
   type Supervisor,
   type SupervisorDeps,
   type SupervisorTicket,
+  type TakeOverReport,
   type TicketOrigin,
   type TicketValidationError,
   type UserMessage,

@@ -1,0 +1,27 @@
+{
+  "name": "@bakacoding/app",
+  "version": "0.0.0",
+  "private": true,
+  "description": "组合根：把 0/2/3/6 与编排层 8/9/10 装到同一条事件总线上（不是功能模块）",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "@bakacoding/coder-pool": "workspace:*",
+    "@bakacoding/config-budget": "workspace:*",
+    "@bakacoding/event-bus": "workspace:*",
+    "@bakacoding/model-gateway": "workspace:*",
+    "@bakacoding/pr": "workspace:*",
+    "@bakacoding/review-pool": "workspace:*",
+    "@bakacoding/scheduler": "workspace:*",
+    "@bakacoding/storage": "workspace:*",
+    "@bakacoding/sub-agent": "workspace:*",
+    "@bakacoding/supervisor": "workspace:*",
+    "@bakacoding/types": "workspace:*",
+    "@bakacoding/workspace": "workspace:*"
+  }
+}

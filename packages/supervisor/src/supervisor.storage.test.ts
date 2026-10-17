@@ -202,3 +202,147 @@ describe("对真实存储（openStorage）", () => {
     expect(warns[0]).toContain("没有结构化字段");
   });
 });
+
+describe("T-041a 重启接管 takeOver（真实存储）", () => {
+  it("本进程已交给 9 的单不重复 enqueue；enqueue 出错记进 failed、不影响其余单；已合入的依赖去掉", async () => {
+    const path = tmpDb();
+    const s = open(path);
+    seedProject(s);
+    const warns: string[] = [];
+    const first = supervisorOn(s, [], warns);
+    const a = await first.sup.createManualTicket({
+      project_id: "demo-1234",
+      ticket_text: "做 A",
+      origin: "manual",
+      write_scope: ["lib/a/**"],
+      interfaces: [],
+    });
+    const b = await first.sup.createManualTicket({
+      project_id: "demo-1234",
+      ticket_text: "做 B",
+      origin: "manual",
+      write_scope: ["lib/b/**"],
+      interfaces: [],
+      depends_on: [a.ticket_id],
+    });
+    // 同一进程：两张都已入队，接管什么都不做
+    expect((await first.sup.takeOver()).enqueued).toEqual([]);
+    expect(first.enqueued).toEqual([a.ticket_id, b.ticket_id]);
+
+    // 「重启」：A 已合入，B 停在 coding
+    s.saveTicket({ ...s.getTicket(a.ticket_id)!, status: "merged" });
+    s.saveTicket({ ...s.getTicket(b.ticket_id)!, status: "coding" });
+    const got: Array<{ id: string; deps: string[] | undefined }> = [];
+    let fail = true;
+    const { sup } = supervisorWithEnqueue(s, (t) => {
+      if (fail) {
+        fail = false;
+        throw new Error("9 不接");
+      }
+      got.push({ id: t.ticket_id, deps: t.depends_on });
+    });
+    const r1 = await sup.takeOver();
+    expect(r1.merged).toEqual([a.ticket_id]);
+    expect(r1.enqueued).toEqual([]);
+    expect(r1.failed).toEqual([{ ticket_id: b.ticket_id, error: "9 不接" }]);
+    const r2 = await sup.takeOver();
+    expect(r2.enqueued).toEqual([b.ticket_id]);
+    expect(got).toEqual([{ id: b.ticket_id, deps: [] }]);
+    expect((await sup.takeOver()).enqueued).toEqual([]);
+  });
+});
+
+describe("T-041a takeOver 与 adopt", () => {
+  it("没注入 adopt 时已在合并队列里的单只列进 awaiting_adopt；注入后先 adopt 再 enqueue", async () => {
+    const s = open(tmpDb());
+    seedProject(s);
+    const order: string[] = [];
+    const { sup: make } = supervisorWithEnqueue(
+      s,
+      (t) => void order.push(`enqueue:${t.ticket_id}`),
+    );
+    const a = await make.createManualTicket({
+      project_id: "demo-1234",
+      ticket_text: "做 A",
+      origin: "manual",
+      write_scope: ["lib/a/**"],
+      interfaces: [],
+    });
+    const b = await make.createManualTicket({
+      project_id: "demo-1234",
+      ticket_text: "做 B",
+      origin: "manual",
+      write_scope: ["lib/b/**"],
+      interfaces: [],
+    });
+    // 「重启」：A 还在 pending（先建），B 已进合并队列
+    s.saveTicket({ ...s.getTicket(b.ticket_id)!, status: "re_reviewing" });
+    order.length = 0;
+    const r1 = await supervisorWithEnqueue(
+      s,
+      (t) => void order.push(`enqueue:${t.ticket_id}`),
+    ).sup.takeOver();
+    expect(r1.awaiting_adopt).toEqual([b.ticket_id]);
+    expect(r1.adopted).toEqual([]);
+    expect(r1.enqueued).toEqual([a.ticket_id]);
+
+    order.length = 0;
+    const withAdopt = createSupervisor({
+      ...baseDeps(s),
+      enqueue: (t) => void order.push(`enqueue:${t.ticket_id}`),
+      adopt: (t) => void order.push(`adopt:${t.ticket_id}`),
+    });
+    const r2 = await withAdopt.takeOver();
+    expect(r2.adopted).toEqual([b.ticket_id]);
+    expect(r2.awaiting_adopt).toEqual([]);
+    expect(order).toEqual([`adopt:${b.ticket_id}`, `enqueue:${a.ticket_id}`]);
+  });
+});
+
+function baseDeps(storage: Storage): SupervisorDeps {
+  let id = 0;
+  return {
+    call: async () => {
+      throw new Error("不调模型");
+    },
+    getConfig: () => ({
+      roles: { supervisor: { provider: "deepseek", model: "deepseek-flash", effort: "max" } },
+    }),
+    promptTemplate: async () => "桩模板",
+    storage,
+    enqueue: () => {},
+    publish: (e) => {
+      storage.ingest({ ...e, seq: storage.nextSeq() } as Parameters<Storage["ingest"]>[0]);
+    },
+    subscribe: () => () => {},
+    targetHead: () => "abc1234",
+    notifyUser: () => {},
+    newId: () => `${Date.now().toString(36)}z${++id}`,
+    logger: { warn: () => {} },
+  };
+}
+
+function supervisorWithEnqueue(storage: Storage, enqueue: SupervisorDeps["enqueue"]) {
+  let id = 0;
+  return {
+    sup: createSupervisor({
+      call: async () => {
+        throw new Error("不调模型");
+      },
+      getConfig: () => ({
+        roles: { supervisor: { provider: "deepseek", model: "deepseek-flash", effort: "max" } },
+      }),
+      promptTemplate: async () => "桩模板",
+      storage,
+      enqueue,
+      publish: (e) => {
+        storage.ingest({ ...e, seq: storage.nextSeq() } as Parameters<Storage["ingest"]>[0]);
+      },
+      subscribe: () => () => {},
+      targetHead: () => "abc1234",
+      notifyUser: () => {},
+      newId: () => `${Date.now().toString(36)}y${++id}`,
+      logger: { warn: () => {} },
+    }),
+  };
+}
