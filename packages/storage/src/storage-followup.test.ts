@@ -161,6 +161,27 @@ describe("T-022 a：时间按毫秒数比较", () => {
   });
 });
 
+describe("T-022 b2：旧库已有重复 seq 时升级中止", () => {
+  it("报一句能看懂的错误，库保持 v1、数据不丢", () => {
+    const path = tmpDb();
+    const raw = new Database(path);
+    raw.exec(MIGRATIONS[0] as string);
+    raw.pragma("user_version = 1");
+    const ins = raw.prepare(
+      `INSERT INTO events (event_id, seq, type, ts, trace_id, span_id, parent_span_id, requirement_id, ticket_id, project_id, payload)
+       VALUES (?, 0, 'review_backlog', '2026-10-17T06:00:00Z', 'tr', 'sp', NULL, 'R-1', NULL, NULL, '{"pending":1,"capacity":1}')`,
+    );
+    ins.run("dup-1");
+    ins.run("dup-2");
+    raw.close();
+    expect(() => openStorage({ path })).toThrow(/升级到 v2 已中止.*重复的 seq（0×2）/);
+    const check = new Database(path);
+    expect(check.pragma("user_version", { simple: true })).toBe(1);
+    expect((check.prepare("SELECT COUNT(*) AS n FROM events").get() as { n: number }).n).toBe(2);
+    check.close();
+  });
+});
+
 describe("T-022 b：events.seq 唯一", () => {
   it("不同事件占同一个 seq 报 StorageSeqConflictError，同一事件重放仍然幂等", () => {
     const s = open();
@@ -314,6 +335,32 @@ describe("T-022 e：prStore 轻脱敏并校验 kind", () => {
     expect(await store.get("pr-1")).toEqual(t);
     expect(await store.get("pr-int-1")).toEqual(i);
     expect(await store.list()).toEqual([t, i]);
+  });
+
+  it("SSH remote、路径里含 @ 的记录原样往返，不被邮箱规则误伤", async () => {
+    const s = open();
+    const store = s.prStore<PrRecord & { remote?: { number: number; url: string } }>();
+    const r = {
+      ...base,
+      worktree_path: "/Users/eva@corp.com/.bakacoding/wt/T-1",
+      repo_path: "/Users/eva@corp.com/proj",
+      merged_at: "2026-10-17T01:00:00.000Z",
+      remote: { number: 3, url: "git@github.com:o/r.git" },
+    };
+    await store.put(r);
+    expect(await store.get("pr-1")).toEqual(r);
+  });
+
+  it("结构字段里是带凭据的 URL 时整条拒写", async () => {
+    const s = open();
+    const store = s.prStore<PrRecord & { remote?: { number: number; url: string } }>();
+    await expect(
+      store.put({ ...base, remote: { number: 1, url: "https://ghp_abc@github.com/o/r.git" } }),
+    ).rejects.toThrow(/remote\.url 是带凭据的 URL/);
+    await expect(
+      store.put({ ...base, repo_path: "https://user:pass@example.com/r.git" }),
+    ).rejects.toThrow(/repo_path 是带凭据的 URL/);
+    expect(await store.get("pr-1")).toBeUndefined();
   });
 
   it("kind 只能是 ticket 或 integration", async () => {

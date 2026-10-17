@@ -195,6 +195,16 @@ export const MIGRATIONS: Migration[] = [
     }
     // 旧库里如果已经有重复 seq，这里会失败，升级中止、库保持 v1，不会悄悄丢数据
     db.exec("DROP INDEX IF EXISTS events_seq");
+    const dup = db
+      .prepare("SELECT seq, COUNT(*) AS n FROM events GROUP BY seq HAVING n > 1 LIMIT 5")
+      .all() as { seq: number; n: number }[];
+    if (dup.length > 0) {
+      throw new Error(
+        `存储升级到 v2 已中止，库保持原版本、数据未改动：events 表里有重复的 seq（${dup
+          .map((d) => `${d.seq}×${d.n}`)
+          .join("、")}），请先导出诊断包排查`,
+      );
+    }
     db.exec("CREATE UNIQUE INDEX events_seq_unique ON events(seq)");
   },
 ];

@@ -149,7 +149,30 @@ export class StorageSeqConflictError extends Error {
 /** 模块 6 允许的 PR 记录类型。 */
 export const PR_RECORD_KINDS = ["ticket", "integration"] as const;
 
-/** prStore 原样保留、不做脱敏的结构字段；其余字段按自由文本轻脱敏。 */
+const CREDENTIAL_URL = /^[a-z][a-z0-9+.-]*:\/\/[^/\s@]+@/i;
+
+function isStructuralPrField(k: string): boolean {
+  return PR_STRUCTURAL_FIELDS.has(k) || k.endsWith("_ts") || k.endsWith("_at");
+}
+
+/** 返回第一个「带凭据的 URL」所在路径；SSH 地址（git@host:o/r.git）和含 @ 的路径不算。 */
+function findCredentialUrl(v: unknown, path: string): string | undefined {
+  if (typeof v === "string") return CREDENTIAL_URL.test(v) ? path : undefined;
+  if (Array.isArray(v)) {
+    for (let i = 0; i < v.length; i++) {
+      const r = findCredentialUrl(v[i], `${path}[${i}]`);
+      if (r) return r;
+    }
+  } else if (v && typeof v === "object") {
+    for (const [k, x] of Object.entries(v)) {
+      const r = findCredentialUrl(x, `${path}.${k}`);
+      if (r) return r;
+    }
+  }
+  return undefined;
+}
+
+/** prStore 原样保留、不做脱敏的结构字段（另加所有 *_ts / *_at 时间字段）；其余字段按自由文本轻脱敏。 */
 export const PR_STRUCTURAL_FIELDS: ReadonlySet<string> = new Set([
   "pr_id",
   "kind",
@@ -161,6 +184,7 @@ export const PR_STRUCTURAL_FIELDS: ReadonlySet<string> = new Set([
   "status",
   "merged_into",
   "merge_sha",
+  "number",
   "created_ts",
   "updated_ts",
   "worktree_path",
@@ -600,11 +624,19 @@ export function openStorage(options: StorageOptions): Storage {
         `PR 记录 ${record.pr_id} 的 kind 只能是 ${PR_RECORD_KINDS.join(" / ")}，收到 ${record.kind}`,
       );
     }
-    // 结构字段（分支、sha、路径、remote 等）原样保留，6 靠它们做 merge / diff / sync，改一个字就对不上；
-    // 其余字段视为自由文本做轻脱敏。
+    // 结构字段（分支、sha、路径、remote、时间等）既不检查也不改写，6 靠它们做 merge / diff / sync；
+    // 唯一例外：URL 里带凭据（https://token@... / https://user:pass@...）时整条拒写。
+    // 其余字段视为自由文本做轻脱敏（现在还没有，以后加 title、body 时生效）。
     const stored: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(record)) {
-      stored[k] = PR_STRUCTURAL_FIELDS.has(k) ? v : deepRedact(v);
+      if (isStructuralPrField(k)) {
+        const bad = findCredentialUrl(v, k);
+        if (bad)
+          throw new TypeError(`PR 记录 ${record.pr_id} 的字段 ${bad} 是带凭据的 URL，拒绝写入`);
+        stored[k] = v;
+      } else {
+        stored[k] = deepRedact(v);
+      }
     }
     db.prepare(
       `INSERT INTO pr_records (pr_id, kind, record, saved_at) VALUES (?, ?, ?, ?)
