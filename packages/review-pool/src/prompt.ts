@@ -32,17 +32,41 @@ export function buildPrompt(template: string, input: ReviewInput, diff: Diff): s
     : `${template}\n\n${body}`;
 }
 
-/** 解析模型输出：允许包在 ```json 代码块里或前后有多余文字；不合格返回 undefined。 */
-export function parseModelOutput(output: string): ReviewModelOutput | undefined {
-  const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(output);
-  const text = fenced?.[1] ?? output;
+function tryParse(text: string): ReviewModelOutput | undefined {
+  const candidates = [text.trim()];
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
-  if (start < 0 || end <= start) return undefined;
-  try {
-    const r = ReviewModelOutputSchema.safeParse(JSON.parse(text.slice(start, end + 1)));
-    return r.success ? r.data : undefined;
-  } catch {
-    return undefined;
+  if (start >= 0 && end > start) candidates.push(text.slice(start, end + 1));
+  for (const c of candidates) {
+    try {
+      const r = ReviewModelOutputSchema.safeParse(JSON.parse(c));
+      if (r.success) return r.data;
+    } catch {
+      // 不是 JSON，试下一个
+    }
   }
+  return undefined;
+}
+
+/**
+ * 解析模型输出，按顺序试：
+ * 1. 标了 json 的代码块（多个时取第一个能通过 ReviewModelOutputSchema 校验的）；
+ * 2. 其余代码块（未标语言或其他语言），按出现顺序取第一个能通过校验的；
+ * 3. 整段文本（整段是 JSON，或取第一个 `{` 到最后一个 `}`）。
+ * 都不行返回 undefined（走 7-6 重试）。
+ */
+export function parseModelOutput(output: string): ReviewModelOutput | undefined {
+  const blocks = [...output.matchAll(/```([^\n`]*)\n([\s\S]*?)```/g)].map((m) => ({
+    lang: (m[1] ?? "").trim().split(/\s+/)[0]!.toLowerCase(),
+    body: m[2] ?? "",
+  }));
+  const ordered = [
+    ...blocks.filter((b) => b.lang === "json"),
+    ...blocks.filter((b) => b.lang !== "json"),
+  ];
+  for (const b of ordered) {
+    const r = tryParse(b.body);
+    if (r) return r;
+  }
+  return tryParse(output);
 }

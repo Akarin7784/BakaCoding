@@ -19,6 +19,12 @@ export interface ReviewInput {
   summary: string;
   /** 模块 1 call() 的 ctx；是否复投看 ctx.is_resubmit */
   ctx: CallCtx;
+  /**
+   * 可选：中止排队。排队等成员时中止会立刻退出队列并抛 signal.reason；
+   * 进入前已中止直接抛；调模型期间不打断（1 的 call() 没有 signal），
+   * 模型返回后发现已中止则丢弃结果、不写 AssignmentStore、直接抛。
+   */
+  signal?: AbortSignal;
 }
 
 /** 7 读到的配置子集；模块 3 的 Config 在结构上满足它。 */

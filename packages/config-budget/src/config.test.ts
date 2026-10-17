@@ -63,6 +63,14 @@ describe("config", () => {
       }).join(),
     ).toMatch(/concurrency_max/);
   });
+  it("pipeline.max_turns 默认 40，只接受正整数", () => {
+    expect(ConfigSchema.parse(minimal()).pipeline.max_turns).toBe(40);
+    expect(
+      ConfigSchema.parse({ ...minimal(), pipeline: { max_turns: 12 } }).pipeline.max_turns,
+    ).toBe(12);
+    for (const bad of [0, -1, 1.5, "40"])
+      expect(validate({ ...minimal(), pipeline: { max_turns: bad } }).join()).toMatch(/max_turns/);
+  });
   it("getConfig 失败抛 ConfigError", () => {
     expect(() => getConfig("/nonexistent/x.json")).toThrow(ConfigError);
   });
