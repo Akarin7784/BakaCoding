@@ -66,7 +66,6 @@ flowchart BT
 | T-009 | 工作区 createWorktree / cleanup | 4 | 基础层开发 | 已合入 | #7 | `cdb1ed7` |
 | T-010 | 受限文件工具 read / write / edit / glob / grep | 4 | 基础层开发 | 已合入 | #32 | `ece21a5` |
 | T-011 | 三级权限与写入范围申请 applyPermissions（含权限清单写入接口）；grep 防回溯、`.env.example` 只读、工具定义深冻结、模块 2 `listPrRounds` | 2、4 | 基础层开发 | 已合入 | #44 | `97c0872` |
-| T-051 | 模块 4 统一不安全 glob 判定 `isUnsafeGlob`：登记清单、越界写申请、收批准时拒绝 `..` / `.` / 绝对路径等写法 | 4 | 基础层开发 | 待评审 | #48 | — |
 | T-012 | PR 抽象接口与本地实现（含 diff 与 commitPatch） | 6 | 执行层开发 | 已合入 | #10 | `b8983a7` |
 | T-013 | 桌面界面壳子（三栏 + 假数据） | 12 | 界面与诊断开发 | 已合入 | #9 | `c8f169d` |
 | T-014 | 诊断包导出（bakacoding-diag/v1、完整脱敏、SWE-bench JSONL） | 11 | 界面与诊断开发 | 已合入 | #11 | `ea7bfcc` |
@@ -101,6 +100,7 @@ flowchart BT
 | T-045 | 模块 7 `storageRoundSource` 改用 `listPrRounds(ticket_id)`；模块 5 `runTicket` 结束时释放本单权限清单、加可选 `scope_requests` 透传给 `createTools` | 5、7 | 执行层开发 | 已合入 | #46 | `bbef27a` |
 | T-047 | 模块 6 GitHub 实现：`open` 只建本地记录（不推不开 PR），远程 PR 在第一次 `commitWorktree` 后开；`commitWorktree` 只推本单分支并开 / 复用 PR，失败保留本地提交、下次补做；没有提交的记录不开 PR（不 422）；`checks` 用 push 之后的 head sha | 6 | 执行层开发 | 已合入 | #42 | `1d0c4a9` |
 | T-049 | 桌面界面：找不到项目的 `escalated`（含合并队列的 `unattributed:<pr_id>`）进侧栏「未归属」，显示 PR 号、原因、说明；`merged_but:` 标「代码已进集成分支」 | 12 | 界面与诊断开发 | 已合入 | #41 | `865dd48` |
+| T-051 | 模块 4 统一不安全 glob 判定 `isUnsafeGlob`：登记清单、越界写申请、收批准时拒绝 `..` / `.` / 绝对路径等写法 | 4 | 基础层开发 | 待评审 | #48 | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单。
 
