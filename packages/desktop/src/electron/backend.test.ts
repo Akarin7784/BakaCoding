@@ -35,7 +35,7 @@ afterEach(() => {
 function gitRepoWithConfig(): { root: string; db: string } {
   const root = mkdtempSync(join(tmpdir(), "bc-be-"));
   dirs.push(root);
-  execFileSync("git", ["init"], { cwd: root });
+  execFileSync("git", ["init", "-b", "main"], { cwd: root });
   execFileSync("git", ["config", "user.email", "t@test"], { cwd: root });
   execFileSync("git", ["config", "user.name", "t"], { cwd: root });
   writeFileSync(join(root, "README.md"), "x\n");
