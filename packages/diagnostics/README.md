@@ -46,3 +46,7 @@ const zip_path = await exportPackage(
 - **eval_task**：按设计不落库，由 `deps.eval_tasks` 传入。
 - **费用**：按包内 `call_completed` 事件汇总，不读存储的台账表。
 - 拆单摘要、结果标签、CI check、合并结果：只有写入方保存过才有，否则字段缺省。
+
+## 需求单 `fields` 不进包（T-056）
+
+模块 2 的需求单结构化字段 `fields` 按设计不脱敏，所以诊断包不带它：存储的 `diagnosticsSource()` 不读出这一列，`buildPackage` 也只按字段白名单拼 `DiagTicket`，不展开整条记录。`storage-source.test.ts` 里有回归测试，两道各测一次。

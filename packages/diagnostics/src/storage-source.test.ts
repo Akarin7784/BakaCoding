@@ -292,3 +292,80 @@ describe("端到端：从存储导出诊断包", () => {
     expect(pkg.tickets.find((t) => t.ticket_id === "T-1")!.rounds).toHaveLength(2);
   });
 });
+
+// T-056：需求单的结构化字段 `fields`（T-055）按设计不脱敏，诊断包永远不能带上它。
+// 两道防线各测一次：存储适配器不读出 fields；就算以后数据源把它带出来，模块 11 按字段白名单拼包也不收。
+// 标记串故意不像密钥 / IP / 路径，脱敏规则抓不到：测的是白名单，不是脱敏。
+describe("需求单 fields 不进诊断包（T-056）", () => {
+  const MARK_KEY = "fieldsGuardKey7f3a";
+  const MARK_VAL = "fields-guard-marker-91c2";
+  const FIELDS = {
+    write_scope: [`src/${MARK_VAL}/**`],
+    interfaces: [MARK_VAL],
+    [MARK_KEY]: { nested: [MARK_VAL] },
+  };
+
+  async function expectNoFields(src: DiagnosticsSource) {
+    for (const scope of [
+      { kind: "ticket", ticket_id: "T-1" } as const,
+      { kind: "requirement", requirement_id: "R-1" } as const,
+    ]) {
+      const out_dir = mkdtempSync(path.join(dir, "out-"));
+      const zip_path = await exportPackage(
+        { project_id: "P-1", scope },
+        { source: src, out_dir, now: () => new Date("2026-10-17T07:00:00Z") },
+      );
+      const entries = readZip(readFileSync(zip_path));
+      expect(entries.map((e) => e.name)).toContain("tickets.jsonl");
+      for (const s of [
+        ...entries.map((e) => e.name),
+        ...entries.map((e) => e.data.toString("utf8")),
+      ]) {
+        expect(s).not.toContain(MARK_VAL);
+        expect(s).not.toContain(MARK_KEY);
+        expect(s).not.toContain('"fields"');
+      }
+      const pkg = await readPackage(zip_path);
+      expect(pkg.tickets.map((t) => t.ticket_id)).toContain("T-1");
+      for (const t of pkg.tickets) expect(Object.keys(t)).not.toContain("fields");
+    }
+  }
+
+  beforeEach(() => {
+    storage.saveTicket({
+      ticket_id: "T-1",
+      project_id: "P-1",
+      requirement_id: "R-1",
+      created_at: "2026-10-10T01:00:00Z",
+      ticket_text: "T-1 需求原文",
+      decomposition_summary: "拆单摘要",
+      status: "merged",
+      outcome: "passed_after_resubmit",
+      base_commit: SHA,
+      permission_list: [{ glob: "src/**", level: "rw" }],
+      context_snippets: [],
+      ci_checks: [],
+      fields: FIELDS,
+    });
+    // 库里确实存上了（不是靠没写进去「通过」）
+    expect(JSON.stringify(storage.getTicket("T-1")?.fields)).toContain(MARK_VAL);
+  });
+
+  it("存储适配器：diagnosticsSource() 读出的需求单不带 fields，导出的 zip 里找不到标记串", async () => {
+    const [t1] = await source.queryTickets({ project_id: "P-1", ticket_id: "T-1" });
+    expect(t1).toBeDefined();
+    expect(Object.keys(t1!)).not.toContain("fields");
+    await expectNoFields(source);
+  });
+
+  it("模块 11 白名单：数据源把 fields 带出来，包里也没有", async () => {
+    const leaky: DiagnosticsSource = {
+      queryEvents: (f) => source.queryEvents(f),
+      async queryTickets(f) {
+        return (await source.queryTickets(f)).map((t) => ({ ...t, fields: FIELDS }));
+      },
+    };
+    expect(JSON.stringify(await leaky.queryTickets({ project_id: "P-1" }))).toContain(MARK_VAL);
+    await expectNoFields(leaky);
+  });
+});
