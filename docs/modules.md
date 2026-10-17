@@ -205,7 +205,7 @@ graph BT
     - 下一次 `runTicket` 时作为反馈接在 `feedback` 后面（标题「接口变更通知…」；没有评审 feedback 时单独作 feedback），由 5 按 T-043 包进不可信区块，8 不转义；带过一次就清掉；`runTicket` 抛错时放回去；轮次记录的 `review_comments` 不含它。
     - 预算暂停时没用上的说明进 `ResumeToken.interface_notes?`，`resume` 时带回（v1 只在凭据和进程内存里，不写 2，见已知缺口）。
     - 本单还在 8 手里（没交给 9：handle 调 `submit` 之前，或冲突复投 / 重审返回结果之前）、评审期间收到影响本单的通知且评审通过：交出去之前再评审一次，不计复投、不发 `resubmit`，发一条 `report` 群消息；再评不过按普通评审复投走。编码之后才收到、还没带给编码池的说明也接在给 7 的精简摘要后面（摘要整体由 7 包进不可信区块）。
-  - **依赖类单标高风险**（T-038）：需求单 `kind: "dependency"`，或本轮 diff（6 的 `diff`）里有文件匹配 `@bakacoding/types` 的 `DEPENDENCY_MANIFEST_GLOBS`（依赖清单与锁文件，只改锁文件也算，匹配规则同 4）时为高风险：给 7 的 `ReviewInput.high_risk: true`（7 在评审提示词最前面、不可信区块之外加一段系统说明）、9 的 `submit({ …, high_risk: true })`、`merge_queued` 结果 `high_risk: true`；只打标，9 照常合并。普通单不带这个字段。
+  - **依赖类单标高风险**（T-038）：需求单 `kind: "dependency"`，或本轮 diff（6 的 `diff`）里有文件匹配 `@bakacoding/types` 的 `DEPENDENCY_MANIFEST_GLOBS`（依赖清单与锁文件，只改锁文件也算，匹配规则同 4）时为高风险：给 7 的 `ReviewInput.high_risk: true`（7 在评审提示词最前面、不可信区块之外加一段系统说明）、9 的 `submit({ …, high_risk: true })`、`merge_queued` 结果 `high_risk: true`。普通单不带这个字段。T-041c 起：判定改用评审前取的那份 6 的 diff，规则抽成导出的 `isHighRiskDiffFile(file)`（依赖清单 / 锁文件按路径判，**删除的也算**；`renamed` 一律算，因为 6 的 `DiffFile` 没有旧路径，看不出是不是把依赖文件改名走了，T-065 加 `old_path` 后只改这一处收窄），`isDependencyFile(path)` 也导出；组合根重启补判用同一个函数。9 的闸门打开时（组合根固定打开）高风险单在合并队列里扣着，等用户裁决（见 9、10）。
   - 不在 T-037 / T-038：按单设计权限和用 `sub_agent` 模型写提示词（3 的 `promptTemplate` 未提供）。
 - **依赖**：2、3（提示词模板）、4、5、6、7。
 - **对应章节**：PD §6、§7、§8、§10、§16。
@@ -238,20 +238,26 @@ graph BT
     - 同一单只派一次：已派出、还没 `submit` / 终态 / 预算暂停的单不再派，续跑也只交回一次。这也是 8 的不变量「同一单不能同时有两个 `runTicket`」在 8 之外的保证（4 的权限登记表按 `ticket_id` 释放，T-048）。
     - 写入范围扩大（T-038）：`extendScope(ticket_id, scope) → { ok: true } | { ok: false, reason }`，由 8 对范围外的越界写申请调用（9 不再订阅 `write_scope_requested`，也不发 granted / denied，答复归 8）。对本单重新加锁：成功把范围并进本单 `write_scope`；失败不改锁、发 `escalated(scope_lock_failed)`（带 `resubmit_counts`，`reason` 写冲突的单号），这时单子还在 8 手里（进队前），9 不改 TicketStatus。未登记或已终态的单返回失败。不安全的范围按与所有范围重叠处理（有在途单就失败）。
     - 换依赖（T-041b，提案 R2）：`replaceDependency(old_id, new_ids) → string[]`，由 10 重拆后调用：在 9 已登记、未到终态的单里，把 `depends_on` 里的 `old_id` 原位换成 `new_ids`（去重，跳过本单自己），返回改过的单号，再触发派单和合并循环。被换掉依赖的单原本因 `old_id` 已上报而 `held`，换完按新单的状态重新判断（`waiting` / `ready`）。只改 9 的内存，2 里的 `fields.depends_on` 由 10 自己写回。
-    - 高风险标记（T-038）：`submit({ …, high_risk? })` 记下 8 打的标，`snapshot()` 每项带 `high_risk`；只打标，不扣留。
+    - 高风险标记（T-038）：`submit({ …, high_risk? })` 记下 8 打的标，`snapshot()` 每项带 `high_risk`。
+    - 高风险闸门（T-041c，提案 R1）：`SchedulerDeps.holdHighRisk?: boolean`，默认 `false`（只打标、照常合并，**只适用于单独使用 9**；组合根固定打开）。打开后：
+      - `high_risk` 的单在合并队列里扣着：状态停在 `merge_queued`、留在队里、写入范围锁照占，选单时跳过它，不挡后面不相干的单；`snapshot()` 每项带 `held_high_risk`（闸门开、高风险、`merge_queued`、当前 PR 没放行）。
+      - 第一次扣住某个 PR 时调一次可选的 `onHighRiskHeld({ ticket_id, pr_id, requirement_id, cause })`（同一 PR 只调一次；`cause`：`submit` 评审通过刚交进来、`adopt` 重启接管接回、`resubmit` 放行后冲突复投换了新 PR）。
+      - `releaseHighRisk(ticket_id) → "released" | "already"`：记下「当前 `pr_id` 已放行」并触发合并循环；同一 PR 已放行过返回 `already`。没登记、已终态、闸门没开、不是高风险单、不在 `merge_queued` 时抛错。**放行按 `pr_id` 绑定**：之后冲突复投换了新 PR 就重新扣；放行只在进程内，重启后重新扣。
+      - `rejectHighRisk(ticket_id, detail) → Promise<void>`：先经 6 的 `close(pr_id, "高风险 PR 被用户拒绝：<detail>")` 关掉当前 PR（关不掉只调 `onError`，照常上报；6 抛 `PrAlreadyMergedError` 时抛错、不上报），再发 `escalated(high_risk_rejected, detail)`（带 `resubmit_counts`），状态写 `escalated`、放锁、清 9 自建的 worktree，下游单 `held`。没登记、已终态、不是高风险单、正在合并或后台复投 / 重审中时抛错；闸门关着也能调。
+    - 反压暂停通知（T-041c）：`backpressureState().pending_prs` 多一个 `high_risk_held`（`merge_queued` 里被闸门扣着、等用户裁决的 PR 数；闸门关时恒为 0）。可选的 `onBackpressurePaused(state)` 在派单时检测到反压从未暂停变成暂停时调一次（一直暂停着不重复调），组合根接给 10 通知用户。
     - 8 的结果：`merge_queued`（8 已 `submit`）只核对；`escalated` / `requeue_budget` 时 8 已写好状态，9 只更新内存（释放锁 / 存续跑凭据）；8 没接住的异常由 9 发 `escalated(internal_error, detail: "dispatch_error: …")`、写 `escalated`。
     - 冲突复投传 sha：先读 `targetHead()`，用这个 sha 建 `r<n+1>` worktree，同一个 sha 作 `base_commit` 交给 8；新 PR 的基线按这个 sha 在合并日志里定位。
     - 终态保护：后台任务（冲突复投、重审、续跑、派单）出错时，单子若已是终态（如 `sync` 期间已标 `merged`）不改成 `escalated`、不发上报，只调 `onError`。合并循环里本单刚合并成功、收尾失败的 `merged_but`（T-038）也不改状态：保持 `merged`，只另发 `escalated(merged_but)`。
     - 取消：`stop()` 中止传给 8 的 `signal`；被取消的 `handle` / `resume` 不上报、不改状态（续跑凭据放回）。
   - TicketStatus 的写入方（裁决）：8 只写到 `merge_queued`（含）为止，单子进入合并队列之后的所有状态（`conflict`、`resubmitting`、`re_reviewing`、预算暂停后的 `pending`、`merged`、`escalated`）都由 9 写，9 不依赖 8 写这些状态。
   - `sync()`：只处理本单当前 PR；被冲突复投取代、由 9 自己关闭的旧 PR（9 在调 `close` 之前就记下）一律跳过，不改状态、不算用户手动关闭、不进返回值；`to: merged`（用户在 GitHub 手动合并）→ `merged`（写状态失败照旧报 `escalated(merged_but)`，detail 格式同合并队列）；合并日志里这次合并的 sha 一律记空串（手动合并在合并序列里的位置未知，按发现顺序记 sha 会让以它为基线的单误判基线已含之后 9 合入的改动，跳过重审；记空串则以它为基线的单按基线未知、和目标分支 HEAD 比后保守重审）。`merge_sha` 合法（`/^[0-9a-f]{40}$/`）时只用作 `interface_changed` 的 `base_commit` 和待补发去重键，按 `onMerged` 同一套逻辑（取改动文件、算受影响单、经 `deps.bus` 发，发失败进待补发列表）发出（T-046）；缺省或不合法时不发、不拿 `targetHead()` 兜底（可能已含后续提交），只调 `onError`，状态仍是 `merged`；`to: closed`（用户手动关闭）→ `escalated`，6 已上报，9 不重复发。 每条变化单独处理，一条出错只调 `onError`，不影响其余。
-  - `backpressureState() → { paused, concurrency, reasons[], review_backlog, supervisor_backlog, pending_prs, daily_budget_exhausted }`，T-039 派单只读它：评审积压 > 容量 × `halve_at` 并发减半（至少 1），> 容量 × `pause_at` 暂停；回落到容量以下后每 `recover_interval_min` 分钟加 `recover_step` 个，直到 `concurrency_max`；主管待办 > `pipeline.supervisor_backlog_limit`、排队中（`merge_queued`）+ 评审中（`review_backlog.pending`）的 PR > `backpressure.pending_pr_limit`、当日预算用完（`daily_exhausted`）都暂停派新单；在途的单照常编码、合并，预算重置后自动恢复。`reasons` 取 `review_backlog_halve` / `review_backlog_pause` / `review_backlog_recovering` / `supervisor_backlog` / `pending_pr_limit` / `daily_budget`。
+  - `backpressureState() → { paused, concurrency, reasons[], review_backlog, supervisor_backlog, pending_prs: { merge_queued, in_review, total, limit, high_risk_held }, daily_budget_exhausted }`，T-039 派单只读它：评审积压 > 容量 × `halve_at` 并发减半（至少 1），> 容量 × `pause_at` 暂停；回落到容量以下后每 `recover_interval_min` 分钟加 `recover_step` 个，直到 `concurrency_max`；主管待办 > `pipeline.supervisor_backlog_limit`、排队中（`merge_queued`）+ 评审中（`review_backlog.pending`）的 PR > `backpressure.pending_pr_limit`、当日预算用完（`daily_exhausted`）都暂停派新单；在途的单照常编码、合并，预算重置后自动恢复。`reasons` 取 `review_backlog_halve` / `review_backlog_pause` / `review_backlog_recovering` / `supervisor_backlog` / `pending_pr_limit` / `daily_budget`。
 - **依赖**：2、3、6、8。
 - **对应章节**：PD §4、§6、§8、§9。
 - **配置字段**：`pipeline.resubmit_limits.conflict`、`backpressure.*`（T-035 新增 `backpressure.pending_pr_limit`，默认 16；默认值 16 没有实测依据，取的是 `concurrency_max` 默认值的 2 倍，待实测后再定）、`pipeline.supervisor_backlog_limit`、`pipeline.concurrency_max`（反压调的就是这个数）、`pipeline.concurrency_hard_max`。
 
 ### 10. 主管
-- **职责**：用户提需求和人工介入的唯一对接方（项目导入、设置、Git 侧栏等配置操作直接在 12 上做，不经过主管）；订阅「项目已创建」并在 1:1 里告知用户；对话（未说明项目时追问）、拆单（需求单接口声明必填；把项目决策记忆附进上下文包，记忆存在 2）、订阅「上报」处理（重拆，同一需求已重拆次数 ≥ `pipeline.resplit_limit`（默认 2）时不再重拆，交给用户；`budget_exceeded`、`internal_error` 不重拆，直接交给用户）、裁决高风险 PR；合入 main 前审集成分支整体 diff，CI 结果从 6 取（配了 CI 的须为绿），按 `main_merge` 通知用户或直接合入；把自己的待办数量作为指标写进 2；派单以「群消息」事件写入。
+- **职责**：用户提需求和人工介入的唯一对接方（项目导入、设置、Git 侧栏等配置操作直接在 12 上做，不经过主管）；订阅「项目已创建」并在 1:1 里告知用户；对话（未说明项目时追问）、拆单（需求单接口声明必填；把项目决策记忆附进上下文包，记忆存在 2）、订阅「上报」处理（重拆，同一需求已重拆次数 ≥ `pipeline.resplit_limit`（默认 2）时不再重拆，交给用户；`budget_exceeded`、`internal_error` 不重拆，直接交给用户）、裁决高风险 PR（T-041c：v1 只交用户放行 / 拒绝，主管模型不审）；合入 main 前审集成分支整体 diff，CI 结果从 6 取（配了 CI 的须为绿），按 `main_merge` 通知用户或直接合入；把自己的待办数量作为指标写进 2；派单以「群消息」事件写入。
 - **对外接口（草案）**：`chat(message) → reply`；`split(requirement) → tickets[]`（含推理摘要）；`reviewIntegration() → ok | blocked`；`mergeMain()`；事件：主管待办指标、群消息、单级警告。
   - T-040 已实现 `createSupervisor(deps) → { chat, split, start, createManualTicket, loadTicket }`，另导出 `validateWriteScope`、`SPLIT_MAX_ATTEMPTS`（3）和类型 `SupervisorDeps`、`Supervisor`、`UserMessage`、`ChatReply`、`SplitRequest`、`SplitResult`、`SupervisorTicket`、`ManualTicketInput`、`TicketOrigin`（`split` / `manual` / `test`）、`TicketValidationError`。`reviewIntegration`、`mergeMain`、主管待办指标是 T-042，上报处理和装配是 T-041。
   - 依赖全部注入：1 的 `call`（`role: "supervisor"`，`ctx.ticket_id` 为 `null`，档位取 `roles.supervisor.effort`）；3 的 `promptTemplate("supervisor")`（10 不带默认模板，提示词 = 模板 + 10 代码里的输出格式说明 `OUTPUT_SPEC.chat` / `OUTPUT_SPEC.split`（包内常量，同 7 的 `OUTPUT_SPEC` 约定，不写进 `prompts/supervisor.md`）+ 不可信区块）；2 的 `listProjects`（带 `name`）、`listDecisions`、`saveDecision`、`registerRequirement`、`saveTicket`、`getTicket`、`listTickets`（T-055，全部同步，直接传 `Pick<Storage, …>`；结构化字段 `{ write_scope, interfaces, depends_on, priority, kind, origin, trace }` 写在 `saveTicket` 的 `fields` 里，读回时按 10 的格式校验）；9 的 `enqueue`；总线的 `publish` / `subscribe`；`targetHead(project_id)`（集成分支 HEAD，作新单基线）；可选 `listFiles(project_id, commit)`（拆单上下文、判断裸目录）；`notifyUser`（1:1 出口，1:1 历史 v1 不持久化）。
@@ -281,6 +287,14 @@ graph BT
     - `enqueue` / `adopt` 抛错 → 记进 `failed: { ticket_id, error }`（截到 500 字），不影响其余单，下次 `takeOver` 再试。本进程已交给 9 的单（拆单、手动单、已接管的）不重复 `enqueue`。
   - 类型 `TakeOverReport = { enqueued, adopted, skipped_invalid, awaiting_adopt, escalated, merged: string[]; escalations: { ticket_id, action }[]; held: { ticket_id, blocked_by: string[] }[]; failed: { ticket_id, error }[] }`（`escalations`、`held` 为 T-041b 新增），单号按 `listTickets()` 顺序。`SupervisorDeps.adopt?(ticket)`（T-041a，可选）：参数是 `SchedulerTicket` 加可选 `kind`。
   - T-041b 新增的可选依赖：`closeTicketPr`、`lastEscalation`、`replaceDependency`、`timers { setTimeout, clearTimeout }`（关旧 PR 重试用）；`getConfig` 多取 `pipeline.resplit_limit`；`publish` 可发 `escalated`；`subscribe` 可订阅 `escalated`。新导出类型 `EscalationAction`（`resplit` / `notify_user` / `resplit_limit` / `ignored`）。
+  - **高风险 PR 裁决**（T-041c，提案 S5、S7、Q4 A + b）：只由用户裁决，主管模型不审。
+    - `SupervisorDeps.highRisk?: { release(ticket_id) → "released" | "already"; reject(ticket_id, detail) }`，组合根接 9 的 `releaseHighRisk` / `rejectHighRisk`。
+    - `decideHighRisk(ticket_id, "release" | "reject", detail?) → Promise<{ ok: true } | { ok: false, error }>`：转调 `highRisk`，不调模型；出错（没注入、单不在等裁决、PR 已合入等）返回 `ok: false`、不抛。拒绝时 `detail` 不给按「用户拒绝」。
+    - `highRiskHeld({ ticket_id, pr_id, requirement_id, cause })`（组合根接 9 的 `onHighRiskHeld`）：通知用户这张单的 PR 改了依赖清单 / 锁文件（或有改名的文件），等放行或拒绝，不处理就一直扣着、不会合入；`cause: adopt`（重启后）写明「放行不跨重启保存，重启前已放行的要再放行一次」，`cause: resubmit` 写明「冲突重做换了新 PR，要重新裁决」。同一 PR 在本进程只通知一次。记进待裁决清单。
+    - `pendingHighRisk() → { ticket_id, pr_id }[]`：等用户裁决的高风险单（T-042 主管待办、T-062 界面用）；放行、拒绝、本单上报或 2 里已到终态时去掉。只在进程内。
+    - `escalated(high_risk_rejected)`：走上报处理的「交用户」一支（写 `escalation_handled`，不关 PR——9 已关——、不重拆），通知写明 PR 已按用户决定拒绝并关闭。
+    - `backpressurePaused({ reasons, pending_prs: { total, limit, high_risk_held } })`（组合根接 9 的 `onBackpressurePaused`，Q-7）：通知用户已暂停派新单和原因，写明待合并 PR 数；原因含 `pending_pr_limit` 或 `high_risk_held > 0` 时写明「其中 N 张是等你裁决的高风险 PR」。
+    - **v1（T-062 之前）在哪里操作**：12 的主进程还没调 `assemble`，桌面端只读，1:1 也没接，所以界面上**没有**放行 / 拒绝的入口；只能由调用方（以后是 12 的主进程，现在是测试或开发脚本）调 `App.supervisor.decideHighRisk(...)`。没人裁决的高风险 PR 一直扣着，不会合入（安全的默认）。T-062（界面与诊断）加放行 / 拒绝的 IPC 和按钮，调 `decideHighRisk`；「待裁决」状态取 9 的 `snapshot().held_high_risk` 或 10 的 `pendingHighRisk()`。GitHub 上手动合并 / 关闭被扣的 PR 要等 9 的 `sync()` 才生效，v1 没有定时 `sync()`。
 - **依赖**：1、2、3（提示词模板）、4（只用 `isUnsafeGlob`）、6（CI 结果）、8、9。
 - **对应章节**：PD §3、§4、§8、§9、§10、§16。
 - **配置字段**：`roles.supervisor`、`pipeline.resplit_limit`、`pipeline.main_merge`、`pipeline.supervisor_backlog_limit`。
@@ -308,7 +322,7 @@ graph BT
 
 ## 组合根
 
-### `@bakacoding/app`（T-041a、T-041b）
+### `@bakacoding/app`（T-041a、T-041b、T-041c）
 - **定位**：不是功能模块。在编排层之上、12 之下；12 的主进程以后调用它（接线另开单）。功能模块都不依赖它。
 - **对外接口**：`assemble(deps: AppDeps) → Promise<App>`，`App = { bus, supervisor, scheduler, subAgent, pr, takeOver: TakeOverReport, stop() }`。
   - `AppDeps`：`config`（3 的 `getConfig()` 结果）、`storage`（2 的写入连接，组合根负责 `attach`，关库归调用方）、`call`（1）、`promptTemplate`（3）、`coder`（5 的 `runTicket`）、`review`（7）、`budget`（3 的 `budgetState`）、`createPr({ eventContext, publish, store }) → PrProvider`（6，通常包一层 `createPrProvider`；`store` 即 2 的 `prStore()`）、`worktrees` / `worktreeRoot`（4）、`targetHead()`、`notifyUser`；可选 `listFiles`、`architectureConstraints`、`bus`、`scheduler`（9 的 `target` / `clock` / `target_dirty_retry_ms` / `exclusive_zones` / `dispatch_poll_ms`）、`scopeTimeoutMs`、`onError`、`logger`、`newId`。
@@ -322,7 +336,8 @@ graph BT
   - 10 的 `replaceDependency` = 9 的。
   - 重启恢复扩出的写入范围：`enqueue` / `adopt` 交给 9 之前，把事件日志里本单经 `extendScope` 批准的范围（`eventLogGrantedScopes`，过滤掉不安全的 glob）并进 `write_scope`；`write_scope` 为空（按 `**`）的不动。
 - **启动顺序**：建总线、2 `attach` → 建 6 → 建 10、8、9 → 9 `start()` → 8 `attach` → 10 `start()` → 10 `takeOver()`。`stop()` 按相反顺序退订并停 9，不关存储。
-- **高风险闸门**：TODO(T-041c)：9 加了闸门后由组合根打开；默认关闭只适用于单独使用 9 的场景。
+- **高风险闸门**（T-041c）：建 9 时固定传 `holdHighRisk: true`，`AppDeps.scheduler` 关不掉（Q-3）；默认关闭只适用于单独使用 9。9 的 `onHighRiskHeld` 接 10 的 `highRiskHeld`，`onBackpressurePaused` 接 10 的 `backpressurePaused`；10 的 `highRisk` 接 9 的 `releaseHighRisk` / `rejectHighRisk`。
+- **重启补判高风险**（T-041c，N4）：`adopt` 前除了需求单 `kind: dependency`，还按 6 的 `diff(pr_id)` 用 8 的 `isHighRiskDiffFile` 补判（`judgeHighRiskOnTakeover`，包内导出）；8 按 diff 判出的高风险不落库，不补判的话重启后会不经扣留直接合并。`diff` 出错按高风险处理（宁可错扣，不可漏扣）。
 - **v1 限制**：一次组装对应一个仓库（9 只有一个合入目标、一个 `targetHead()`，10 的 `targetHead(project_id)` 也用它）。
 
 ## 事件清单
@@ -340,7 +355,7 @@ graph BT
 | 需要扩大写入范围 `write_scope_requested` | 4 | 8（T-038 起；范围外的由 8 调 9 的 `extendScope`） | `ticket_id`、`request_id`、`requested_scope`、`reason` | PD §6 |
 | 已批准 `write_scope_granted` | 8（所有批准都发；需求单记录不加列） | 4、2（事件日志，跨重启的批准来源） | `ticket_id`、`request_id`、`granted_scope` | PD §6 |
 | 已拒绝 `write_scope_denied` | 8 | 4 | `ticket_id`、`request_id`、`requested_scope`、`reason` | PD §6 |
-| 上报 `escalated` | 6（`github_manual`：鉴权失败或需要手动解冲突）、8（评审不过超限）、9（冲突超限、加锁失败；`merged_but`：已合入集成分支、之后的收尾出错，单子状态保持 `merged`，`detail` 写 `merged_but: …`，T-038）、8（`coder_failed`：编码池返回 `gave_up` / `turn_limit`（或 `done` 但提交时 `NoChangesError`）超过复投上限，`detail` 写最后一次状态；`budget_exceeded`：本单预算用完，不复投，主管直接交给用户，由用户决定加预算还是取消；`internal_error`：评审调用、写轮次记录、读预算等内部出错，`detail` 写 `<阶段>_error: …`，主管不重拆、直接交给用户）、10（重拆超限 `resplit_limit`，由主管自己发出） | 10；`resplit_limit` 由 12 订阅，提示「需要人工介入」 | `ticket_id`、`requirement_id`、`reason`（`review_limit` / `conflict_limit` / `scope_lock_failed` / `resplit_limit` / `github_manual` / `coder_failed` / `budget_exceeded` / `internal_error` / `merged_but`）、`resubmit_counts`（可选；`github_manual` 不带）、`detail`（可选，自由文本；`github_manual` 必写） | PD §6、§7、§8 |
+| 上报 `escalated` | 6（`github_manual`：鉴权失败或需要手动解冲突）、8（评审不过超限）、9（冲突超限、加锁失败；`merged_but`：已合入集成分支、之后的收尾出错，单子状态保持 `merged`，`detail` 写 `merged_but: …`，T-038）、8（`coder_failed`：编码池返回 `gave_up` / `turn_limit`（或 `done` 但提交时 `NoChangesError`）超过复投上限，`detail` 写最后一次状态；`budget_exceeded`：本单预算用完，不复投，主管直接交给用户，由用户决定加预算还是取消；`internal_error`：评审调用、写轮次记录、读预算等内部出错，`detail` 写 `<阶段>_error: …`，主管不重拆、直接交给用户）、10（重拆超限 `resplit_limit`，由主管自己发出）、9（T-041c：`high_risk_rejected`，用户拒绝了被高风险闸门扣着的 PR，PR 已关、`detail` 写用户给的原因，主管不重拆、交用户） | 10；`resplit_limit` 由 12 订阅，提示「需要人工介入」 | `ticket_id`、`requirement_id`、`reason`（`review_limit` / `conflict_limit` / `scope_lock_failed` / `resplit_limit` / `github_manual` / `coder_failed` / `budget_exceeded` / `internal_error` / `merged_but` / `high_risk_rejected`）、`resubmit_counts`（可选；`github_manual` 不带）、`detail`（可选，自由文本；`github_manual` 必写） | PD §6、§7、§8 |
 | 接口已变更 `interface_changed` | 9（合并队列合并成功后；用户在 GitHub 手动合并、`sync()` 拿到 `merge_sha` 时；发失败后的补发，T-046） | 8 | `pr_id`、`ticket_id`（必填）、`base_commit`（合并后新基线）、`changed_interfaces`（改动的接口列表，每项为文件 + 符号）、`summary`、`affected_ticket_ids`（写入范围或接口声明与本次改动有交集的在途单） | PD §9 |
 | 评审积压 `review_backlog` | 7（`pending` 或 `capacity` 变化时） | 9（反压） | `pending`（进入评审尚未返回的单数，含排队）、`capacity`（成员数 × `reviews_per_member`，0 成员按 1 算） | PD §9 |
 | 主管待办指标 `supervisor_backlog` | 10 | 9 | `pending`、`capacity` | PD §9 |

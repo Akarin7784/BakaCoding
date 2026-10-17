@@ -42,3 +42,11 @@
 - 需求原文超过 20000 个码点截断，每批次发一条 `ticket_warning(requirement_truncated)`。
 - `takeOver()` 先补跑已上报单的上报处理（每次最多 `TAKEOVER_REPLAY_LIMIT` = 5 张），再把依赖里被取代的单换成新单，依赖已上报（未被取代）或 `fields_invalid` 的单进 `held`、通知一次。报告多了 `escalations`、`held`。
 - 已知缺口：补跑上限 5 张、旧 worktree 不清、重试只在进程内、旧单首尾空白条目按 `fields_invalid`。详见 docs/progress.md。
+
+## T-041c：高风险 PR 裁决
+
+- `decideHighRisk(ticket_id, "release" | "reject", detail?)`：只由用户裁决，转调注入的 `highRisk`（9 的 `releaseHighRisk` / `rejectHighRisk`），不调模型，出错返回 `{ ok: false, error }`。
+- `highRiskHeld(info)`：9 扣住时通知用户（重启后、冲突复投换新 PR 时写明要重新放行），同一 PR 本进程只通知一次；`pendingHighRisk()` 列出等裁决的单。
+- `backpressurePaused(state)`：反压暂停时通知用户，写明其中几张待合并 PR 是等裁决的高风险 PR。
+- `escalated(high_risk_rejected)` 不重拆，交用户。
+- v1 在 T-062 之前没有界面入口，只能调 `App.supervisor.decideHighRisk`；没人裁决就一直扣着。

@@ -8,6 +8,8 @@ T-038：不再订阅 `write_scope_requested`、不发 granted / denied（答复�
 
 T-041b：`replaceDependency(old_id, new_ids)` 把在途单 `depends_on` 里被重拆取代的单原位换成新单（去重、跳过自己和终态单），返回改过的单号；`adopt` 写 `merge_queued` 失败时撤登记、放锁、不入队，原样抛错。
 
+T-041c：高风险闸门 `holdHighRisk`（默认关，只打标照常合并；组合根固定打开）。打开后 `high_risk` 单扣在合并队列里（不挡后面的单、锁照占），`releaseHighRisk` 放行（按 `pr_id` 绑定，冲突复投换新 PR 重新扣）、`rejectHighRisk` 拒绝（先关 PR 再发 `escalated(high_risk_rejected)`）；`onHighRiskHeld` 在扣住某 PR 时调一次；`snapshot()` 带 `held_high_risk`；`pending_prs.high_risk_held` 和 `onBackpressurePaused` 用于反压暂停通知。
+
 ```ts
 const scheduler = createScheduler({
   bus,

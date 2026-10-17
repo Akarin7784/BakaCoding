@@ -94,7 +94,7 @@ flowchart BT
 | T-040 | 模块 10 主管：`chat` / `split`（接口声明必填、决策记忆、项目创建告知用户） | 10 | 编排层开发 | 已合入 | #56 | `79bc488` |
 | T-041a | 模块 10 组装根 `@bakacoding/app`（8 / 9 / 10 共用一条总线）、重启接管 `takeOver`（派单沿用已开的 PR；已在合并队列的单经模块 9 新增的 `adopt` 接回；`fields_invalid` 的单不接回、只发一次警告） | 10、9 | 编排层开发 | 已合入 | #62 | `694bddb` |
 | T-041b | 模块 10 上报处理和重拆（已重拆次数 ≥ 上限（默认 2）时不再重拆，`budget_exceeded` 直接交用户；重拆前先关旧 PR、失败重试；需求原文入库；重启补跑上报处理、下游挂起；含模块 9 `replaceDependency`、`adopt` 写状态失败回滚，组合根恢复 `extendScope` 扩出的范围；写入范围首尾空白条目报错） | 10、9 | 编排层开发 | 已合入 | #65 | `30d3248` |
-| T-041c | 模块 10 高风险 PR 裁决（含模块 9 高风险闸门） | 10、9 | 编排层开发 | 未开始 | — | — |
+| T-041c | 模块 10 高风险 PR 裁决（含模块 9 高风险闸门，组合根固定打开）：用户放行 / 拒绝（`decideHighRisk`），拒绝关 PR 并发 `escalated(high_risk_rejected)`、不重拆；放行按 PR 绑定，冲突复投换新 PR 重新扣；重启接管按 diff 补判高风险（diff 出错按高风险）、重新扣住并通知用户；反压暂停时通知写明其中等裁决的高风险 PR 数；含模块 8 导出 `isDependencyFile` / `isHighRiskDiffFile`（删除的依赖文件按路径算、改名一律算）、桌面端 `high_risk_rejected` 文案 | 10、9、8、12 | 编排层开发 | 待评审 | — | — |
 | T-042 | 模块 10 集成分支审查与合入 main、主管待办指标 | 10 | 编排层开发 | 未开始 | — | — |
 | T-043 | 不可信文本包装与转义：评审池的需求单 / 摘要 / 架构约束 / diff 与编码池 feedback 统一包进带 nonce 的 `untrusted` 区块；转义前做 NFKC、忽略零宽字符和软连字符；共用函数放 `@bakacoding/types`；nonce 不进编码池公共前缀 | 5、7 | 执行层开发 | 已合入 | #35 | `876cac0` |
 | T-044 | 模块 5/7 把 `signal` 透传给模型调用（`runTicket` 加可选 `signal`，调模型前、工具调用前检查取消）；编码池工具轮把上一轮的 `reasoning`（含 `signature`）原样放进 assistant 消息回传 | 5、7 | 执行层开发 | 已合入 | #43 | `d646d20` |
@@ -115,6 +115,7 @@ flowchart BT
 | T-058 | 模块 2：prStore 凭据检查收窄，`ssh://git@`、`https://user@` 放行；`user:token@`（含 `%3A`、无斜杠、嵌在文字里）、像 token 或长串十六进制 / base64 的用户名（任何 scheme）、查询参数和 `#` 片段里的 token 照样整条拒写；顺带 T-057 的三个小点（正常读到后清掉警告记录、`warn` 抛错不影响读取、注释归位）；`closed_by` 早已在 `PR_STRUCTURAL_FIELDS` 里，补一条测试锁住，接口不变 | 2 | 基础层开发 | 已合入 | #58 | `adc43ba` |
 | T-059 | 模块 3：带凭据 URL 的判断抽成模块 3 导出的 `isCredentialUrl`，2 的 prStore 拒写和 `redact` 的 `url_credentials` 规则共用，两边和 11 跑同一份 `CREDENTIAL_CASES`；`ghp_` / `github_pat_` / `glpat-` 任何位置都遮；`redact` 去掉平方级回溯（邮箱、内网主机名、env 变量名、私钥、IPv6 加上限或改线性扫描），超长主机名照样遮；接口新增 `isCredentialUrl`、`credentialUrlRanges`、`CREDENTIAL_CASES` | 3 | 基础层开发 | 已合入 | #63 | `61f5af3` |
 | T-060 | 模块 11 端到端回归：改用模块 3 的 `CREDENTIAL_CASES`，应拒的用例把带凭据文本放进上报详情和群消息，断言导出的诊断包里任何文件都找不到密文、事件确实在包里；应放行的用例详情里不出现 `[REDACTED:url_credentials]`；清单非空；40 位十六进制用户名判为 `url_credentials`；5 种 10 万字符详情的导出各在 500ms 内 | 11 | 界面与诊断开发 | 已合入 | #64 | `4c739e8` |
+| T-065 | 模块 6 / types：DiffFile 加可选 old_path，6 用 git diff -M 时填上旧路径，isDependencyFile 新旧路径都检查；之后把 041c 的改名兜底（renamed 一律当高风险）收窄成只看依赖文件 | 6、8 | 执行层开发 | 未开始 | — | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
@@ -141,7 +142,13 @@ flowchart BT
 - 模块 10（T-041b）：关旧 PR 的重试（30 秒、2 分钟、10 分钟）只在进程内，进程退出即停；重启时从关旧 PR 这一步接着做，但重试计数从头算。
 - 模块 10（T-041b）：`notifyUser` 失败只记警告，那条通知就丢了（上报处理的标记照常写，重启不会重发）。
 - 模块 10（T-041b）：没有需求原文（`requirement_text`）的旧单上报后不能自动重拆，只交用户。
-- 组合根（T-041a）：高风险闸门的打开在 T-041c。（重启补跑上报处理已由 T-041b 补上。）
+- 模块 10 / 12（T-041c）：T-062 之前没有放行 / 拒绝高风险 PR 的界面入口，只能调 `App.supervisor.decideHighRisk`；没人裁决的高风险 PR 一直扣着（安全的默认）。
+- 模块 9 / 10（T-041c，Q-4）：放行只在进程内，不跨重启；重启后重新扣住、通知用户再放行一次。
+- 模块 9（T-041c，Q-7）：被扣着的高风险单一直占着写入范围锁（依赖清单属于独占区域，会挡住别的依赖类单），也算进 `pending_prs`，扣多了会触发反压暂停（暂停通知里写明其中几张在等裁决）。
+- 模块 9（T-041c，Q-6）：GitHub 上手动合并 / 关闭被扣的 PR 要等 9 的 `sync()` 才生效，现在没有定时 `sync()`（另开单）。
+- 模块 8 / 组合根（T-041c）：6 的 DiffFile 没有旧路径，改名的文件一律按高风险（T-065 收窄）；重启补判取 diff 出错也按高风险，可能误扣。
+- 模块 10（T-041c）：高风险通知「同一 PR 只通知一次」、待裁决清单 `pendingHighRisk()` 都只在进程内，重启后重新通知一次。
+- 模块 8（T-041c 发现）：`DEPENDENCY_MANIFEST_GLOBS` 里 `pnpm-lock.yaml` 只匹配仓库根目录（没有 `**/pnpm-lock.yaml`），嵌套目录里的 pnpm 锁文件不算依赖文件（未改，留给 types 的维护方定）。
 - 组合根（T-041a → T-041b）：依赖已上报（未被取代）或 `fields_invalid` 的单，T-041b 起重启时进 `held`、通知用户一次；依赖接管失败（`failed`）的单仍不进 `held`，9 不认识它，依赖它的单会一直 `waiting`。
 - 模块 9（T-041a）：`adopt` 接回的单复投数是估的：评审复投数从 0 记起（9 只用它报上报的 `resubmit_counts`，8 的复投上限按事件日志算），冲突复投数按 worktree 轮次估。
 - 组合根（T-041a）：`fields_invalid` 的「只通知一次」只在同一进程内去重；每次重启都会再发一条 `ticket_warning(fields_invalid)`，跨重启去重由桌面端做（T-062，按单号 + 警告码去重）。
