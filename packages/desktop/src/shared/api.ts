@@ -1,6 +1,6 @@
 // 主进程 ↔ preload ↔ 渲染进程的数据契约。只放类型和通道名，不引入 Node 或存储模块，
 // 渲染进程可以安全地 import type。
-import type { HighRiskDecisionErrorCode } from "@bakacoding/scheduler";
+import type { HighRiskDecisionErrorCode, SyncState } from "@bakacoding/scheduler";
 import type { HighRiskFile, HighRiskReason } from "@bakacoding/sub-agent";
 import type { HighRiskDecisionResult, PendingHighRisk } from "@bakacoding/supervisor";
 import type { BakaEvent, TicketStatus } from "@bakacoding/types";
@@ -23,6 +23,10 @@ export const IPC_CHANNELS = {
   highRiskDecide: "bakacoding:high-risk:decide",
   /** 主进程 → 渲染进程：高风险待裁决清单刷新（T-062）。 */
   highRiskPendingUpdate: "bakacoding:high-risk:pending-update",
+  /** invoke：9 的定时同步状态（syncState() 快照，T-067）。 */
+  syncState: "bakacoding:sync:state",
+  /** 主进程 → 渲染进程：同步状态有变化时推送（T-067）。 */
+  syncStateUpdate: "bakacoding:sync:state-update",
 } as const;
 
 /** 界面关心的事件类型；其余事件主进程不下发。 */
@@ -109,6 +113,14 @@ export type DesktopDecideHighRiskResult =
   | { ok: true; result: HighRiskDecisionResult }
   | { ok: false; code: HighRiskDecisionErrorCode; message: string };
 
+/**
+ * 9 的 `syncState()` 经 IPC 下发的形状（T-067）。live 时与 9 的 SyncState 同字段，
+ * 只是 `last_error.message` 已在主进程脱敏、截到 SYNC_ERROR_MESSAGE_MAX 字；
+ * 只读 / 未接线时 `available: false`，`reason` 只写变量名 / 错误名。
+ */
+export type DesktopSyncState =
+  ({ available: true } & SyncState) | { available: false; reason: string };
+
 /** preload 通过 contextBridge 暴露在 window.bakacoding 上的 API。 */
 export interface BakaDesktopApi {
   readonly platform: string;
@@ -130,9 +142,19 @@ export interface BakaDesktopApi {
   ): Promise<DesktopDecideHighRiskResult>;
   /** 订阅待裁决清单刷新（T-062）。 */
   onPendingHighRisk(listener: (list: DesktopPendingHighRisk[]) => void): () => void;
+  /** 取一次定时同步状态（T-067）；只读模式 available:false。 */
+  getSyncState(): Promise<DesktopSyncState>;
+  /** 订阅同步状态变化（T-067）。 */
+  onSyncState(listener: (state: DesktopSyncState) => void): () => void;
 }
 
-export type { HighRiskDecisionErrorCode, HighRiskFile, HighRiskReason, HighRiskDecisionResult };
+export type {
+  HighRiskDecisionErrorCode,
+  HighRiskFile,
+  HighRiskReason,
+  HighRiskDecisionResult,
+  SyncState,
+};
 
 declare global {
   interface Window {

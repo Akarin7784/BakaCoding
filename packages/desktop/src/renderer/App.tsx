@@ -1,13 +1,15 @@
 import { useState } from "react";
-import type { BakaDesktopApi, DesktopPendingHighRisk } from "../shared/api";
+import type { BakaDesktopApi, DesktopPendingHighRisk, DesktopSyncState } from "../shared/api";
 import { ConversationList, type Selection } from "./components/Sidebar";
 import { SupervisorChat } from "./components/SupervisorChat";
 import { ProjectGroup } from "./components/ProjectGroup";
 import { RightPanel } from "./components/RightPanel";
 import { UnattributedPanel } from "./components/Escalations";
 import { HighRiskPanel } from "./components/HighRiskPanel";
+import { SyncStatus } from "./components/SyncStatus";
 import { useDesktopData } from "./data/useDesktopData";
 import { usePendingHighRisk } from "./data/usePendingHighRisk";
+import { useSyncState } from "./data/useSyncState";
 import * as mock from "./mock/data";
 import type {
   EscalationView,
@@ -27,6 +29,8 @@ export interface AppProps {
   unattributedWarnings?: TicketWarningView[];
   /** 测试注入的待裁决高风险清单（T-062）；有 api 时以主进程为准。 */
   pendingHighRisk?: DesktopPendingHighRisk[];
+  /** 测试注入的定时同步状态（T-067）；有 api 时以主进程为准。 */
+  syncState?: DesktopSyncState;
   /** 数据来源；默认取 preload 暴露的 window.bakacoding，传 null 强制用假数据。 */
   api?: BakaDesktopApi | null;
 }
@@ -47,6 +51,7 @@ export function App(props: AppProps) {
   // 主管对话的历史还没有落库来源，接入真实数据时先从空对话开始。
   const supervisorMessages = props.supervisorMessages ?? (live ? [] : mock.supervisorMessages);
   const highRisk = usePendingHighRisk(api, props.pendingHighRisk ?? []);
+  const syncState = useSyncState(api, props.syncState ?? null);
 
   const [selection, setSelection] = useState<Selection>({ kind: "supervisor" });
   const [sidebarOpen, setSidebarOpen] = useState(false); // 默认关闭
@@ -81,6 +86,7 @@ export function App(props: AppProps) {
           {notice}
         </div>
       )}
+      {syncState && <SyncStatus state={syncState} />}
       <div className="flex min-h-0 flex-1">
         <ConversationList
           projects={projects}

@@ -412,7 +412,11 @@ export class GithubPrProvider implements PrProvider {
     return [...runs, ...statuses];
   }
 
-  /** 翻页拉齐全部 check-runs（T-066 C2）。最多 MAX_CHECK_PAGES 页，超出抛错（不静默漏掉后面的失败）。 */
+  /**
+   * 翻页拉齐全部 check-runs（T-066 C2）。按 per_page=100&page=N 翻页，直到收满 total_count（或某页为空，
+   * T-069：不再以「本页不足 100 条」为止，服务端每页给得少时也不漏后页）；最多 MAX_CHECK_PAGES 页，
+   * 超出抛错（不静默漏掉后面的失败）。
+   */
   private async fetchAllCheckRuns(rec: PrRecord, sha: string): Promise<CheckResult[]> {
     const op = "GET /commits/{sha}/check-runs";
     const out: CheckResult[] = [];
@@ -427,6 +431,7 @@ export class GithubPrProvider implements PrProvider {
       );
       if (!res.ok) throw await this.apiError(op, res);
       const body = (await res.json()) as {
+        total_count?: number;
         check_runs?: {
           name: string;
           status: string;
@@ -444,7 +449,8 @@ export class GithubPrProvider implements PrProvider {
         if (c.html_url) r.url = c.html_url;
         out.push(r);
       }
-      if (batch.length < 100) break;
+      const total = typeof body.total_count === "number" ? body.total_count : out.length;
+      if (batch.length === 0 || out.length >= total) break;
     }
     return out;
   }
