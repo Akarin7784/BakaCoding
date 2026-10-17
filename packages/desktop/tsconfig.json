@@ -2,16 +2,14 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "rootDir": "src",
-    "outDir": "dist"
+    "outDir": "dist",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["vite/client"]
   },
   "include": ["src"],
-  "references": [
-    {
-      "path": "../config-budget"
-    },
-    {
-      "path": "../types"
-    }
-  ],
-  "exclude": ["src/**/*.test.ts"]
+  "references": [{ "path": "../config-budget" }, { "path": "../types" }],
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
 }
