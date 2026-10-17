@@ -50,6 +50,8 @@ function setup(
     responses?: (Response | Error)[];
     budget?: { ok: false; scope: "daily" | "ticket" };
     getSecret?: () => string;
+    /** 请求挂住，直到 signal 取消才 reject（模拟请求途中取消） */
+    hang?: boolean;
   } = {},
 ) {
   const events: CallCompletedInput[] = [];
@@ -58,9 +60,19 @@ function setup(
   const holds: { ticket_id: string | null; amount_micro_usd: number; released: number }[] = [];
   const queue = [...(o.responses ?? [ok()])];
   let now = Date.parse("2026-10-17T12:00:00Z");
+  let onSent: () => void = () => {};
+  const sent = new Promise<void>((r) => (onSent = r));
   const fetchFn = vi.fn(async (_u: unknown, init?: RequestInit) => {
     bodies.push(JSON.parse(String(init!.body)));
     now += 100;
+    onSent();
+    if (o.hang) {
+      return await new Promise<Response>((_, reject) => {
+        const sig = init!.signal!;
+        if (sig.aborted) reject(sig.reason);
+        sig.addEventListener("abort", () => reject(sig.reason), { once: true });
+      });
+    }
     const next = queue.shift();
     if (!next) throw new Error("no more responses");
     if (next instanceof Error) throw next;
@@ -87,7 +99,7 @@ function setup(
     },
     onWarning: (w) => warnings.push(w.message),
   });
-  return { gw, events, bodies, warnings, holds, reserve, fetchFn };
+  return { gw, events, bodies, warnings, holds, reserve, fetchFn, sent };
 }
 
 describe("testConnection", () => {
@@ -191,7 +203,50 @@ describe("testConnection", () => {
     expect(s.events).toHaveLength(1);
     expect(s.events[0]!.payload.error).not.toBeNull();
     expect(JSON.stringify(r)).not.toContain(KEY);
+    // T-111：台账事件里也不能有密钥（401 的服务商报错里带了密钥）
+    expect(JSON.stringify(s.events)).not.toContain(KEY);
     expect(s.holds[0]!.released).toBe(1);
+  });
+
+  it("401 报错带密钥：台账事件和结果里都没有密钥", async () => {
+    const s = setup({
+      responses: [
+        json(401, { error: { type: "authentication_error", message: `invalid key ${KEY}` } }),
+      ],
+    });
+    expect(await s.gw.testConnection({ provider: "deepseek" })).toEqual({
+      ok: false,
+      reason: "auth_failed",
+      status: 401,
+    });
+    expect(s.events).toHaveLength(1);
+    expect(s.events[0]!.payload.error).toMatchObject({ code: "AUTH" });
+    expect(JSON.stringify(s.events)).not.toContain(KEY);
+    expect(JSON.stringify(s.events)).not.toContain(KEY.slice(-12));
+  });
+
+  it("429 会记入全局退避状态：之后 rateLimitState 显示该模型在退避中", async () => {
+    const s = setup({
+      responses: [
+        new Response(JSON.stringify({ error: { type: "rate_limit_error", message: "slow" } }), {
+          status: 429,
+          headers: { "content-type": "application/json", "retry-after": "5" },
+        }),
+      ],
+    });
+    const target = { provider: "deepseek", model: "deepseek-flash" };
+    expect(s.gw.rateLimitState(target).models).toEqual([
+      expect.objectContaining({ limited: false, rate_limited_total: 0 }),
+    ]);
+    expect(await s.gw.testConnection({ provider: "deepseek" })).toMatchObject({
+      ok: false,
+      reason: "rate_limited",
+      status: 429,
+    });
+    // 与正式调用共用同一份账号级退避状态（retry-after 5s）
+    expect(s.gw.rateLimitState(target).models).toEqual([
+      expect.objectContaining({ limited: true, until: expect.any(String), rate_limited_total: 1 }),
+    ]);
   });
 
   it("网络错误 → network，不重试", async () => {
@@ -221,5 +276,21 @@ describe("testConnection", () => {
       s.gw.testConnection({ provider: "deepseek" }, { signal: ac.signal }),
     ).rejects.toMatchObject({ name: "AbortError" });
     expect(s.fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("请求途中取消 → 抛 AbortError；只发过一次请求，记一条 ABORTED 台账，释放预占", async () => {
+    const s = setup({ hang: true });
+    const ac = new AbortController();
+    const p = s.gw.testConnection({ provider: "deepseek" }, { signal: ac.signal });
+    await s.sent;
+    ac.abort();
+    await expect(p).rejects.toMatchObject({ name: "AbortError" });
+    expect(s.fetchFn).toHaveBeenCalledTimes(1);
+    expect(s.events).toHaveLength(1);
+    expect(s.events[0]!.requirement_id).toBe(PROVIDER_TEST_REQUIREMENT_ID);
+    expect(s.events[0]!.payload.error).toMatchObject({ code: "ABORTED" });
+    expect(JSON.stringify(s.events)).not.toContain(KEY);
+    expect(s.holds).toHaveLength(1);
+    expect(s.holds[0]!.released).toBe(1);
   });
 });

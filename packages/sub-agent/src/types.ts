@@ -299,6 +299,14 @@ export interface ResumeOptions {
   signal?: AbortSignal;
 }
 
+/**
+ * resubmitConflict / reReview 的选项（T-102b）：`signal` 语义同 HandleOptions.signal，9 的 stop() 时中止，
+ * 8 原样传给 5 的 runTicket 和 7 的 review；中止后抛 `signal.reason`，不上报、不写状态。
+ */
+export interface SchedulerCallOptions {
+  signal?: AbortSignal;
+}
+
 // ---- 与 T-035（模块 9，尚未合入）对齐的入口：同形的结构类型，8 不依赖 9 的包 ----
 
 export interface SchedulerTicketLike {
@@ -350,10 +358,19 @@ export interface SubAgent {
     token: ResumeToken,
     options?: ResumeOptions,
   ): Promise<SubAgentOutcome>;
-  /** 9 的冲突复投入口：新 worktree、新 PR，冲突文件作 feedback；冲突计数由 9 给 */
-  resubmitConflict(req: ConflictResubmitRequest): Promise<SchedulerFacingOutcome>;
-  /** 9 的重审入口（基线前进且涉及本单接口或依赖）：同一 PR 再评一次，不计复投 */
-  reReview(req: ReReviewRequest): Promise<SchedulerFacingOutcome>;
+  /**
+   * 9 的冲突复投入口：新 worktree、新 PR，冲突文件作 feedback；冲突计数由 9 给。
+   * `options.signal`（T-102b）同 handle：中止后抛 signal.reason，不上报、不写状态。
+   */
+  resubmitConflict(
+    req: ConflictResubmitRequest,
+    options?: SchedulerCallOptions,
+  ): Promise<SchedulerFacingOutcome>;
+  /**
+   * 9 的重审入口（基线前进且涉及本单接口或依赖）：同一 PR 再评一次，不计复投。
+   * `options.signal`（T-102b）同 handle；不沿用 handle 时的信号，只认这次传进来的。
+   */
+  reReview(req: ReReviewRequest, options?: SchedulerCallOptions): Promise<SchedulerFacingOutcome>;
   /**
    * 接口变更通知（T-038，9 合并成功后发的 `interface_changed`）：对 `affected_ticket_ids` 里的每张单（合并的那张除外）
    * 记一条说明，作为不可信反馈（5 按 T-043 包进 untrusted 区块）接在下一次 `runTicket` 的 feedback 里；

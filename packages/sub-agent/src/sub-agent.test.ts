@@ -1244,6 +1244,227 @@ describe("T-039 取消信号", () => {
   });
 });
 
+describe("T-102b resubmitConflict / reReview 的取消信号", () => {
+  const conflict = (): ConflictResubmitRequest => ({
+    ticket: SCHED_TICKET,
+    round: 1,
+    worktree_path: "/wt/T-1-r1",
+    branch: "bakacoding/T-1-r1",
+    base_commit: "e".repeat(40),
+    conflicted_files: ["src/a.ts"],
+    previous_pr_id: "pr-T-1-1",
+    resubmit_counts: { review: 0, conflict: 1 },
+  });
+  const rereview = () => ({ ticket: SCHED_TICKET, pr_id: "pr-T-1-1", merged_since: [] });
+
+  it("resubmitConflict 把 signal 原样传给 runTicket 和 review", async () => {
+    const t = setup({ runs: [done(), done()], reviews: [PASS(), PASS()] });
+    await t.agent.handle(TICKET);
+    const ac = new AbortController();
+    await t.agent.resubmitConflict(conflict(), { signal: ac.signal });
+    expect(vi.mocked(t.deps.coder.runTicket).mock.calls[1]![0].signal).toBe(ac.signal);
+    expect(vi.mocked(t.deps.review).mock.calls[1]![0].signal).toBe(ac.signal);
+  });
+
+  it("reReview 用这次传进来的 signal（不沿用 handle 时的）：评审和评审不过后的复投编码都带它", async () => {
+    const t = setup({ runs: [done(), done()], reviews: [PASS(), FAIL(), PASS()] });
+    const handleAc = new AbortController();
+    await t.agent.handle(TICKET, { signal: handleAc.signal });
+    const ac = new AbortController();
+    await t.agent.reReview(rereview(), { signal: ac.signal });
+    const reviews = vi.mocked(t.deps.review).mock.calls;
+    expect(reviews[1]![0].signal).toBe(ac.signal);
+    expect(reviews[2]![0].signal).toBe(ac.signal);
+    expect(vi.mocked(t.deps.coder.runTicket).mock.calls[1]![0].signal).toBe(ac.signal);
+  });
+
+  it("不传 options：行为不变，两个入口都不带 signal 字段，reReview 也不沿用 handle 的", async () => {
+    const t = setup({ runs: [done(), done()], reviews: [PASS(), PASS(), PASS()] });
+    const handleAc = new AbortController();
+    await t.agent.handle(TICKET, { signal: handleAc.signal });
+    expect(await t.agent.reReview(rereview())).toEqual({ pr_id: "pr-T-1-1", review_resubmits: 0 });
+    expect(await t.agent.resubmitConflict(conflict())).toEqual({
+      pr_id: "pr-T-1-2",
+      review_resubmits: 0,
+    });
+    const reviews = vi.mocked(t.deps.review).mock.calls;
+    expect("signal" in reviews[1]![0]).toBe(false);
+    expect("signal" in reviews[2]![0]).toBe(false);
+    expect("signal" in vi.mocked(t.deps.coder.runTicket).mock.calls[1]![0]).toBe(false);
+  });
+
+  it("冲突复投编码中途取消：抛 signal.reason，不上报、不开 PR、不写状态", async () => {
+    const ac = new AbortController();
+    const reason = new Error("调度器已停止");
+    const t = setup({
+      over: {
+        loadTicket: (id) => ({ ...TICKET, ticket_id: id }),
+        coder: {
+          runTicket: vi.fn(async (input: RunTicketInput) => {
+            ac.abort(reason);
+            throw input.signal!.reason;
+          }),
+        },
+      },
+    });
+    await expect(t.agent.resubmitConflict(conflict(), { signal: ac.signal })).rejects.toBe(reason);
+    expect(t.events.filter((e) => e.type === "escalated")).toEqual([]);
+    expect(t.pr.open).not.toHaveBeenCalled();
+    expect(t.statuses).toEqual([]);
+  });
+
+  it("重审评审中途取消：抛 signal.reason，不当评审错误上报，不写轮次记录", async () => {
+    const ac = new AbortController();
+    const reviewMock = vi.fn(async (input: ReviewInput): Promise<ReviewResult> => {
+      if (reviewMock.mock.calls.length === 1) return PASS();
+      ac.abort("stop");
+      throw new Error(`call aborted ${String(input.signal?.aborted)}`);
+    });
+    const t = setup({ runs: [done()], over: { review: reviewMock } });
+    await t.agent.handle(TICKET);
+    const n = t.statuses.length;
+    const roundsBefore = t.rounds.length;
+    await expect(t.agent.reReview(rereview(), { signal: ac.signal })).rejects.toBe("stop");
+    expect(t.events.filter((e) => e.type === "escalated")).toEqual([]);
+    expect(t.rounds.length).toBe(roundsBefore);
+    expect(t.statuses.length).toBe(n);
+  });
+
+  it("已取消再调：两个入口都立刻抛，不调编码池和评审", async () => {
+    const ac = new AbortController();
+    ac.abort("gone");
+    const t = setup({ runs: [done()], reviews: [PASS()] });
+    await t.agent.handle(TICKET);
+    await expect(t.agent.resubmitConflict(conflict(), { signal: ac.signal })).rejects.toBe("gone");
+    await expect(t.agent.reReview(rereview(), { signal: ac.signal })).rejects.toBe("gone");
+    expect(t.deps.coder.runTicket).toHaveBeenCalledTimes(1);
+    expect(t.deps.review).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("T-102b 8 把 signal 交给 6（open / commitWorktree / diff）", () => {
+  type Pr = ReturnType<typeof setup>["pr"];
+  /** 每次 6 调用的最后一个参数（没传选项时是本单的业务参数） */
+  const lastArgs = (pr: Pr) => ({
+    open: pr.open.mock.calls.map((c) => (c as unknown[]).slice(3)),
+    commit: pr.commitWorktree.mock.calls.map((c) => (c as unknown[]).slice(2)),
+    diff: pr.diff.mock.calls.map((c) => (c as unknown[]).slice(1)),
+  });
+  const conflict = (): ConflictResubmitRequest => ({
+    ticket: SCHED_TICKET,
+    round: 1,
+    worktree_path: "/wt/T-1-r1",
+    branch: "bakacoding/T-1-r1",
+    base_commit: "e".repeat(40),
+    conflicted_files: ["src/a.ts"],
+    previous_pr_id: "pr-T-1-1",
+    resubmit_counts: { review: 0, conflict: 1 },
+  });
+
+  it("handle：open、commitWorktree 和每一次 diff（含交出前重取）都带同一个 signal", async () => {
+    const t = setup({ runs: [done()], reviews: [PASS()] });
+    const ac = new AbortController();
+    await t.agent.handle(TICKET, { signal: ac.signal });
+    const a = lastArgs(t.pr);
+    expect(a.open).toEqual([[{ signal: ac.signal }]]);
+    expect(a.commit).toEqual([[{ signal: ac.signal }]]);
+    // 编码后取改动文件、评审前绑定 head、交出前重取 head：3 次
+    expect(a.diff).toEqual([
+      [{ signal: ac.signal }],
+      [{ signal: ac.signal }],
+      [{ signal: ac.signal }],
+    ]);
+  });
+
+  it("resubmitConflict：新 PR 的 open、commitWorktree、diff 都带 signal", async () => {
+    const t = setup({ runs: [done(), done()], reviews: [PASS(), PASS()] });
+    await t.agent.handle(TICKET);
+    t.pr.open.mockClear();
+    t.pr.commitWorktree.mockClear();
+    t.pr.diff.mockClear();
+    const ac = new AbortController();
+    await t.agent.resubmitConflict(conflict(), { signal: ac.signal });
+    const a = lastArgs(t.pr);
+    expect(a.open).toEqual([[{ signal: ac.signal }]]);
+    expect(a.commit).toEqual([[{ signal: ac.signal }]]);
+    expect(a.diff.length).toBe(3); // 编码后、评审前、交出前重取 head
+    for (const d of a.diff) expect(d).toEqual([{ signal: ac.signal }]);
+  });
+
+  it("reReview（重启后，从 diff 取改动文件）：每一次 diff 都带 signal", async () => {
+    const t = setup({
+      reviews: [PASS()],
+      over: {
+        loadTicket: (id) => ({ ...TICKET, ticket_id: id }),
+        prRecords: {
+          get: () => ({
+            pr_id: "pr-9",
+            kind: "ticket",
+            ticket_id: "T-1",
+            worktree_path: "/wt/T-1-r1",
+            branch: "bakacoding/T-1-r1",
+            base_sha: "f".repeat(40),
+            status: "open",
+          }),
+        },
+      },
+    });
+    const ac = new AbortController();
+    await t.agent.reReview(
+      { ticket: SCHED_TICKET, pr_id: "pr-9", merged_since: [] },
+      { signal: ac.signal },
+    );
+    const a = lastArgs(t.pr);
+    // 从 diff 取改动文件、评审前绑定 head、交出前重取 head：3 次
+    expect(a.diff).toEqual([
+      [{ signal: ac.signal }],
+      [{ signal: ac.signal }],
+      [{ signal: ac.signal }],
+    ]);
+  });
+
+  it("不传 signal：6 的调用参数个数和以前一样", async () => {
+    const t = setup({ runs: [done()], reviews: [PASS()] });
+    await t.agent.handle(TICKET);
+    const a = lastArgs(t.pr);
+    expect(a.open).toEqual([[]]);
+    expect(a.commit).toEqual([[]]);
+    expect(a.diff).toEqual([[], [], []]);
+  });
+
+  it("交出前重取 diff 时被中止：原样抛 signal.reason，不当「取不到 diff」记警告，不写 merge_queued、不 submit", async () => {
+    const warn = vi.fn();
+    const t = setup({ runs: [done()], reviews: [PASS()], over: { logger: { warn } } });
+    const ac = new AbortController();
+    let n = 0;
+    t.pr.diff.mockImplementation(async () => {
+      if (++n === 3) {
+        ac.abort("stop");
+        throw new Error("请求被中止");
+      }
+      return DIFF;
+    });
+    await expect(t.agent.handle(TICKET, { signal: ac.signal })).rejects.toBe("stop");
+    expect(t.submit).not.toHaveBeenCalled();
+    expect(t.statuses).not.toContain("merge_queued");
+    expect(t.events.filter((e) => e.type === "escalated")).toEqual([]);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("交出前重取 diff 正常返回、但期间已中止：也不写 merge_queued、不 submit", async () => {
+    const t = setup({ runs: [done()], reviews: [PASS()] });
+    const ac = new AbortController();
+    let n = 0;
+    t.pr.diff.mockImplementation(async () => {
+      if (++n === 3) ac.abort("stop");
+      return DIFF;
+    });
+    await expect(t.agent.handle(TICKET, { signal: ac.signal })).rejects.toBe("stop");
+    expect(t.submit).not.toHaveBeenCalled();
+    expect(t.statuses).not.toContain("merge_queued");
+  });
+});
+
 describe("T-048 每单权限清单（以 2 的需求单记录为准）", () => {
   /** 需求单记录替身：记下每次读写，读时返回副本。 */
   function recordStore(initial: PermissionList | undefined = []) {

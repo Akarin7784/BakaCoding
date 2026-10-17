@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`c691bf2` · main 上测试：112 个测试文件、2038 个测试全部通过 · 更新日期：2026-10-18（UTC+8）
+> 上次更新时 main：`6b11d11` · main 上测试：112 个测试文件、2057 个测试全部通过 · 更新日期：2026-10-18（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -154,6 +154,7 @@ flowchart BT
 | T-101 | 模块 9 / 组合根：`listFiles`、`userMainWorktreeFor` 的 git 调用统一走 repoGit + `gitEnv()` + 超时（T-096 评审跟进）；`repoGit` 挪到内部文件 `repo-git.ts`，加可选 `maxBuffer`，`listFiles` 用 16 MiB。main `5b1ff25`，测试 110 个文件 / 2010 个 | 9 | 编排层开发 | 已合入 | #134 | `5b1ff25` |
 | T-102 | 模块 8 + 6：`resubmitConflict` / `reReview` 接收 stop 的 signal；模块 6 GitHub 请求加请求级超时（T-096 已知缺口）；preview.1 之后 | 8 / 6 | 编排层开发、执行层开发 | 待开发 | — | — |
 | T-102a | 模块 6：GitHub REST 请求级超时（`GITHUB_REQUEST_TIMEOUT_MS` 30s）+ 各方法 `opts.signal`；finishMerged 缺 `merge_commit_sha` 时沿第一父链找合并提交。main `574ec8a`，测试 110 个文件 / 2019 个 | 6 | 执行层开发 | 已合入 | #135 | `574ec8a` |
+| T-102b | 模块 8 / 9：`resubmitConflict` / `reReview` 收可选 `options.signal`，8 原样交给 5、7，中止后抛 `signal.reason`（`reReview` 不再写死 `signal: undefined`）；9 在 `stop()` 时用同一个 signal 中止，被中止的调用不上报、不改状态，留给 takeOver；组合根透传；8 调 6 的 `open` / `commitWorktree` / `diff` 也带 signal（接 T-102a），交出前被中止不写 `merge_queued`、不 submit；modules.md §8、§9 同步，§9 写定收尾时间（带 / 不带 signal 两种情况，复核桌面退出上限 35 秒）。main `e151225`，测试 112 个文件 / 2054 个 | 8 / 9 | 编排层开发 | 已合入 | #136 | `e151225` |
 | T-103 | 模块 6：合并重试幂等。本地 `merge` 在锁内读到 target 后先查 head 是否已被 target 包含，是则直接记 merged（`merge_sha` 取把 head 带进 target 的那个提交：快进为 head，非快进为当时的合并提交），不再 commit-tree、不动 target；GitHub `merge` 推分支前先查远程 PR，已合入则不推不 PUT，fetch、快进本地 target 后记 merged（`merge_sha` 用 `merge_commit_sha`），PUT 回 405 / 409 时也回查；接口不变，modules.md §6 同步。来源：编排层分析 2026-10-18，preview.1 之前。main `436fbdf`，测试 96 个文件 / 1831 个 | 6 | 执行层开发 | 已合入 | #117 | `436fbdf` |
 | T-105 | 模块 12 桌面端退出和收尾等 stop 结束（T-096 评审跟进）：`before-quit` 里 `preventDefault`，等 `BackendSwitcher.stop()` 结束再 `app.quit()`，上限 `QUIT_STOP_TIMEOUT_MS` = `REPO_GIT_TIMEOUT_MS` + 5 s，超时写一条固定 warn（不带路径、不带原始错误）后退出，只 stop 一次、自己发起的退出放行（判断抽成 `quit-guard.ts`）；后端 `stop()` / 启动失败的 `cleanupPartial` 先 `await app.stop()` 再 dispose、关库、放写锁，`stop()` 重复调用返回同一个 Promise；`window:theme` 失败一律回固定文案「主题设置失败」，不传原始错误（取代 UI-08 的脱敏透传）；`window-theme.json` 改原子写（同目录临时文件 + rename，失败删临时文件）；modules.md §12 和组合根一节同步。preview.1 之前。main `ad3fa49`，测试 103 个文件 / 1879 个 | 12 | 界面与诊断开发 | 已合入 | #122 | `ad3fa49` |
 | UI-08 | 模块 12 状态与反馈（`docs/ui-design.md` §3、§4.7、§4.8；基于已合入的 UI-02 #103）：只读横幅「只读模式：原因」+ 查看详情（`backend:status` 新增脱敏后的 `error`：错误名 / 信息 / 错误码 / 一层 cause）+ 重新连接（接 T-093 `backend:reconnect`）；只读时输入框、裁决、合入 main、导出禁用并说明；操作结果改右下角 toast（错误不消失、可复制详情）；左栏底部全局状态点 + 状态卡（后端、同步、数据库、待处理、未归属并入）；右面板抽屉改 Radix Dialog（焦点移入 / 困住 / 归还，`--overlay` 遮罩）；窗口按钮留位优先用 Window Controls Overlay；主进程记住主题偏好，启动建窗口前读出，标题栏不闪；`window:theme` 失败原因脱敏（改固定文案见 T-105）。main `9ffac04`，测试 101 个文件 / 1866 个 | 12 | 界面与诊断开发 | 已合入 | #119 | `9ffac04` |
@@ -164,6 +165,8 @@ flowchart BT
 | UI-03b | 模块 12 模型配置：密钥项、向导、「测试连接」；`secret:*` 和 `provider:test` IPC（UI-07 复用）；依赖 T-088（#126）、T-089（#132）、T-108（#133），都已合入 | 12 | 界面与诊断开发 | 待评审 #N | #N | — |
 | T-106 | 模块 12 退出时显示「正在退出」（T-105 跟进）：主进程开始退出收尾时经新 IPC `app:quitting`（主进程 → 渲染进程，不带内容）通知一次，窗口已销毁就跳过、不影响退出；preload `onQuitting`；渲染进程在内容区标题栏下显示中性横幅 + 转圈，固定文案「正在退出…」，不是遮罩；Windows / Linux 点关闭时窗口先不关，等收尾结束统一关，重复点关闭不重复发起（`createWindowCloseHandler`）；`backend-switcher.ts` 来源不明的占位后端重连按 cwd 解析补注释和测试（#130 评审小项）；modules.md §12 同步。main `c691bf2`，测试 112 个文件 / 2038 个 | 12 | 界面与诊断开发 | 已合入 | #137 | `c691bf2` |
 | T-110 | 模块 6：远程 git 操作（`fetch` / `push` / `ls-remote`）加超时并接收 signal（T-102a #135 评审跟进，remote git 当时未改）；在 T-102b 之后 | 6 | 执行层开发 | 待开发 | — | — |
+| T-111 | 模块 1：`testConnection` 补测试（T-089 评审跟进）：请求途中取消抛 AbortError、记一条 `ABORTED` 台账并释放预占；401 报错带密钥时台账事件里没有密钥；429 记入全局退避状态；modules.md §1 写明测试连接遇到 429 会触发全局退避。只加测试和文档，不改行为。main `6b11d11`，测试 112 个文件 / 2057 个 | 1 | 基础层开发 | 已合入 | #139 | `6b11d11` |
+| T-112 | 模块 9：9 调 6 的 `merge` / `sync` / `close` / `diff` 传 signal（T-102b #136 评审跟进；目前在途的 GitHub `merge` 最坏 150 秒、`sync` 为记录数 × 30 秒，见 modules.md §9「收尾要多久」） | 9 | 编排层开发 | 待接口方案 | — | — |
 | T-109 | 界面：`App.status.test` 重新连接失败用例偶发超时（flaky），定位并修稳；preview.1 之后处理（UI-03a #130 评审跟进） | 12 | 界面与诊断开发 | 待开发（preview.1 之后） | — | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。

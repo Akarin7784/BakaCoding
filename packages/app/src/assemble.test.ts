@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getConfig } from "@bakacoding/config-budget";
-import type { CoderPool } from "@bakacoding/coder-pool";
+import type { CoderPool, RunTicketInput } from "@bakacoding/coder-pool";
 import { GithubRateLimitError, type PrProvider, type TicketPrRecord } from "@bakacoding/pr";
 import { openStorage, type Storage, type TicketFields } from "@bakacoding/storage";
 import { EventSchema, type BakaEvent, type TicketStatus } from "@bakacoding/types";
@@ -94,6 +94,8 @@ interface Opts {
   worktreeRoot: string;
   pr: PrProvider;
   runTicket?: CoderPool["runTicket"];
+  /** T-102b：7 的 review 替身（默认总是通过） */
+  review?: AppDeps["review"];
   notifyUser?: AppDeps["notifyUser"];
   /** 改配置（T-041c：pending_pr_limit） */
   config?: (c: AppDeps["config"]) => AppDeps["config"];
@@ -120,7 +122,7 @@ async function start(o: Opts) {
     },
     promptTemplate: async () => "桩模板",
     coder: { runTicket },
-    review: async () => ({ verdict: "pass", reasons: [], reviewer: "m1" }),
+    review: o.review ?? (async () => ({ verdict: "pass", reasons: [], reviewer: "m1" })),
     budget: {
       budgetState: async () =>
         ({
@@ -1658,6 +1660,107 @@ describe("T-096 App.stop() 等 9 收尾", () => {
     expect(storage.listTickets().map((t) => [t.ticket_id, t.status])).toEqual(after);
     expect(storage.queryEvents().length).toBe(events);
     expect(storage.queryEvents({ types: ["escalated"] })).toEqual([]);
+  });
+});
+
+describe("T-102b 组合根把 9 的 signal 透传给 8 的 resubmitConflict / reReview", () => {
+  it("E2E：合并冲突 → 冲突复投编码在途，stop() 中止 runTicket 收到的 signal；stop 收尾，不上报、库里状态不变", async () => {
+    const { storage, worktreeRoot } = setup();
+    const { pr, calls } = fakePr();
+    let merges = 0;
+    pr.merge = async (pr_id) => {
+      calls.merge.push(pr_id);
+      if (merges++ === 0)
+        return { merged: false, conflict: true, conflicted_files: ["lib/a/x.ts"] };
+      return { merged: true, sha: MERGE_SHA, fast_forward: false };
+    };
+    const inputs: RunTicketInput[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const runTicket = vi.fn(async (input: RunTicketInput) => {
+      inputs.push(input);
+      if (inputs.length > 1) {
+        // 冲突复投：收到 signal 就等它中止；没收到（透传断了）就等测试放行，免得 stop() 卡死
+        const signal = input.signal;
+        await (signal
+          ? new Promise<never>((_, reject) =>
+              signal.addEventListener("abort", () => reject(signal.reason)),
+            )
+          : gate);
+      }
+      return { status: "done" as const, summary: "写好了", changed_files: ["lib/a/x.ts"] };
+    });
+    const { app } = await start({ storage, worktreeRoot, pr, runTicket });
+    await createProject(app);
+    const t = await app.supervisor.createManualTicket({
+      project_id: PROJECT,
+      ticket_text: "在 lib/a 下加 x",
+      origin: "manual",
+      write_scope: ["lib/a/**"],
+      interfaces: [],
+    });
+    await vi.waitFor(() => expect(inputs.length).toBe(2), { timeout: 5000 });
+    expect(statusOf(storage, t.ticket_id)).toBe("resubmitting");
+    const signal = inputs[1]!.signal;
+    release();
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal!.aborted).toBe(false);
+    await app.stop();
+    expect(signal!.aborted).toBe(true);
+    expect(statusOf(storage, t.ticket_id)).toBe("resubmitting");
+    expect(storage.queryEvents({ types: ["escalated"] })).toEqual([]);
+    expect(calls.merge).toHaveLength(1);
+  });
+
+  it("E2E：基线不明 → 重审在途，stop() 中止 review 收到的 signal；stop 收尾，不上报、库里状态不变", async () => {
+    const { storage, worktreeRoot } = setup();
+    const { pr, calls } = fakePr();
+    // 8 的 reReview 以 2 的 PR 记录为准：开 PR 时照真实 6 那样写一条
+    const open = pr.open;
+    pr.open = async (ticket_id, worktree_path, branch) => {
+      const pr_id = await open(ticket_id, worktree_path, branch);
+      await storage
+        .prStore<TicketPrRecord>()
+        .put(prRec({ pr_id, ticket_id, worktree_path, branch, base_sha: "d".repeat(40) }));
+      return pr_id;
+    };
+    const signals: Array<AbortSignal | undefined> = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const review: AppDeps["review"] = async (input) => {
+      signals.push(input.signal);
+      if (signals.length > 1) {
+        // 重审：收到 signal 就等它中止；没收到（透传断了）就等测试放行
+        const signal = input.signal;
+        await (signal
+          ? new Promise<never>((_, reject) =>
+              signal.addEventListener("abort", () => reject(signal.reason)),
+            )
+          : gate);
+      }
+      return { verdict: "pass", reasons: [], reviewer: "m1" };
+    };
+    const { app } = await start({ storage, worktreeRoot, pr, review });
+    await createProject(app);
+    const t = await app.supervisor.createManualTicket({
+      project_id: PROJECT,
+      ticket_text: "在 lib/a 下加 x",
+      origin: "manual",
+      write_scope: ["lib/a/**"],
+      interfaces: [],
+      base_commit: "d".repeat(40), // 9 不认识的基线：合并前重审
+    });
+    await vi.waitFor(() => expect(signals.length).toBe(2), { timeout: 5000 });
+    expect(statusOf(storage, t.ticket_id)).toBe("re_reviewing");
+    const signal = signals[1];
+    release();
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal!.aborted).toBe(false);
+    await app.stop();
+    expect(signal!.aborted).toBe(true);
+    expect(statusOf(storage, t.ticket_id)).toBe("re_reviewing");
+    expect(storage.queryEvents({ types: ["escalated"] })).toEqual([]);
+    expect(calls.merge).toEqual([]);
   });
 });
 
