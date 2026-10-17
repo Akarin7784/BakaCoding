@@ -113,6 +113,10 @@ describe("ticket_warning 和 merged_but（T-050）", () => {
   it("文案：两个已知代码有中文；不认识的代码原样显示，原型链上的名字不当成文案", () => {
     expect(ticketWarningLabel("write_scope_defaulted")).toContain("整个仓库");
     expect(ticketWarningLabel("fields_invalid")).toContain("不能续跑");
+    expect(ticketWarningLabel("requirement_truncated")).toContain("截断");
+    expect(ticketWarningLabel("pr_close_failed")).toContain("关闭");
+    expect(ticketWarningLabel("high_risk_reject_not_applied")).toContain("裁决未生效");
+    expect(ticketWarningLabel("takeover_skipped")).toContain("跳过");
     expect(ticketWarningLabel("some_future_code")).toBe("some_future_code");
     expect(ticketWarningLabel("toString")).toBe("toString");
   });

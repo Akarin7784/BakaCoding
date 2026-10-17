@@ -1,5 +1,10 @@
 // 把只读数据与后端状态通过 IPC 推给渲染进程。
-import { IPC_CHANNELS, type DesktopUpdate, type SupervisorNotifyMessage } from "../shared/api.js";
+import {
+  IPC_CHANNELS,
+  type DesktopDecideHighRiskResult,
+  type DesktopUpdate,
+  type SupervisorNotifyMessage,
+} from "../shared/api.js";
 import type { BackendHandle } from "./backend.js";
 import type { EventReader } from "./reader.js";
 
@@ -22,6 +27,8 @@ export function serveReader(
   reader: EventReader,
   sink: () => UpdateSink | null,
   pollMs: number = DEFAULT_POLL_MS,
+  /** 每次轮询有机会刷新高风险清单（PR 状态经 sync 变化时不发新事件，靠这里补）（T-062） */
+  onPoll?: () => void,
 ): () => void {
   ipc.handle(IPC_CHANNELS.snapshot, () => reader.snapshot());
   const timer = setInterval(() => {
@@ -35,6 +42,12 @@ export function serveReader(
       return;
     }
     if (update) s.send(IPC_CHANNELS.update, update);
+    // 有或没有 UI 增量都刷新一次：sync 合入 / 关 PR 可能只改库里的状态
+    try {
+      onPoll?.();
+    } catch (e) {
+      console.error("[desktop] 刷新高风险清单失败", e);
+    }
   }, pollMs);
   return () => {
     clearInterval(timer);
@@ -65,5 +78,39 @@ export function serveBackend(
     off();
     ipc.removeHandler(IPC_CHANNELS.backendStatus);
     ipc.removeHandler(IPC_CHANNELS.supervisorReady);
+  };
+}
+
+/**
+ * 高风险 PR 裁决 IPC（T-062）：pendingHighRisk / decideHighRisk，清单变化推 pending-update。
+ * 刷新触发：onHighRiskHeld（经 notify）、escalated / ticket_warning、裁决后、以及 reader 轮询（PR 状态）。
+ */
+export function serveHighRisk(
+  ipc: IpcMainLike,
+  backend: BackendHandle,
+  sink: () => UpdateSink | null,
+): () => void {
+  ipc.handle(IPC_CHANNELS.highRiskPending, () => backend.pendingHighRisk());
+  ipc.handle(IPC_CHANNELS.highRiskDecide, async (...args: unknown[]) => {
+    const ticket_id = String(args[0] ?? "");
+    const pr_id = String(args[1] ?? "");
+    const decision = args[2] === "reject" ? "reject" : "release";
+    const detail = typeof args[3] === "string" ? args[3] : undefined;
+    const result: DesktopDecideHighRiskResult = await backend.decideHighRisk(
+      ticket_id,
+      pr_id,
+      decision,
+      detail,
+    );
+    return result;
+  });
+  const off = backend.onPendingHighRisk((list) => {
+    const s = sink();
+    if (s && !s.isDestroyed()) s.send(IPC_CHANNELS.highRiskPendingUpdate, list);
+  });
+  return () => {
+    off();
+    ipc.removeHandler(IPC_CHANNELS.highRiskPending);
+    ipc.removeHandler(IPC_CHANNELS.highRiskDecide);
   };
 }

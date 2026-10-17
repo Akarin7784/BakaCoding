@@ -62,9 +62,12 @@ describe("preload 暴露的只读 API", () => {
   it("暴露只读与后端状态相关成员，且不可改", () => {
     const api = createDesktopApi(fakeIpc(), "linux");
     expect(Object.keys(api).sort()).toEqual([
+      "decideHighRisk",
       "getBackendStatus",
+      "getPendingHighRisk",
       "getSnapshot",
       "markSupervisorReady",
+      "onPendingHighRisk",
       "onSupervisorNotify",
       "onUpdate",
       "platform",

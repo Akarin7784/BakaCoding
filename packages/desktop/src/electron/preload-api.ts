@@ -3,6 +3,9 @@ import {
   IPC_CHANNELS,
   type BakaDesktopApi,
   type DesktopBackendStatus,
+  type DesktopDecideHighRiskResult,
+  type DesktopHighRiskDecision,
+  type DesktopPendingHighRisk,
   type DesktopSnapshot,
   type DesktopUpdate,
   type SupervisorNotifyMessage,
@@ -34,6 +37,30 @@ export function createDesktopApi(ipc: IpcRendererLike, platform: string): BakaDe
       ipc.on(IPC_CHANNELS.supervisorNotify, wrapped);
       return () => {
         ipc.removeListener(IPC_CHANNELS.supervisorNotify, wrapped);
+      };
+    },
+    getPendingHighRisk: () =>
+      ipc.invoke(IPC_CHANNELS.highRiskPending) as Promise<DesktopPendingHighRisk[]>,
+    decideHighRisk(
+      ticket_id: string,
+      pr_id: string,
+      decision: DesktopHighRiskDecision,
+      detail?: string,
+    ) {
+      return ipc.invoke(
+        IPC_CHANNELS.highRiskDecide,
+        ticket_id,
+        pr_id,
+        decision,
+        detail,
+      ) as Promise<DesktopDecideHighRiskResult>;
+    },
+    onPendingHighRisk(listener: (list: DesktopPendingHighRisk[]) => void) {
+      const wrapped = (_event: unknown, list: unknown) =>
+        listener(list as DesktopPendingHighRisk[]);
+      ipc.on(IPC_CHANNELS.highRiskPendingUpdate, wrapped);
+      return () => {
+        ipc.removeListener(IPC_CHANNELS.highRiskPendingUpdate, wrapped);
       };
     },
   });

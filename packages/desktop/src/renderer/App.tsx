@@ -1,11 +1,13 @@
 import { useState } from "react";
-import type { BakaDesktopApi } from "../shared/api";
+import type { BakaDesktopApi, DesktopPendingHighRisk } from "../shared/api";
 import { ConversationList, type Selection } from "./components/Sidebar";
 import { SupervisorChat } from "./components/SupervisorChat";
 import { ProjectGroup } from "./components/ProjectGroup";
 import { RightPanel } from "./components/RightPanel";
 import { UnattributedPanel } from "./components/Escalations";
+import { HighRiskPanel } from "./components/HighRiskPanel";
 import { useDesktopData } from "./data/useDesktopData";
+import { usePendingHighRisk } from "./data/usePendingHighRisk";
 import * as mock from "./mock/data";
 import type {
   EscalationView,
@@ -23,6 +25,8 @@ export interface AppProps {
   unattributed?: EscalationView[];
   /** 找不到所属项目的 ticket_warning（T-050）。 */
   unattributedWarnings?: TicketWarningView[];
+  /** 测试注入的待裁决高风险清单（T-062）；有 api 时以主进程为准。 */
+  pendingHighRisk?: DesktopPendingHighRisk[];
   /** 数据来源；默认取 preload 暴露的 window.bakacoding，传 null 强制用假数据。 */
   api?: BakaDesktopApi | null;
 }
@@ -42,6 +46,7 @@ export function App(props: AppProps) {
   const unattributedWarnings = props.unattributedWarnings ?? live?.unattributedWarnings ?? [];
   // 主管对话的历史还没有落库来源，接入真实数据时先从空对话开始。
   const supervisorMessages = props.supervisorMessages ?? (live ? [] : mock.supervisorMessages);
+  const highRisk = usePendingHighRisk(api, props.pendingHighRisk ?? []);
 
   const [selection, setSelection] = useState<Selection>({ kind: "supervisor" });
   const [sidebarOpen, setSidebarOpen] = useState(false); // 默认关闭
@@ -60,6 +65,12 @@ export function App(props: AppProps) {
   const current = projects.find((p) => p.project.payload.project_id === currentId);
   const notice = live ? dbNotice(live.db) : null;
 
+  // 当前视图相关的高风险单优先；主管页显示全部
+  const panelItems =
+    selection.kind === "project" && current
+      ? highRisk.items.filter((i) => i.project_id === current.project.payload.project_id)
+      : highRisk.items;
+
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
       {notice && (
@@ -77,18 +88,21 @@ export function App(props: AppProps) {
           selection={selection}
           onSelect={select}
         />
-        {selection.kind === "unattributed" ? (
-          <UnattributedPanel escalations={unattributed} warnings={unattributedWarnings} />
-        ) : selection.kind === "supervisor" || !current ? (
-          <SupervisorChat initial={supervisorMessages} />
-        ) : (
-          <ProjectGroup
-            view={current}
-            calls={flashCalls}
-            sidebarOpen={sidebarOpen}
-            onToggleSidebar={() => setSidebarOpen((o) => !o)}
-          />
-        )}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <HighRiskPanel items={panelItems} onDecide={highRisk.decide} />
+          {selection.kind === "unattributed" ? (
+            <UnattributedPanel escalations={unattributed} warnings={unattributedWarnings} />
+          ) : selection.kind === "supervisor" || !current ? (
+            <SupervisorChat initial={supervisorMessages} />
+          ) : (
+            <ProjectGroup
+              view={current}
+              calls={flashCalls}
+              sidebarOpen={sidebarOpen}
+              onToggleSidebar={() => setSidebarOpen((o) => !o)}
+            />
+          )}
+        </div>
         {sidebarOpen && current && selection.kind !== "unattributed" && (
           <RightPanel
             view={current}

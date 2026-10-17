@@ -14,8 +14,12 @@
     "rebuild:electron": "node scripts/rebuild-electron.mjs"
   },
   "dependencies": {
+    "@bakacoding/app": "workspace:*",
     "@bakacoding/config-budget": "workspace:*",
+    "@bakacoding/scheduler": "workspace:*",
     "@bakacoding/storage": "workspace:*",
+    "@bakacoding/sub-agent": "workspace:*",
+    "@bakacoding/supervisor": "workspace:*",
     "@bakacoding/types": "workspace:*",
     "better-sqlite3": "^12.11.1",
     "class-variance-authority": "^0.7.1",
@@ -23,9 +27,7 @@
     "lucide-react": "^1.58.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
-    "tailwind-merge": "^3.7.0",
-    "@bakacoding/app": "workspace:*",
-    "@bakacoding/supervisor": "workspace:*"
+    "tailwind-merge": "^3.7.0"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.1",

@@ -32,3 +32,15 @@
 模块 10 发的 `ticket_warning`（单级警告，不需要人工介入）显示在项目群顶部的「需求单提示」里，用灰字，排在「需要人工介入」下面；侧边栏 PR 列表里对应的单带一个提示图标，悬停看文案。`write_scope_defaulted`（没给写入范围，按整个仓库可写处理）和 `fields_invalid`（结构化字段缺失或损坏，不能续跑）有中文文案；文案表故意不按代码穷举，以后加了新代码而这里还没配文案时，原样显示代码，类型检查也不会挂。项目号对不上任何项目的警告放进「未归属」。
 
 `escalated` 的 `reason` 是 `merged_but`（T-038 起）或说明以 `merged_but:` 开头（旧库）时，都标「代码已进集成分支」。
+
+## 高风险 PR 裁决（T-062）
+
+- 主进程经 `assemble` 拿到 `App.supervisor` 后，IPC 暴露：
+  - `getPendingHighRisk()` → 同步调用 `pendingHighRisk()`（内存清单；只读模式为空）
+  - `decideHighRisk(ticket_id, pr_id, "release" | "reject", detail?)` → 转调 `decideHighRisk`；`stale_pr` 返回文案「PR 已更新，请重新查看」
+  - `onPendingHighRisk`：清单刷新推送
+- 刷新时机：`onHighRiskHeld`（经主管通知）、`escalated` / `ticket_warning`、裁决完成后、以及事件轮询（PR 状态经 sync 变化时不发新事件，靠轮询补刷）。不新增事件类型。
+- 界面顶部「高风险 PR 待裁决」：理由用 `HighRiskReason` 中文；命中文件用模块 8 的 `HighRiskFile`，有 `old_path` 显示 `package.json → x.json`。
+- 裁决错误码九个都有中文（`HIGH_RISK_DECISION_ERROR_LABEL`）。
+- 警告列表：`requirement_truncated` / `pr_close_failed` / `high_risk_reject_not_applied` / `takeover_skipped` 配中文；按 `ticket_id+code` 去重带 ×N；最多约 50 条，其余 `+N 条`；detail 预览约 500 字，悬停全文上限 4000。
+- **不在本单**：`syncState()` 接线（T-067）。

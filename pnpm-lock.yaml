@@ -107,9 +107,15 @@ importers:
       '@bakacoding/config-budget':
         specifier: workspace:*
         version: link:../config-budget
+      '@bakacoding/scheduler':
+        specifier: workspace:*
+        version: link:../scheduler
       '@bakacoding/storage':
         specifier: workspace:*
         version: link:../storage
+      '@bakacoding/sub-agent':
+        specifier: workspace:*
+        version: link:../sub-agent
       '@bakacoding/supervisor':
         specifier: workspace:*
         version: link:../supervisor

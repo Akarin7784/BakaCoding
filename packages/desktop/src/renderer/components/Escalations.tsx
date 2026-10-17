@@ -1,5 +1,6 @@
 import { TriangleAlert } from "lucide-react";
 import type { EscalationView, TicketWarningView } from "../mock/types";
+import { sliceWarningsForDisplay, truncateDetail, type DedupedWarning } from "../lib/warnings";
 
 export const ESCALATION_REASON: Record<EscalationView["reason"], string> = {
   review_limit: "评审复投超限",
@@ -34,42 +35,63 @@ export function isMergedBut(e: EscalationView): boolean {
 }
 
 /**
- * ticket_warning 的中文文案（T-050）。故意不按 TICKET_WARNING_CODES 穷举：
+ * ticket_warning 的中文文案（T-050 / T-062）。故意不按 TICKET_WARNING_CODES 穷举：
  * 模块 10 加了新代码而这里还没配文案时，显示代码本身，桌面的类型检查也不会挂。
  */
 export const TICKET_WARNING_LABEL: Readonly<Record<string, string>> = {
   write_scope_defaulted: "没给写入范围，按整个仓库可写处理",
   fields_invalid: "单子的结构化字段缺失或损坏，不能续跑",
+  requirement_truncated: "需求原文过长，已截断",
+  pr_close_failed: "关闭旧 PR 失败，稍后重试",
+  high_risk_reject_not_applied: "PR 已关但裁决未生效，新 PR 仍在等你裁决",
+  takeover_skipped: "重启接管时跳过了这张单",
 };
 
 export function ticketWarningLabel(code: string): string {
   return Object.hasOwn(TICKET_WARNING_LABEL, code) ? TICKET_WARNING_LABEL[code]! : code;
 }
 
-export function TicketWarningItem({ w }: { w: TicketWarningView }) {
+export function TicketWarningItem({ w }: { w: DedupedWarning | TicketWarningView }) {
+  const count = "count" in w ? w.count : 1;
+  const detailInfo = w.detail ? truncateDetail(w.detail) : null;
   return (
     <li data-testid="ticket-warning" className="flex items-start gap-1">
       <TriangleAlert size={14} strokeWidth={1.5} className="mt-0.5 shrink-0" aria-hidden />
       <span>
         {w.ticket_id} · {ticketWarningLabel(w.code)}
-        {w.detail ? `：${w.detail}` : ""}
+        {count > 1 ? `（×${count}）` : ""}
+        {detailInfo ? (
+          <>
+            ：
+            <span title={detailInfo.title} data-testid="ticket-warning-detail">
+              {detailInfo.preview}
+            </span>
+          </>
+        ) : null}
       </span>
     </li>
   );
 }
 
-/** 需求单提示列表：比「需要人工介入」弱一级，用灰字，不抢眼。 */
+/** 需求单提示列表：比「需要人工介入」弱一级，用灰字，不抢眼。T-062：去重、截断、最多约 50 条。 */
 export function TicketWarningList({ warnings }: { warnings: TicketWarningView[] }) {
   if (warnings.length === 0) return null;
+  const { visible, more } = sliceWarningsForDisplay(warnings);
   return (
     <ul
       role="status"
       aria-label="需求单提示"
       className="space-y-1 border-b border-border px-4 py-2 text-xs text-muted-foreground"
+      data-testid="ticket-warning-list"
     >
-      {warnings.map((w) => (
-        <TicketWarningItem key={w.event_id} w={w} />
+      {visible.map((w) => (
+        <TicketWarningItem key={`${w.ticket_id}:${w.code}:${w.event_id}`} w={w} />
       ))}
+      {more > 0 && (
+        <li data-testid="ticket-warning-more" className="pl-5 text-muted-foreground">
+          +{more} 条
+        </li>
+      )}
     </ul>
   );
 }
