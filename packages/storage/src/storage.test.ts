@@ -354,23 +354,46 @@ describe("@bakacoding/storage", () => {
       total_micro_usd: 150,
       resubmit_micro_usd: 50,
       entries: 2,
+      by_role: { supervisor: 0, reviewer: 0, sub_agent: 0, coder: 150 },
     });
     expect(await s.ledger.totalsByDay("2026-10-18")).toEqual({
       total_micro_usd: 7,
       resubmit_micro_usd: 0,
       entries: 1,
+      by_role: { supervisor: 0, reviewer: 0, sub_agent: 0, coder: 7 },
     });
     expect(await s.ledger.totalsByTicket("T-1")).toEqual({
       total_micro_usd: 150,
       resubmit_micro_usd: 50,
       entries: 2,
+      by_role: { supervisor: 0, reviewer: 0, sub_agent: 0, coder: 150 },
     });
     expect(await s.ledger.totalsByDay("2026-01-01")).toEqual({
       total_micro_usd: 0,
       resubmit_micro_usd: 0,
       entries: 0,
+      by_role: { supervisor: 0, reviewer: 0, sub_agent: 0, coder: 0 },
     });
     await expect(s.ledger.totalsByDay("2026/10/17")).rejects.toThrow(RangeError);
+  });
+
+  it("台账汇总按角色分列", async () => {
+    const s = open();
+    const e = {
+      requirement_id: "R-1",
+      ticket_id: "T-9",
+      ts: "2026-10-17T01:00:00.000Z",
+      is_resubmit: false,
+      cache_hit: false,
+      offpeak: false,
+    };
+    await s.ledger.append({ ...e, entry_id: "r1", role: "coder", cost_micro_usd: 10 });
+    await s.ledger.append({ ...e, entry_id: "r2", role: "reviewer", cost_micro_usd: 20 });
+    await s.ledger.append({ ...e, entry_id: "r3", role: "reviewer", cost_micro_usd: 5 });
+    await s.ledger.append({ ...e, entry_id: "r4", role: "sub_agent", cost_micro_usd: 3 });
+    const t = await s.ledger.totalsByTicket("T-9");
+    expect(t.by_role).toEqual({ supervisor: 0, reviewer: 25, sub_agent: 3, coder: 10 });
+    expect(t.total_micro_usd).toBe(38);
   });
 
   it("diagnosticsSource 适配模块 11 的 DiagnosticsSource", async () => {

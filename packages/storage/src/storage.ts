@@ -5,6 +5,7 @@ import { redact as redactText } from "@bakacoding/config-budget";
 import {
   EventSchema,
   LedgerEntrySchema,
+  ROLES,
   type BakaEvent,
   type CiCheck,
   type DiagEventFilter,
@@ -13,10 +14,12 @@ import {
   type EventType,
   type LedgerEntry,
   type LedgerStore,
+  type LedgerBreakdown,
   type LedgerTotals,
   type OutcomeLabel,
   type PermissionList,
   type RawFile,
+  type Role,
   type RoundRecord,
   type TicketRecord,
   type TicketStatus,
@@ -796,6 +799,15 @@ export function openStorage(options: StorageOptions): Storage {
   const totalsSql = `SELECT COALESCE(SUM(cost_micro_usd), 0) AS total_micro_usd,
       COALESCE(SUM(CASE WHEN is_resubmit = 1 THEN cost_micro_usd ELSE 0 END), 0) AS resubmit_micro_usd,
       COUNT(*) AS entries FROM ledger`;
+  const ledgerTotals = (where: string, arg: string): LedgerBreakdown => {
+    const t = db.prepare(`${totalsSql} WHERE ${where} = ?`).get(arg) as LedgerTotals;
+    const by_role = Object.fromEntries(ROLES.map((r) => [r, 0])) as LedgerBreakdown["by_role"];
+    const rows = db
+      .prepare(`SELECT role, SUM(cost_micro_usd) AS c FROM ledger WHERE ${where} = ? GROUP BY role`)
+      .all(arg) as { role: Role; c: number }[];
+    for (const r of rows) by_role[r.role] = r.c;
+    return { ...t, by_role };
+  };
   const ledger: LedgerStore = {
     async append(entry) {
       ledgerAppend(entry);
@@ -803,10 +815,10 @@ export function openStorage(options: StorageOptions): Storage {
     async totalsByDay(day) {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(day))
         throw new RangeError(`day 须为 YYYY-MM-DD（UTC），收到 ${day}`);
-      return db.prepare(`${totalsSql} WHERE day = ?`).get(day) as LedgerTotals;
+      return ledgerTotals("day", day);
     },
     async totalsByTicket(ticket_id) {
-      return db.prepare(`${totalsSql} WHERE ticket_id = ?`).get(ticket_id) as LedgerTotals;
+      return ledgerTotals("ticket_id", ticket_id);
     },
   };
 
