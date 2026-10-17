@@ -1,3 +1,16 @@
-// 模块 9 占位，接口见 docs/modules.md「9.」一节。
+// 模块 9：调度器与合并队列，接口见 docs/modules.md「9.」一节。
 export const MODULE_ID = 9 as const;
 export const MODULE_NAME = "@bakacoding/scheduler" as const;
+
+export * from "./types.js";
+export {
+  BackpressureController,
+  type BacklogInput,
+  type BackpressureDecision,
+} from "./backpressure.js";
+export {
+  createScheduler,
+  RATE_LIMIT_ESCALATE_AFTER,
+  DEFAULT_TARGET_DIRTY_RETRY_MS,
+} from "./scheduler.js";
+export { globToRegExp, matchesAny } from "./glob.js";
