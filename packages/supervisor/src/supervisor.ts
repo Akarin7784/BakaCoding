@@ -1863,13 +1863,13 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   let integrationReviewing = false;
   let lastBacklog: { pending: number; capacity: number } | null = null;
 
+  /**
+   * 主管待办数（T-070）：在途 chat/split + 上报串行队列 + 审查中(0/1)。
+   * 等用户裁决的高风险 PR 不算在这里：它已经计入 9 的待合并 PR 数（`pending_pr_limit` 那边），
+   * 再算一次会让两条反压重复触发。它照样在 pendingHighRisk() 里展示给用户。
+   */
   function backlogPending(): number {
-    return (
-      chatSplitInflight +
-      escalationPending +
-      pendingHighRisk().length +
-      (integrationReviewing ? 1 : 0)
-    );
+    return chatSplitInflight + escalationPending + (integrationReviewing ? 1 : 0);
   }
 
   async function emitSupervisorBacklog(): Promise<void> {
