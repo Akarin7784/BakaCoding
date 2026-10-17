@@ -1,0 +1,17 @@
+{
+  "name": "@bakacoding/desktop",
+  "version": "0.0.0",
+  "private": true,
+  "description": "模块 12：桌面界面（占位）",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "@bakacoding/config-budget": "workspace:*",
+    "@bakacoding/types": "workspace:*"
+  }
+}

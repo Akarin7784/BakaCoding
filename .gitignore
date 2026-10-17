@@ -25,3 +25,7 @@ test-results/
 Thumbs.db
 .idea/
 .vscode/
+*.tsbuildinfo
+
+# BakaCoding local worktrees
+.bakacoding/worktrees/
