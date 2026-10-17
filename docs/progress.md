@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`9ffac04` · main 上测试：101 个测试文件、1866 个测试全部通过 · 更新日期：2026-10-18（UTC+8）
+> 上次更新时 main：`ad3fa49` · main 上测试：103 个测试文件、1879 个测试全部通过 · 更新日期：2026-10-18（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -154,7 +154,7 @@ flowchart BT
 | T-101 | 模块 9 / 组合根：`listFiles`、`userMainWorktreeFor` 的 git 调用统一走 repoGit + `gitEnv()` + 超时（T-096 评审跟进）；preview.1 之后 | 9 | 编排层开发 | 待开发 | — | — |
 | T-102 | 模块 8 + 6：`resubmitConflict` / `reReview` 接收 stop 的 signal；模块 6 GitHub 请求加请求级超时（T-096 已知缺口）；preview.1 之后 | 8 / 6 | 编排层开发、执行层开发 | 待开发 | — | — |
 | T-103 | 模块 6：合并重试幂等。本地 `merge` 在锁内读到 target 后先查 head 是否已被 target 包含，是则直接记 merged（`merge_sha` 取把 head 带进 target 的那个提交：快进为 head，非快进为当时的合并提交），不再 commit-tree、不动 target；GitHub `merge` 推分支前先查远程 PR，已合入则不推不 PUT，fetch、快进本地 target 后记 merged（`merge_sha` 用 `merge_commit_sha`），PUT 回 405 / 409 时也回查；接口不变，modules.md §6 同步。来源：编排层分析 2026-10-18，preview.1 之前。main `436fbdf`，测试 96 个文件 / 1831 个 | 6 | 执行层开发 | 已合入 | #117 | `436fbdf` |
-| T-105 | 模块 12 桌面端退出和收尾等 stop 结束（T-096 评审跟进）：`before-quit` 里 `preventDefault`，等 `BackendSwitcher.stop()` 结束再 `app.quit()`，上限 `QUIT_STOP_TIMEOUT_MS` = `REPO_GIT_TIMEOUT_MS` + 5 s，超时写一条固定 warn（不带路径、不带原始错误）后退出，只 stop 一次、自己发起的退出放行（判断抽成 `quit-guard.ts`）；后端 `stop()` / 启动失败的 `cleanupPartial` 先 `await app.stop()` 再 dispose、关库、放写锁，`stop()` 重复调用返回同一个 Promise；`window:theme` 失败一律回固定文案「主题设置失败」，不传原始错误（取代 UI-08 的脱敏透传）；`window-theme.json` 改原子写（同目录临时文件 + rename，失败删临时文件）；modules.md §12 和组合根一节同步。preview.1 之前 | 12 | 界面与诊断开发 | 待评审 | #122 | — |
+| T-105 | 模块 12 桌面端退出和收尾等 stop 结束（T-096 评审跟进）：`before-quit` 里 `preventDefault`，等 `BackendSwitcher.stop()` 结束再 `app.quit()`，上限 `QUIT_STOP_TIMEOUT_MS` = `REPO_GIT_TIMEOUT_MS` + 5 s，超时写一条固定 warn（不带路径、不带原始错误）后退出，只 stop 一次、自己发起的退出放行（判断抽成 `quit-guard.ts`）；后端 `stop()` / 启动失败的 `cleanupPartial` 先 `await app.stop()` 再 dispose、关库、放写锁，`stop()` 重复调用返回同一个 Promise；`window:theme` 失败一律回固定文案「主题设置失败」，不传原始错误（取代 UI-08 的脱敏透传）；`window-theme.json` 改原子写（同目录临时文件 + rename，失败删临时文件）；modules.md §12 和组合根一节同步。preview.1 之前。main `ad3fa49`，测试 103 个文件 / 1879 个 | 12 | 界面与诊断开发 | 已合入 | #122 | `ad3fa49` |
 | UI-08 | 模块 12 状态与反馈（`docs/ui-design.md` §3、§4.7、§4.8；基于已合入的 UI-02 #103）：只读横幅「只读模式：原因」+ 查看详情（`backend:status` 新增脱敏后的 `error`：错误名 / 信息 / 错误码 / 一层 cause）+ 重新连接（接 T-093 `backend:reconnect`）；只读时输入框、裁决、合入 main、导出禁用并说明；操作结果改右下角 toast（错误不消失、可复制详情）；左栏底部全局状态点 + 状态卡（后端、同步、数据库、待处理、未归属并入）；右面板抽屉改 Radix Dialog（焦点移入 / 困住 / 归还，`--overlay` 遮罩）；窗口按钮留位优先用 Window Controls Overlay；主进程记住主题偏好，启动建窗口前读出，标题栏不闪；`window:theme` 失败原因脱敏（改固定文案见 T-105）。main `9ffac04`，测试 101 个文件 / 1866 个 | 12 | 界面与诊断开发 | 已合入 | #119 | `9ffac04` |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
