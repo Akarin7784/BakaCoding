@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`aae7037` · main 上测试：115 个测试文件、2127 个测试全部通过 · 更新日期：2026-10-18（UTC+8）
+> 上次更新时 main：`10d9e00` · main 上测试：116 个测试文件、2149 个测试全部通过 · 更新日期：2026-10-18（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -168,7 +168,7 @@ flowchart BT
 | T-111 | 模块 1：`testConnection` 补测试（T-089 评审跟进）：请求途中取消抛 AbortError、记一条 `ABORTED` 台账并释放预占；401 报错带密钥时台账事件里没有密钥；429 记入全局退避状态；modules.md §1 写明测试连接遇到 429 会触发全局退避。只加测试和文档，不改行为。main `6b11d11`，测试 112 个文件 / 2057 个；跟进 #141（`5906e4c`）：modules.md §1 改为 429 只记入共享退避状态、不阻塞后续请求，补「退避期内再测照常发出」测试，main `5906e4c`，测试 112 个文件 / 2058 个 | 1 | 基础层开发 | 已合入 | #139、#141 | `6b11d11`、`5906e4c` |
 | T-112 | 模块 9：9 调 6 的 `merge` / `sync` / `close` / `diff` 传 signal（T-102b #136 评审跟进；目前在途的 GitHub `merge` 最坏 150 秒、`sync` 为记录数 × 30 秒，见 modules.md §9「收尾要多久」） | 9 | 编排层开发 | 待接口方案 | — | — |
 | T-109 | 界面：`App.status.test` 重新连接失败用例偶发失败（flaky），定位并修稳（UI-03a #130 评审跟进）。根因：sonner 点 action 默认关掉 toast（200ms 后卸载），「复制详情」把错误 toast 关了，末尾断言能否通过取决于测试是否在 200ms 内跑完；`notifyError` 的复制按钮 `preventDefault`，复制后错误 toast 留着，测试改看 `data-removed` 标记、不靠时间。另补退出组合测试：stop 挂住 + 收尾中点关闭 + 到 `QUIT_STOP_TIMEOUT_MS` 放行窗口、只退出一次（假计时器）。main `aae7037`，测试 115 个文件 / 2127 个 | 12 | 界面与诊断开发 | 已合入 | #147 | `aae7037` |
-| T-114 | 模块 3 / 4：配置向导（T-113）的底层支持：3 新增 `writePricing(path, pricing, opts?)` 与 `WRITABLE_PRICING_FILE`（只写 `pricing.json`，`PricingSchema` 校验 + 像密钥的值检查，和 `writeConfig` 共用原子写入）；4 新增 `nested_repo`：`checkRepo` 的 git 项、`initRepo`（不建目录、不 init）和提交类修复都识别「在另一个 Git 仓库里面」，`rev-parse` 失败时逐层 lstat 找 `.git` | 3、4 | 基础层开发 | 待评审 #148 | #148 | — |
+| T-114 | 模块 3 / 4：配置向导（T-113）的底层支持：3 新增 `writePricing(path, pricing, opts?)` 与 `WRITABLE_PRICING_FILE`（只写 `pricing.json`，`PricingSchema` 校验 + 像密钥的值检查，和 `writeConfig` 共用原子写入）；4 新增 `nested_repo`：`checkRepo` 的 git 项、`initRepo`（不建目录、不 init）和提交类修复都识别「在另一个 Git 仓库里面」，`rev-parse` 失败时逐层 lstat 找 `.git`。main `10d9e00`，测试 116 个文件 / 2149 个 | 3、4 | 基础层开发 | 已合入 | #148 | `10d9e00` |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
