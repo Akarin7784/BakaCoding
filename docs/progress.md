@@ -97,6 +97,7 @@ flowchart BT
 | T-043 | 不可信文本包装与转义：评审池的需求单 / 摘要 / 架构约束 / diff 与编码池 feedback 统一包进带 nonce 的 `untrusted` 区块；转义前做 NFKC、忽略零宽字符和软连字符；共用函数放 `@bakacoding/types`；nonce 不进编码池公共前缀 | 5、7 | 执行层开发 | 已合入 | #35 | `876cac0` |
 | T-044 | 模块 5/7 把 `signal` 透传给模型调用（`runTicket` 加可选 `signal`，调模型前、工具调用前检查取消）；编码池工具轮把上一轮的 `reasoning`（含 `signature`）原样放进 assistant 消息回传 | 5、7 | 执行层开发 | 已合入 | #43 | `d646d20` |
 | T-045 | 模块 7 `storageRoundSource` 改用 `listPrRounds(ticket_id)`；模块 5 `runTicket` 结束时释放本单权限清单、加可选 `scope_requests` 透传给 `createTools` | 5、7 | 执行层开发 | 已合入 | #46 | `bbef27a` |
+| T-046 | 模块 9：GitHub 手动合并（`sync()` 带 `merge_sha`）也发 `interface_changed`；`onMerged` 写状态 / `saveMergeResult` 失败不挡发事件；`interface_changed` 发失败进进程内待补发列表（单号 + sha 去重，每轮合并前和 `sync()` 时重试，只报一次 `merged_but`）；补发有重入保护；`sync()` 发现的手动合并在合并日志里记空串 sha（基线未知、保守重审），`merge_sha` 校验 40 位十六进制，只用于事件和去重；模块 6 `SyncChange` 加可选 `merge_sha` | 6、9 | 执行层开发 | 待评审 | #59 | — |
 | T-047 | 模块 6 GitHub 实现：`open` 只建本地记录（不推不开 PR），远程 PR 在第一次 `commitWorktree` 后开；`commitWorktree` 只推本单分支并开 / 复用 PR，失败保留本地提交、下次补做；没有提交的记录不开 PR（不 422）；`checks` 用 push 之后的 head sha | 6 | 执行层开发 | 已合入 | #42 | `1d0c4a9` |
 | T-048 | 模块 8 每单权限清单：按单上建议和 `write_scope` 生成三级清单（默认拒绝，范围外写权限降为只读并记日志），以 2 的需求单记录为准、每次编码 / 评审前读回，批准的范围写回记录（`recordGrantedScope`，`scopeRequests` 透传给 5 时自动写回）；同一单不并发 `runTicket`；删 `projectOf`；模块 9 写入范围锁展开花括号、独占区域补「末段模式能写到具体文件名」的判断 | 8、9 | 编排层开发 | 已合入 | #47 | `22ec076` |
 | T-049 | 桌面界面：找不到项目的 `escalated`（含合并队列的 `unattributed:<pr_id>`）进侧栏「未归属」，显示 PR 号、原因、说明；`merged_but:` 标「代码已进集成分支」 | 12 | 界面与诊断开发 | 已合入 | #41 | `865dd48` |
@@ -108,7 +109,7 @@ flowchart BT
 | T-056 | 模块 11 回归测试：需求单 `fields` 带标记串，断言导出的诊断包里任何文件都找不到（存储适配器不读出、模块 11 字段白名单不收，两道各测一次） | 11 | 界面与诊断开发 | 已合入 | #55 | `40c5936` |
 | T-057 | 模块 2：需求单 `fields` 损坏时同一连接里同一单号只警告一次（不再每次读都警告），接口不变 | 2 | 基础层开发 | 已合入 | #57 | `c4cd336` |
 
-编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单。
+编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
 ### 已知缺口
 
@@ -124,6 +125,9 @@ flowchart BT
 - 模块 10（T-040）：追问项目后，去掉项目名和虚词仍剩至少 2 个字就当新消息处理，判断较粗，可能误判。
 - 模块 10（T-040）：未注入 `listFiles` 时不查裸目录；`persistAndDispatch` 入队中途抛错会半批入队；`pending` 是全进程共用变量，并发会抢（v1 只有一对一对话，可接受）。
 - 模块 10（T-040）：1:1 历史 v1 不持久化：主管只通过注入的 `notifyUser` 回 1:1，追问项目时暂存的需求只在本进程内存里，重启即丢。
+- 模块 9（T-046）：用户在 GitHub 手动合并而 GitHub 没给合法的 `merge_commit_sha`（40 位小写十六进制）时，不发 `interface_changed`（不用 `targetHead()` 兜底），只调 `onError`。
+- 模块 9（T-046）：合并日志不持久化，重启后不从 2 恢复（`TicketRecord.merge` 没有 sha 和改动文件），重启后基线定不了的单按 T-035 保守重审。
+- 模块 9（T-046）：没补发成功的 `interface_changed` 待补发列表只在进程内，重启即丢。
 - 已解决（T-053）：中途写入范围申请里的路径曾按 glob 原样批准，文件名本身带通配符（如 `docs/**`）会批成整个目录可写；现在申请路径带通配字符一律拒绝。
 - 已解决（T-038）：合并成功后收尾出错（`merged_but`）不再把 `merged` 改成 `escalated`，状态保持 `merged` 并另发 `escalated(merged_but)`。
 - 已解决（T-048，#47）：写入范围重叠判断展开花括号（`src/{a,b}.ts` 与 `src/a.ts` 算重叠），独占区域按多个代表路径判断（`src/**/*.json` 命中 `**/package.json`）。
