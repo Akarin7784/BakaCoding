@@ -1,6 +1,6 @@
 {
   "name": "@bakacoding/desktop",
-  "version": "1.0.0-preview",
+  "version": "1.0.0-preview.1",
   "private": true,
   "description": "模块 12：桌面界面（Electron + React 三栏壳子，假数据）",
   "type": "module",
