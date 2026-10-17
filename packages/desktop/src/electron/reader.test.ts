@@ -11,7 +11,7 @@ import {
 import type { BakaEvent } from "@bakacoding/types";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DB_PATH_ENV, resolveDbPath } from "./config.js";
-import { openEventReader, type EventReader } from "./reader.js";
+import { openEventReader, ticketTitle, type EventReader } from "./reader.js";
 
 let dir: string;
 let storage: Storage | null;
@@ -347,5 +347,58 @@ describe("数据库路径", () => {
     expect(resolveDbPath([], { [DB_PATH_ENV]: "data/x.db" }, cwd)).toBe("/work/proj/data/x.db");
     expect(resolveDbPath(["--db=/abs/a.db"], { [DB_PATH_ENV]: "x.db" }, cwd)).toBe("/abs/a.db");
     expect(resolveDbPath(["electron", ".", "--db", "b.db"], {}, cwd)).toBe("/work/proj/b.db");
+  });
+});
+
+describe("项目列表与标题（T-033）", () => {
+  it("项目列表来自存储 listProjects()：每个已创建项目的需求单都列出，标题去掉 CRLF 的 \\r", () => {
+    const s = writer();
+    s.ingest(projectCreated());
+    s.ingest({
+      ...common(null),
+      type: "project_created",
+      payload: {
+        project_id: "P-2",
+        name: "baka-notes",
+        language: "TypeScript",
+        has_github_remote: true,
+      },
+    });
+    const ticket = (
+      ticket_id: string,
+      project_id: string,
+      ticket_text: string,
+      created_at: string,
+    ) =>
+      s.saveTicket({
+        ticket_id,
+        project_id,
+        requirement_id: "R-1",
+        created_at,
+        ticket_text,
+        base_commit: "a".repeat(40),
+        permission_list: [],
+        context_snippets: [],
+      });
+    ticket("T-1", "P-1", "\r\n给 Todo 加 due_date 字段\r\n详细说明", "2026-10-17T01:00:00.000Z");
+    ticket("T-2", "P-2", "笔记支持标签\r\n", "2026-10-17T01:00:01.000Z");
+    expect(s.listProjects().map((p) => p.project_id)).toEqual(["P-1", "P-2"]);
+
+    reader = openEventReader({ path: path.join(dir, "store.db") });
+    const tickets = reader.snapshot().tickets;
+    expect(tickets.map((t) => [t.ticket_id, t.project_id, t.title])).toEqual([
+      ["T-1", "P-1", "给 Todo 加 due_date 字段"],
+      ["T-2", "P-2", "笔记支持标签"],
+    ]);
+  });
+
+  it("ticketTitle：\\r\\n、单独 \\r、行尾空白都不进标题；超长截断", () => {
+    expect(ticketTitle("标题\r\n正文")).toBe("标题");
+    expect(ticketTitle("\r\n\r\n  标题  \r\n")).toBe("  标题");
+    expect(ticketTitle("旧 Mac 换行\r正文")).toBe("旧 Mac 换行");
+    expect(ticketTitle("只有一行\r")).toBe("只有一行");
+    expect(ticketTitle("")).toBe("");
+    const long = "长".repeat(100);
+    expect(ticketTitle(long)).toBe(`${"长".repeat(79)}…`);
   });
 });
