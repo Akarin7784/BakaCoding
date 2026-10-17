@@ -2,7 +2,7 @@
 // 然后由 BackendSwitcher 拆掉旧后端、在新仓库上重新组装，再用新后端的总线调 3 的 importProject。
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { loadPricing, validate } from "@bakacoding/config-budget";
+import { ConfigError, loadPricing, validate } from "@bakacoding/config-budget";
 import { CONFIG_ENV, DB_PATH_ENV, REPO_ENV, resolveConfigPath } from "./backend.js";
 import { sanitizeSyncErrorMessage } from "./sync-state.js";
 
@@ -74,6 +74,24 @@ export function envConfigNote(
 }
 
 /**
+ * JSON 解析失败的说明（T-100，同 3 的 T-098 做法）：不拼 `e.message`（Node 的报错会带出原文片段），
+ * 只从里面取字符位置换成行列号；取不到就只说不是合法 JSON。
+ */
+export function jsonParseErrorText(text: string, e: unknown, subject: string): string {
+  const m = /\bposition (\d+)\b/.exec(e instanceof Error ? e.message : "");
+  if (!m) return `${subject} 不是合法 JSON`;
+  const pos = Math.min(Number(m[1]), text.length);
+  const before = text.slice(0, pos).split("\n");
+  return `${subject} 不是合法 JSON（第 ${before.length} 行第 ${before[before.length - 1]!.length + 1} 列）`;
+}
+
+/** 读文件失败只留错误码（T-100：Node 的 message 里带完整路径）。 */
+function readErrorCode(e: unknown): string {
+  const code = (e as NodeJS.ErrnoException | undefined)?.code;
+  return typeof code === "string" && /^[A-Z0-9_]+$/.test(code) ? code : "unknown";
+}
+
+/**
  * (a) git 仓库检查 + 配置文件是否存在；(b) 用 3 的 validate / loadPricing 校验内容。
  * 配置路径用后端同一个 resolveConfigPath（`--config` > BAKACODING_CONFIG > `<dir>/config/models.json`，
  * 相对路径相对所选目录）；用了另外指定的配置时结果里写明来源。错误信息先换密钥值、再 redact(light)、截断。
@@ -107,16 +125,33 @@ export function checkProjectDir(
     };
   }
   const errors: string[] = [];
+  // T-100：读不到只报错误码，坏 JSON 只报行列号，都不拼 e.message
+  let text: string | undefined;
   try {
-    const errs = validate(JSON.parse(readFileSync(models, "utf8")));
-    errors.push(...errs.map((e) => `${modelsLabel}：${e}`));
+    text = readFileSync(models, "utf8");
   } catch (e) {
-    errors.push(`${modelsLabel} 读取失败：${e instanceof Error ? e.message : String(e)}`);
+    errors.push(`${modelsLabel} 读取失败（${readErrorCode(e)}）`);
+  }
+  if (text !== undefined) {
+    let raw: unknown;
+    let parsed = false;
+    try {
+      raw = JSON.parse(text);
+      parsed = true;
+    } catch (e) {
+      errors.push(jsonParseErrorText(text, e, modelsLabel));
+    }
+    if (parsed) errors.push(...validate(raw).map((e) => `${modelsLabel}：${e}`));
   }
   try {
     loadPricing(pricing);
   } catch (e) {
-    errors.push(`${PRICING_FILE} 校验失败：${e instanceof Error ? e.message : String(e)}`);
+    // T-100：3 的 loadPricing（T-099）抛的 ConfigError 各条已脱敏，原样用；别的错误只说校验失败
+    errors.push(
+      e instanceof ConfigError
+        ? `${PRICING_FILE} 校验失败：${e.errors.join("；")}`
+        : `${PRICING_FILE} 校验失败`,
+    );
   }
   if (errors.length) {
     if (note) errors.push(note);

@@ -3,13 +3,14 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme } from "electron";
-import { resolveRepoDbPath, startBackend } from "./backend.js";
+import { lastRepoForStart, resolveRepoDbPath, startBackend, type RepoSource } from "./backend.js";
 import {
   serveBackend,
   serveBackendReload,
   serveHighRisk,
   serveProjectSettings,
   serveReader,
+  serveRepoFix,
   serveSupervisorChat,
   serveSyncState,
   serveWindowTheme,
@@ -82,16 +83,24 @@ if (!gotLock) {
     const binding = electronSqliteBinding();
     const userData = app.getPath("userData");
     // T-072：--repo > BAKACODING_REPO > 上次导入的路径 > cwd
+    // UI-03a 评审 B1：重载 / 退回原仓库时 switcher 传原来源；原来是 cwd 就不把它当「上次导入」传进去，
+    // 来源仍按 cwd 解析（不提供初始化 / 首次提交）。
     const lastRepo = readLastRepo(userData);
-    const start = (repo?: string) =>
-      startBackend({
+    const start = (repo?: string, source?: RepoSource) => {
+      const last = lastRepoForStart(repo, source, lastRepo);
+      return startBackend({
         argv: process.argv,
         env: process.env,
         cwd: process.cwd(),
-        ...((repo ?? lastRepo) !== undefined && { lastRepo: repo ?? lastRepo }),
+        ...(last !== undefined && { lastRepo: last }),
         ...(binding !== undefined && { nativeBinding: binding }),
       });
-    const backend = new BackendSwitcher(await start(), (repo) => start(repo), process.env);
+    };
+    const backend = new BackendSwitcher(
+      await start(),
+      (repo, source) => start(repo, source),
+      process.env,
+    );
 
     // 只读端始终开；live 时写连接在 backend 里，只读连接仍用于界面轮询。切换仓库后重开到新库。
     const openReaderFor = (repoRoot: string): EventReader =>
@@ -155,6 +164,12 @@ if (!gotLock) {
     const onNativeTheme = () => applyTitleBar(nativeTheme.shouldUseDarkColors);
     nativeTheme.on("updated", onNativeTheme);
     const stopBackendReload = serveBackendReload(ipcMain, backend, process.env);
+    // UI-03a：项目准备页的仓库检查与修复，作用于当前仓库；写操作成功后走 reconnect
+    const stopRepoFix = serveRepoFix(ipcMain, {
+      repoRoot: () => backend.repoRoot(),
+      repoSource: () => backend.status().repoSource,
+      reconnect: () => backend.reconnect(),
+    });
 
     // T-105：before-quit 里拦下退出，等 backend.stop()（9 收尾后才关库、放写锁）结束再退；
     // 最多等 QUIT_STOP_TIMEOUT_MS，超时只写一条不带路径的 warn。我们自己再发起的退出直接放行。
@@ -171,6 +186,7 @@ if (!gotLock) {
         stopWindowTheme();
         nativeTheme.off("updated", onNativeTheme);
         stopBackendReload();
+        stopRepoFix();
         reader.close();
       },
       warn: (m) => console.warn(`[desktop] ${m}`),
