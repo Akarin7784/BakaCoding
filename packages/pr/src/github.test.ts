@@ -68,7 +68,7 @@ class FakeGithub {
     state: string;
     target_url?: string | null;
   }[] = [];
-  /** check-runs 每页条数，默认 100；测翻页时可改小 */
+  /** check-runs 每页上限（同真 GitHub：不带 per_page 默认 30，最多 100）；测翻页时可改小 */
   checkRunsPageSize = 100;
   /** commit status 每页上限（同真 GitHub：不带 per_page 默认 30，最多 100）；测翻页时可改小 */
   statusPageSize = 100;
@@ -160,7 +160,8 @@ class FakeGithub {
       const page = Math.max(1, Number(url.searchParams.get("page") ?? "1") || 1);
       const per = Math.min(
         this.checkRunsPageSize,
-        Math.max(1, Number(url.searchParams.get("per_page") ?? "100") || 100),
+        100,
+        Math.max(1, Number(url.searchParams.get("per_page") ?? "30") || 30),
       );
       const start = (page - 1) * per;
       const slice = this.checkRuns.slice(start, start + per);
@@ -1268,6 +1269,81 @@ describe("T-066 checks 翻页 + commit status（C2）", () => {
     gh.commitStatuses = [{ context: "ok", state: "success" }];
     const res = await pr.checks(iid);
     expect(res.some((r) => r.conclusion === "failure")).toBe(false);
+  });
+
+  it("T-069 check-runs 最后一页正好 100 条：按 total_count 收满即停，只发 2 次请求", async () => {
+    await integrationAhead();
+    const iid = await pr.openIntegration();
+    gh.checkRuns = Array.from({ length: 200 }, (_, i) => ({
+      name: `f-${i}`,
+      status: "completed",
+      conclusion: i === 199 ? "failure" : "success",
+    }));
+    const res = await pr.checks(iid);
+    expect(res.filter((r) => r.name.startsWith("f-"))).toHaveLength(200);
+    expect(res.find((r) => r.name === "f-199")).toMatchObject({ conclusion: "failure" });
+    const head = await rev(repo, INTEGRATION_BRANCH);
+    expect(
+      gh.calls.filter((c) => c.path.startsWith(`/commits/${head}/check-runs`)).map((c) => c.path),
+    ).toEqual([
+      `/commits/${head}/check-runs?per_page=100&page=1`,
+      `/commits/${head}/check-runs?per_page=100&page=2`,
+    ]);
+  });
+
+  it("T-069 check-runs 服务端每页只给 30 条：按 total_count 继续翻页，最后一页的失败不漏", async () => {
+    await integrationAhead();
+    const iid = await pr.openIntegration();
+    gh.checkRunsPageSize = 30;
+    gh.checkRuns = Array.from({ length: 75 }, (_, i) => ({
+      name: `m-${i}`,
+      status: "completed",
+      conclusion: i === 74 ? "failure" : "success",
+    }));
+    const res = await pr.checks(iid);
+    expect(res.filter((r) => r.name.startsWith("m-"))).toHaveLength(75);
+    expect(res.find((r) => r.name === "m-74")).toMatchObject({
+      status: "completed",
+      conclusion: "failure",
+    });
+    const head = await rev(repo, INTEGRATION_BRANCH);
+    expect(
+      gh.calls.filter((c) => c.path.startsWith(`/commits/${head}/check-runs`)).map((c) => c.path),
+    ).toEqual([1, 2, 3].map((n) => `/commits/${head}/check-runs?per_page=100&page=${n}`));
+  });
+
+  it("T-069 check-runs 某页为空但没收满 total_count：停止翻页，不死循环", async () => {
+    await integrationAhead();
+    const iid = await pr.openIntegration();
+    // 第 1 页报 total_count 5 却只给 1 条，第 2 页为空（override 在记下本次请求之后调用）
+    gh.override = (method, path) => {
+      if (method !== "GET" || !path.endsWith("/check-runs")) return undefined;
+      const runs = gh.calls.at(-1)!.path.endsWith("page=1")
+        ? [{ name: "only", status: "completed", conclusion: "success" }]
+        : [];
+      return new Response(JSON.stringify({ total_count: 5, check_runs: runs }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+    const res = await pr.checks(iid);
+    expect(res.filter((r) => r.name === "only")).toHaveLength(1);
+    const head = await rev(repo, INTEGRATION_BRANCH);
+    expect(
+      gh.calls.filter((c) => c.path.startsWith(`/commits/${head}/check-runs`)).map((c) => c.path),
+    ).toEqual([1, 2].map((n) => `/commits/${head}/check-runs?per_page=100&page=${n}`));
+  });
+
+  it("T-069 check-runs 超过页数上限仍未取满 total_count：抛错", async () => {
+    await integrationAhead();
+    const iid = await pr.openIntegration();
+    gh.checkRunsPageSize = 1;
+    gh.checkRuns = Array.from({ length: 60 }, (_, i) => ({
+      name: `cap-${i}`,
+      status: "completed",
+      conclusion: "success",
+    }));
+    await expect(pr.checks(iid)).rejects.toThrow(/check-runs 超过 50 页/);
   });
 
   it("反向：只读第一页会漏掉第 101 条 check-run", async () => {
