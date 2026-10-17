@@ -1,6 +1,7 @@
 // T-008：项目导入。按根目录下的清单文件识别语言，判断有没有 GitHub 远程，完成后发 project_created。
 import { createHash, randomUUID } from "node:crypto";
-import { readFile, readdir, realpath, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 import type { EventOf, Trace } from "@bakacoding/types";
@@ -105,27 +106,47 @@ export function remoteUrls(configText: string): string[] {
   return urls;
 }
 
-async function isFile(p: string): Promise<boolean> {
-  return (await stat(p).catch(() => undefined))?.isFile() ?? false;
+/** 读 git 元数据文件的上限：正常的 config / gitdir / commondir 远小于此。 */
+export const GIT_META_MAX_BYTES = 1024 * 1024;
+
+/**
+ * 安全地读一个小的 git 元数据文件：不可信项目里它可能是命名管道、指向 /dev/zero 的符号链接或超大文件。
+ * 用 O_NONBLOCK 打开（管道不会卡住），fstat 要求是普通文件且不超过 GIT_META_MAX_BYTES，
+ * 否则返回 undefined（按没有远程处理）。检查和读取用同一个文件描述符，中间不会被换掉。
+ */
+async function readGitMeta(p: string): Promise<string | undefined> {
+  const fh = await open(p, constants.O_RDONLY | constants.O_NONBLOCK).catch(() => undefined);
+  if (!fh) return undefined;
+  try {
+    const st = await fh.stat();
+    if (!st.isFile() || st.size > GIT_META_MAX_BYTES) return undefined;
+    const buf = Buffer.alloc(Math.min(st.size, GIT_META_MAX_BYTES) + 1);
+    const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+    if (bytesRead > GIT_META_MAX_BYTES) return undefined;
+    return buf.subarray(0, bytesRead).toString("utf8");
+  } catch {
+    return undefined;
+  } finally {
+    await fh.close().catch(() => undefined);
+  }
 }
 
 /** 找 git 的公共目录（普通仓库是 .git，worktree 跟 gitdir 和 commondir），读不到返回 undefined。 */
 async function gitConfigText(root: string): Promise<string | undefined> {
   const dotGit = join(root, ".git");
-  const st = await stat(dotGit).catch(() => undefined);
+  const st = await lstat(dotGit).catch(() => undefined);
   if (!st) return undefined;
   let gitDir = dotGit;
-  if (st.isFile()) {
-    const m = /^gitdir:\s*(.+)$/m.exec(await readFile(dotGit, "utf8"));
+  if (!st.isDirectory()) {
+    // worktree：.git 是写着 gitdir: 的普通文件（管道、设备等一律当没有）
+    const text = await readGitMeta(dotGit);
+    const m = text === undefined ? null : /^gitdir:\s*(.+)$/m.exec(text);
     if (!m) return undefined;
     gitDir = resolve(root, m[1]!.trim());
   }
-  const common = join(gitDir, "commondir");
-  if (await isFile(common)) {
-    const c = (await readFile(common, "utf8")).trim();
-    gitDir = isAbsolute(c) ? c : resolve(gitDir, c);
-  }
-  return readFile(join(gitDir, "config"), "utf8").catch(() => undefined);
+  const c = (await readGitMeta(join(gitDir, "commondir")))?.trim();
+  if (c) gitDir = isAbsolute(c) ? c : resolve(gitDir, c);
+  return readGitMeta(join(gitDir, "config"));
 }
 
 function slug(name: string): string {

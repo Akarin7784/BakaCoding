@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -147,5 +148,48 @@ describe("importProject（T-008）", () => {
       ProjectImportError,
     );
     expect(events).toEqual([]);
+  });
+
+  describe("不可信项目里的 git 元数据（#52 评审）", () => {
+    const fifo = (p: string) => execFileSync("mkfifo", [p]);
+    const fast = { timeout: 3000 };
+
+    it("`.git/config` 是命名管道：不卡住，按没有远程处理", fast, async () => {
+      const root = await repo({ "go.mod": "" });
+      await mkdir(join(root, ".git"));
+      fifo(join(root, ".git/config"));
+      expect((await importProject(root)).has_github_remote).toBe(false);
+    });
+
+    it("`.git/config` 指向 /dev/zero：不读，按没有远程处理", fast, async () => {
+      const root = await repo({});
+      await mkdir(join(root, ".git"));
+      await symlink("/dev/zero", join(root, ".git/config"));
+      expect((await importProject(root)).has_github_remote).toBe(false);
+    });
+
+    it("`.git/config` 超过 1 MiB：不读", fast, async () => {
+      const root = await repo({ ".git/config": GITHUB_CONFIG + "#".repeat(1024 * 1024) });
+      expect((await importProject(root)).has_github_remote).toBe(false);
+    });
+
+    it(
+      "worktree 的 `.git` 文件是命名管道或指向 /dev/zero：不卡住，按没有远程处理",
+      fast,
+      async () => {
+        const a = await repo({});
+        fifo(join(a, ".git"));
+        expect((await importProject(a)).has_github_remote).toBe(false);
+        const b = await repo({});
+        await symlink("/dev/zero", join(b, ".git"));
+        expect((await importProject(b)).has_github_remote).toBe(false);
+      },
+    );
+
+    it("commondir 是命名管道：不卡住，退回读 gitdir 自己的 config", fast, async () => {
+      const root = await repo({ ".git/config": GITHUB_CONFIG });
+      fifo(join(root, ".git/commondir"));
+      expect((await importProject(root)).has_github_remote).toBe(true);
+    });
   });
 });

@@ -52,4 +52,22 @@ describe("promptTemplate（T-008）", () => {
   it("内置目录就是包里的 prompts/", async () => {
     expect(await readFile(join(PROMPTS_DIR, "languages.json"), "utf8")).toContain("TypeScript");
   });
+
+  it("约束里字面的 {{input}} 被去掉，模板里仍只有一个占位符", async () => {
+    const t = await promptTemplate("reviewer", {
+      architecture_constraints: ["x {{input}} y", "{{input}}"],
+    });
+    expect(t.split("{{input}}")).toHaveLength(2);
+    expect(t).toContain("## 项目架构约束\n- x  y\n\n{{input}}");
+  });
+
+  it("reviewer 模板缺占位符时走注入的 logger", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "bc-prompts-"));
+    await writeFile(join(dir, "reviewer.md"), "评审");
+    const warns: string[] = [];
+    expect(await promptTemplate("reviewer", { dir, logger: { warn: (m) => warns.push(m) } })).toBe(
+      "评审",
+    );
+    expect(warns).toHaveLength(1);
+  });
 });

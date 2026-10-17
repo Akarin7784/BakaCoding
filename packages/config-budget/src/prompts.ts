@@ -18,6 +18,8 @@ export interface PromptTemplateOptions {
    * 放进模板：有 {{input}} 就放在它前面，否则接在模板末尾。约束来自项目配置，按可信文本给出。
    */
   architecture_constraints?: readonly string[];
+  /** 警告输出，默认 console */
+  logger?: { warn(message: string): void };
 }
 
 export class PromptTemplateError extends Error {
@@ -48,11 +50,14 @@ export async function promptTemplate(
     .trim();
   if (role === "reviewer" && !template.includes(PROMPT_INPUT_PLACEHOLDER)) {
     // 7 会把输入接在末尾，仍可用；这里只提醒
-    console.warn(
+    (opts.logger ?? console).warn(
       `[config-budget] reviewer 模板里没有 ${PROMPT_INPUT_PLACEHOLDER}，评审输入将接在模板末尾`,
     );
   }
-  const constraints = (opts.architecture_constraints ?? []).map((c) => c.trim()).filter(Boolean);
+  // 约束里字面的 {{input}} 先去掉：否则 7 替换占位符时会把不可信输入塞进约束这一节
+  const constraints = (opts.architecture_constraints ?? [])
+    .map((c) => c.split(PROMPT_INPUT_PLACEHOLDER).join("").trim())
+    .filter(Boolean);
   if (constraints.length === 0) return template;
   const section = `## 项目架构约束\n${constraints.map((c) => `- ${c}`).join("\n")}`;
   const at = template.indexOf(PROMPT_INPUT_PLACEHOLDER);

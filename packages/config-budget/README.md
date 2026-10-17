@@ -37,7 +37,8 @@
 - `importProject(path, opts?)`：只读不写，不要求是 git 仓库。返回 `{ project_id, name, path, language, languages, manifests, has_github_remote }`。
   - 语言：只看项目根目录下的清单文件，按 [`prompts/languages.json`](prompts/languages.json) 的顺序匹配（`*.ext` 按后缀），第一个命中的是主语言，都没命中为 `unknown`。例如有 `tsconfig.json` 是 TypeScript，只有 `package.json` 是 JavaScript。
   - GitHub 远程：读 `.git/config`（worktree 跟 `gitdir` 和 `commondir` 找到主仓库），任一 `[remote]` 的 `url` 指向 github.com（https、ssh、`git@github.com:` 写法）即为 `true`。
-  - `project_id` 是名称 slug 加真实路径 sha256 的前 8 位，同一路径（含经符号链接）重复导入得到同一个 id，2 落库时 `INSERT OR IGNORE`。
+  - `project_id` 是名称 slug 加真实路径 sha256 的前 8 位，同一路径（含经符号链接）重复导入得到同一个 id，2 落库时 `INSERT OR IGNORE`。名称会进 id：同一路径传不同的 `name`，得到的 `project_id` 也不同。
+  - 项目可能来自不可信压缩包：`.git`、`gitdir:` 文件、`commondir`、`config` 都用非阻塞方式打开，要求是普通文件且不超过 1 MiB（`GIT_META_MAX_BYTES`），命名管道、设备、`/dev/zero` 符号链接、超大文件一律当作没有远程。
   - 传 `publish`（通常是 `(e) => bus.publish(e)`）时发 `project_created`，`requirement_id`、`ticket_id` 为 `null`；`trace` 不传就新开一条。本包不依赖总线。
 - 路径不存在或不是目录报 `ProjectImportError`，不发事件。
 
@@ -46,4 +47,5 @@
 - `promptTemplate(role, opts?)`：读 `prompts/<role>.md`（`supervisor`、`reviewer`、`sub_agent`、`coder`）。每次调用都读文件，去 BOM、换行统一 LF、去首尾空白，同样的文件跨平台逐字节相同；5 按内容哈希缓存公共前缀，所以改模板后下一单自动生效。
 - `reviewer` 模板带 `{{input}}`，7 的 `buildPrompt` 替换它；模板里没有时 7 把输入接在末尾。
 - `architecture_constraints`：给了非空数组时加一节「## 项目架构约束」，放在 `{{input}}` 前面（没有占位符就接在末尾），供 7 带上与 5 公共前缀同一份的项目约束。`coder` 不用传，5 自己拼。
-- `dir` 可指向自定义模板目录。未知角色或读不到文件报 `PromptTemplateError`。
+- 约束里字面的 `{{input}}` 会先去掉，免得 7 替换占位符时把不可信输入塞进约束这一节。
+- `dir` 可指向自定义模板目录；`logger` 接收警告（默认 `console`）。未知角色或读不到文件报 `PromptTemplateError`。
