@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { openStorage, type Storage } from "@bakacoding/storage";
+import { openStorage, openStorageReadonly, type Storage } from "@bakacoding/storage";
 import type { CallCtx, Diff, ReviewResult } from "@bakacoding/types";
 import {
   createReviewPool,
@@ -135,8 +135,8 @@ function saveRound(s: Storage, ticket_id: string, round: number, r: ReviewResult
     reviewer: r.reviewer,
   });
 }
-const storeOn = (s: Storage) =>
-  createRoundAssignmentStore({ rounds: storageRoundSource(s, () => "P-1") });
+const storeOn = (s: Pick<Storage, "listPrRounds">) =>
+  createRoundAssignmentStore({ rounds: storageRoundSource(s) });
 
 describe("复投成员记录持久化（T-034）", () => {
   it("重启后复投的单仍交给原成员（读 2 的 PR 轮次 reviewer）", async () => {
@@ -211,7 +211,7 @@ describe("复投成员记录持久化（T-034）", () => {
     expect(b.used).toEqual(["reviewer-1"]);
   });
 
-  it("本进程刚评审完、8 还没写轮次：用内存里的值；没有轮次记录、查不到项目都退回按负载分配", async () => {
+  it("本进程刚评审完、8 还没写轮次：用内存里的值；没有轮次记录、单不存在都退回按负载分配", async () => {
     const rounds = vi.fn(async () => [] as { round: number; reviewer?: string | null }[]);
     const store = createRoundAssignmentStore({ rounds });
     await store.set("T-5", "reviewer-2");
@@ -220,10 +220,7 @@ describe("复投成员记录持久化（T-034）", () => {
     expect(rounds).toHaveBeenCalledTimes(1);
 
     const s = open(dbPath());
-    const noProject = createRoundAssignmentStore({
-      rounds: storageRoundSource(s, () => undefined),
-    });
-    expect(await noProject.get("T-7")).toBeUndefined();
+    expect(await storeOn(s).get("T-7")).toBeUndefined();
   });
 
   it("按轮次取最新：顺序乱也取轮次最大的非空 reviewer", async () => {
@@ -250,5 +247,73 @@ describe("复投成员记录持久化（T-034）", () => {
     const r = await b.pool.review(input("T-9", true));
     expect(r.reviewer).toBe("reviewer-1");
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("库被锁"));
+  });
+});
+
+describe("storageRoundSource 走 listPrRounds（T-045）", () => {
+  it("真实 SQLite：多轮含 null 与 supervisor，按单号恢复，不需要 project_id；只读连接同样可用", async () => {
+    const path = dbPath();
+    const s = open(path);
+    s.saveTicket(ticketRow("T-10"));
+    s.saveTicket({ ...ticketRow("T-11"), project_id: "P-2" });
+    const fail = (reviewer: string | null): ReviewResult => ({
+      verdict: "fail",
+      reasons: [{ category: "bug", detail: "x" }],
+      reviewer,
+    });
+    // T-10：成员 → CI 失败（null）→ 主管 → CI 失败（null）
+    saveRound(s, "T-10", 1, fail("reviewer-2"));
+    saveRound(s, "T-10", 2, fail(null));
+    saveRound(s, "T-10", 3, fail(SUPERVISOR_MEMBER_ID));
+    saveRound(s, "T-10", 4, fail(null));
+    // T-11（另一个项目 P-2）：成员 → CI 失败（null）
+    saveRound(s, "T-11", 1, fail("reviewer-2"));
+    saveRound(s, "T-11", 2, fail(null));
+
+    const source = storageRoundSource(s);
+    expect((await source("T-10")).map((r) => [r.round, r.reviewer])).toEqual([
+      [1, "reviewer-2"],
+      [2, null],
+      [3, SUPERVISOR_MEMBER_ID],
+      [4, null],
+    ]);
+    expect(await source("T-404")).toEqual([]);
+
+    const store = storeOn(s);
+    expect(await store.get("T-10")).toBe(SUPERVISOR_MEMBER_ID);
+    expect(await store.get("T-11")).toBe("reviewer-2");
+    expect(await store.get("T-404")).toBeUndefined();
+
+    // 只读连接（12 等读方）：结构上满足 RoundQuery，结果一致
+    const ro = openStorageReadonly({ path });
+    try {
+      const roStore = storeOn(ro);
+      expect(await roStore.get("T-10")).toBe(SUPERVISOR_MEMBER_ID);
+      expect(await roStore.get("T-11")).toBe("reviewer-2");
+    } finally {
+      ro.close();
+    }
+
+    // 接进评审池：T-11 按负载本该给 reviewer-1，粘性交回 reviewer-2；T-10 主管仍兼任就交回主管
+    const b = pool({ assignments: storeOn(s) });
+    expect((await b.pool.review(input("T-11", true))).reviewer).toBe("reviewer-2");
+    expect(b.used).toEqual(["reviewer-2"]);
+    const c = pool({ assignments: storeOn(s), config: cfg([]) });
+    expect((await c.pool.review(input("T-10", true))).reviewer).toBe(SUPERVISOR_MEMBER_ID);
+    expect(c.used).toEqual(["boss"]);
+  });
+
+  it("listPrRounds 抛错：记 warn，退回按负载分配", async () => {
+    const warn = vi.fn();
+    const store = createRoundAssignmentStore({
+      rounds: storageRoundSource({
+        listPrRounds: () => {
+          throw new Error("库已关闭");
+        },
+      }),
+      logger: { warn },
+    });
+    expect(await store.get("T-12")).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("库已关闭"));
   });
 });

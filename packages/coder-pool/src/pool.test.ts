@@ -2,7 +2,10 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { CallCtx } from "@bakacoding/types";
-import { FILE_TOOL_DEFINITIONS as WORKSPACE_FILE_TOOL_DEFINITIONS } from "@bakacoding/workspace";
+import {
+  defaultPermissionRegistry,
+  FILE_TOOL_DEFINITIONS as WORKSPACE_FILE_TOOL_DEFINITIONS,
+} from "@bakacoding/workspace";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   appendSystemNote,
@@ -241,6 +244,8 @@ describe("runTicket 基本流程（5-1 / 5-3）", () => {
       ticket_id: "T-1",
       worktree_path: "/wt/T-1-r1",
       permission_list: [{ glob: "src/**", level: "rw" }],
+      // 5 用的权限登记表（默认 4 的 defaultPermissionRegistry），结束时对它 release（T-045）
+      registry: defaultPermissionRegistry,
     });
   });
 });

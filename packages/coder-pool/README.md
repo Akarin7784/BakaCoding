@@ -4,7 +4,7 @@
 
 ## 文件工具（T-034）
 
-- 发给模型的工具定义是模块 4 的 `FILE_TOOL_DEFINITIONS`，工具执行默认用模块 4 的 `createTools({ ticket_id, worktree_path, permission_list })`；`deps.createTools` 只在测试或接线时注入替身。参数名以模块 4 为准：`read(file_path, offset?, limit?)`、`write(file_path, content)`、`edit(file_path, old_string, new_string, replace_all?)`、`glob(pattern, path?)`、`grep(pattern, path?, include?)`。
+- 发给模型的工具定义是模块 4 的 `FILE_TOOL_DEFINITIONS`，工具执行默认用模块 4 的 `createTools({ ticket_id, worktree_path, permission_list, registry, scope_requests? })`；`deps.createTools` 只在测试或接线时注入替身。参数名以模块 4 为准：`read(file_path, offset?, limit?)`、`write(file_path, content)`、`edit(file_path, old_string, new_string, replace_all?)`、`glob(pattern, path?)`、`grep(pattern, path?, include?)`。
 - 模块 4 的拒绝（`FS_OUTSIDE_WORKSPACE`、`FS_PROTECTED_PATH`、`FS_PERMISSION_DENIED`、`FS_INVALID_INPUT` 等）原样作为工具结果交还模型，本单继续。
 - `changed_files`：成功的 `write` / `edit` 的 `file_path`，按模块 4 的规则规范成相对 worktree 的路径（反斜杠转 `/`、去 `./`、合并 `..`），去重，按首次修改顺序。
 
@@ -31,3 +31,13 @@
   - 模型取消后才返回的那一轮整轮丢弃，不执行它的工具调用。已开始的工具调用不打断，跑完后不再执行同一轮剩下的工具。
 - 思考内容：每轮 `chat()` 返回的 `reasoning`（`{ text, signature? }[]`）原样放进这一轮的 assistant 消息（含 `signature`，不改写、不截断），之后的请求带着全部历史，由模块 1 按协议回传（DeepSeek 带 tools 时必须回传，否则 400）。那一轮没有思考内容（缺省或空数组）就不带 `reasoning` 字段。
 - 思考和 signal 都不进 `system` / `tools`，公共前缀和它的快照不变。
+
+## 权限清单释放与越界写申请（T-045）
+
+- 权限登记表：`createCoderPool({ …, registry? })`，默认模块 4 的 `defaultPermissionRegistry`。5 把它传给 `createTools`（模块 4 在这里登记这张单的清单），`runTicket` 结束时在 `finally` 里调 `registry.release(ticket_id)`，刚好一次。
+  - 覆盖所有结束方式：`done`、`gave_up`、`turn_limit`、`budget_exceeded`、模型调用抛错、取消、`createTools` 自己抛错。进入时就已取消的不建工具，也不释放。
+  - 注入了 `deps.createTools` 替身时，5 照样对自己的 `registry` 释放；替身应该把清单登记到传进来的 `registry` 上。
+  - `release` 自己抛错只记一条 warn（`deps.logger`，默认 `console`），不覆盖原来的结果或错误。
+  - 批准的范围只存在登记表里，会随清单一起释放。要跨轮次保留，由模块 8 写回需求单记录，下一轮放进 `permission_list`（T-048）。
+- `runTicket({ …, scope_requests? })`：类型是模块 4 的 `ScopeRequestOptions`（`{ bus, ctx: { requirement_id, trace }, timeout_ms? }`），原样传给 `createTools`。给了时，写或改被权限清单拒绝就由模块 4 发 `write_scope_requested` 等批复；不给就不带这个字段，越界写直接 `FS_PERMISSION_DENIED`。5 不实现批准方（T-038）。
+- 两者都不进 `system` / `tools`，公共前缀和它的快照不变。

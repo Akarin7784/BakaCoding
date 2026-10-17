@@ -55,25 +55,14 @@ export function createRoundAssignmentStore(opts: RoundAssignmentStoreOptions): A
 
 /** 模块 2 存储里 7 用到的读方法（`Storage` / `ReadonlyStorage` 在结构上满足它）。 */
 export interface RoundQuery {
-  query(filter: { project_id: string; ticket_id?: string }): readonly {
-    ticket_id: string;
-    rounds: readonly RoundReviewer[];
-  }[];
+  /** 该单全部轮次，按轮次升序；单不存在返回空数组（T-011）。 */
+  listPrRounds(ticket_id: string): readonly RoundReviewer[];
 }
 
 /**
- * 用模块 2 的 `query({ project_id, ticket_id })` 读轮次。2 目前只能按项目查单，
- * 所以要调用方给出单号所属的项目；查不到项目或单时视为没有记录。
+ * 用模块 2 的 `listPrRounds(ticket_id)` 读轮次（T-045）：直接按单号查，写入连接和只读连接都能用；
+ * 单不存在时 2 返回空数组，视为没有记录。读出错原样抛出，由 `createRoundAssignmentStore` 记 warn 并退回按负载分配。
  */
-export function storageRoundSource(
-  storage: RoundQuery,
-  projectOf: (ticket_id: string) => MaybePromise<string | undefined>,
-): RoundSource {
-  return async (ticket_id) => {
-    const project_id = await projectOf(ticket_id);
-    if (project_id === undefined) return [];
-    return (
-      storage.query({ project_id, ticket_id }).find((t) => t.ticket_id === ticket_id)?.rounds ?? []
-    );
-  };
+export function storageRoundSource(storage: RoundQuery): RoundSource {
+  return (ticket_id) => storage.listPrRounds(ticket_id);
 }
