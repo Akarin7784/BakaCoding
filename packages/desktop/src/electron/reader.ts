@@ -6,12 +6,7 @@ import {
   StorageVersionError,
   type ReadonlyStorage,
 } from "@bakacoding/storage";
-import {
-  EventSchema,
-  TicketStatusSchema,
-  type BakaEvent,
-  type TicketStatus,
-} from "@bakacoding/types";
+import { EventSchema, TicketStatusSchema, type TicketStatus } from "@bakacoding/types";
 import {
   UI_EVENT_TYPES,
   type DbStatus,
@@ -38,8 +33,9 @@ export interface EventReader {
 
 const TITLE_MAX = 80;
 
-function ticketTitle(text: string): string {
-  const first = text.split("\n").find((l) => l.trim() !== "") ?? "";
+/** 取需求单正文的第一行非空文本作标题；按 \r\n、\r、\n 分行，去掉行尾空白（含 CRLF 留下的 \r）。 */
+export function ticketTitle(text: string): string {
+  const first = (text.split(/\r\n|\r|\n/).find((l) => l.trim() !== "") ?? "").trimEnd();
   return first.length > TITLE_MAX ? `${first.slice(0, TITLE_MAX - 1)}…` : first;
 }
 
@@ -58,12 +54,6 @@ function describeError(e: unknown): string {
   return msg;
 }
 
-/** 从事件里认出项目：project_created，以及带 project_id 的群消息。 */
-function projectOf(e: BakaEvent): string | undefined {
-  if (e.type === "project_created" || e.type === "group_message") return e.payload.project_id;
-  return undefined;
-}
-
 export function openEventReader(opts: ReaderOptions): EventReader {
   const open = opts.open ?? openStorageReadonly;
   let store: ReadonlyStorage | null = null;
@@ -73,15 +63,12 @@ export function openEventReader(opts: ReaderOptions): EventReader {
   /** 已读过的库内最大 seq（含界面不关心的事件），按 maxSeq() 判断有没有新事件。 */
   let seenSeq = -1;
   let lastTicketsKey = "";
-  /** 存储按项目查需求单，没有「列出全部项目」的读方法，项目 id 从事件里收集。 */
-  const projects = new Set<string>();
 
   function reset(): void {
     store?.close();
     store = null;
     lastSeq = -1;
     seenSeq = -1;
-    projects.clear();
   }
 
   function ensureOpen(): ReadonlyStorage | null {
@@ -107,13 +94,10 @@ export function openEventReader(opts: ReaderOptions): EventReader {
   function readEvents(s: ReadonlyStorage): UiEvent[] {
     const max = s.maxSeq();
     if (max === null || max <= seenSeq) return [];
-    // 项目 id 要从全部 project_created / group_message 里收，和下发的类型一致，一次查完。
     const rows = s.queryEvents({ after_seq: seenSeq, types: [...UI_EVENT_TYPES] });
     seenSeq = Math.max(max, ...rows.map((r) => r.seq));
     const out: UiEvent[] = [];
     for (const row of rows) {
-      const project = projectOf(row);
-      if (project) projects.add(project);
       // 完整提示词不下发给界面，输出照存储给的（过期后是摘要）。
       const e =
         row.type === "call_completed" ? { ...row, payload: { ...row.payload, prompt: "" } } : row;
@@ -127,7 +111,8 @@ export function openEventReader(opts: ReaderOptions): EventReader {
 
   function readTickets(s: ReadonlyStorage): TicketView[] {
     const all: TicketView[] = [];
-    for (const project_id of projects) {
+    // 项目列表用存储的 listProjects()（T-033），不再从事件里收集。
+    for (const { project_id } of s.listProjects()) {
       for (const t of s.query({ project_id })) {
         all.push({
           ticket_id: t.ticket_id,

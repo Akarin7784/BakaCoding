@@ -6,7 +6,8 @@
 
 - 主进程用模块 2 的 `openStorageReadonly` 打开库（T-027 起；T-023 时是手写 SQL）：不跑迁移、不拿写入者租约，协调服务在写的时候也能看。事件用 `queryEvents({ after_seq, types })`，需求单用 `query({ project_id })`，不再直接碰表。
 - 轮询先看 `maxSeq()`，没有新事件就不查事件表；需求单（`saveTicket` 不产生事件）每次照查，有变化才下发。
-- 需求单按项目查，存储没有「列出全部项目」的读方法，项目 id 从 `project_created` 和群消息事件里收集；没有这些事件的项目，界面本来也不显示。
+- 项目列表用存储的 `listProjects()`（T-033 起；之前从 `project_created` 和群消息事件里收集项目 id），再按项目 `query({ project_id })` 取需求单。
+- 需求单标题取正文第一行非空文本，按 `\r\n`、`\r`、`\n` 分行并去掉行尾空白，Windows 换行不会在标题末尾留下 `\r`；超过 80 字符截断。
 - 界面顶部的状态：库文件不存在显示路径；库版本和代码不一致（`StorageVersionError`）显示存储给的说明；原生模块 ABI 不对时提示先跑 `rebuild:electron`。打开或读取失败后每次轮询重试，恢复后补发全部数据。
 - 路径：`--db=<path>` 参数 > 环境变量 `BAKACODING_DB_PATH` > `<cwd>/.bakacoding/bakacoding.db`。库还不存在时界面顶部提示路径，建库后自动接上。
 - 主进程每 1 秒按 `seq` 增量轮询（协调服务在另一个进程，进程内总线订阅不到），经 IPC 推给渲染进程：先 `bakacoding:snapshot` 取快照，再收 `bakacoding:update` 增量。只下发 `project_created`、`group_message`、`call_completed`（不带提示词）、`escalated` 和需求单摘要。

@@ -37,8 +37,8 @@ flowchart BT
   classDef doing fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef done fill:#dcfce7,stroke:#16a34a,color:#14532d
 
-  class M0,M2,M5,M6,M7,M11,M12,T done
-  class M3,M4 doing
+  class M0,M2,M5,M6,M7,M11,T done
+  class M3,M4,M12 doing
   class M1,M8,M9,M10 todo
 ```
 
@@ -84,6 +84,7 @@ flowchart BT
 | T-029 | 模块 5 Flash 编码池：`createCoderPool` / `runTicket`（返回 `done` / `gave_up` / `turn_limit` / `budget_exceeded`，不返回补丁）、逐字节固定的公共前缀、删 `slots()`；模块 3 配置加 `pipeline.max_turns`（默认 40）；1、3、4 未合入部分先注入；含模块 7 顺手改动：signal、json 代码块优先（#27 评审意见） | 5 | 执行层开发 | 已合入 | #30 | `09cf7fe` |
 | T-030 | 模块 7 评审池：`review` / `backlog`、CI 失败直接判不过、主管兼任、复投粘性与限流跳过、输出解析重试、`review_backlog` 事件；评审结论类型进 `@bakacoding/types` | 7 | 执行层开发 | 已合入 | #27、跟进 #28 | `be1fa6f`、`a44d985` |
 | T-032 | 模块 5/7 收尾：编码池 feedback 闭合标签转义；公共前缀按内容哈希失效；结束回复解析不了先要求重回一轮，仍不行返回 `gave_up` | 5 | 执行层开发 | 已合入 | #31 | `34df5fc` |
+| T-033 | 桌面界面跟进：项目列表改用存储 `listProjects()`（不再从事件收集项目 id）；需求单标题去掉行尾 `\r`（#29 评审意见） | 12 | 界面与诊断开发 | 待评审 | — | — |
 | T-036 | 共享类型：`escalated` 上报原因加 `coder_failed`、`budget_exceeded`；桌面界面 `ESCALATION_REASON` 补两条显示文字 | 共享类型包、12 | 编排层开发 | 已合入 | #34 | `29c1d4f` |
 
 8、9、10（编排层开发）的第二批需求单还没拆。
