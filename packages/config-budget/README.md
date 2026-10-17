@@ -54,8 +54,9 @@
 
 - `redact(text, "light" | "full")`：light 遮 key / token / Bearer / env 密钥 / 邮箱 / 私钥 / URL 凭据；full 另遮 home 路径、IP、内网主机名。所有规则都是线性的（重复次数有上限，或改成逐段扫描），10 万字符的输入在 500ms 内。
   - `url_credentials` 与 `isCredentialUrl` 同一套判定，只遮凭据那一段（userinfo、`?` / `#` 之后；解析不了的遮 `://` 之后全部）。
-  - `ghp_` / `gho_` / `ghu_` / `ghs_` / `ghr_`、`github_pat_`、`glpat-` 不管前面紧挨着什么都遮。
-  - 邮箱本地部分最长 64，域名每段最长 63、最多 16 段；内网主机名最多 16 段，更长的从匹配处往前整条遮掉。
+  - `github_token`（`ghp_` / `gho_` / `ghu_` / `ghs_` / `ghr_`、`github_pat_`）和 `gitlab_token`（`glpat-`）不管前面紧挨着什么都遮。
+  - 邮箱逐个 `@` 扫：向左按 `[A-Za-z0-9._%+-]` 扩到上一处匹配或上一个 `@`，向右按 `[A-Za-z0-9.-]` 扩、去掉末尾的 `.` 和 `-`，以 2 个及以上字母的顶级域结尾就遮，不设长度上限。
+  - 内网主机名最多 16 段起匹配，再从匹配处往前整条遮掉。
   - 私钥只有 BEGIN 没有 END 时遮到文末。
 - `isCredentialUrl(s)`：字符串是不是（或里面有没有）带凭据的 URL，宁可误拒不漏放。模块 2 的 prStore 拒写调它。
 - `CREDENTIAL_CASES`：2、3、11 共用的用例表，见 `src/credential-cases.ts`。假 token 运行时拼出，源码里没有完整 token。

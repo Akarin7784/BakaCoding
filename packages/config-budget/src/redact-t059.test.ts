@@ -19,6 +19,7 @@ const INPUTS: Array<[string, () => string]> = [
   ["1::1:1:… 不以分隔符结尾", () => `1::${"1:".repeat(50_000)}x`],
   ["Bearer 后接空白", () => `Bearer${" ".repeat(100_000)}`],
   ["ghp_ 反复", () => "ghp_".repeat(25_000)],
+  ["a@b. 反复", () => "a@b.".repeat(25_000)],
 ];
 
 describe("redact 10 万字符输入（T-059）", () => {
@@ -71,5 +72,35 @@ describe("收紧上限后不漏", () => {
     const r = redact(`${k}\nmid\n${k}`, "light");
     expect(r.text).toBe("[REDACTED:private_key]\nmid\n[REDACTED:private_key]");
     expect(r.report.private_key).toBe(2);
+  });
+});
+
+describe("邮箱不设长度上限（#63 评审）", () => {
+  const labels = (n: number) => Array.from({ length: n }, (_, i) => `d${i}`).join(".");
+  it.each([
+    ["17 段及以上的域名", `eva@${labels(17)}.com`],
+    ["40 段的域名", `eva@${labels(40)}.com`],
+    ["一段超过 63 字符的域名", `eva@${"x".repeat(70)}.com`],
+    ["65 字符的本地部分", `${"a".repeat(65)}@example.com`],
+    ["200 字符的本地部分", `${"b".repeat(200)}@example.com`],
+  ])("%s 整条遮掉", (_n, mail) => {
+    for (const level of ["light", "full"] as const) {
+      const r = redact(`to ${mail}, ok`, level);
+      expect(r.text).toBe("to [REDACTED:email], ok");
+      expect(r.report.email).toBe(1);
+    }
+  });
+  it("末尾的 . 和 - 不算进域名；没有字母顶级域不遮", () => {
+    expect(redact("mail eva@example.com.", "light").text).toBe("mail [REDACTED:email].");
+    expect(redact("v1@2.0 and a@b", "light").text).toBe("v1@2.0 and a@b");
+  });
+  it("相邻的 @ 各自判断", () => {
+    const r = redact("a@b.com@c.org x@y.io", "light");
+    expect(r.text).not.toMatch(/a@b\.com|x@y\.io/);
+    expect(r.report.email).toBeGreaterThanOrEqual(2);
+  });
+  it("full：超过 16 段的内网域名邮箱不留 .internal 后缀", () => {
+    const r = redact(`eva@${labels(17)}.internal:80`, "full");
+    expect(r.text).toBe("[REDACTED:email]:80");
   });
 });

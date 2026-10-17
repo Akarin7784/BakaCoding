@@ -11,8 +11,6 @@ interface RegexRule {
   re: RegExp;
   /** 返回替换文本；默认 [REDACTED:name]。返回 `undefined` 表示这处不算命中、保留原文。 */
   replace?: (m: string, ...g: string[]) => string | undefined;
-  /** 文本里没有这个子串时整条规则跳过（便宜的预检）。 */
-  needs?: string;
 }
 
 interface FnRule {
@@ -79,6 +77,37 @@ function redactHostnames(text: string): { text: string; count: number } {
   return { text: replaceRanges(text, ranges, "hostname"), count: ranges.length };
 }
 
+/**
+ * 邮箱：不设长度上限，逐个 `@` 扫（#63 评审）。对每个 `@`：向左按 `[A-Za-z0-9._%+-]` 扩，遇到上一处匹配的末尾
+ * 或上一个 `@` 就停；向右按 `[A-Za-z0-9.-]` 扩，去掉末尾的 `.` 和 `-`；右边含 `.` 且以 2 个及以上字母的顶级域结尾就遮。
+ * 每个 `@` 把左右扫描和相邻的隔开，整体线性。
+ */
+const EMAIL_LOCAL = /[A-Za-z0-9._%+-]/;
+const EMAIL_DOMAIN = /[A-Za-z0-9.-]/;
+const EMAIL_TLD = /^[A-Za-z]{2,}$/;
+function redactEmails(text: string): { text: string; count: number } {
+  if (!text.includes("@")) return { text, count: 0 };
+  const ranges: Array<[number, number]> = [];
+  const n = text.length;
+  let floor = 0;
+  for (let at = text.indexOf("@"); at >= 0; at = text.indexOf("@", floor)) {
+    let s = at;
+    while (s > floor && EMAIL_LOCAL.test(text[s - 1]!)) s--;
+    let e = at + 1;
+    while (e < n && EMAIL_DOMAIN.test(text[e]!)) e++;
+    while (e > at + 1 && (text[e - 1] === "." || text[e - 1] === "-")) e--;
+    const domain = text.slice(at + 1, e);
+    const dot = domain.lastIndexOf(".");
+    if (s < at && dot > 0 && EMAIL_TLD.test(domain.slice(dot + 1))) {
+      ranges.push([s, e]);
+      floor = e;
+    } else {
+      floor = at + 1;
+    }
+  }
+  return { text: replaceRanges(text, ranges, "email"), count: ranges.length };
+}
+
 // 顺序重要：先匹配带结构的，再匹配宽泛的。
 // 所有规则都要线性（T-059：10 万字符的输入 light / full 都在 500ms 内）：重复次数有上限，
 // 或者是匹配末尾的一段贪婪字符（后面没有别的约束，不会回溯）。
@@ -115,13 +144,7 @@ const RULES: Rule[] = [
     re: /(?<![A-Za-z0-9_])(?=[A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIALS?))([A-Z0-9_]+)\s{0,16}([=:])\s{0,16}("[^"\n]{0,4096}"|'[^'\n]{0,4096}'|["']?[^\s"'\n]+)/g,
     replace: (_m, k, sep) => `${k}${sep}${tag("env_secret")}`,
   },
-  {
-    // 本地部分最长 64，域名每段最长 63、最多 16 段；没有 @ 直接跳过。
-    name: "email",
-    level: "light",
-    needs: "@",
-    re: /[A-Za-z0-9._%+-]{1,64}@(?:[A-Za-z0-9-]{1,63}\.){1,16}[A-Za-z]{2,63}\b/g,
-  },
+  { name: "email", level: "light", apply: redactEmails },
   {
     name: "home_path",
     level: "full",
@@ -159,7 +182,6 @@ export function redact(text: string, level: RedactLevel): { text: string; report
       hit(r.name, res.count);
       continue;
     }
-    if (r.needs && !out.includes(r.needs)) continue;
     out = out.replace(r.re, (m: string, ...rest: unknown[]) => {
       const groups = rest.filter((x): x is string => typeof x === "string");
       const rep = r.replace ? r.replace(m, ...groups) : tag(r.name);
