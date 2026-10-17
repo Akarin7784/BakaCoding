@@ -274,7 +274,12 @@ export type DesktopChatResult = { ok: true; reply: ChatReply } | { ok: false; re
 /** `project:import` 结果（T-072）：project 原样取自 3 的 importProject；note 为补充说明（如在用 BAKACODING_CONFIG）。 */
 export type DesktopImportResult =
   | { ok: true; project: Project; note?: string }
-  | { ok: false; canceled?: true; missing?: string[]; reason?: string };
+  | { ok: false; canceled?: true; missing?: string[]; reason?: string }
+  /**
+   * UI-03b：文件夹还没准备好（不是 Git 仓库 / 没有提交 / 没有 main）：已切到它（只读，来源 last_import），
+   * 界面直接进项目准备页；reason 是只读原因（已脱敏）。
+   */
+  | { ok: false; needsPrep: true; reason: string; note?: string };
 
 /** `diagnostics:export` 结果（T-072）；reason 已脱敏截断。 */
 export type DesktopExportResult =
@@ -374,15 +379,12 @@ export interface DesktopSecretFailure {
   reason: string;
 }
 export type DesktopSecretStatusResult =
-  | { ok: true; status: DesktopSecretStatus }
-  | DesktopSecretFailure;
+  { ok: true; status: DesktopSecretStatus } | DesktopSecretFailure;
 /** 保存成功：后端是只读时主进程顺手重新连接一次，结果在 reload；live 时不重连（网关每次调用现读环境变量）。 */
 export type DesktopSecretSetResult =
-  | { ok: true; status: DesktopSecretStatus; reload?: DesktopReloadResult }
-  | DesktopSecretFailure;
+  { ok: true; status: DesktopSecretStatus; reload?: DesktopReloadResult } | DesktopSecretFailure;
 export type DesktopSecretClearResult =
-  | { ok: true; status: DesktopSecretStatus }
-  | DesktopSecretFailure;
+  { ok: true; status: DesktopSecretStatus } | DesktopSecretFailure;
 
 export interface DesktopProviderTarget {
   provider: string;

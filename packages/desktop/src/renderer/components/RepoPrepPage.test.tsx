@@ -10,9 +10,18 @@ import type {
   DesktopRepoFixResult,
 } from "../../shared/api";
 import { App } from "../App";
+import { IMPORT_NEEDS_PREP } from "../data/useProjectActions";
 import { toast, Toaster } from "./ui/sonner";
 import { RepoPrepPage, type RepoPrepApi } from "./RepoPrepPage";
-import { identityFormFields, missingIdentity, prepItems, shortFolder } from "../lib/repoPrep";
+import {
+  fixFailureReason,
+  IDENTITY_FAILURE_TEXT,
+  identityArg,
+  identityFormFields,
+  missingIdentity,
+  prepItems,
+  shortFolder,
+} from "../lib/repoPrep";
 import { needsImportFirst, repoFixRoute } from "../lib/readonly";
 
 beforeAll(() => {
@@ -125,10 +134,26 @@ describe("纯逻辑（UI-03a）", () => {
     expect(prepItems(NO_MAIN).map((i) => i.state)).toEqual(["ok", "ok", "fail", "blocked"]);
   });
 
-  it("身份字段：缺哪项算哪项；表单只在两项都缺时出现", () => {
+  it("身份字段（UI-03b）：缺哪项算哪项；只缺一项时表单只要那一项，只把那一项交给主进程", () => {
     expect(missingIdentity({ name: false, email: true })).toEqual(["name"]);
     expect(identityFormFields(["name", "email"])).toEqual(["name", "email"]);
-    expect(identityFormFields(["email"])).toEqual([]);
+    expect(identityFormFields(["email"])).toEqual(["email"]);
+    expect(identityFormFields([])).toEqual([]);
+    expect(identityArg(["email"], { name: "", email: " e@x.io " })).toEqual({
+      identity: { email: "e@x.io" },
+    });
+    expect(identityArg([], { name: "a", email: "b" })).toEqual({});
+  });
+
+  it("no_identity / invalid_identity 用固定文案，不提示去命令行 git config", () => {
+    for (const code of ["no_identity", "invalid_identity"] as const) {
+      const t = fixFailureReason({ code, reason: "主进程原文 git config user.name" });
+      expect(t).toBe(IDENTITY_FAILURE_TEXT[code]);
+      expect(t).not.toContain("git config");
+    }
+    expect(fixFailureReason({ code: "main_exists", reason: "main 分支已经存在" })).toBe(
+      "main 分支已经存在",
+    );
   });
 });
 
@@ -203,18 +228,62 @@ describe("项目准备页（UI-03a）", () => {
     await waitFor(() => expect(a.initialCommit).toHaveBeenCalledWith({ empty: true }));
   });
 
-  it("只缺一项身份：不出表单（只显示缺的那项的补法），不能提交", async () => {
+  it("只缺一项身份（UI-03b）：表单只要缺的那一项，填好就能提交，只传那一项；不提示 git config", async () => {
     const a = api([NO_COMMITS({ name: true, email: false })]);
     renderPage(a);
     fireEvent.click(await screen.findByRole("button", { name: "创建首次提交" }));
     const dlg = await screen.findByRole("dialog");
-    const part = await within(dlg).findByTestId("identity-partial");
-    expect(part.textContent).toContain("Git 邮箱");
-    expect(part.textContent).not.toContain("Git 用户名");
+    const form = await within(dlg).findByTestId("identity-form");
+    expect(form.textContent).toContain("还没设置Git 邮箱");
     expect(within(dlg).queryByLabelText("Git 用户名")).toBeNull();
+    expect(dlg.textContent).not.toContain("git config");
+    const submit = within(dlg).getByRole("button", { name: "提交 2 个文件" }) as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+    fireEvent.change(within(dlg).getByLabelText("Git 邮箱"), { target: { value: "not-an-email" } });
+    expect(submit.disabled).toBe(true);
+    fireEvent.change(within(dlg).getByLabelText("Git 邮箱"), { target: { value: "eva@x.io" } });
+    expect(submit.disabled).toBe(false);
+    fireEvent.click(submit);
+    await waitFor(() =>
+      expect(a.initialCommit).toHaveBeenCalledWith({
+        files: ["README.md", "src/a.ts"],
+        identity: { email: "eva@x.io" },
+      }),
+    );
+  });
+
+  it("只缺用户名：表单只有用户名一栏，空提交也只传 name", async () => {
+    const a = api([NO_COMMITS({ name: false, email: true })]);
+    renderPage(a);
+    fireEvent.click(await screen.findByRole("button", { name: "创建首次提交" }));
+    const dlg = await screen.findByRole("dialog");
+    await within(dlg).findByTestId("include-list");
+    expect(within(dlg).queryByLabelText("Git 邮箱")).toBeNull();
+    fireEvent.change(within(dlg).getByLabelText("Git 用户名"), { target: { value: "Eva" } });
+    fireEvent.click(within(dlg).getByRole("button", { name: "只做空提交" }));
+    await waitFor(() =>
+      expect(a.initialCommit).toHaveBeenCalledWith({ empty: true, identity: { name: "Eva" } }),
+    );
+  });
+
+  it("主进程回 no_identity：toast 用固定文案（不带主进程原文），确认框不关", async () => {
+    const a = api([NO_COMMITS({ name: true, email: false })], {
+      initialCommit: vi.fn(async () => ({
+        ok: false as const,
+        code: "no_identity" as const,
+        reason: "还没有设置 Git 用户名和邮箱",
+      })),
+    });
+    renderPage(a);
+    fireEvent.click(await screen.findByRole("button", { name: "创建首次提交" }));
+    const dlg = await screen.findByRole("dialog");
+    await within(dlg).findByTestId("include-list");
+    fireEvent.change(within(dlg).getByLabelText("Git 邮箱"), { target: { value: "eva@x.io" } });
+    fireEvent.click(within(dlg).getByRole("button", { name: "提交 2 个文件" }));
     expect(
-      (within(dlg).getByRole("button", { name: "提交 2 个文件" }) as HTMLButtonElement).disabled,
-    ).toBe(true);
+      await screen.findByText(`首次提交失败：${IDENTITY_FAILURE_TEXT.no_identity}`),
+    ).toBeTruthy();
+    expect(screen.getByRole("dialog")).toBeTruthy();
   });
 
   it("新建 main：确认框写明从哪个分支、只新建；失败只 toast 主进程给的固定文案", async () => {
@@ -238,6 +307,25 @@ describe("项目准备页（UI-03a）", () => {
     renderPage(api([ALL_OK]));
     expect(await screen.findByTestId("prep-all-ok")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /初始化|首次提交|新建 main/ })).toBeNull();
+    // 没有 secret / provider 接口时不给「设置模型」
+    expect(screen.queryByTestId("prep-model")).toBeNull();
+  });
+
+  it("全部通过且有密钥接口（UI-03b）：「设置模型」在本页打开模型设置向导", async () => {
+    const a = api([ALL_OK], {
+      secretStatus: vi.fn(async () => ({
+        ok: true as const,
+        status: { set: false, source: null },
+      })),
+      setSecret: vi.fn(),
+      clearSecret: vi.fn(),
+      testProvider: vi.fn(),
+    });
+    renderPage(a);
+    const entry = await screen.findByTestId("prep-model");
+    fireEvent.click(within(entry).getByRole("button", { name: "设置模型" }));
+    expect(await screen.findByRole("dialog", { name: "模型设置向导" })).toBeTruthy();
+    expect(screen.getByTestId("repo-prep")).toBeTruthy();
   });
 });
 
@@ -345,6 +433,30 @@ describe("仓库来源是当前工作目录（UI-03a 评审 B1）", () => {
       expect(screen.queryByTestId("repo-prep")).toBeNull();
     });
   }
+
+  it("导入不是 Git 仓库的文件夹（UI-03b）：不重载界面，直接进项目准备页（来源变成上次导入）", async () => {
+    let status = notGit("cwd");
+    const importProject = vi.fn(async () => {
+      status = notGit("last_import");
+      return { ok: false, needsPrep: true, reason: "这个文件夹还不是 Git 仓库" };
+    });
+    const a = { ...appApi(status, importProject), getBackendStatus: vi.fn(async () => status) };
+    const onReload = vi.fn();
+    render(
+      <>
+        <App api={a as BakaDesktopApi} onReload={onReload} />
+        <Toaster />
+      </>,
+    );
+    const banner = await screen.findByRole("region", { name: "只读模式" });
+    fireEvent.click(within(banner).getByRole("button", { name: "导入项目" }));
+    expect(await screen.findByTestId("repo-prep")).toBeTruthy();
+    expect(await screen.findByText(IMPORT_NEEDS_PREP)).toBeTruthy();
+    expect(onReload).not.toHaveBeenCalled();
+    expect(
+      within(screen.getByTestId("prep-item-git")).getByRole("button", { name: "初始化 Git" }),
+    ).toBeTruthy();
+  });
 
   it("来源是上次导入：照常给「准备仓库」，不提示导入", async () => {
     render(<App api={appApi(notGit("last_import"))} />);

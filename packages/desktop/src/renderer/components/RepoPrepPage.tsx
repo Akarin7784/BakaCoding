@@ -14,6 +14,7 @@ import type { RepoFixRoute } from "../lib/readonly";
 import {
   EXCLUDED_REASON,
   firstFailing,
+  fixFailureReason,
   IDENTITY_LABEL,
   identityArg,
   identityFormFields,
@@ -39,11 +40,14 @@ import {
   DialogTitle,
 } from "./ui/dialog";
 import { Input } from "./ui/input";
+import { ModelSetupWizard, type WizardApi } from "./ModelSetupWizard";
+import { WIZARD_COPY } from "../lib/secretItem";
 
 export type RepoPrepApi = Pick<
   BakaDesktopApi,
   "checkRepo" | "initRepo" | "listInitialFiles" | "initialCommit" | "createMainBranch"
->;
+> &
+  Partial<WizardApi>;
 
 type Fix = "git" | "commit" | "main";
 
@@ -105,6 +109,7 @@ export function RepoPrepPage({
   const [busy, setBusy] = useState(false);
   const [files, setFiles] = useState<DesktopRepoFilesResult | null>(null);
   const [identity, setIdentity] = useState({ name: "", email: "" });
+  const [wizardOpen, setWizardOpen] = useState(false);
 
   const recheck = useCallback(async () => {
     if (!api.checkRepo) return;
@@ -146,7 +151,7 @@ export function RepoPrepPage({
       const r = await call();
       if (!r) return;
       if (!r.ok) {
-        notifyError(failureText(FAIL_PREFIX[fix], r.reason));
+        notifyError(failureText(FAIL_PREFIX[fix], fixFailureReason(r)));
         return;
       }
       setDialog(null);
@@ -260,6 +265,22 @@ export function RepoPrepPage({
             <span className="font-medium">{PREP_COPY.allOk}</span>
             <span className="text-muted-foreground">{PREP_COPY.allOkHint}</span>
           </div>
+        )}
+
+        {/* UI-03b：仓库都准备好了，接着在这里打开模型设置向导（密钥 + 测试连接），不另开页面 */}
+        {check && first === null && api.secretStatus && api.testProvider && (
+          <div
+            data-testid="prep-model"
+            className="flex items-center gap-3 rounded-xl border border-border px-4 py-3"
+          >
+            <span className="min-w-0 flex-1 text-muted-foreground">{WIZARD_COPY.prepHint}</span>
+            <Button size="sm" onClick={() => setWizardOpen(true)}>
+              {WIZARD_COPY.prepEntry}
+            </Button>
+          </div>
+        )}
+        {wizardOpen && api.secretStatus && (
+          <ModelSetupWizard open={wizardOpen} onOpenChange={setWizardOpen} api={api} />
         )}
       </div>
 

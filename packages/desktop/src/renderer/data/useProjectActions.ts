@@ -17,6 +17,8 @@ export interface ProjectActions {
 }
 
 const IPC_FAILED = "和主进程通信失败，请重试";
+/** UI-03b：导入了还没准备好的文件夹 */
+export const IMPORT_NEEDS_PREP = "已导入文件夹，还要先做几步准备（比如初始化 Git）";
 
 /** 操作结果的去处（UI-08：右下角 toast）；测试可注入。 */
 export interface ActionNotifier {
@@ -30,6 +32,8 @@ export function useProjectActions(
   /** 导入成功后重新加载界面（新仓库的快照、通知回放）；测试注入 */
   reload: () => void = () => globalThis.location?.reload(),
   notify: ActionNotifier = toastNotifier,
+  /** UI-03b：导入的文件夹还要准备（不是 Git 仓库等）：不重载界面，直接进项目准备页 */
+  onNeedsPrep?: () => void,
 ): ProjectActions {
   const [busy, setBusy] = useState<ProjectActions["busy"]>(null);
   const setNotice = (n: { tone: "ok" | "error"; text: string }) =>
@@ -57,6 +61,10 @@ export function useProjectActions(
             text: `已导入项目「${r.project.name}」：${r.project.path}${r.note ? `。${r.note}` : ""}`,
           });
           reload();
+        } else if ("needsPrep" in r) {
+          setNotice({ tone: "ok", text: IMPORT_NEEDS_PREP });
+          if (onNeedsPrep) onNeedsPrep();
+          else reload();
         } else if (!r.canceled) {
           const missing = r.missing?.length ? `缺少：${r.missing.join("、")}。` : "";
           setNotice({

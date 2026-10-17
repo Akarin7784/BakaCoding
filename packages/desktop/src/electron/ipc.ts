@@ -34,10 +34,7 @@ import { errorDetail, sanitizeSyncErrorMessage } from "./sync-state.js";
 import type { EventReader } from "./reader.js";
 import { isWindowThemeSource } from "./window-chrome.js";
 import { repoFixHandlers, type RepoFixDeps } from "./repo-fix-ipc.js";
-import {
-  secretProviderHandlers,
-  type SecretProviderDeps,
-} from "./secret-provider-ipc.js";
+import { secretProviderHandlers, type SecretProviderDeps } from "./secret-provider-ipc.js";
 
 /**
  * 主进程 ipcMain 的最小子集，便于测试注入。
@@ -286,6 +283,16 @@ export function serveProjectSettings(ipc: IpcMainLike, deps: ProjectSettingsDeps
       } satisfies DesktopImportResult;
     }
     const r = await deps.backend.switchTo(path.resolve(dir));
+    if (!r.ok && "needsPrep" in r) {
+      // UI-03b：没准备好的文件夹也算导入了（记下路径），界面进准备页
+      deps.saveLastRepo(path.resolve(dir));
+      return {
+        ok: false,
+        needsPrep: true,
+        reason: r.reason,
+        ...(check.note !== undefined && { note: check.note }),
+      } satisfies DesktopImportResult;
+    }
     if (!r.ok) {
       // 新后端已经在跑、只是 importProject 失败：记下的路径要和实际运行的仓库一致
       if (r.switched) deps.saveLastRepo(path.resolve(dir));

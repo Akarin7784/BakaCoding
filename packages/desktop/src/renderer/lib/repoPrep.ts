@@ -129,6 +129,22 @@ export function identityFormFields(missing: readonly IdentityField[]): IdentityF
   return [...missing];
 }
 
+/**
+ * 身份相关失败的固定文案（UI-03b）：不管主进程 reason 是什么都显示这两句；
+ * 不再提示去命令行跑 git config，缺的那项直接在确认框里填。
+ */
+export const IDENTITY_FAILURE_TEXT = {
+  no_identity: "还缺 Git 用户名或邮箱，请在确认框里填上缺的那一项",
+  invalid_identity: "Git 用户名或邮箱格式不对，请检查后再试",
+} as const;
+
+/** 修复失败时显示的原因：身份两种用固定文案，其余用主进程的固定文案 */
+export function fixFailureReason(r: { code: string; reason: string }): string {
+  return r.code === "no_identity" || r.code === "invalid_identity"
+    ? IDENTITY_FAILURE_TEXT[r.code]
+    : r.reason;
+}
+
 /** 只把缺的字段交给主进程；不缺就不传 identity。 */
 export function identityArg(
   missing: readonly IdentityField[],
