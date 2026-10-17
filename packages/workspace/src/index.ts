@@ -12,3 +12,4 @@ export {
   resolveInWorkspace,
 } from "./guard.js";
 export type { ResolvedPath } from "./guard.js";
+export * from "./repo.js";
