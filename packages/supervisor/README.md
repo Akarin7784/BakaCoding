@@ -18,7 +18,7 @@
 |---|---|---|---|
 | `write_scope_missing` | 没给或为空 | 无效，整批退回 | 按 `["**"]`，发 `ticket_warning(write_scope_defaulted)` |
 | `write_scope_trailing_slash` | 以 `/` 结尾 | 无效（写成 `lib/**`，不自动改写） | 同左 |
-| `write_scope_unsafe` | 4 的 `isUnsafeGlob` 为真 | 无效 | 同左 |
+| `write_scope_unsafe` | 首尾带空白（`/^\s|\s$/u`，T-041b；先于其他检查，手动单的 `" **"` 也报错）；或 4 的 `isUnsafeGlob` 为真 | 无效 | 同左 |
 | `write_scope_whole_repo` | 第一段不是字面量（含 `* ? [ ] { } ( ) ! + @`）：`**`、`**/*`、`*`、`*/**`、`{**,x}`、`?(**)`、`[!_]**`、`**/package.json` 等，都可能写到整个仓库 | 无效（v1 不开白名单） | 按 `["**"]`，发警告 |
 | `write_scope_bare_directory` | 字面路径是基线上的目录（需 `listFiles`） | 无效（写成 `dir/**`） | 同左 |
 
@@ -33,3 +33,12 @@
 下一条回复只用项目名认领暂存的需求：界面传了 `project_id` 就用它；否则原文里恰好提到一个项目才认领。提到多个项目（如「加到官网，别加到应用」）或一个都没提到（如「第一个吧」）时不认领、再问一次（`ask_project`），暂存的需求保留，不调模型、不建单。去掉项目名后剩下的内容如果还有实际内容（去掉标点和「是 / 就 / 吧 / 项目」等虚词后至少 2 个字），就当一条新消息照常处理（意图判断、定项目、拆单），不丢掉顺带提的新需求。两条的回复文字拼接、单号合并；新消息还要追问项目时 `kind` 为 `ask_project`，新需求进暂存。
 
 已知缺口：1:1 历史 v1 不持久化（暂存的需求只在本进程）；意图判断那次调用也预生成 `requirement_id`（1/2/3 要求必填），不是需求的消息也会留下一个未登记的需求号。追问项目后，去掉项目名和虚词仍剩至少 2 个字就当新消息处理，判断较粗，可能误判。未注入 `listFiles` 时不查裸目录；`persistAndDispatch` 入队中途抛错会半批入队；`pending` 是全进程共用变量，并发会抢（v1 只有一对一对话，可接受）。
+
+## T-041b：上报处理与重拆
+
+- `start()` 另订阅 `escalated`，逐条串行处理。`review_limit` / `coder_failed` / `conflict_limit` 先写 `fields.escalation_handled`，再经注入的 `closeTicketPr` 关旧 PR（结果写 `fields.pr_close_done`），然后以 `fields.requirement_text` 重拆；已重拆次数 ≥ `pipeline.resplit_limit` 时不再重拆，发 `escalated(resplit_limit)` 交用户。其余原因交用户；`merged_but`、`scope_lock_failed` 只通知、不写标记。
+- 关旧 PR 失败：不重拆，发一次 `ticket_warning(pr_close_failed)`，按 `PR_CLOSE_RETRY_MS`（30 秒、2 分钟、10 分钟）重试，仍失败交用户。远端已合入（`merged`）不重拆、交用户。
+- 重拆出的新单写 `resplit` / `resplit_of`，继承旧单的依赖；下游单经 `replaceDependency`（9）和 2 的 `fields.depends_on` 改依赖新单。
+- 需求原文超过 20000 个码点截断，每批次发一条 `ticket_warning(requirement_truncated)`。
+- `takeOver()` 先补跑已上报单的上报处理（每次最多 `TAKEOVER_REPLAY_LIMIT` = 5 张），再把依赖里被取代的单换成新单，依赖已上报（未被取代）或 `fields_invalid` 的单进 `held`、通知一次。报告多了 `escalations`、`held`。
+- 已知缺口：补跑上限 5 张、旧 worktree 不清、重试只在进程内、旧单首尾空白条目按 `fields_invalid`。详见 docs/progress.md。

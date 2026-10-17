@@ -6,6 +6,8 @@ T-035 已实现合并队列和反压信号（`createScheduler`），接口和行
 
 T-038：不再订阅 `write_scope_requested`、不发 granted / denied（答复归 8）；8 对范围外的越界写申请调 `extendScope(ticket_id, scope)` 重新加锁（失败发 `escalated(scope_lock_failed)`）。`submit({ …, high_risk })` 记下 8 打的高风险标记，`snapshot()` 每项带 `high_risk`，只打标不扣留。合并成功后收尾出错时状态保持 `merged`，另发 `escalated(merged_but)`。默认独占区域以 `@bakacoding/types` 的 `DEPENDENCY_MANIFEST_GLOBS` 开头。`isUnsafeScope` 转调模块 4 的 `isUnsafeGlob`（`@deprecated`）。
 
+T-041b：`replaceDependency(old_id, new_ids)` 把在途单 `depends_on` 里被重拆取代的单原位换成新单（去重、跳过自己和终态单），返回改过的单号；`adopt` 写 `merge_queued` 失败时撤登记、放锁、不入队，原样抛错。
+
 ```ts
 const scheduler = createScheduler({
   bus,

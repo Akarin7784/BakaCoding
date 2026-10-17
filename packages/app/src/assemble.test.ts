@@ -5,13 +5,13 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getConfig } from "@bakacoding/config-budget";
 import type { CoderPool } from "@bakacoding/coder-pool";
-import type { PrProvider, TicketPrRecord } from "@bakacoding/pr";
+import { GithubRateLimitError, type PrProvider, type TicketPrRecord } from "@bakacoding/pr";
 import { openStorage, type Storage, type TicketFields } from "@bakacoding/storage";
 import type { BakaEvent, TicketStatus } from "@bakacoding/types";
 import { requestWriteScope } from "@bakacoding/workspace";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { assemble, type App, type AppDeps } from "./index.js";
-import { currentTicketPr } from "./assemble.js";
+import { closeTicketPrs, currentTicketPr, lastEscalationFrom } from "./assemble.js";
 
 const examplePath = fileURLToPath(new URL("../../../config/models.example.json", import.meta.url));
 const HEAD = "a".repeat(40);
@@ -333,7 +333,7 @@ describe("组合根：重启接管", () => {
     expect(calls.merge).toEqual(["local-7"]);
   });
 
-  it("fields 无效的单不接回、只发一次 ticket_warning(fields_invalid)，不重拆、不上报；已上报的单只列出；没有 PR 记录的不 adopt", async () => {
+  it("fields 无效的单不接回、只发一次 ticket_warning(fields_invalid)，不重拆、不上报；已上报、查不到原因的单补跑一次只交用户；没有 PR 记录的不 adopt", async () => {
     const { storage, worktreeRoot } = setup();
     saveTicket(storage, "req-1-1", "pending", undefined); // fields 为 null（旧单）
     saveTicket(storage, "req-1-2", "coding", fields({ write_scope: ["**"] })); // split 单存了 **，复查不过
@@ -348,6 +348,7 @@ describe("组合根：重启接管", () => {
       skipped_invalid: ["req-1-1", "req-1-2"],
       awaiting_adopt: [],
       escalated: ["req-1-4"],
+      escalations: [{ ticket_id: "req-1-4", action: "notify_user" }],
       merged: [],
     });
     // merge_queued 但 2 里没有 PR 记录：adopt 拒绝，记进 failed，不派单、不开 PR
@@ -536,5 +537,320 @@ describe("currentTicketPr", () => {
     ];
     expect((await currentTicketPr({ list: async () => list }, "T"))?.pr_id).toBe("p2");
     expect(await currentTicketPr({ list: async () => list }, "X")).toBeUndefined();
+  });
+});
+
+// ---------------- T-041b ----------------
+
+function prRec(
+  over: Partial<TicketPrRecord> & { pr_id: string; ticket_id: string },
+): TicketPrRecord {
+  return {
+    kind: "ticket",
+    worktree_path: `/wt/${over.ticket_id}-r0`,
+    branch: `bakacoding/${over.ticket_id}-r0`,
+    base_branch: "bakacoding/integration",
+    base_sha: HEAD,
+    head_sha: "d".repeat(40),
+    status: "open",
+    created_ts: "2026-10-17T08:00:01Z",
+    updated_ts: "2026-10-17T08:00:01Z",
+    ...over,
+  };
+}
+
+describe("T-041b closeTicketPrs（N1）", () => {
+  it("远端已合入、本地还是 open：先 sync 再判，返回 merged，本地记录不会被标成 closed", async () => {
+    const { storage } = setup();
+    const store = storage.prStore<TicketPrRecord>();
+    await store.put(prRec({ pr_id: "local-1", ticket_id: "T" }));
+    const order: string[] = [];
+    const close = vi.fn(async (pr_id: string) => {
+      order.push("close");
+      const r = (await store.get(pr_id))!;
+      await store.put({ ...r, status: "closed" });
+    });
+    const sync = async () => {
+      order.push("sync");
+      // 6 的 sync：把用户在 GitHub 上的手动合并同步回本地
+      const r = (await store.get("local-1"))!;
+      await store.put({ ...r, status: "merged" });
+    };
+    expect(await closeTicketPrs({ sync, store, pr: { close } }, "T", "由重拆取代")).toBe("merged");
+    expect(order).toEqual(["sync"]);
+    expect(close).not.toHaveBeenCalled();
+    expect((await store.get("local-1"))!.status).toBe("merged");
+  });
+
+  it("只看本单的 ticket 记录：open / conflict 全部关掉返回 closed；没有未结束的返回 none；close 抛 PrAlreadyMergedError 算 merged；sync 出错照抛、不关", async () => {
+    const { storage } = setup();
+    const store = storage.prStore<TicketPrRecord>();
+    await store.put(prRec({ pr_id: "local-1", ticket_id: "T", status: "closed" }));
+    await store.put(prRec({ pr_id: "local-2", ticket_id: "T", status: "conflict" }));
+    await store.put(prRec({ pr_id: "local-3", ticket_id: "T" }));
+    await store.put(prRec({ pr_id: "local-4", ticket_id: "U" }));
+    const closed: string[] = [];
+    const pr = { close: async (id: string) => void closed.push(id) };
+    const sync = async () => {};
+    expect(await closeTicketPrs({ sync, store, pr }, "T", "r")).toBe("closed");
+    expect(closed.sort()).toEqual(["local-2", "local-3"]);
+    expect(await closeTicketPrs({ sync, store, pr }, "V", "r")).toBe("none");
+    const { PrAlreadyMergedError } = await import("@bakacoding/pr");
+    expect(
+      await closeTicketPrs(
+        {
+          sync,
+          store,
+          pr: {
+            close: async (id) => {
+              throw new PrAlreadyMergedError(id);
+            },
+          },
+        },
+        "U",
+        "r",
+      ),
+    ).toBe("merged");
+    const close = vi.fn();
+    await expect(
+      closeTicketPrs(
+        {
+          sync: async () => {
+            throw new Error("sync 挂了");
+          },
+          store,
+          pr: { close },
+        },
+        "U",
+        "r",
+      ),
+    ).rejects.toThrow(/sync 挂了/);
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it("#65 评审：sync 抛 GithubRateLimitError 原样抛出（同一个实例），一次 close 都不调", async () => {
+    const { storage } = setup();
+    const store = storage.prStore<TicketPrRecord>();
+    await store.put(prRec({ pr_id: "local-1", ticket_id: "T" }));
+    const err = new GithubRateLimitError(429, "sync", 60000);
+    const close = vi.fn();
+    await expect(
+      closeTicketPrs(
+        {
+          sync: async () => {
+            throw err;
+          },
+          store,
+          pr: { close },
+        },
+        "T",
+        "r",
+      ),
+    ).rejects.toBe(err);
+    expect(close).not.toHaveBeenCalled();
+    expect((await store.get("local-1"))!.status).toBe("open");
+  });
+});
+
+describe("T-041b lastEscalationFrom（N5）", () => {
+  it("取本单最后一条需要处理的 escalated，跳过 scope_lock_failed / merged_but / resplit_limit", () => {
+    const { storage } = setup();
+    const ev = (ticket_id: string, reason: string, n: number) =>
+      storage.ingest({
+        type: "escalated",
+        event_id: `e${n}`,
+        seq: storage.nextSeq(),
+        ts: "2026-10-17T08:00:00Z",
+        trace_id: "t",
+        span_id: `s${n}`,
+        parent_span_id: null,
+        requirement_id: "req-1",
+        ticket_id,
+        payload: { reason, detail: `d${n}` },
+      } as BakaEvent);
+    ev("T", "review_limit", 1);
+    ev("T", "conflict_limit", 2);
+    ev("T", "scope_lock_failed", 3);
+    ev("T", "resplit_limit", 4);
+    ev("U", "budget_exceeded", 5);
+    const last = lastEscalationFrom(storage);
+    expect(last("T")).toMatchObject({ payload: { reason: "conflict_limit", detail: "d2" } });
+    expect(last("X")).toBeUndefined();
+  });
+});
+
+describe("T-041b 组合根：上报处理与重启", () => {
+  it("关旧 PR 时 sync 失败：不关、不重拆、发 pr_close_failed；重启后从关旧 PR 这一步接着做", async () => {
+    const { storage, worktreeRoot } = setup();
+    saveTicket(storage, "req-1-1", "coding", fields({ requirement_text: "原需求" }));
+    const wt = join(worktreeRoot, "req-1-1-r0");
+    mkdirSync(wt, { recursive: true });
+    await storage
+      .prStore<TicketPrRecord>()
+      .put(prRec({ pr_id: "local-1", ticket_id: "req-1-1", worktree_path: wt }));
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const a = fakePr();
+    a.pr.sync = async () => {
+      throw new Error("GitHub 不可用");
+    };
+    const close1 = vi.spyOn(a.pr, "close");
+    const runTicket = vi.fn(async () => {
+      await gate;
+      return { status: "done" as const, summary: "", changed_files: [] };
+    });
+    const { app } = await start({ storage, worktreeRoot, pr: a.pr, runTicket });
+    await vi.waitFor(() => expect(runTicket).toHaveBeenCalled(), { timeout: 5000 });
+    // 8 上报（状态由 8 写，这里直接模拟）
+    saveTicket(storage, "req-1-1", "escalated", undefined);
+    await app.bus.publish({
+      type: "escalated",
+      trace_id: "tr-r",
+      span_id: "sp-x",
+      parent_span_id: "sp-t",
+      requirement_id: "req-1",
+      ticket_id: "req-1-1",
+      payload: {
+        reason: "review_limit",
+        detail: "评审不过",
+        resubmit_counts: { review: 3, conflict: 0 },
+      },
+    });
+    await vi.waitFor(
+      () =>
+        expect(
+          storage
+            .queryEvents({ types: ["ticket_warning"] })
+            .map((e) => (e.payload as { code: string }).code),
+        ).toEqual(["pr_close_failed"]),
+      { timeout: 5000 },
+    );
+    expect(close1).not.toHaveBeenCalled();
+    const f1 = storage.getTicket("req-1-1")!.fields as Record<string, unknown>;
+    expect(f1).toMatchObject({ escalation_handled: { action: "resplit" } });
+    expect(f1.pr_close_done).toBeUndefined();
+    expect(storage.listTickets().map((r) => r.ticket_id)).toEqual(["req-1-1"]);
+    app.stop();
+    release();
+
+    // 重启：sync 正常，从关旧 PR 这一步接着做（关掉旧 PR，再进拆单；本测试没建项目，拆单失败 → 记 error 交用户、不再重试）
+    const b = fakePr();
+    const closed: string[] = [];
+    b.pr.close = async (id) => void closed.push(id);
+    const notified: string[] = [];
+    const { app: app2 } = await start({
+      storage,
+      worktreeRoot,
+      pr: b.pr,
+      notifyUser: (m) => void notified.push(m.text),
+    });
+    expect(app2.takeOver.escalations).toEqual([{ ticket_id: "req-1-1", action: "notify_user" }]);
+    expect(closed).toEqual(["local-1"]);
+    const f2 = storage.getTicket("req-1-1")!.fields as Record<string, unknown>;
+    expect(f2).toMatchObject({
+      pr_close_done: { result: "closed" },
+      escalation_handled: { action: "resplit", error: expect.any(String) },
+    });
+    expect(notified.some((t) => /重拆失败/.test(t))).toBe(true);
+  });
+
+  it("#65 评审：关旧 PR 时 6 的 sync 抛 GithubRateLimitError：错误原样上抛、一次 close 都不调、发 pr_close_failed、不出新单", async () => {
+    const { storage, worktreeRoot } = setup();
+    saveTicket(storage, "req-1-1", "coding", fields({ requirement_text: "原需求" }));
+    const wt = join(worktreeRoot, "req-1-1-r0");
+    mkdirSync(wt, { recursive: true });
+    await storage
+      .prStore<TicketPrRecord>()
+      .put(prRec({ pr_id: "local-1", ticket_id: "req-1-1", worktree_path: wt }));
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const a = fakePr();
+    const err = new GithubRateLimitError(429, "sync", 60000);
+    const sync = vi.fn(async (): Promise<never> => {
+      throw err;
+    });
+    a.pr.sync = sync;
+    const close1 = vi.spyOn(a.pr, "close");
+    const runTicket = vi.fn(async () => {
+      await gate;
+      return { status: "done" as const, summary: "", changed_files: [] };
+    });
+    const { app } = await start({ storage, worktreeRoot, pr: a.pr, runTicket });
+    await vi.waitFor(() => expect(runTicket).toHaveBeenCalled(), { timeout: 5000 });
+    saveTicket(storage, "req-1-1", "escalated", undefined);
+    await app.bus.publish({
+      type: "escalated",
+      trace_id: "tr-r",
+      span_id: "sp-x",
+      parent_span_id: "sp-t",
+      requirement_id: "req-1",
+      ticket_id: "req-1-1",
+      payload: {
+        reason: "review_limit",
+        detail: "评审不过",
+        resubmit_counts: { review: 3, conflict: 0 },
+      },
+    });
+    await vi.waitFor(
+      () =>
+        expect(
+          storage
+            .queryEvents({ types: ["ticket_warning"] })
+            .map((e) => (e.payload as { code: string }).code),
+        ).toEqual(["pr_close_failed"]),
+      { timeout: 5000 },
+    );
+    expect(sync).toHaveBeenCalled();
+    // 10 拿到的就是 6 抛的这个限流错误（经 9 的 sync 和 closeTicketPrs 原样上抛，没被吞、没被换掉）
+    const w = storage.queryEvents({ types: ["ticket_warning"] })[0]!;
+    expect((w.payload as { detail: string }).detail).toContain(err.message);
+    expect(close1).not.toHaveBeenCalled();
+    const f1 = storage.getTicket("req-1-1")!.fields as Record<string, unknown>;
+    expect(f1).toMatchObject({ escalation_handled: { action: "resplit" } });
+    expect(f1.pr_close_done).toBeUndefined();
+    expect(storage.listTickets().map((r) => r.ticket_id)).toEqual(["req-1-1"]);
+    expect((await storage.prStore<TicketPrRecord>().get("local-1"))!.status).toBe("open");
+    app.stop();
+    release();
+  });
+
+  it("重启前经 extendScope 批准扩出的范围随 adopt / enqueue 并进 9 的锁：与它重叠的单接不回", async () => {
+    const { storage, worktreeRoot } = setup();
+    saveTicket(
+      storage,
+      "req-1-1",
+      "merge_queued",
+      fields({ write_scope: ["lib/a/**"], depends_on: ["zz"] }),
+    );
+    saveTicket(storage, "req-1-2", "merge_queued", fields({ write_scope: ["lib/z/x.ts"] }));
+    for (const id of ["req-1-1", "req-1-2"]) {
+      const path = join(worktreeRoot, `${id}-r0`);
+      mkdirSync(path, { recursive: true });
+      await storage
+        .prStore<TicketPrRecord>()
+        .put(prRec({ pr_id: `local-${id}`, ticket_id: id, worktree_path: path }));
+    }
+    storage.ingest({
+      type: "write_scope_granted",
+      event_id: "g1",
+      seq: storage.nextSeq(),
+      ts: "2026-10-17T08:00:00Z",
+      trace_id: "tr-r",
+      span_id: "sp-g",
+      parent_span_id: null,
+      requirement_id: "req-1",
+      ticket_id: "req-1-1",
+      payload: { ticket_id: "req-1-1", request_id: "r1", granted_scope: ["lib/z/**", "../bad/**"] },
+    } as BakaEvent);
+    const { pr } = fakePr();
+    const { app } = await start({ storage, worktreeRoot, pr });
+    expect(app.takeOver.adopted).toEqual(["req-1-1"]);
+    expect(app.takeOver.failed).toEqual([
+      { ticket_id: "req-1-2", error: expect.stringMatching(/在途单 req-1-1 重叠/) },
+    ]);
+    expect(app.scheduler.snapshot().find((v) => v.ticket_id === "req-1-1")!.locked_scope).toEqual([
+      "lib/a/**",
+      "lib/z/**",
+    ]);
   });
 });

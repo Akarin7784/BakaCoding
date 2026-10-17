@@ -1360,7 +1360,16 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       if (!loc.unknown) e.base_seq = loc.seq;
       entries.set(ticket.ticket_id, e);
       prToTicket.set(pr_id, ticket.ticket_id);
-      await setStatus(e, "merge_queued");
+      try {
+        await setStatus(e, "merge_queued");
+      } catch (err) {
+        // T-041b（#62 评审）：写状态失败时撤掉登记和 PR 映射、放掉锁，不入队；原错误抛给 10 记进 failed，
+        // 下次 takeOver 能用同一个 PR 重试
+        if (entries.get(ticket.ticket_id) === e) entries.delete(ticket.ticket_id);
+        if (prToTicket.get(pr_id) === ticket.ticket_id) prToTicket.delete(pr_id);
+        e.lock_scope = null;
+        throw err;
+      }
       queue.push(ticket.ticket_id);
       kick(); // 只触发合并循环，不触发派单
       return "adopted";
@@ -1434,6 +1443,28 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       return backpressureFrom(await deps.budgetState());
     },
     extendScope: (ticket_id, scope) => extendScope(ticket_id, scope),
+    replaceDependency(old_ticket_id, new_ticket_ids) {
+      const replacement = [...new Set(new_ticket_ids)].filter((id) => id !== old_ticket_id);
+      const changed: string[] = [];
+      for (const e of entries.values()) {
+        const id = e.ticket.ticket_id;
+        if (id === old_ticket_id || TERMINAL.has(e.status)) continue;
+        const deps0 = e.ticket.depends_on ?? [];
+        if (!deps0.includes(old_ticket_id)) continue;
+        const next: string[] = [];
+        for (const d of deps0) {
+          for (const x of d === old_ticket_id ? replacement : [d])
+            if (x !== id && !next.includes(x)) next.push(x);
+        }
+        e.ticket.depends_on = next;
+        changed.push(id);
+      }
+      if (changed.length) {
+        kick();
+        kickDispatch();
+      }
+      return changed;
+    },
     dependencyState: (id) => dependencyState(id),
     status: (id) => entries.get(id)?.status,
     snapshot: () =>

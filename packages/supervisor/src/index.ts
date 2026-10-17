@@ -5,6 +5,7 @@ export const MODULE_NAME = "@bakacoding/supervisor" as const;
 export {
   SPLIT_MAX_ATTEMPTS,
   type ChatReply,
+  type EscalationAction,
   type ManualTicketInput,
   type SplitRequest,
   type SplitResult,

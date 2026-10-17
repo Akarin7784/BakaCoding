@@ -5,13 +5,14 @@ import type { Budget, Config } from "@bakacoding/config-budget";
 import type { CoderPool } from "@bakacoding/coder-pool";
 import { createEventBus, type EventBus } from "@bakacoding/event-bus";
 import type { ModelGateway } from "@bakacoding/model-gateway";
-import type {
-  EventContextFn,
-  PrProvider,
-  PrRecord,
-  PrStore,
-  PublishEscalated,
-  TicketPrRecord,
+import {
+  PrAlreadyMergedError,
+  type EventContextFn,
+  type PrProvider,
+  type PrRecord,
+  type PrStore,
+  type PublishEscalated,
+  type TicketPrRecord,
 } from "@bakacoding/pr";
 import type { ReviewInput } from "@bakacoding/review-pool";
 import {
@@ -41,8 +42,8 @@ import {
   type SupervisorDeps,
   type TakeOverReport,
 } from "@bakacoding/supervisor";
-import type { ReviewResult, TicketStatus } from "@bakacoding/types";
-import type { ScopeBus } from "@bakacoding/workspace";
+import type { EventOf, ReviewResult, TicketStatus } from "@bakacoding/types";
+import { isUnsafeGlob, type ScopeBus } from "@bakacoding/workspace";
 
 export type MaybePromise<T> = T | Promise<T>;
 
@@ -153,6 +154,52 @@ export async function currentTicketPr(
   return open.at(-1);
 }
 
+/** N5：重启补跑时取上报原因——本单最后一条需要处理的 escalated（跳过只通知的和 10 自己发的）。 */
+export function lastEscalationFrom(
+  storage: Pick<Storage, "queryEvents">,
+): (ticket_id: string) => EventOf<"escalated"> | undefined {
+  const skip = new Set(["scope_lock_failed", "merged_but", "resplit_limit"]);
+  return (ticket_id) => {
+    const evs = storage
+      .queryEvents({ ticket_id, types: ["escalated"] })
+      .filter(
+        (e): e is EventOf<"escalated"> =>
+          e.type === "escalated" && e.ticket_id === ticket_id && !skip.has(e.payload.reason),
+      )
+      .sort((a, b) => a.seq - b.seq);
+    return evs.at(-1);
+  };
+}
+
+/**
+ * N1：重拆前关掉旧单的 PR。先 `sync()` 把远端状态同步回本地记录（经 9 的 sync，内部调 6 的 sync，其他单的变化也照常应用），
+ * 再只看本单的 `kind: "ticket"` 记录：有 merged 的返回 `"merged"`；没有 open / conflict 的返回 `"none"`；
+ * 否则全部关掉返回 `"closed"`（6 抛 `PrAlreadyMergedError` 也算 `"merged"`）。sync 或 close 的其他错误照抛，10 不重拆、重试。
+ * 不先 sync 的话，远端已合入、本地还是 open 的 PR 会被 6 在本地标成 closed（6 的 close 只看本地记录）。
+ */
+export async function closeTicketPrs(
+  o: { sync: () => Promise<unknown>; store: Pick<PrStore, "list">; pr: Pick<PrProvider, "close"> },
+  ticket_id: string,
+  reason: string,
+): Promise<"closed" | "none" | "merged"> {
+  await o.sync();
+  const mine = (await o.store.list()).filter(
+    (r: PrRecord): r is TicketPrRecord => r.kind === "ticket" && r.ticket_id === ticket_id,
+  );
+  if (mine.some((r) => r.status === "merged")) return "merged";
+  const open = mine.filter((r) => r.status === "open" || r.status === "conflict");
+  if (open.length === 0) return "none";
+  for (const r of open) {
+    try {
+      await o.pr.close(r.pr_id, reason);
+    } catch (err) {
+      if (err instanceof PrAlreadyMergedError) return "merged";
+      throw err;
+    }
+  }
+  return "closed";
+}
+
 export async function assemble(deps: AppDeps): Promise<App> {
   const logger = deps.logger ?? {
     warn: (m: string, d?: unknown) => console.warn(`[app] ${m}`, d ?? ""),
@@ -166,6 +213,7 @@ export async function assemble(deps: AppDeps): Promise<App> {
 
   const store = storage.prStore<PrRecord>() as PrStore;
   const tickets = storageTicketStatus(storage, (m) => logger.warn(m));
+  const granted = eventLogGrantedScopes(storage);
   const publish = (e: Parameters<EventBus["publish"]>[0]) => bus.publish(e);
 
   // 6、8、10 先建，闭包里转调后面才建的 9（都只在 9 start() 之后才会被调用）
@@ -182,8 +230,12 @@ export async function assemble(deps: AppDeps): Promise<App> {
     getConfig: () => config,
     promptTemplate: () => deps.promptTemplate("supervisor"),
     storage,
-    enqueue: (t) => scheduler.enqueue(t),
-    adopt: (t) => adopt(t),
+    enqueue: (t) => scheduler.enqueue(withGrantedScopes(t)),
+    adopt: (t) => adopt(withGrantedScopes(t)),
+    closeTicketPr: (ticket_id, reason) =>
+      closeTicketPrs({ sync: () => scheduler.sync(), store, pr }, ticket_id, reason),
+    lastEscalation: lastEscalationFrom(storage),
+    replaceDependency: (old_id, ids) => scheduler.replaceDependency(old_id, ids),
     publish,
     subscribe: (type, handler) => bus.subscribe(type, handler),
     targetHead: () => deps.targetHead(),
@@ -218,13 +270,27 @@ export async function assemble(deps: AppDeps): Promise<App> {
       ...(deps.scopeTimeoutMs !== undefined ? { timeout_ms: deps.scopeTimeoutMs } : {}),
     },
     scheduler: { extendScope: (id, scope) => scheduler.extendScope(id, scope) },
-    grantedScopes: eventLogGrantedScopes(storage),
+    grantedScopes: granted,
     ...(deps.architectureConstraints
       ? { architectureConstraints: deps.architectureConstraints }
       : {}),
     promptTemplate: () => deps.promptTemplate("sub_agent"),
     logger,
   });
+
+  /**
+   * 重启前经 extendScope 扩出、并经 8 批准过的写入范围（事件日志里的 write_scope_granted）并进交给 9 的
+   * write_scope，9 按它加锁（T-041b，#62 已知缺口）。不安全的 glob 不并。新单没有批准记录，不受影响。
+   */
+  function withGrantedScopes<T extends SchedulerTicket>(t: T): T {
+    const base = t.write_scope ?? [];
+    // 没写 write_scope 即整仓 **，并进去反而变窄
+    if (base.length === 0) return t;
+    const extra = granted(t.ticket_id).filter((g) => !isUnsafeGlob(g));
+    if (extra.length === 0) return t;
+    const merged = [...base, ...extra.filter((g) => !base.includes(g))];
+    return merged.length === base.length ? t : { ...t, write_scope: merged };
+  }
 
   /** 9 只有 SchedulerTicket：按单号用 10 的 loadTicket 补全成 SubAgentTicket；重启后沿用 2 里已开的 PR。 */
   async function handle(

@@ -315,7 +315,8 @@ export interface Scheduler {
    *   不同就保守重审（同 submit 的 base_unknown）。冲突复投数默认取 `round`（worktree 的轮次 n）。
    * - 写入范围锁按原 `write_scope` 加（没写按整个仓库），规则同派单：与其他持锁单可能重叠，或碰独占区域而
    *   另一张独占单正持锁，就抛错（错误里写明和哪些单冲突、是否因独占区域），不登记、不入队、不写状态。
-   *   重启前经 extendScope 扩出的范围不恢复。
+   *   重启前经 extendScope 扩出的范围由组合根并进 `write_scope` 传进来（T-041b），9 不另查。
+   * - 写状态失败时撤掉登记和 PR 映射、放掉锁、不入队，原错误照抛（T-041b）。
    */
   adopt(
     ticket: SchedulerTicket,
@@ -341,6 +342,12 @@ export interface Scheduler {
     ticket_id: string,
     scope: readonly string[],
   ): Promise<{ ok: true } | { ok: false; reason: string }>;
+  /**
+   * 重拆取代依赖（T-041b，提案 R2）：所有未到终态的单，`depends_on` 里的 `old_ticket_id` 原位换成
+   * `new_ticket_ids`（去重，不含自己），`held` 随之解除（新单没合入前是 waiting）。返回被改了依赖的单号，
+   * 10 据此改写 2 里这些单的 `fields.depends_on`。有改动时触发派单与合并循环。
+   */
+  replaceDependency(old_ticket_id: string, new_ticket_ids: readonly string[]): string[];
   /** 给 6 的 eventContext：按 ticket_id，其次按 pr_id（含已关闭的旧 PR）查本单的 trace */
   eventContext: EventContextFn;
   /** 最近一次合并尝试的结果；没有尝试过返回 undefined */

@@ -154,8 +154,17 @@ export const GroupMessageSchema = ev("group_message", {
  * 单级警告的代码（T-040）：所有需求单级别的警告都用 `ticket_warning`，代码只加不改。
  * - `write_scope_defaulted`：手动 / 测试单没给写入范围（或给了第一段不是字面量的范围，如 `**`），按 `**` 处理。
  * - `fields_invalid`：需求单的结构化字段缺失、损坏或不合格式（含写入范围复查不过），这张单不能续跑。
+ * - `requirement_truncated`（T-041b）：需求原文超过上限（20000 码点），存进需求单字段时截断了；重拆只能看到截断后的原文。
+ *   每个拆单批次只发一条，挂在这一批的第一张单上，`detail` 列出整批单号。
+ * - `pr_close_failed`（T-041b）：重拆前关旧 PR 失败（先同步远端状态，同步或关闭出错）；在确认旧 PR 已关或不存在之前不重拆，
+ *   主管会按 30 秒、2 分钟、10 分钟重试，仍失败就交给用户。
  */
-export const TICKET_WARNING_CODES = ["write_scope_defaulted", "fields_invalid"] as const;
+export const TICKET_WARNING_CODES = [
+  "write_scope_defaulted",
+  "fields_invalid",
+  "requirement_truncated",
+  "pr_close_failed",
+] as const;
 export type TicketWarningCode = (typeof TICKET_WARNING_CODES)[number];
 /** ticket_warning 是单级事件，ticket_id 必须非 null。 */
 export const TicketWarningSchema = ev("ticket_warning", {

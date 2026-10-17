@@ -111,13 +111,32 @@ export interface TicketValidationError {
   message: string;
 }
 
-type PublishOf<K extends "group_message" | "ticket_warning"> = Omit<EventOf<K>, "seq">;
+type PublishOf<K extends "group_message" | "ticket_warning" | "escalated"> = Omit<
+  EventOf<K>,
+  "seq"
+>;
+
+/**
+ * 上报处理的结果（T-041b，提案 S9）：
+ * - `resplit`：重拆（同一需求已重拆次数 < `pipeline.resplit_limit`）；
+ * - `notify_user`：只在 1:1 里交给用户（`budget_exceeded`、`internal_error`、`github_manual`、`merged_but`、
+ *   `scope_lock_failed`、旧单没有需求原文、旧 PR 其实已合入、拆单失败、已经处理过的单再次上报等）；
+ * - `resplit_limit`：已重拆次数 ≥ 上限，发 `escalated(resplit_limit)` 并交给用户；
+ * - `ignored`：10 自己发的 `resplit_limit`。
+ */
+export type EscalationAction = "resplit" | "notify_user" | "resplit_limit" | "ignored";
+
+/** 10 订阅的事件（T-041b，提案 S2）。 */
+type SubscribedType = "project_created" | "escalated";
 
 export interface SupervisorDeps {
   /** 1 的 call */
   call: ModelGateway["call"];
-  /** 3：只用 roles.supervisor */
-  getConfig: () => { roles: Pick<Config["roles"], "supervisor"> };
+  /** 3：用 roles.supervisor 和 pipeline.resplit_limit（T-041b，提案 S4；3 的 Config 本来就满足） */
+  getConfig: () => {
+    roles: Pick<Config["roles"], "supervisor">;
+    pipeline: Pick<Config["pipeline"], "resplit_limit">;
+  };
   /** 3 的 promptTemplate（T-008）；10 不带默认模板 */
   promptTemplate: (role: "supervisor") => MaybePromise<string>;
   /**
@@ -142,13 +161,48 @@ export interface SupervisorDeps {
    * 不注入时这些单只列进 `TakeOverReport.awaiting_adopt`（单独使用 10 的场景）。
    */
   adopt?: (ticket: SchedulerTicket & { kind?: "dependency" }) => unknown;
-  /** 0：只发 group_message 与 ticket_warning（10 自己填 event_id、ts） */
-  publish: (event: PublishOf<"group_message"> | PublishOf<"ticket_warning">) => unknown;
-  /** 0：只订阅 project_created */
-  subscribe: (
-    type: "project_created",
-    handler: (event: EventOf<"project_created">) => void | Promise<void>,
+  /**
+   * 0：发 group_message、ticket_warning，以及 T-041b 起的 escalated（只发 `resplit_limit`，提案 S3）。
+   * 10 自己填 event_id、ts。
+   */
+  publish: (
+    event: PublishOf<"group_message"> | PublishOf<"ticket_warning"> | PublishOf<"escalated">,
+  ) => unknown;
+  /** 0：订阅 project_created，T-041b 起另订阅 escalated（提案 S2） */
+  subscribe: <K extends SubscribedType>(
+    type: K,
+    handler: (event: EventOf<K>) => void | Promise<void>,
   ) => () => void;
+  /**
+   * 可选（T-041b，N1）：重拆前关掉旧单的 PR。组合根实现：先同步远端状态（9 的 `sync()`，内部调 6 的 `sync()`），
+   * 再只看本单的 `kind: "ticket"` 记录：有 merged 的返回 `"merged"`（10 不重拆，交用户）；没有 open / conflict 的
+   * 返回 `"none"`；否则全部关掉返回 `"closed"`（6 抛 `PrAlreadyMergedError` 时也返回 `"merged"`）。
+   * 抛错（同步或关闭失败）时 10 不重拆，发 `ticket_warning(pr_close_failed)` 并重试。
+   * 不注入时 10 不关 PR，按 `"none"` 处理并记 warn（单独使用 10 的场景）。
+   */
+  closeTicketPr?: (ticket_id: string, reason: string) => MaybePromise<"closed" | "none" | "merged">;
+  /**
+   * 可选（T-041b，N5）：本单最后一条需要处理的 `escalated`（跳过 `scope_lock_failed`、`merged_but`、
+   * `resplit_limit`），重启补跑上报处理时用来取原因。组合根用 2 的 `queryEvents` 实现。
+   * 不注入或查不到时按 `notify_user` 处理（不重拆）。
+   */
+  lastEscalation?: (ticket_id: string) => MaybePromise<EventOf<"escalated"> | undefined>;
+  /**
+   * 可选（T-041b）：9 的 `replaceDependency`（提案 R2）。重拆后把下游单依赖里的旧单号换成新单号，返回被改的单号；
+   * 不注入时只改 2 里的 `fields.depends_on`（单独使用 10 的场景）。
+   */
+  replaceDependency?: (
+    old_ticket_id: string,
+    new_ticket_ids: readonly string[],
+  ) => MaybePromise<string[]>;
+  /**
+   * 可选（T-041b）：关旧 PR 失败后重试用的定时器（默认全局 setTimeout / clearTimeout），测试注入。
+   * 重试间隔 30 秒、2 分钟、10 分钟；`start()` 返回的退订函数会清掉没到期的重试。
+   */
+  timers?: {
+    setTimeout: (fn: () => void, ms: number) => unknown;
+    clearTimeout: (handle: unknown) => void;
+  };
   /** 集成分支 HEAD，作为新单基线 */
   targetHead: (project_id: string) => MaybePromise<string>;
   /** 可选：基线上的文件清单，用作拆单上下文和判断「裸目录」 */
@@ -176,8 +230,19 @@ export interface TakeOverReport {
   adopted: string[];
   /** 同上，但没注入 `deps.adopt`（单独使用 10）：没有接回，只列出来 */
   awaiting_adopt: string[];
-  /** escalated：补跑上报处理在 T-041b，本次只列出来 */
+  /** escalated：全部列出（含已处理过的）；本次补跑过上报处理的另见 `escalations` */
   escalated: string[];
+  /**
+   * 本次补跑了上报处理的单及其结果（T-041b，N3）：已上报、还没有 `escalation_handled` 的单补跑一次；
+   * 已标记要重拆、但旧 PR 还没确认关掉的单从关旧 PR 这一步接着做。每次 takeOver 最多补跑 5 张，其余进 `held`。
+   */
+  escalations: { ticket_id: string; action: EscalationAction }[];
+  /**
+   * 没有接回的单（T-041b，N4）：依赖（含间接）已上报又没被重拆取代、或依赖 `fields_invalid` 的单，不接回 9
+   * （接回也会一直 waiting）；以及超出本次补跑上限、留到下次 takeOver 的已上报单（`blocked_by` 为空）。
+   * 每张单在 1:1 里只通知一次（同一进程内）。
+   */
+  held: { ticket_id: string; blocked_by: string[] }[];
   /** merged：跳过 */
   merged: string[];
   /** 接回时出错（9 的 enqueue / adopt 抛错，如查不到 PR 记录）；不影响其余单，下次 takeOver 再试 */
