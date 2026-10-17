@@ -36,6 +36,11 @@ export interface StorageOptions {
   lease_ttl_ms?: number;
   /** 测试用：注入时间。 */
   now?: () => Date;
+  /**
+   * better-sqlite3 原生模块路径（`better_sqlite3.node`）。桌面端在 Electron 里用按 Electron ABI 编译的那份，
+   * 见 `scripts/build-electron-sqlite.mjs`；不传则用 Node 默认的那份。
+   */
+  nativeBinding?: string;
 }
 
 /** 另一个写入者持有未过期的租约，或本进程的租约已被别人接管。 */
@@ -43,6 +48,22 @@ export class StorageLeaseError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "StorageLeaseError";
+  }
+}
+
+/** 只读打开的存储上调用了写方法。 */
+export class StorageReadonlyError extends Error {
+  constructor(method: string) {
+    super(`存储以只读方式打开，不能调用写方法 ${method}`);
+    this.name = "StorageReadonlyError";
+  }
+}
+
+/** 只读打开时库的版本和当前代码不一致。 */
+export class StorageVersionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "StorageVersionError";
   }
 }
 
@@ -223,6 +244,8 @@ export interface Storage {
   health(): StorageHealth;
   /** 库里最大 seq + 1，空库为 0；启动时传给总线的 `initialSeq`。 */
   nextSeq(): number;
+  /** 库里最大 seq，空库为 null；只读端按它轮询新事件。 */
+  maxSeq(): number | null;
   queryEvents(filter?: EventFilter): BakaEvent[];
   /** 登记需求属于哪个项目，用于按项目过滤事件。保存单或群消息时会自动登记。 */
   registerRequirement(requirement_id: string, project_id: string): void;
@@ -256,24 +279,82 @@ export interface Storage {
   close(): void;
 }
 
+export interface ReadonlyStorageOptions {
+  path: string;
+  /** 同 `StorageOptions.nativeBinding`。 */
+  nativeBinding?: string;
+}
+
+/** 只读打开返回的类型：只有读方法；prStore 只有 get / list。 */
+export type ReadonlyStorage = Pick<
+  Storage,
+  | "health"
+  | "nextSeq"
+  | "maxSeq"
+  | "queryEvents"
+  | "query"
+  | "listDecisions"
+  | "groupMessages"
+  | "backlogMetrics"
+  | "diagnosticsSource"
+  | "close"
+> & {
+  prStore<T extends PrRecordLike>(): Pick<PrRecordStore<T>, "get" | "list">;
+  readonly ledger: Pick<LedgerStore, "totalsByDay" | "totalsByTicket">;
+};
+
 const SUMMARY_CHARS = 200;
 const DAY_MS = 86_400_000;
 
 type Row = Record<string, unknown>;
 
 export function openStorage(options: StorageOptions): Storage {
+  return open(options, false);
+}
+
+/**
+ * 只读打开（T-026）：不拿租约、不跑迁移，库文件必须已存在；写入方正在跑时也能打开。
+ * 库版本低于当前代码时报 `StorageVersionError`，提示先用写入方打开一次完成升级。
+ * 返回的对象在类型上只有读方法；运行时调到写方法也会抛 `StorageReadonlyError`。
+ */
+export function openStorageReadonly(options: ReadonlyStorageOptions): ReadonlyStorage {
+  return open(
+    {
+      path: options.path,
+      ...(options.nativeBinding !== undefined && { nativeBinding: options.nativeBinding }),
+    },
+    true,
+  );
+}
+
+function open(options: StorageOptions, ro: boolean): Storage {
   const now = options.now ?? (() => new Date());
   const owner = options.owner ?? randomUUID();
   const ttl = options.lease_ttl_ms ?? 30_000;
   const retentionDays = options.retention_days ?? 30;
   const light = options.redact ?? ((t: string) => redactText(t, "light").text);
 
-  const db = new Database(options.path);
-  db.pragma("journal_mode = WAL");
-  db.pragma("synchronous = NORMAL");
-  db.pragma("foreign_keys = ON");
+  const dbOpts: Database.Options = {};
+  if (options.nativeBinding !== undefined) dbOpts.nativeBinding = options.nativeBinding;
+  if (ro) {
+    dbOpts.readonly = true;
+    dbOpts.fileMustExist = true;
+  }
+  const db = new Database(options.path, dbOpts);
   db.pragma("busy_timeout = 5000");
-  migrate(db);
+  if (ro) {
+    try {
+      checkReadonlyVersion(db, options.path);
+    } catch (e) {
+      db.close();
+      throw e;
+    }
+  } else {
+    db.pragma("journal_mode = WAL");
+    db.pragma("synchronous = NORMAL");
+    db.pragma("foreign_keys = ON");
+    migrate(db);
+  }
   const toMs = (ts: string, field: string): number => {
     const ms = isoToMs(ts);
     if (ms === null) throw new RangeError(`${field} 不是合法的 ISO 时间：${ts}`);
@@ -294,11 +375,13 @@ export function openStorage(options: StorageOptions): Storage {
       "INSERT INTO lease (id, owner, expires_at) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET owner = excluded.owner, expires_at = excluded.expires_at",
     ).run(owner, t + ttl);
   });
-  try {
-    acquire.immediate();
-  } catch (e) {
-    db.close();
-    throw e;
+  if (!ro) {
+    try {
+      acquire.immediate();
+    } catch (e) {
+      db.close();
+      throw e;
+    }
   }
   const renewStmt = db.prepare("UPDATE lease SET expires_at = ? WHERE id = 1 AND owner = ?");
   let leaseLost = false;
@@ -312,21 +395,28 @@ export function openStorage(options: StorageOptions): Storage {
       throw new StorageLeaseError("租约已被另一个写入者接管，本进程不能再写入");
     }
   }
-  const timer = setInterval(
-    () => {
-      try {
-        holdLease();
-      } catch (e) {
-        leaseLost = true;
-        console.error("[storage] 续租失败", e);
-      }
-    },
-    Math.max(1, Math.floor(ttl / 3)),
-  );
-  timer.unref();
+  const timer = ro
+    ? undefined
+    : setInterval(
+        () => {
+          try {
+            holdLease();
+          } catch (e) {
+            leaseLost = true;
+            console.error("[storage] 续租失败", e);
+          }
+        },
+        Math.max(1, Math.floor(ttl / 3)),
+      );
+  timer?.unref();
   let closed = false;
 
-  function write<A extends unknown[], R>(fn: (...args: A) => R): (...args: A) => R {
+  function write<A extends unknown[], R>(name: string, fn: (...args: A) => R): (...args: A) => R {
+    if (ro) {
+      return () => {
+        throw new StorageReadonlyError(name);
+      };
+    }
     const tx = db.transaction((...args: A) => {
       holdLease();
       return fn(...args);
@@ -336,6 +426,10 @@ export function openStorage(options: StorageOptions): Storage {
       // IMMEDIATE：事务一开始就拿写锁，两个进程同时写时由 busy_timeout 排队，不会中途报 SQLITE_BUSY
       return tx.immediate(...args);
     };
+  }
+
+  function maxSeq(): number | null {
+    return (db.prepare("SELECT MAX(seq) AS m FROM events").get() as { m: number | null }).m;
   }
 
   // ---------- 脱敏 ----------
@@ -392,7 +486,7 @@ export function openStorage(options: StorageOptions): Storage {
   };
 
   // ---------- 事件落库 ----------
-  const ingest = write((input: BakaEvent) => {
+  const ingest = write("ingest", (input: BakaEvent) => {
     const e = EventSchema.parse(input);
     const ts_ms = toMs(e.ts, "ts");
     const seqRow = st.seqOwner.get(e.seq) as { event_id: string } | undefined;
@@ -575,7 +669,7 @@ export function openStorage(options: StorageOptions): Storage {
   }
 
   // ---------- 需求单 / PR 记录 ----------
-  const saveTicket = write((t: TicketInput) => {
+  const saveTicket = write("saveTicket", (t: TicketInput) => {
     st.upsertRequirement.run(t.requirement_id, t.project_id);
     db.prepare(
       `INSERT INTO tickets (ticket_id, project_id, requirement_id, created_at, created_at_ms, ticket_text, decomposition_summary, status, outcome,
@@ -604,7 +698,7 @@ export function openStorage(options: StorageOptions): Storage {
     });
   });
 
-  const savePrRecord = write((input: PrRoundInput) => {
+  const savePrRecord = write("savePrRecord", (input: PrRoundInput) => {
     const { ticket_id, ...round } = input;
     db.prepare(
       `INSERT INTO pr_rounds (ticket_id, round, record, saved_at) VALUES (?, ?, ?, ?)
@@ -612,7 +706,7 @@ export function openStorage(options: StorageOptions): Storage {
     ).run(ticket_id, round.round, JSON.stringify(deepRedact(round)), now().toISOString());
   });
 
-  const putPrRecord = write((record: PrRecordLike) => {
+  const putPrRecord = write("prStore().put", (record: PrRecordLike) => {
     if (typeof record.pr_id !== "string" || record.pr_id === "") {
       throw new TypeError("PR 记录缺少 pr_id");
     }
@@ -674,7 +768,7 @@ export function openStorage(options: StorageOptions): Storage {
     };
   }
 
-  const saveMergeResult = write((ticket_id: string, result: DiagMergeResult) => {
+  const saveMergeResult = write("saveMergeResult", (ticket_id: string, result: DiagMergeResult) => {
     db.prepare(
       `INSERT INTO merge_results (ticket_id, result, saved_at) VALUES (?, ?, ?)
        ON CONFLICT(ticket_id) DO UPDATE SET result = excluded.result, saved_at = excluded.saved_at`,
@@ -739,6 +833,7 @@ export function openStorage(options: StorageOptions): Storage {
 
   // ---------- 决策记忆 / 群消息 / 待办指标 ----------
   const saveDecision = write(
+    "saveDecision",
     (d: { project_id: string; content: string; decision_id?: string; ts?: string }): Decision => {
       const out: Decision = {
         decision_id: d.decision_id ?? randomUUID(),
@@ -754,14 +849,14 @@ export function openStorage(options: StorageOptions): Storage {
   );
 
   // ---------- 保留期 ----------
-  const markForEvalSet = write((ticket_id: string) => {
+  const markForEvalSet = write("markForEvalSet", (ticket_id: string) => {
     db.prepare("INSERT OR IGNORE INTO eval_set (ticket_id, marked_at) VALUES (?, ?)").run(
       ticket_id,
       now().toISOString(),
     );
   });
 
-  const purgeExpired = write((): PurgeResult => {
+  const purgeExpired = write("purgeExpired", (): PurgeResult => {
     const t = now();
     const cutoff = t.getTime() - retentionDays * DAY_MS;
     const res = db
@@ -775,7 +870,7 @@ export function openStorage(options: StorageOptions): Storage {
   });
 
   // ---------- 台账 ----------
-  const ledgerAppend = write((entry: LedgerEntry) => {
+  const ledgerAppend = write("ledger.append", (entry: LedgerEntry) => {
     const e = LedgerEntrySchema.parse(entry);
     db.prepare(
       `INSERT OR IGNORE INTO ledger (entry_id, ts, day, requirement_id, ticket_id, role, cost_micro_usd, is_resubmit, cache_hit, offpeak)
@@ -813,6 +908,7 @@ export function openStorage(options: StorageOptions): Storage {
   return {
     ingest,
     attach(bus, opts = {}) {
+      if (ro) throw new StorageReadonlyError("attach");
       const onError =
         opts.onError ??
         ((f: IngestFailure) =>
@@ -849,13 +945,17 @@ export function openStorage(options: StorageOptions): Storage {
       return h;
     },
     nextSeq() {
-      const row = db.prepare("SELECT MAX(seq) AS m FROM events").get() as { m: number | null };
-      return row.m === null ? 0 : row.m + 1;
+      const m = maxSeq();
+      return m === null ? 0 : m + 1;
     },
+    maxSeq,
     queryEvents,
-    registerRequirement: write((requirement_id: string, project_id: string) => {
-      st.upsertRequirement.run(requirement_id, project_id);
-    }),
+    registerRequirement: write(
+      "registerRequirement",
+      (requirement_id: string, project_id: string) => {
+        st.upsertRequirement.run(requirement_id, project_id);
+      },
+    ),
     saveTicket,
     savePrRecord,
     prStore,
@@ -916,9 +1016,9 @@ export function openStorage(options: StorageOptions): Storage {
     },
     close() {
       if (closed) return;
-      clearInterval(timer);
+      if (timer) clearInterval(timer);
       try {
-        db.prepare("DELETE FROM lease WHERE id = 1 AND owner = ?").run(owner);
+        if (!ro) db.prepare("DELETE FROM lease WHERE id = 1 AND owner = ?").run(owner);
       } finally {
         closed = true;
         db.close();
@@ -938,5 +1038,20 @@ function migrate(db: Database.Database): void {
       else step(db);
       db.pragma(`user_version = ${v + 1}`);
     }).immediate();
+  }
+}
+
+function checkReadonlyVersion(db: Database.Database, path: string): void {
+  const v = db.pragma("user_version", { simple: true }) as number;
+  const want = MIGRATIONS.length;
+  if (v < want) {
+    throw new StorageVersionError(
+      `数据库 ${path} 的版本是 v${v}，当前代码需要 v${want}。只读方式不做升级，请先用写入方（BakaCoding 主进程）打开一次完成升级`,
+    );
+  }
+  if (v > want) {
+    throw new StorageVersionError(
+      `数据库 ${path} 的版本是 v${v}，比当前代码支持的 v${want} 新，请升级 BakaCoding 后再打开`,
+    );
   }
 }
