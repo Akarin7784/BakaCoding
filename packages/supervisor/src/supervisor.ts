@@ -1358,9 +1358,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     );
     // T-042 Q-1：合入集成分支后，无在途单时自动审一次（同一 head 只审一次）
     const offInterface = deps.subscribe("interface_changed", () => {
-      void maybeAutoReview().catch((err: unknown) =>
-        logger.warn("自动审查集成分支失败", err),
-      );
+      void maybeAutoReview().catch((err: unknown) => logger.warn("自动审查集成分支失败", err));
     });
     void emitSupervisorBacklog();
     return () => {
@@ -1856,7 +1854,6 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     );
   }
 
-
   // ---------- 集成分支审查与合入 main（T-042） ----------
 
   type OkReview = Extract<IntegrationReview, { result: "ok" }>;
@@ -1990,9 +1987,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       const fileList = diff.files
         .map(
           (f) =>
-            `${f.status} ${f.path} +${f.additions}/-${f.deletions}${
-              f.patch ? `\n${f.patch}` : ""
-            }`,
+            `${f.status} ${f.path} +${f.additions}/-${f.deletions}${f.patch ? `\n${f.patch}` : ""}`,
         )
         .join("\n\n");
       const trunc = truncateDiffText(fileList);
@@ -2028,7 +2023,11 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         };
       }
 
-      let parsed: { verdict?: string; summary?: string; items?: { detail: string; file?: string }[] };
+      let parsed: {
+        verdict?: string;
+        summary?: string;
+        items?: { detail: string; file?: string }[];
+      };
       try {
         const m = raw.match(/\{[\s\S]*\}/);
         parsed = JSON.parse(m ? m[0]! : raw) as typeof parsed;
@@ -2048,9 +2047,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
           reasons: [{ code: "review_failed", detail: "主管模型 verdict 非法" }],
         };
       }
-      const summary =
-        (parsed.summary?.trim() || "") +
-        (trunc.truncated ? "（diff 已截断）" : "");
+      const summary = (parsed.summary?.trim() || "") + (trunc.truncated ? "（diff 已截断）" : "");
       if (parsed.verdict === "blocked") {
         const items = Array.isArray(parsed.items)
           ? parsed.items.filter((i) => i && typeof i.detail === "string")
@@ -2103,16 +2100,10 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     try {
       headNow = (await pr.diff(lastOkReview.pr_id)).head_sha;
     } catch (err) {
-      throw new MainMergeError(
-        "error",
-        err instanceof Error ? err.message : String(err),
-      );
+      throw new MainMergeError("error", err instanceof Error ? err.message : String(err));
     }
     if (headNow !== opts.head_sha)
-      throw new MainMergeError(
-        "stale_head",
-        `集成分支 head 已变成 ${headNow.slice(0, 7)}，请重审`,
-      );
+      throw new MainMergeError("stale_head", `集成分支 head 已变成 ${headNow.slice(0, 7)}，请重审`);
 
     const mainMerge = deps.getConfig().pipeline.main_merge ?? "user";
     const ctx = opts.project_id ? { project_id: opts.project_id } : {};
@@ -2149,7 +2140,10 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       ) => ReturnType<NonNullable<typeof deps.pr>["merge"]>;
       mergeResult = await merge(lastOkReview.pr_id, "main", { expected_head: opts.head_sha });
     } catch (err) {
-      const name = err && typeof err === "object" && "name" in err ? String((err as { name: string }).name) : "";
+      const name =
+        err && typeof err === "object" && "name" in err
+          ? String((err as { name: string }).name)
+          : "";
       const msg = err instanceof Error ? err.message : String(err);
       if (name === "GithubRateLimitError" || /rate.?limit/i.test(msg))
         throw new MainMergeError("rate_limit", msg);
@@ -2162,10 +2156,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       if ("reason" in mergeResult && mergeResult.reason === "merge_blocked")
         throw new MainMergeError("merge_blocked", mergeResult.detail);
       if ("reason" in mergeResult && mergeResult.reason === "target_dirty")
-        throw new MainMergeError(
-          "target_dirty",
-          `main 工作区不干净：${mergeResult.worktree_path}`,
-        );
+        throw new MainMergeError("target_dirty", `main 工作区不干净：${mergeResult.worktree_path}`);
       throw new MainMergeError("error", "合入 main 失败");
     }
 

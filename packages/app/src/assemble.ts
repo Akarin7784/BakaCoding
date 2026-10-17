@@ -341,11 +341,10 @@ export async function assemble(deps: AppDeps): Promise<App> {
     // worktreeRoot = <repo>/.bakacoding/worktrees
     const repo = dirname(dirname(deps.worktreeRoot));
     try {
-      const { stdout } = await promisify(execFile)(
-        "git",
-        ["worktree", "list", "--porcelain"],
-        { cwd: repo, encoding: "utf8" },
-      );
+      const { stdout } = await promisify(execFile)("git", ["worktree", "list", "--porcelain"], {
+        cwd: repo,
+        encoding: "utf8",
+      });
       let path: string | undefined;
       for (const line of stdout.split("\n")) {
         if (line.startsWith("worktree ")) path = line.slice(9);

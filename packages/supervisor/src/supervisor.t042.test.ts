@@ -119,9 +119,7 @@ describe("T-042 reviewIntegration / mergeMain", () => {
             head_sha: "b".repeat(40),
             files: [{ path: "a.ts", status: "modified", additions: 1, deletions: 0 }],
           }),
-          checks: async () => [
-            { name: "ci", status: "completed", conclusion: "cancelled" },
-          ],
+          checks: async () => [{ name: "ci", status: "completed", conclusion: "cancelled" }],
           merge: async () => ({ merged: true, sha: "c".repeat(40), fast_forward: true }),
         },
         integration: { idle: async () => true },
@@ -236,7 +234,9 @@ describe("T-042 reviewIntegration / mergeMain", () => {
     );
     expect((await s.reviewIntegration()).result).toBe("ok");
     currentHead = "f".repeat(40);
-    await expect(s.mergeMain({ by: "user", head_sha: head })).rejects.toBeInstanceOf(MainMergeError);
+    await expect(s.mergeMain({ by: "user", head_sha: head })).rejects.toBeInstanceOf(
+      MainMergeError,
+    );
     await expect(s.mergeMain({ by: "user", head_sha: head })).rejects.toMatchObject({
       code: "stale_head",
     });

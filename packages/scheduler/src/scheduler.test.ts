@@ -1,7 +1,12 @@
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { getConfig } from "@bakacoding/config-budget";
-import { GithubRateLimitError, SyncPartialError, type MergeResult, type SyncChange } from "@bakacoding/pr";
+import {
+  GithubRateLimitError,
+  SyncPartialError,
+  type MergeResult,
+  type SyncChange,
+} from "@bakacoding/pr";
 import {
   DEPENDENCY_MANIFEST_GLOBS,
   EventSchema,

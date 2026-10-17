@@ -112,9 +112,8 @@ export interface TicketValidationError {
   message: string;
 }
 
-type PublishOf<
-  K extends "group_message" | "ticket_warning" | "escalated" | "supervisor_backlog"
-> = Omit<EventOf<K>, "seq">;
+type PublishOf<K extends "group_message" | "ticket_warning" | "escalated" | "supervisor_backlog"> =
+  Omit<EventOf<K>, "seq">;
 
 /**
  * 上报处理的结果（T-041b，提案 S9）：
@@ -424,8 +423,7 @@ export type IntegrationReview =
     };
 
 export type MainMergeResult =
-  | { result: "merged"; pr_id: string; sha: string }
-  | { result: "notified"; reason?: string };
+  { result: "merged"; pr_id: string; sha: string } | { result: "notified"; reason?: string };
 
 export type MainMergeErrorCode =
   | "unavailable"

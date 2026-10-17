@@ -95,7 +95,11 @@ function rateLimitWait(e: unknown): number | undefined {
 /** T-042：SyncPartialError 包着真实 cause；限流 / 鉴权判定要看 cause。 */
 function unwrapSyncCause(e: unknown): unknown {
   if (e instanceof SyncPartialError) return e.cause;
-  if (typeof e === "object" && e !== null && (e as { name?: unknown }).name === "SyncPartialError") {
+  if (
+    typeof e === "object" &&
+    e !== null &&
+    (e as { name?: unknown }).name === "SyncPartialError"
+  ) {
     const c = (e as { cause?: unknown }).cause;
     if (c !== undefined) return c;
   }
