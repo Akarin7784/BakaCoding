@@ -23,4 +23,26 @@ raw/<ticket>/context/…   上下文片段
 repo/…                   完整仓库（仅勾选时）
 ```
 
-数据源 `DiagnosticsSource` 由模块 2 实现，落地前由调用方注入。
+## 数据源（T-024）
+
+`DiagnosticsSource` 定义在 `@bakacoding/types`，由模块 2 的 `storage.diagnosticsSource()` 实现（modules.md 11：模块 2 写适配器实现）。用法：
+
+```ts
+const storage = openStorage({ path: ".bakacoding/bakacoding.db" });
+const zip_path = await exportPackage(
+  { project_id, scope },
+  { source: storage.diagnosticsSource(), out_dir },
+);
+```
+
+- 按项目过滤在存储层完成（事件按 `project_id` 或需求所属项目）；`time_range` 按 `ts_ms` / `created_at_ms` 比较，两端都包含，ISO 时间带不带毫秒都可以。
+- 存储里的数据落库前已做轻脱敏，导出时照常再做完整脱敏。
+
+存储没有、所以诊断包里也没有的数据（不补造）：
+
+- **完整仓库**：存储不存仓库文件，适配器不提供 `repoFiles`；勾选 `include_full_repo` 会直接报错。
+- **超过保留期的调用**：只剩摘要，`prompt` 为空串，`output` 为摘要。
+- **没有归属项目的事件**：需求没登记到项目（没有 `saveTicket`、群消息或 `registerRequirement`）、事件自身也不带 `project_id` 时，按项目查不到。
+- **eval_task**：按设计不落库，由 `deps.eval_tasks` 传入。
+- **费用**：按包内 `call_completed` 事件汇总，不读存储的台账表。
+- 拆单摘要、结果标签、CI check、合并结果：只有写入方保存过才有，否则字段缺省。

@@ -1,0 +1,294 @@
+// T-024：模块 2 的 Storage.diagnosticsSource() 作为模块 11 的数据源（modules.md 11：「模块 2 写适配器实现」）。
+// 夹具全部通过存储 API 写入临时库；假密钥都是按格式拼的假值。
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { openStorage, type Storage } from "@bakacoding/storage";
+import type { BakaEvent, DiagnosticsSource } from "@bakacoding/types";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { buildPackage, exportPackage, readPackage, readZip } from "./index.js";
+
+const FAKE_SK = `sk-${"FAKEstorage0000".repeat(2)}`;
+const FAKE_IP = "10.20.30.40";
+const FAKE_HOME_USER = "fakehomeuser";
+const SHA = "c".repeat(40);
+
+let dir: string;
+let storage: Storage;
+let source: DiagnosticsSource;
+let seq = 0;
+
+function ev(
+  type: "call_completed" | "group_message" | "project_created" | "escalated",
+  ts: string,
+  requirement_id: string | null,
+  ticket_id: string | null,
+  extra: Record<string, unknown> = {},
+): BakaEvent {
+  seq += 1;
+  const common = {
+    event_id: `evt-${seq}`,
+    seq,
+    ts,
+    trace_id: `trace-${requirement_id ?? "p"}`,
+    span_id: `span-${seq}`,
+    parent_span_id: null,
+    requirement_id,
+    ticket_id,
+  };
+  switch (type) {
+    case "project_created":
+      return {
+        ...common,
+        type,
+        payload: { project_id: "P-1", name: "proj", language: "TS", has_github_remote: false },
+      } as BakaEvent;
+    case "group_message":
+      return {
+        ...common,
+        type,
+        payload: {
+          project_id: "P-1",
+          sender: "sub_agent",
+          kind: "report",
+          content: `部署在 ${FAKE_IP}，日志在 /home/${FAKE_HOME_USER}/logs`,
+          flash_calls: [],
+          ...extra,
+        },
+      } as BakaEvent;
+    case "escalated":
+      return { ...common, type, payload: { reason: "review_limit" } } as BakaEvent;
+    case "call_completed":
+      return {
+        ...common,
+        type,
+        payload: {
+          role: "coder",
+          provider: "deepseek",
+          model: "deepseek-v4.1-flash",
+          effort: "low",
+          prompt: `key=${FAKE_SK} host ${FAKE_IP}`,
+          output: "ok",
+          tokens: { input: 10, output: 2, cache_hit_input: 0 },
+          cache_hit: false,
+          latency_ms: 100,
+          cost: 7,
+          is_resubmit: false,
+          rate_limited_retry: 0,
+          ...extra,
+        },
+      } as BakaEvent;
+  }
+}
+
+function ticket(ticket_id: string, requirement_id: string, created_at: string, project_id = "P-1") {
+  storage.saveTicket({
+    ticket_id,
+    project_id,
+    requirement_id,
+    created_at,
+    ticket_text: `${ticket_id} 需求原文`,
+    decomposition_summary: "拆单摘要",
+    status: "merged",
+    outcome: "passed_after_resubmit",
+    base_commit: SHA,
+    permission_list: [{ glob: "src/**", level: "rw" }],
+    context_snippets: [
+      { path: "src/a.ts", content: `// 服务器 ${FAKE_IP}\n` },
+      { path: "src/.env", content: "SHOULD_NOT_EXPORT=1\n" },
+    ],
+    ci_checks: [{ name: "ci", conclusion: "success" }],
+  });
+}
+
+const diff = (patch: string) => ({
+  base_sha: SHA,
+  head_sha: "d".repeat(40),
+  files: [{ path: "src/a.ts", status: "modified" as const, additions: 1, deletions: 0, patch }],
+});
+
+beforeEach(() => {
+  seq = 0;
+  dir = mkdtempSync(path.join(tmpdir(), "bc-diag-storage-"));
+  storage = openStorage({ path: path.join(dir, "s.db") });
+  source = storage.diagnosticsSource();
+
+  storage.ingest(ev("project_created", "2026-10-10T00:00:00Z", null, null));
+  ticket("T-1", "R-1", "2026-10-10T01:00:00Z");
+  ticket("T-2", "R-1", "2026-10-10T01:00:00.999Z");
+  ticket("T-3", "R-2", "2026-10-10T01:00:01.000Z");
+  ticket("T-9", "R-9", "2026-10-10T01:00:00.500Z", "P-other");
+  storage.savePrRecord({
+    ticket_id: "T-1",
+    round: 1,
+    diff: diff(`@@ -1 +1,2 @@\n+// ${FAKE_IP}`),
+    verdict: "fail",
+    fail_reasons: ["缺测试"],
+  });
+  storage.savePrRecord({
+    ticket_id: "T-1",
+    round: 2,
+    diff: diff("@@ -1 +1,2 @@\n+ok"),
+    verdict: "pass",
+    fail_reasons: [],
+    review_comments: "补上了",
+  });
+  storage.saveMergeResult("T-1", {
+    conflicted: false,
+    base_changed: true,
+    re_reviewed: true,
+    merged: true,
+  });
+  storage.markForEvalSet("T-1");
+
+  // 时间格式混用：有的带毫秒、有的不带
+  storage.ingest(ev("call_completed", "2026-10-10T01:00:00Z", "R-1", "T-1"));
+  storage.ingest(
+    ev("call_completed", "2026-10-10T01:00:00.500Z", "R-1", "T-1", { is_resubmit: true, cost: 5 }),
+  );
+  storage.ingest(ev("group_message", "2026-10-10T01:00:00.999Z", "R-1", "T-2"));
+  storage.ingest(ev("escalated", "2026-10-10T01:00:01.000Z", "R-2", "T-3"));
+  storage.ingest(ev("call_completed", "2026-10-10T01:00:00.700Z", "R-9", "T-9"));
+});
+
+afterEach(() => {
+  storage.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+describe("Storage.diagnosticsSource() 作为诊断数据源", () => {
+  it("需求单：轮次、合并结果、评测集标记、CI、上下文都来自存储；只给本项目", async () => {
+    const tickets = await source.queryTickets({ project_id: "P-1" });
+    expect(tickets.map((t) => t.ticket_id)).toEqual(["T-1", "T-2", "T-3"]);
+    const t1 = tickets[0]!;
+    expect(t1.rounds.map((r) => [r.round, r.verdict])).toEqual([
+      [1, "fail"],
+      [2, "pass"],
+    ]);
+    expect(t1.merge).toEqual({
+      conflicted: false,
+      base_changed: true,
+      re_reviewed: true,
+      merged: true,
+    });
+    expect(t1.marked_for_eval_set).toBe(true);
+    expect(t1.outcome).toBe("passed_after_resubmit");
+    expect(t1.ci_checks).toEqual([{ name: "ci", conclusion: "success" }]);
+    expect(t1.context_snippets.map((f) => f.path)).toEqual(["src/a.ts", "src/.env"]);
+    // 存储不存仓库文件，适配器不提供 repoFiles
+    expect(source.repoFiles).toBeUndefined();
+  });
+
+  it("按单：只有这张单的事件和记录", async () => {
+    const pkg = await buildPackage(
+      { project_id: "P-1", scope: { kind: "ticket", ticket_id: "T-1" } },
+      { source, out_dir: dir },
+    );
+    expect(pkg.tickets.map((t) => t.ticket_id)).toEqual(["T-1"]);
+    expect(pkg.events.map((e) => [e.type, e.ticket_id])).toEqual([
+      ["call_completed", "T-1"],
+      ["call_completed", "T-1"],
+    ]);
+    expect(pkg.tickets[0]!.cost).toEqual({
+      ticket_id: "T-1",
+      total_micro_usd: 12,
+      resubmit_micro_usd: 5,
+      entries: 2,
+    });
+  });
+
+  it("按需求：含需求下全部单，不含别的需求和别的项目", async () => {
+    const pkg = await buildPackage(
+      { project_id: "P-1", scope: { kind: "requirement", requirement_id: "R-1" } },
+      { source, out_dir: dir },
+    );
+    expect(pkg.tickets.map((t) => t.ticket_id)).toEqual(["T-1", "T-2"]);
+    expect(pkg.events.map((e) => e.event_id)).toEqual(["evt-2", "evt-3", "evt-4"]);
+  });
+
+  it("按时间段：两端都包含，带毫秒和不带毫秒的时间按毫秒比较", async () => {
+    // from 不带毫秒、to 带毫秒；边界上的 T-1（01:00:00Z）和 T-2（01:00:00.999Z）都要进来，T-3（01:00:01.000Z）不进
+    const scope = {
+      kind: "time_range" as const,
+      from: "2026-10-10T01:00:00Z",
+      to: "2026-10-10T01:00:00.999Z",
+    };
+    const pkg = await buildPackage({ project_id: "P-1", scope }, { source, out_dir: dir });
+    expect(pkg.tickets.map((t) => t.ticket_id)).toEqual(["T-1", "T-2"]);
+    expect(pkg.events.map((e) => e.ts)).toEqual([
+      "2026-10-10T01:00:00Z",
+      "2026-10-10T01:00:00.500Z",
+      "2026-10-10T01:00:00.999Z",
+    ]);
+    // 别的项目同一时段的单和事件不进
+    expect(JSON.stringify(pkg)).not.toContain("T-9");
+
+    // 反过来：from 带毫秒、to 不带毫秒，正好卡在 T-3 上
+    const pkg2 = await buildPackage(
+      {
+        project_id: "P-1",
+        scope: { kind: "time_range", from: "2026-10-10T01:00:01.000Z", to: "2026-10-10T01:00:01Z" },
+      },
+      { source, out_dir: dir },
+    );
+    expect(pkg2.tickets.map((t) => t.ticket_id)).toEqual(["T-3"]);
+    expect(pkg2.events.map((e) => e.type)).toEqual(["escalated"]);
+  });
+
+  it("数据源直接查询同样两端包含（存储层按 ts_ms / created_at_ms 过滤）", async () => {
+    const f = {
+      project_id: "P-1",
+      from: "2026-10-10T01:00:00.000Z",
+      to: "2026-10-10T01:00:00.999Z",
+    };
+    expect((await source.queryEvents(f)).map((e) => e.event_id)).toEqual([
+      "evt-2",
+      "evt-3",
+      "evt-4",
+    ]);
+    expect((await source.queryTickets(f)).map((t) => t.ticket_id)).toEqual(["T-1", "T-2"]);
+  });
+
+  it("勾选完整仓库：存储没有仓库文件来源，导出明确报错而不是假装导出", async () => {
+    await expect(
+      buildPackage(
+        { project_id: "P-1", scope: { kind: "ticket", ticket_id: "T-1" }, include_full_repo: true },
+        { source, out_dir: dir },
+      ),
+    ).rejects.toThrow(/repoFiles/);
+  });
+});
+
+describe("端到端：从存储导出诊断包", () => {
+  it("zip 里没有假密钥和内网信息，脱敏报告记下了完整脱敏的命中", async () => {
+    const zip_path = await exportPackage(
+      { project_id: "P-1", scope: { kind: "requirement", requirement_id: "R-1" } },
+      { source, out_dir: dir, now: () => new Date("2026-10-17T07:00:00Z") },
+    );
+    const bytes = readFileSync(zip_path);
+    const entries = readZip(bytes);
+    const all = [
+      zip_path,
+      bytes.toString("latin1"),
+      ...entries.map((e) => e.name),
+      ...entries.map((e) => e.data.toString("utf8")),
+    ];
+    for (const needle of [FAKE_SK, FAKE_IP, FAKE_HOME_USER, "SHOULD_NOT_EXPORT"]) {
+      for (const s of all) expect(s).not.toContain(needle);
+    }
+    // 事件确实进了包（不是靠没导出来"通过"）
+    const pkg = await readPackage(zip_path);
+    expect(pkg.manifest.schema).toBe("bakacoding-diag/v1.1");
+    const msg = pkg.events.find((e) => e.type === "group_message");
+    expect(msg?.type === "group_message" && msg.payload.content).toBe(
+      "部署在 [REDACTED:ipv4]，日志在 [REDACTED:home_path]/logs",
+    );
+    // 落库时轻脱敏已去掉 sk- key；内网 IP 和 home 路径只在导出的完整脱敏里去掉，并计入报告
+    expect(pkg.redaction_report.ipv4).toBeGreaterThan(0);
+    expect(pkg.redaction_report.home_path).toBeGreaterThan(0);
+    expect(JSON.stringify(pkg.redaction_report)).not.toContain(FAKE_IP);
+    // 上下文里的 .env 不进包，只计数
+    expect(pkg.manifest.excluded_context_env_files).toBe(2);
+    expect(pkg.tickets.find((t) => t.ticket_id === "T-1")!.rounds).toHaveLength(2);
+  });
+});
