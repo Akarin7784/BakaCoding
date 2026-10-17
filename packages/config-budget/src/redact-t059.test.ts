@@ -1,5 +1,6 @@
 // T-059：redact 不出现平方级耗时；收紧上限后长输入照样遮干净。
 import { describe, expect, it } from "vitest";
+import { emailRanges } from "./email.js";
 import { redact } from "./redact.js";
 
 const INPUTS: Array<[string, () => string]> = [
@@ -21,6 +22,8 @@ const INPUTS: Array<[string, () => string]> = [
   ["ghp_ 反复", () => "ghp_".repeat(25_000)],
   ["a@b. 反复", () => "a@b.".repeat(25_000)],
   ["a@b.c- 反复", () => "a@b.c-".repeat(16_667)],
+  ["a@b.cc.1 反复", () => "a@b.cc.1".repeat(12_500)],
+  ["长域名 .ab.ab… 无 @ 后结尾", () => "a@" + "b.ab".repeat(25_000) + "1"],
 ];
 
 describe("redact 10 万字符输入（T-059）", () => {
@@ -116,5 +119,82 @@ describe("邮箱后面紧跟 - 时截在顶级域名后（#63 复审）", () => 
     for (const level of ["light", "full"] as const) {
       expect(redact(input, level).text).toBe(out);
     }
+  });
+});
+
+describe("邮箱结束位置与 main 的正则一致（#63 复审二）", () => {
+  it.each([
+    ["eva@example.com.123", "[REDACTED:email].123"],
+    ["eva@example.com.v2", "[REDACTED:email].v2"],
+    ["eva@example.com.a", "[REDACTED:email].a"],
+    ["eva@example.com.1.2", "[REDACTED:email].1.2"],
+    ["eva@example.com.-x", "[REDACTED:email].-x"],
+    ["eva@sub.example.com-1.2", "[REDACTED:email]-1.2"],
+    ["eva@a.bc-d.e1", "[REDACTED:email]-d.e1"],
+  ])("%s", (input, out) => {
+    for (const level of ["light", "full"] as const) {
+      const r = redact(input, level);
+      expect(r.text).toBe(out);
+      expect(r.report.email).toBe(1);
+    }
+  });
+});
+
+describe("以 main 的旧邮箱正则为基准的随机对比（新规则可以多遮，不能少遮）", () => {
+  // main 25d7006 上的邮箱正则，只在测试里当基准；输入不超过 200 字符，不会回溯爆炸。
+  const MAIN_EMAIL = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
+  // 固定种子的 mulberry32
+  function rng(seed: number) {
+    return () => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  const PIECES = [
+    "a",
+    "b",
+    "z",
+    "A",
+    "Q",
+    "0",
+    "1",
+    "9",
+    ".",
+    ".",
+    "-",
+    "_",
+    "%",
+    "+",
+    "@",
+    "@",
+    " ",
+    "/",
+    ":",
+    "co",
+    "com",
+    "org",
+    "x1",
+    "é",
+  ];
+  it("20000 条短输入，main 遮到的每个字符新规则都遮到", () => {
+    const r = rng(20261017);
+    let compared = 0;
+    for (let c = 0; c < 20_000; c++) {
+      const len = 1 + Math.floor(r() * 60);
+      let input = "";
+      while (input.length < len) input += PIECES[Math.floor(r() * PIECES.length)];
+      input = input.slice(0, 200);
+      const covered = new Uint8Array(input.length);
+      for (const [s, e] of emailRanges(input)) covered.fill(1, s, e);
+      for (const m of input.matchAll(MAIN_EMAIL)) {
+        compared++;
+        for (let i = m.index!; i < m.index! + m[0].length; i++) {
+          if (!covered[i]) throw new Error(`少遮：${JSON.stringify(input)} 第 ${i} 个字符`);
+        }
+      }
+    }
+    expect(compared).toBeGreaterThan(300);
   });
 });

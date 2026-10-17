@@ -1,4 +1,5 @@
 import { credentialUrlRanges } from "./credential.js";
+import { emailRanges } from "./email.js";
 
 export type RedactLevel = "light" | "full";
 
@@ -77,46 +78,8 @@ function redactHostnames(text: string): { text: string; count: number } {
   return { text: replaceRanges(text, ranges, "hostname"), count: ranges.length };
 }
 
-/**
- * 邮箱：不设长度上限，逐个 `@` 扫（#63 评审）。对每个 `@`：向左按 `[A-Za-z0-9._%+-]` 扩，遇到上一处匹配的末尾
- * 或上一个 `@` 就停；向右按 `[A-Za-z0-9.-]` 扩，去掉末尾的 `.` 和 `-`；右边含 `.` 且以 2 个及以上字母的顶级域结尾就遮。
- * 每个 `@` 把左右扫描和相邻的隔开，整体线性。
- */
-const EMAIL_LOCAL = /[A-Za-z0-9._%+-]/;
-const EMAIL_DOMAIN = /[A-Za-z0-9.-]/;
-const EMAIL_TLD = /^[A-Za-z]{2,}$/;
 function redactEmails(text: string): { text: string; count: number } {
-  if (!text.includes("@")) return { text, count: 0 };
-  const ranges: Array<[number, number]> = [];
-  const n = text.length;
-  let floor = 0;
-  for (let at = text.indexOf("@"); at >= 0; at = text.indexOf("@", floor)) {
-    let s = at;
-    while (s > floor && EMAIL_LOCAL.test(text[s - 1]!)) s--;
-    let e = at + 1;
-    while (e < n && EMAIL_DOMAIN.test(text[e]!)) e++;
-    while (e > at + 1 && (text[e - 1] === "." || text[e - 1] === "-")) e--;
-    const domain = text.slice(at + 1, e);
-    const dot = domain.lastIndexOf(".");
-    let ok = dot > 0 && EMAIL_TLD.test(domain.slice(dot + 1));
-    if (!ok && dot > 0) {
-      // 最后一段像 `com-2`：取开头连续的字母，至少 2 个且后面紧跟 `-` 就截在字母后面
-      // （和 main 上 `\b` 的效果一致），`eva@example.com-2` → `[REDACTED:email]-2`。
-      const tldStart = at + 1 + dot + 1;
-      let k = tldStart;
-      while (k < e && /[A-Za-z]/.test(text[k]!)) k++;
-      if (k - tldStart >= 2 && text[k] === "-") {
-        e = k;
-        ok = true;
-      }
-    }
-    if (s < at && ok) {
-      ranges.push([s, e]);
-      floor = e;
-    } else {
-      floor = at + 1;
-    }
-  }
+  const ranges = emailRanges(text);
   return { text: replaceRanges(text, ranges, "email"), count: ranges.length };
 }
 
