@@ -20,10 +20,18 @@ export interface SchedulerTicket {
   parent_span_id: string | null;
   /** 依赖的单号：全部合入后本单才出队；任一依赖已上报（含间接依赖），本单挂起 */
   depends_on?: string[];
-  /** 写入范围（glob），用来算 interface_changed 的受影响单 */
+  /**
+   * 写入范围（glob）：派单时按它加写入范围逻辑锁（T-039），也用来算 interface_changed 的受影响单。
+   * 不给（或为空）按整个仓库 `**` 处理：与所有单互斥。
+   */
   write_scope?: string[];
   /** 接口声明（必填项，文件 + 符号）；合并后与改动文件取交集作为 changed_interfaces */
   interfaces?: ChangedInterface[];
+  /**
+   * 排期优先级（PD §4，与思考档位无关）：`deferred` 的单在 3 的闲时开关 `budget.offpeak_preference` 打开、
+   * 当前不是闲时时不派（T-039）；默认 `normal`。
+   */
+  priority?: "normal" | "deferred";
 }
 
 /** 事件发布入参：seq 由总线分配；9 总是自己填 event_id 和 ts。 */
@@ -34,7 +42,17 @@ export type PublishInput<K extends EventType = EventType> = Omit<
 
 /** 只用到的总线能力（与模块 0 的 EventBus 兼容）。 */
 export interface SchedulerBus {
-  publish(input: PublishInput<"escalated"> | PublishInput<"interface_changed">): unknown;
+  publish(
+    input:
+      | PublishInput<"escalated">
+      | PublishInput<"interface_changed">
+      | PublishInput<"write_scope_granted">
+      | PublishInput<"write_scope_denied">,
+  ): unknown;
+  subscribe(
+    type: "write_scope_requested",
+    handler: (e: EventOf<"write_scope_requested">) => void | Promise<void>,
+  ): () => void;
   subscribe(
     type: "review_backlog",
     handler: (e: EventOf<"review_backlog">) => void | Promise<void>,
@@ -67,7 +85,7 @@ export interface ConflictResubmitRequest {
   round: number;
   worktree_path: string;
   branch: string;
-  /** 新 worktree 的基线（集成分支名） */
+  /** 新 worktree 的基线 sha（T-039：9 先读目标分支 HEAD，再从这个 sha 建 worktree） */
   base_commit: string;
   conflicted_files: string[];
   /** 旧 PR，9 在新 PR 开出后关闭 */
@@ -109,8 +127,27 @@ export type ResumeOutcome =
   | { kind: "escalated"; pr_id: string | null }
   | { kind: "requeue_budget"; resume: unknown };
 
+/**
+ * 8 的 handle(ticket) 的结果（与 8 的 SubAgentOutcome 同形，9 只用到这些字段）：`merge_queued` 时 8 已经
+ * 写好 merge_queued 并调过 9 的 submit；`escalated` / `requeue_budget` 时 8 已经写好 escalated / pending（进队前的状态归 8）。
+ */
+export type DispatchOutcome = ResumeOutcome;
+
+/**
+ * 9 调 8 的 handle / resume 时带的选项（T-039）：`signal` 在 9 的 stop() 时中止，8 原样传给 5 的 runTicket
+ * 和 7 的 review；中止后 8 抛 signal.reason，9 不上报、不改状态（没有 aborted 状态）。
+ */
+export interface SubAgentCallOptions {
+  signal?: AbortSignal;
+}
+
 /** 8 的接口（8 未实现前注入 mock）。 */
 export interface SchedulerSubAgent {
+  /**
+   * 派单（T-039）：对应 8 的 `handle(ticket)`。不注入时 9 不派单，只做合并队列（T-035 行为）。
+   * 8 的 handle 要完整的 SubAgentTicket，组合根按单号补全（同 resume）。
+   */
+  handle?(ticket: SchedulerTicket, options?: SubAgentCallOptions): Promise<DispatchOutcome>;
   resubmitConflict(req: ConflictResubmitRequest): Promise<SubAgentOutcome>;
   reReview(req: ReReviewRequest): Promise<SubAgentOutcome>;
   /**
@@ -118,7 +155,11 @@ export interface SchedulerSubAgent {
    * 注意：8 的 resume 要完整的 SubAgentTicket，9 只有 SchedulerTicket，组合根要按单号补全（或 8 像
    * resubmitConflict 一样自己 lookup）。
    */
-  resume(ticket: SchedulerTicket, token: unknown): Promise<ResumeOutcome>;
+  resume(
+    ticket: SchedulerTicket,
+    token: unknown,
+    options?: SubAgentCallOptions,
+  ): Promise<ResumeOutcome>;
 }
 
 /** 9 维护的需求单状态写到 2（适配 storage.saveTicket 的 status 字段）。 */
@@ -147,7 +188,8 @@ export interface SchedulerDeps {
     pipeline: Pick<
       Config["pipeline"],
       "concurrency_max" | "resubmit_limits" | "supervisor_backlog_limit"
-    >;
+    > &
+      Partial<Pick<Config["pipeline"], "concurrency_hard_max">>;
     backpressure: Config["backpressure"];
   };
   /**
@@ -155,8 +197,14 @@ export interface SchedulerDeps {
    * 合并日志定不了某张单的基线时（重启后、基线未知），合并前再读一次比对。
    */
   targetHead(): MaybePromise<string>;
-  /** 3 的 budgetState()，只看 daily_exhausted */
-  budgetState(): MaybePromise<Pick<BudgetState, "daily_exhausted">>;
+  /**
+   * 3 的 budgetState()：`daily_exhausted` 停派新单、决定何时续跑预算暂停的单；`offpeak_now` /
+   * `offpeak_preference`（可选）决定 `priority: deferred` 的单是否等闲时（T-039）。
+   */
+  budgetState(): MaybePromise<
+    Pick<BudgetState, "daily_exhausted"> &
+      Partial<Pick<BudgetState, "offpeak_now" | "offpeak_preference">>
+  >;
   tickets: TicketStatusStore;
   /** 2 的 saveMergeResult（诊断包用），可选 */
   saveMergeResult?(
@@ -179,6 +227,16 @@ export interface SchedulerDeps {
   unknownEventContext?: (info: { pr_id: string; ticket_id: string | null }) => EventContext;
   /** 后台任务（复投、重审）出错时调用，默认 console.warn；9 随后发 escalated(github_manual) */
   onError?: (error: unknown, ticket_id: string) => void;
+  /**
+   * 独占区域（PD §4：依赖清单、锁文件、全局配置、迁移、公共类型）的 glob，默认 `DEFAULT_EXCLUSIVE_ZONES`。
+   * 写入范围碰到独占区域的单单独排队：同一时刻最多一张在持锁（T-039）。
+   */
+  exclusive_zones?: readonly string[];
+  /**
+   * 派单轮询间隔（毫秒，默认 60 秒；0 关闭）。入队、交队、合并、编码结束、积压变化时都会立即派单，
+   * 轮询只用来接住预算重置、进入闲时、反压恢复这类没有事件的变化。只在注入了 8 的 handle 时启用。
+   */
+  dispatch_poll_ms?: number;
 }
 
 export type BackpressureReason =
@@ -207,7 +265,12 @@ export type DependencyState = "ready" | "waiting" | "held";
 
 export interface QueueEntryView {
   ticket_id: string;
+  /** 9 内存里的状态；8 编码 / 评审期间（进队前）仍是 pending，以 2 里的 TicketStatus 为准 */
   status: TicketStatus;
+  /** 9 派出、还占着编码槽位（handle 未返回且还没 submit） */
+  coding: boolean;
+  /** 当前持有的写入范围锁；没持锁为 null（终态自动释放） */
+  locked_scope: string[] | null;
   pr_id: string | null;
   round: number;
   resubmit_counts: { review: number; conflict: number };
@@ -219,9 +282,21 @@ export interface QueueEntryView {
 export interface Scheduler {
   /** 启动：建 6（注入 eventContext），订阅 review_backlog / supervisor_backlog */
   start(): Promise<void>;
+  /** 停止：停合并循环、取消等待中的定时器、停止派单，并中止交给 8 的 handle / resume（signal，T-039） */
   stop(): void;
-  /** 登记一张单（状态 pending）。重复登记同一单号报错。 */
+  /** 登记一张单（状态 pending）。重复登记同一单号报错。注入了 8 的 handle 时随即尝试派单。 */
   enqueue(ticket: SchedulerTicket): Promise<void>;
+  /**
+   * 写入范围逻辑锁（modules.md §9 `lock`）：把 write_scope 并进本单已持有的锁。与其他在途单的锁可能重叠、
+   * 或本单碰到独占区域而另一张独占单正持锁时返回 `fail`，不改任何锁。单子到终态时自动释放。
+   */
+  lock(ticket_id: string, write_scope: readonly string[]): "ok" | "fail";
+  /**
+   * 派单一轮（T-039）：反压闸门打开时先把预算暂停的单交回 8 续跑，再按入队顺序把依赖已合入、能加上写入范围锁、
+   * 不需等闲时的 pending 单交给 8 的 handle，直到编码槽位（反压给的并发，不超过 concurrency_hard_max）占满。
+   * 返回这一轮新派出的单号。内部在各种变化时会自动调用，一般不用手动调。
+   */
+  dispatch(): Promise<string[]>;
   /** 8 在评审通过后调用：PR 进合并队列（状态 merge_queued） */
   submit(input: {
     ticket_id: string;

@@ -129,6 +129,18 @@ function realOrResolved(p: string): string {
   }
 }
 
+/** 中止时抛的错误：优先 signal.reason，没有就抛名为 AbortError 的错误（与 5、7 一致）。 */
+function abortReason(signal: AbortSignal): unknown {
+  if (signal.reason !== undefined) return signal.reason;
+  const e = new Error("已取消");
+  e.name = "AbortError";
+  return e;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw abortReason(signal);
+}
+
 function roundFromPath(p: string): number {
   const m = /-r(\d+)\/?$/.exec(p);
   return m ? Number(m[1]) : 0;
@@ -160,13 +172,15 @@ interface RunState {
   /** 编码开始时发的派单说明（只发一次） */
   announce?: string;
   stage: SubAgentStage;
+  /** 取消信号（T-039）：原样传给 runTicket / review；中止后抛 signal.reason，不上报 */
+  signal?: AbortSignal;
 }
 
 export function createSubAgent(deps: SubAgentDeps): SubAgent {
   const logger = deps.logger ?? console;
   const isBudgetExceeded = deps.isBudgetExceeded ?? defaultIsBudgetExceeded;
   const registry = new Map<string, SubAgentTicket>();
-  /** 每单最近一次运行的状态（reReview 用；重启后从存储读当前 PR 留给 T-039） */
+  /** 每单最近一次运行的状态（reReview 沿用编码摘要和计数；当前 PR 以 deps.prRecords 为准，T-039） */
   const active = new Map<string, RunState>();
   const lastRound = new Map<string, number>();
   const root = realOrResolved(deps.worktreeRoot);
@@ -358,6 +372,7 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
   async function loop(s: RunState): Promise<SubAgentOutcome> {
     const limit = deps.getConfig().pipeline.resubmit_limits.review;
     for (;;) {
+      throwIfAborted(s.signal);
       remember(s);
       if (s.phase === "coding") {
         const effort = effortFor(deps.getConfig(), s.counts);
@@ -375,7 +390,9 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
           effort,
           ...(s.feedback !== undefined ? { feedback: s.feedback } : {}),
           ctx: ctx(s.ticket, s.is_resubmit),
+          ...(s.signal ? { signal: s.signal } : {}),
         });
+        throwIfAborted(s.signal);
         if (res.status === "budget_exceeded") return budgetStop(s);
 
         let failure: { status: CoderFailureStatus; feedback: string } | undefined;
@@ -454,11 +471,14 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
           permission_list: s.ticket.permission_list,
           summary,
           ctx: ctx(s.ticket, s.is_resubmit),
+          ...(s.signal ? { signal: s.signal } : {}),
         });
       } catch (e) {
+        throwIfAborted(s.signal);
         if (isBudgetExceeded(e)) return budgetStop(s);
         throw e;
       }
+      throwIfAborted(s.signal);
       s.stage = "diff";
       const diff = await deps.pr.diff(pr_id);
       s.stage = "round_save";
@@ -514,12 +534,54 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
     try {
       return await loop(s);
     } catch (e) {
+      // 取消：原样抛 signal.reason，不上报、不写状态（T-039）
+      if (s.signal?.aborted) throw abortReason(s.signal);
       if (s.mode !== "handle") throw e;
       logger.warn(
         `[bakacoding/sub-agent] ${s.ticket.ticket_id} 在 ${s.stage} 阶段出错，上报：${String(e)}`,
       );
       return escalate(s, STAGE_REASON[s.stage], errorDetail(s.stage, e));
     }
+  }
+
+  /**
+   * 重审要接着用的运行状态。注入了 `prRecords` 时以 2 的 PR 记录为准（T-039）：确认是本单当前 PR，
+   * worktree / 分支 / 基线取记录里的；本进程跑过同一个 PR 时再沿用内存里的编码摘要和计数。
+   * 没注入时只认本进程跑过的单（T-037 行为）。
+   */
+  async function reReviewState(ticket: SubAgentTicket, pr_id: string): Promise<RunState> {
+    const a = active.get(ticket.ticket_id);
+    const mem = a && a.pr_id === pr_id ? a : undefined;
+    if (!deps.prRecords) {
+      if (!mem) throw new Error(`${ticket.ticket_id} 的当前 PR 不是 ${pr_id}，无法重审`);
+      return mem;
+    }
+    const rec = await deps.prRecords.get(pr_id);
+    if (!rec) throw new Error(`2 里没有 PR 记录 ${pr_id}，无法重审 ${ticket.ticket_id}`);
+    if (rec.kind !== "ticket" || rec.ticket_id !== ticket.ticket_id || !rec.worktree_path)
+      throw new Error(`PR ${pr_id} 不属于 ${ticket.ticket_id}，无法重审`);
+    if (rec.status !== "open" && rec.status !== "conflict")
+      throw new Error(
+        `${ticket.ticket_id} 的 PR ${pr_id} 已是 ${rec.status}，不是当前 PR，无法重审`,
+      );
+    assertWorktree(rec.worktree_path);
+    if (mem) return { ...mem, worktree_path: rec.worktree_path, branch: rec.branch };
+    // 重启后：本进程没跑过这张单。评审复投数从事件日志恢复；冲突复投数取 worktree 轮次 n（每次冲突复投建 r<n+1>）
+    const worktree_round = roundFromPath(rec.worktree_path);
+    return {
+      ticket,
+      worktree_path: rec.worktree_path,
+      branch: rec.branch,
+      base_commit: rec.base_sha,
+      worktree_round,
+      pr_id,
+      counts: { review: await history(ticket.ticket_id), conflict: worktree_round },
+      phase: "review",
+      is_resubmit: true,
+      mode: "rereview",
+      submit: false,
+      stage: "review",
+    };
   }
 
   function toScheduler(o: SubAgentOutcome): SchedulerFacingOutcome {
@@ -532,6 +594,7 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
 
   return {
     async handle(ticket, options: HandleOptions = {}) {
+      throwIfAborted(options.signal);
       register(ticket);
       let wt = options.worktree;
       let worktree_round = options.worktree_round;
@@ -560,10 +623,12 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
             ? `${ticket.ticket_id} 重启后接着编码（已评审复投 ${review} 次）`
             : `${ticket.ticket_id} 派给 Flash 编码`,
         stage: "coding",
+        ...(options.signal ? { signal: options.signal } : {}),
       });
     },
 
-    async resume(minimal, token) {
+    async resume(minimal, token, options = {}) {
+      throwIfAborted(options.signal);
       const ticket = await lookup(minimal);
       if (token.ticket_id !== ticket.ticket_id)
         throw new Error(`续跑凭据属于 ${token.ticket_id}，不是 ${ticket.ticket_id}`);
@@ -591,6 +656,7 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
         submit: true,
         announce: `${ticket.ticket_id} 预算重置，续跑`,
         stage: token.phase === "coding" ? "coding" : "review",
+        ...(options.signal ? { signal: options.signal } : {}),
       });
     },
 
@@ -622,9 +688,7 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
 
     async reReview(req: ReReviewRequest) {
       const ticket = await lookup(req.ticket);
-      const a = active.get(ticket.ticket_id);
-      if (!a || a.pr_id !== req.pr_id)
-        throw new Error(`${ticket.ticket_id} 的当前 PR 不是 ${req.pr_id}，无法重审`);
+      const a = await reReviewState(ticket, req.pr_id);
       const o = await run({
         ...a,
         counts: { ...a.counts },
@@ -635,6 +699,7 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
         submit: false,
         announce: undefined,
         stage: "review",
+        signal: undefined, // 不沿用 handle 时的取消信号
       });
       return toScheduler(o);
     },

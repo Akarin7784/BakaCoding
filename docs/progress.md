@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`97c0872` · main 上测试：36 个测试文件、561 个测试全部通过 · 更新日期：2026-10-17（UTC+8）
+> 上次更新时 main：`501853a` · main 上测试：36 个测试文件、593 个测试全部通过 · 更新日期：2026-10-17（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -37,8 +37,8 @@ flowchart BT
   classDef doing fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef done fill:#dcfce7,stroke:#16a34a,color:#14532d
 
-  class M0,M1,M2,M4,M6,M11,M12,T done
-  class M3,M5,M7,M8,M9 doing
+  class M0,M1,M2,M4,M6,M9,M11,M12,T done
+  class M3,M5,M7,M8 doing
   class M10 todo
 ```
 
@@ -91,7 +91,7 @@ flowchart BT
 | T-036 | 共享类型：`escalated` 上报原因加 `coder_failed`、`budget_exceeded`；桌面界面 `ESCALATION_REASON` 补两条显示文字 | 共享类型包、12 | 编排层开发 | 已合入 | #34 | `29c1d4f` |
 | T-037 | 模块 8 副 Agent 主流程 `handle(ticket)`：使用单子的 permission_list、编码池结果处理（`coder_failed` / `budget_exceeded` 上报）、开 PR 与评审、复投、轮次写 `reviewer`、群消息 | 8 | 编排层开发 | 已合入 | #40 | `aa8fb80` |
 | T-038 | 模块 8 补充：中途权限申请审批、订阅 `interface_changed`、依赖类单标高风险 | 8 | 编排层开发 | 未开始 | — | — |
-| T-039 | 模块 9 调度器：入队与依赖排序、写入范围锁与独占区、写入范围申请回复、编码槽位、闲时 `deferred`（读 T-035 的反压信号） | 9 | 编排层开发 | 未开始 | — | — |
+| T-039 | 模块 9 调度器：入队与依赖排序、写入范围锁与独占区、写入范围申请回复、编码槽位、闲时 `deferred`（读 T-035 的反压信号）；另含：预算续跑接派单闸门、冲突复投传 sha 基线、后台出错不覆盖终态、8 的 `reReview` 重启后读 2 的 PR 记录、worktree 根目录软链接逃逸测试、`stop()` 的取消信号经 8 传给 5/7 | 9、8 | 编排层开发 | 已合入 | #45 | `501853a` |
 | T-040 | 模块 10 主管：`chat` / `split`（接口声明必填、决策记忆、项目创建告知用户） | 10 | 编排层开发 | 未开始 | — | — |
 | T-041 | 模块 10 上报处理（重拆最多 2 次，`budget_exceeded` 直接交用户）与高风险 PR 裁决 | 10 | 编排层开发 | 未开始 | — | — |
 | T-042 | 模块 10 集成分支审查与合入 main、主管待办指标 | 10 | 编排层开发 | 未开始 | — | — |
@@ -102,6 +102,12 @@ flowchart BT
 | T-049 | 桌面界面：找不到项目的 `escalated`（含合并队列的 `unattributed:<pr_id>`）进侧栏「未归属」，显示 PR 号、原因、说明；`merged_but:` 标「代码已进集成分支」 | 12 | 界面与诊断开发 | 已合入 | #41 | `865dd48` |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单。
+
+### 已知缺口
+
+- 模块 9（T-039）：大写入范围的单等锁时没有防饿死，可能一直被小范围的单抢先。
+- 模块 9（T-039）：`priority: deferred` 只看闲时开关，不看预算紧张程度。
+- 模块 9：合并成功后收尾出错（`merged_but`）仍会把终态 `merged` 改成 `escalated`，留给 T-038 处理。
 
 ### 不对应需求单的 PR
 

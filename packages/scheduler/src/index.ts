@@ -12,5 +12,8 @@ export {
   createScheduler,
   RATE_LIMIT_ESCALATE_AFTER,
   DEFAULT_TARGET_DIRTY_RETRY_MS,
+  DEFAULT_DISPATCH_POLL_MS,
+  DEFAULT_EXCLUSIVE_ZONES,
+  WHOLE_REPO_SCOPE,
 } from "./scheduler.js";
-export { globToRegExp, matchesAny } from "./glob.js";
+export { globToRegExp, matchesAny, globsOverlap, scopesOverlap, sampleOf } from "./glob.js";

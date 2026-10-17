@@ -7,6 +7,7 @@ import {
   BUDGET_RESUME_NOTE,
   type ConflictResubmitRequest,
   type ResumeToken,
+  type StoredPrRecord,
   createSubAgent,
   effortFor,
   reasonsToFeedback,
@@ -1004,5 +1005,193 @@ describe("#40 评审跟进", () => {
     const out = await t.agent.handle(TICKET);
     expect(out).toMatchObject({ resubmit_counts: { review: 2 } });
     expect(t.kinds().filter((k) => k === "resubmit")).toHaveLength(2);
+  });
+});
+
+// ---------------- T-039 ----------------
+
+const SCHED_TICKET = {
+  ticket_id: "T-1",
+  requirement_id: "R-1",
+  trace_id: "tr-1",
+  span_id: "sp-1",
+  parent_span_id: "sp-0",
+};
+
+describe("T-039 重启后 reReview 从 2 读当前 PR", () => {
+  const rec = (over: Partial<StoredPrRecord> = {}): StoredPrRecord => ({
+    pr_id: "pr-9",
+    kind: "ticket",
+    ticket_id: "T-1",
+    worktree_path: "/wt/T-1-r1",
+    branch: "bakacoding/T-1-r1",
+    base_sha: "f".repeat(40),
+    status: "open",
+    ...over,
+  });
+
+  it("本进程没跑过这张单：按 PR 记录的 worktree / 分支 / 基线重审，评审复投数取事件日志、冲突复投数取 worktree 轮次", async () => {
+    const records = new Map([["pr-9", rec()]]);
+    const t = setup({
+      reviews: [PASS()],
+      over: {
+        loadTicket: (id) => ({ ...TICKET, ticket_id: id }),
+        prRecords: { get: (id) => records.get(id) },
+        resubmitHistory: () => ({ review: 2 }),
+      },
+    });
+    const out = await t.agent.reReview({ ticket: SCHED_TICKET, pr_id: "pr-9", merged_since: [] });
+    expect(out).toEqual({ pr_id: "pr-9", review_resubmits: 2 });
+    expect(t.deps.coder.runTicket).not.toHaveBeenCalled();
+    expect(t.reviewInputs[0]).toMatchObject({ pr_id: "pr-9", ctx: { is_resubmit: true } });
+    expect(t.submit).not.toHaveBeenCalled();
+    expect(t.statuses).toEqual([]); // 重审期间状态归 9
+  });
+
+  it("重审不过时在 PR 记录的 worktree 里复投；上报带恢复出的计数", async () => {
+    const t = setup({
+      config: { ...CFG, pipeline: { resubmit_limits: { review: 1 } } },
+      runs: [done()],
+      reviews: [FAIL(), FAIL()],
+      over: {
+        loadTicket: (id) => ({ ...TICKET, ticket_id: id }),
+        prRecords: { get: () => rec({ worktree_path: "/wt/T-1-r2", branch: "b-r2" }) },
+      },
+    });
+    const out = await t.agent.reReview({ ticket: SCHED_TICKET, pr_id: "pr-9", merged_since: [] });
+    expect(out).toEqual({ escalated: true, pr_id: "pr-9" });
+    expect(t.runInputs[0]!.worktree_path).toBe("/wt/T-1-r2");
+    const esc = t.events.find((e) => e.type === "escalated")!;
+    expect(esc.payload).toMatchObject({
+      reason: "review_limit",
+      resubmit_counts: { review: 1, conflict: 2 },
+    });
+  });
+
+  it("PR 记录不对就报错：没有记录、不是本单、集成记录、已 merged / closed、worktree 越界", async () => {
+    const cases: Array<[StoredPrRecord | undefined, RegExp]> = [
+      [undefined, /没有 PR 记录/],
+      [rec({ ticket_id: "T-2" }), /不属于/],
+      [rec({ kind: "integration", ticket_id: undefined, worktree_path: undefined }), /不属于/],
+      [rec({ status: "merged" }), /已是 merged/],
+      [rec({ status: "closed" }), /已是 closed/],
+      [rec({ worktree_path: "/etc/T-1-r0" }), /worktree 根目录/],
+    ];
+    for (const [r, msg] of cases) {
+      const t = setup({
+        over: {
+          loadTicket: (id) => ({ ...TICKET, ticket_id: id }),
+          prRecords: { get: () => r },
+        },
+      });
+      await expect(
+        t.agent.reReview({ ticket: SCHED_TICKET, pr_id: "pr-9", merged_since: [] }),
+      ).rejects.toThrow(msg);
+      expect(t.deps.review).not.toHaveBeenCalled();
+    }
+  });
+
+  it("本进程跑过同一个 PR：仍以 PR 记录为准核对，沿用内存里的编码摘要", async () => {
+    const t = setup({
+      runs: [done("foo 改成 bar")],
+      reviews: [PASS(), PASS()],
+      over: { prRecords: { get: () => rec({ pr_id: "pr-T-1-1", worktree_path: "/wt/T-1-r0" }) } },
+    });
+    await t.agent.handle(TICKET);
+    await t.agent.reReview({ ticket: SCHED_TICKET, pr_id: "pr-T-1-1", merged_since: [] });
+    expect(t.reviewInputs[1]!.summary).toContain("foo 改成 bar");
+  });
+});
+
+describe("T-039 取消信号", () => {
+  it("handle 把 signal 原样传给 runTicket 和 review", async () => {
+    const t = setup({ runs: [done()], reviews: [PASS()] });
+    const ac = new AbortController();
+    await t.agent.handle(TICKET, { signal: ac.signal });
+    expect(t.runInputs.length).toBe(1);
+    const runCall = vi.mocked(t.deps.coder.runTicket).mock.calls[0]![0];
+    expect(runCall.signal).toBe(ac.signal);
+    const reviewCall = vi.mocked(t.deps.review).mock.calls[0]![0];
+    expect(reviewCall.signal).toBe(ac.signal);
+  });
+
+  it("不传 signal 时不带这个字段", async () => {
+    const t = setup({ runs: [done()], reviews: [PASS()] });
+    await t.agent.handle(TICKET);
+    expect("signal" in vi.mocked(t.deps.coder.runTicket).mock.calls[0]![0]).toBe(false);
+    expect("signal" in vi.mocked(t.deps.review).mock.calls[0]![0]).toBe(false);
+  });
+
+  it("编码中途取消：抛 signal.reason，不上报、不再写状态、不计复投", async () => {
+    const ac = new AbortController();
+    const reason = new Error("调度器已停止");
+    const t = setup({
+      over: {
+        coder: {
+          runTicket: vi.fn(async (input: RunTicketInput) => {
+            ac.abort(reason);
+            throw input.signal!.reason;
+          }),
+        },
+      },
+    });
+    await expect(t.agent.handle(TICKET, { signal: ac.signal })).rejects.toBe(reason);
+    expect(t.events.filter((e) => e.type === "escalated")).toEqual([]);
+    expect(t.kinds()).not.toContain("resubmit");
+    expect(t.statuses).toEqual(["coding"]);
+  });
+
+  it("评审中途取消：同样抛 signal.reason，不当评审错误上报；编码池返回后已取消也直接抛", async () => {
+    const ac = new AbortController();
+    const t = setup({
+      runs: [done()],
+      over: {
+        review: vi.fn(async () => {
+          ac.abort();
+          throw new Error("call aborted");
+        }),
+      },
+    });
+    const err = await t.agent.handle(TICKET, { signal: ac.signal }).catch((e: unknown) => e);
+    expect((err as Error).name).toBe("AbortError");
+    expect(t.events.filter((e) => e.type === "escalated")).toEqual([]);
+
+    const ac2 = new AbortController();
+    const t2 = setup({
+      over: {
+        coder: {
+          runTicket: vi.fn(async () => {
+            ac2.abort("stop");
+            return done();
+          }),
+        },
+      },
+    });
+    await expect(t2.agent.handle(TICKET, { signal: ac2.signal })).rejects.toBe("stop");
+    expect(t2.pr.open).not.toHaveBeenCalled();
+  });
+
+  it("已取消再调 handle / resume：立刻抛，不调编码池；resume 把 signal 传下去", async () => {
+    const ac = new AbortController();
+    ac.abort("gone");
+    const t = setup({ runs: [done()], reviews: [PASS()] });
+    await expect(t.agent.handle(TICKET, { signal: ac.signal })).rejects.toBe("gone");
+    const token: ResumeToken = {
+      ticket_id: "T-1",
+      worktree_path: "/wt/T-1-r0",
+      branch: "b",
+      base_commit: TICKET.base_commit,
+      worktree_round: 0,
+      pr_id: null,
+      resubmit_counts: { review: 0, conflict: 0 },
+      phase: "coding",
+      is_resubmit: false,
+    };
+    await expect(t.agent.resume(TICKET, token, { signal: ac.signal })).rejects.toBe("gone");
+    expect(t.deps.coder.runTicket).not.toHaveBeenCalled();
+
+    const live = new AbortController();
+    await t.agent.resume(TICKET, token, { signal: live.signal });
+    expect(vi.mocked(t.deps.coder.runTicket).mock.calls[0]![0].signal).toBe(live.signal);
   });
 });
