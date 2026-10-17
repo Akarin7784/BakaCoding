@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BakaEvent } from "@bakacoding/types";
@@ -9,6 +9,7 @@ import {
   buildPackage,
   exportPackage,
   isEnvFile,
+  packageToZip,
   readPackage,
   readZip,
   toSweBenchJsonl,
@@ -375,7 +376,7 @@ describe("导出范围与内容", () => {
     expect(zip_path).toMatch(/bakacoding-diag-proj-1-ticket-T-1-20261017T060000000Z\.zip$/);
     const pkg = await readPackage(zip_path);
     expect(pkg.manifest.schema).toBe(DIAG_SCHEMA);
-    expect(pkg.manifest.schema).toBe("bakacoding-diag/v1");
+    expect(pkg.manifest.schema).toBe("bakacoding-diag/v1.1");
     expect(pkg.manifest.redaction).toBe("full");
     const names = readZip(await readFile(zip_path))
       .map((e) => e.name)
@@ -395,7 +396,6 @@ describe("导出范围与内容", () => {
       "raw/T-1/r1.diff",
       "raw/T-1/r2.diff",
       "raw/T-1/context/src/config.ts",
-      "raw/T-1/context/REDACTED-home_path/proj/.env",
     ]);
   });
 
@@ -614,7 +614,7 @@ describe("T-019：完整仓库默认排除 .env 文件", () => {
       { path: ".env/inner.txt", content: "x\n" },
       { path: "docs/.environment.md", content: "kept\n" },
       { path: "src/env.ts", content: "kept\n" },
-      { path: "src/.envrc", content: "kept\n" },
+      { path: "src/.envrc", content: "excluded since T-021\n" },
     ];
     source.repoFiles = vi.fn(async () => files);
     const zip_path = await exportPackage(
@@ -623,15 +623,10 @@ describe("T-019：完整仓库默认排除 .env 文件", () => {
     );
     const names = readZip(await readFile(zip_path)).map((e) => e.name);
     expect(names.filter((n) => n.startsWith("repo/")).sort()).toEqual(
-      [
-        "repo/docs/.environment.md",
-        "repo/src/env.ts",
-        "repo/src/.envrc",
-        "repo/src/index.ts",
-      ].sort(),
+      ["repo/docs/.environment.md", "repo/src/env.ts", "repo/src/index.ts"].sort(),
     );
     const pkg = await readPackage(zip_path);
-    expect(pkg.manifest.excluded_env_files).toBe(4);
+    expect(pkg.manifest.excluded_env_files).toBe(5);
     // 被排除的文件不是"打包后再脱敏"：脱敏报告与只给保留文件时完全一样。
     source.repoFiles = vi.fn(async () => files.filter((f) => !isEnvFile(f.path)));
     const baseline = await buildPackage(
@@ -684,5 +679,126 @@ describe("T-019：diff_file 就是写进 zip 的条目路径", () => {
     expect([...pkg.manifest.files].sort()).toEqual([...names].sort());
     const inst = JSON.parse(toSweBenchJsonl(pkg).trim());
     expect(inst.patch).toContain("diff --git a/README.md b/README.md");
+  });
+});
+
+describe("T-021：.env 排除规则", () => {
+  const repoOnly = async (files: RawFile[]) => {
+    source.repoFiles = vi.fn(async () => files);
+    return buildPackage(
+      { project_id: PROJECT, scope: { kind: "ticket", ticket_id: "T-2" }, include_full_repo: true },
+      deps,
+    );
+  };
+
+  it("大小写不敏感：.ENV、.Env.local 也排除", async () => {
+    const pkg = await repoOnly([
+      { path: ".ENV", content: "A=1\n" },
+      { path: "apps/web/.Env.local", content: "B=2\n" },
+      { path: "CONFIG/.eNv.Production/x.txt", content: "C=3\n" },
+      { path: "src/index.ts", content: "export {};\n" },
+    ]);
+    expect(pkg.raw_files.filter((f) => f.path.startsWith("repo/")).map((f) => f.path)).toEqual([
+      "repo/src/index.ts",
+    ]);
+    expect(pkg.manifest.excluded_env_files).toBe(3);
+    expect(isEnvFile(".ENV")).toBe(true);
+    expect(isEnvFile("a\\.Env.local")).toBe(true);
+  });
+
+  it(".envrc 也排除（含大小写变体），.environment.md 之类仍保留", async () => {
+    const pkg = await repoOnly([
+      { path: ".envrc", content: "export A=1\n" },
+      { path: "sub/.ENVRC", content: "export B=1\n" },
+      { path: "docs/.environment.md", content: "kept\n" },
+      { path: "src/envrc.ts", content: "kept\n" },
+    ]);
+    expect(
+      pkg.raw_files
+        .filter((f) => f.path.startsWith("repo/"))
+        .map((f) => f.path)
+        .sort(),
+    ).toEqual(["repo/docs/.environment.md", "repo/src/envrc.ts"]);
+    expect(pkg.manifest.excluded_env_files).toBe(2);
+    expect(isEnvFile("x/.envrc")).toBe(true);
+    expect(isEnvFile("x/.envrc.bak")).toBe(true);
+    expect(isEnvFile("x/.envrcx")).toBe(false);
+  });
+
+  it("上下文片段同样排除：不进包，只在 manifest 记个数，不记路径", async () => {
+    const base = makeTickets()[1]!;
+    const marker = "CTXENVMARKER";
+    const t: TicketRecord = {
+      ...base,
+      context_snippets: [
+        { path: "src/keep.ts", content: "keep\n" },
+        { path: `secretdir-${marker}/.env`, content: `X=${marker}\nDB_PASSWORD=${FAKE.envPass}\n` },
+        { path: `pkg/.Env.Local`, content: `${marker}\n` },
+        { path: `.envrc`, content: `${marker}\n` },
+      ],
+    };
+    source.queryTickets = async () => [t];
+    const zip_path = await exportPackage(
+      { project_id: PROJECT, scope: { kind: "ticket", ticket_id: "T-2" } },
+      deps,
+    );
+    const entries = readZip(await readFile(zip_path));
+    const pkg = await readPackage(zip_path);
+    expect(pkg.tickets[0]!.context_files).toEqual(["raw/T-2/context/src/keep.ts"]);
+    expect(pkg.manifest.excluded_context_env_files).toBe(3);
+    expect(pkg.manifest.excluded_env_files).toBe(0);
+    for (const e of entries) {
+      expect(e.name).not.toContain(marker);
+      expect(e.name.toLowerCase()).not.toMatch(/(^|\/)\.env/);
+      expect(e.data.toString("utf8")).not.toContain(marker);
+    }
+    // 不是打包后再脱敏：没有因这些文件内容产生 env_secret 命中。
+    source.queryTickets = async () => [{ ...t, context_snippets: [t.context_snippets[0]!] }];
+    const baseline = await buildPackage(
+      { project_id: PROJECT, scope: { kind: "ticket", ticket_id: "T-2" } },
+      deps,
+    );
+    expect(pkg.redaction_report).toEqual(baseline.redaction_report);
+  });
+});
+
+describe("T-021：schema bakacoding-diag/v1.1", () => {
+  it("新导出的包是 v1.1", async () => {
+    const pkg = await buildPackage(
+      { project_id: PROJECT, scope: { kind: "ticket", ticket_id: "T-2" } },
+      deps,
+    );
+    expect(DIAG_SCHEMA).toBe("bakacoding-diag/v1.1");
+    expect(pkg.manifest.schema).toBe("bakacoding-diag/v1.1");
+  });
+
+  it("readPackage 读 v1.1，也仍能读 v1 旧包；未知 schema 报错", async () => {
+    const pkg = await buildPackage(
+      { project_id: PROJECT, scope: { kind: "ticket", ticket_id: "T-2" } },
+      deps,
+    );
+    const p11 = join(dir, "v11.zip");
+    await writeFile(p11, packageToZip(pkg));
+    expect((await readPackage(p11)).manifest.schema).toBe("bakacoding-diag/v1.1");
+    // 模拟 v1 旧包：schema 为 v1，没有 v1.1 新增的 excluded_context_env_files。
+    const { excluded_context_env_files: _drop, ...v1manifest } =
+      pkg.manifest as typeof pkg.manifest & {
+        excluded_context_env_files?: number;
+      };
+    void _drop;
+    const v1 = packageToZip({ ...pkg, manifest: { ...v1manifest, schema: "bakacoding-diag/v1" } });
+    const p1 = join(dir, "v1.zip");
+    await writeFile(p1, v1);
+    const back = await readPackage(p1);
+    expect(back.manifest.schema).toBe("bakacoding-diag/v1");
+    expect(back.manifest.excluded_context_env_files).toBeUndefined();
+    expect(back.tickets.map((t) => t.ticket_id)).toEqual(["T-2"]);
+
+    for (const bad of ["bakacoding-diag/v2", "bakacoding-diag/v1.2", "other/v9"]) {
+      const z = packageToZip({ ...pkg, manifest: { ...pkg.manifest, schema: bad as never } });
+      const pb = join(dir, "bad.zip");
+      await writeFile(pb, z);
+      await expect(readPackage(pb)).rejects.toThrow(/schema/);
+    }
   });
 });

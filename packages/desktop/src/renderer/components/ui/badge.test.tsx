@@ -32,4 +32,11 @@ describe("假数据符合 @bakacoding/types 的事件 schema", () => {
       for (const m of p.messages) expect(EventSchema.safeParse(m).success).toBe(true);
     }
   });
+
+  it("project_created 的 requirement_id 为 null；group_message 仍必须带需求", () => {
+    for (const p of projects) expect(p.project.requirement_id).toBeNull();
+    const msg = projects[0]!.messages[0]!;
+    expect(msg.requirement_id).not.toBeNull();
+    expect(EventSchema.safeParse({ ...msg, requirement_id: null }).success).toBe(false);
+  });
 });

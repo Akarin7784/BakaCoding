@@ -6,9 +6,16 @@ import type {
   TicketStatus,
 } from "@bakacoding/types";
 
-/** 诊断包 schema 版本。以后只加字段，不破坏旧包（PD §18）。 */
-export const DIAG_SCHEMA = "bakacoding-diag/v1" as const;
+/**
+ * 诊断包 schema 版本。以后只加字段，不破坏旧包（PD §18）。
+ * v1.1（T-021）：新增 manifest.excluded_context_env_files；.env 排除规则扩到大小写不敏感和 .envrc。
+ */
+export const DIAG_SCHEMA = "bakacoding-diag/v1.1" as const;
 export type DiagSchema = typeof DIAG_SCHEMA;
+
+/** readPackage 能读的版本：v1.1 只加字段，v1 旧包照常读，缺的字段保持缺省。 */
+export const READABLE_DIAG_SCHEMAS = ["bakacoding-diag/v1", DIAG_SCHEMA] as const;
+export type ReadableDiagSchema = (typeof READABLE_DIAG_SCHEMAS)[number];
 
 /** 导出范围：单张需求单、一个需求（含拆出的所有单）、某个时间段（PD §18、modules.md 11）。 */
 export type ExportScope =
@@ -166,7 +173,8 @@ export interface DiagStats {
 }
 
 export interface DiagManifest {
-  schema: DiagSchema;
+  /** 新导出的包总是 DIAG_SCHEMA；读回的旧包可能是 v1。 */
+  schema: ReadableDiagSchema;
   project_id: string;
   repo?: string;
   scope: ExportScope;
@@ -175,6 +183,8 @@ export interface DiagManifest {
   redaction: "full";
   /** 勾选完整仓库时按默认规则排除的 .env 类文件个数（只记个数，不记路径）。 */
   excluded_env_files: number;
+  /** v1.1 新增：上下文片段里按同一规则排除的 .env 类文件个数（只记个数，不记路径）；v1 旧包没有此字段。 */
+  excluded_context_env_files?: number;
   /** zip 内全部条目名，与实际条目逐字一致。 */
   files: string[];
   stats: DiagStats;

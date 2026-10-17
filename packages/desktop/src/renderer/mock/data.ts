@@ -2,14 +2,17 @@
 import type { FlashCallSummary, ProjectView, SupervisorMessage } from "./types";
 
 // 事件公共字段，形状同 @bakacoding/types 的 EventCommon。
-// project_created 没有所属需求，但 schema 要求 requirement_id 非空，假数据里先填占位值。
-const common = (n: number, requirement_id: string, ticket: string | null = null) => ({
+const common = <R extends string | null>(
+  n: number,
+  requirement_id: R,
+  ticket: string | null = null,
+) => ({
   event_id: `evt-${n}`,
   seq: n,
   ts: `2026-10-17T0${Math.min(n, 9)}:00:00Z`,
   requirement_id,
   ticket_id: ticket,
-  trace_id: `trace-${requirement_id}`,
+  trace_id: `trace-${requirement_id ?? `project-${n}`}`,
   span_id: `span-${n}`,
   parent_span_id: null,
 });
@@ -57,7 +60,7 @@ export const flashCalls: Record<string, FlashCallSummary> = {
 export const projects: ProjectView[] = [
   {
     project: {
-      ...common(1, "req-none"),
+      ...common(1, null),
       type: "project_created",
       payload: {
         project_id: "p-todo",
@@ -155,7 +158,7 @@ export const projects: ProjectView[] = [
   },
   {
     project: {
-      ...common(7, "req-none"),
+      ...common(7, null),
       type: "project_created",
       payload: {
         project_id: "p-blog",
