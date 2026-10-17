@@ -134,7 +134,7 @@ flowchart BT
 | T-077 | 模块 12 界面小修：报错前缀只出现一次、不露出 `Error：`（主进程 `errorDetail`、界面 `failureText`，兼容 Electron remote method 包装）；只读时导出先拒绝、不弹保存框；设置页标题和项目群 / 未归属的「只读」标签只在后端只读时显示 | 12 | 界面与诊断开发 | 已合入 | #84 | `b4a3745` |
 | T-078 | 模块 4：`.git/info/exclude` 改为排除整个 `/.bakacoding/`（数据库等运行文件不再出现在 git status）；旧版只写了 `/.bakacoding/worktrees/` 的仓库补一行、旧行保留；已有等价规则不重复写；跟进：新增 `ensureBakacodingIgnored(dir)`（经 `@bakacoding/app` 再导出），12 的 `startBackend` 在拿写入锁、建库之前对仓库根调用，失败只记 warn、不挡启动 | 4 | 基础层开发 | 已合入 | #85、#87 | `3bb713c`、`30d31cd` |
 | T-079 | 组合根 `targetHead` 改读集成分支 `bakacoding/integration`（不读检出的 HEAD，修用户在功能分支上时未合入提交漏进集成分支、单 2 基线缺单 1 改动）；集成分支还没建时退回基线分支（组合根唯一来源，同一个值传给 6 的 baseBranch，默认 main），连基线分支都没有才退回 HEAD；9 / 10 接口不变，只改 `scheduler/types.ts` 注释；补组合根单测和 4/6/9 真实 git 两张单先后合入测试 | 9 | 编排层开发 | 已合入 | #88 | `adb682b` |
-| T-080 | 文档：README 重写（1.0.0-preview 的 Windows 下载与运行、桌面端用法、环境变量、v1 已知限制、第三方声明 lucide ISC）；`docs/images/` 加三张实机截图（主界面、同步状态行、导出诊断包）；整体设计（md / html）状态句改为 v1 已实现，worktree 排除说明改为 `.git/info/exclude` 排除整个 `/.bakacoding/` | 文档 | 界面与诊断开发 | 待评审 | — | — |
+| T-080 | 文档：README 重写（1.0.0-preview 的 Windows 下载与运行、桌面端用法、环境变量、v1 已知限制、第三方声明 lucide ISC）；`docs/images/` 加三张实机截图（主界面、同步状态行、导出诊断包）；整体设计（md / html）状态句改为 v1 已实现，worktree 排除说明改为 `.git/info/exclude` 排除整个 `/.bakacoding/` | 文档 | 界面与诊断开发 | 待评审 | #89 | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
