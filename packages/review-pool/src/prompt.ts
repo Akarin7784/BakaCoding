@@ -3,7 +3,8 @@ import type { ReviewInput } from "./types.js";
 
 const OUTPUT_SPEC = `只输出一个 JSON 对象，不要输出其他文字：
 {"verdict": "pass" | "fail", "reasons": [{"category": "incomplete" | "out_of_scope" | "bug" | "arch_violation", "detail": "说明", "file": "可选，相对路径", "line": 可选正整数}]}
-verdict 为 fail 时 reasons 至少一条。`;
+verdict 为 fail 时 reasons 至少一条。
+reasons 会原样交给编码代理作为下一轮的修改依据：detail 写成能直接照着改的具体修改要求（改哪里、改成什么、为什么），不要只写笼统评价；能定位到文件和行就填 file 和 line。`;
 
 /**
  * 评审输入固定为「diff + 需求单 + 精简摘要」（另附权限清单用于判断越界、架构约束）。

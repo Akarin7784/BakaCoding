@@ -127,6 +127,7 @@ describe("review：输入与结论", () => {
     expect(r).toEqual({
       verdict: "fail",
       reasons: [{ category: "out_of_scope", detail: "改了 b.ts", file: "b.ts", line: 3 }],
+      reviewer: "reviewer-1",
     });
     expect(t.pr.diff).toHaveBeenCalledWith("pr-T-1");
     const c = t.calls[0]!;
@@ -166,9 +167,13 @@ describe("7-3 CI", () => {
     expect(r).toEqual({
       verdict: "fail",
       reasons: [
-        { category: "ci_failed", detail: "build: failure（https://ci/1）" },
-        { category: "ci_failed", detail: "lint: timed_out" },
+        {
+          category: "ci_failed",
+          detail: "CI 检查 build 结果为 failure，请按日志修复后重新提交：https://ci/1",
+        },
+        { category: "ci_failed", detail: "CI 检查 lint 结果为 timed_out，请按日志修复后重新提交" },
       ],
+      reviewer: null,
     });
     expect(t.call).not.toHaveBeenCalled();
     expect(t.pr.diff).not.toHaveBeenCalled();
@@ -295,6 +300,7 @@ describe("7-6 输出解析不了", () => {
     const t = setup({ outputs: ["我觉得挺好", FAIL] });
     const r = await t.pool.review(input("T-H"));
     expect(r.verdict).toBe("fail");
+    expect(r.reviewer).toBe("reviewer-2");
     expect(t.calls.map((c) => c.member)).toEqual(["reviewer-1", "reviewer-2"]);
   });
   it("两次都解析不了：判 fail，理由 bug「评审输出无法解析」", async () => {
@@ -303,6 +309,7 @@ describe("7-6 输出解析不了", () => {
     expect(r).toEqual({
       verdict: "fail",
       reasons: [{ category: "bug", detail: UNPARSEABLE_DETAIL }],
+      reviewer: "reviewer-2",
     });
     expect(t.pool.backlog().pending).toBe(0);
   });
@@ -392,18 +399,29 @@ describe("7-7 review_backlog", () => {
 
 describe("@bakacoding/types ReviewResultSchema", () => {
   it("fail 至少一条原因；category 取五类", () => {
-    expect(ReviewResultSchema.safeParse({ verdict: "pass", reasons: [] }).success).toBe(true);
-    expect(ReviewResultSchema.safeParse({ verdict: "fail", reasons: [] }).success).toBe(false);
+    const base = { reviewer: "reviewer-1" };
+    expect(ReviewResultSchema.safeParse({ verdict: "pass", reasons: [], ...base }).success).toBe(
+      true,
+    );
+    expect(ReviewResultSchema.safeParse({ verdict: "fail", reasons: [], ...base }).success).toBe(
+      false,
+    );
+    expect(ReviewResultSchema.safeParse({ verdict: "pass", reasons: [] }).success).toBe(false);
+    expect(
+      ReviewResultSchema.safeParse({ verdict: "pass", reasons: [], reviewer: null }).success,
+    ).toBe(true);
     expect(
       ReviewResultSchema.safeParse({
         verdict: "fail",
         reasons: [{ category: "ci_failed", detail: "x" }],
+        reviewer: null,
       }).success,
     ).toBe(true);
     expect(
       ReviewResultSchema.safeParse({
         verdict: "fail",
         reasons: [{ category: "style", detail: "x" }],
+        reviewer: null,
       }).success,
     ).toBe(false);
   });
