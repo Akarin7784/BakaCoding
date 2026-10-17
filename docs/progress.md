@@ -115,6 +115,8 @@ flowchart BT
 | T-058 | 模块 2：prStore 凭据检查收窄，`ssh://git@`、`https://user@` 放行；`user:token@`（含 `%3A`、无斜杠、嵌在文字里）、像 token 或长串十六进制 / base64 的用户名（任何 scheme）、查询参数和 `#` 片段里的 token 照样整条拒写；顺带 T-057 的三个小点（正常读到后清掉警告记录、`warn` 抛错不影响读取、注释归位）；`closed_by` 早已在 `PR_STRUCTURAL_FIELDS` 里，补一条测试锁住，接口不变 | 2 | 基础层开发 | 已合入 | #58 | `adc43ba` |
 | T-059 | 模块 3：带凭据 URL 的判断抽成模块 3 导出的 `isCredentialUrl`，2 的 prStore 拒写和 `redact` 的 `url_credentials` 规则共用，两边和 11 跑同一份 `CREDENTIAL_CASES`；`ghp_` / `github_pat_` / `glpat-` 任何位置都遮；`redact` 去掉平方级回溯（邮箱、内网主机名、env 变量名、私钥、IPv6 加上限或改线性扫描），超长主机名照样遮；接口新增 `isCredentialUrl`、`credentialUrlRanges`、`CREDENTIAL_CASES` | 3 | 基础层开发 | 已合入 | #63 | `61f5af3` |
 | T-060 | 模块 11 端到端回归：改用模块 3 的 `CREDENTIAL_CASES`，应拒的用例把带凭据文本放进上报详情和群消息，断言导出的诊断包里任何文件都找不到密文、事件确实在包里；应放行的用例详情里不出现 `[REDACTED:url_credentials]`；清单非空；40 位十六进制用户名判为 `url_credentials`；5 种 10 万字符详情的导出各在 500ms 内 | 11 | 界面与诊断开发 | 已合入 | #64 | `4c739e8` |
+| T-062 | 模块 12：高风险 PR 放行和拒绝的界面与 IPC（接 pendingHighRisk / decideHighRisk，stale_pr 时提示「PR 已更新，请重新查看」）；警告列表最多显示约 50 条，其余显示 +N；detail 截断，按单号加警告码去重；requirement_truncated / pr_close_failed 配中文文案；诊断导出补按需求、按时间段两种范围的拒绝用例和 include_full_repo，耗时上限放宽到 2s | 12 | 界面与诊断开发 | 未开始 | — | — |
+| T-064 | 模块 9：定时 sync() 加限流退避，用户在 GitHub 上手动合入或关闭的 PR 能同步回来 | 9 | 编排层开发 | 未开始 | — | — |
 | T-065 | 模块 6 / types：DiffFile 加可选 old_path，6 用 git diff -M 时填上旧路径，isDependencyFile 新旧路径都检查；之后把 041c 的改名兜底（renamed 一律当高风险）收窄成只看依赖文件 | 6、8 | 执行层开发 | 未开始 | — | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
