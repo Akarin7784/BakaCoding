@@ -1,3 +1,6 @@
+/** 每次 git 调用的默认超时（T-086 定义；T-094 起挪到这里，repo.ts 原样再导出，worktree / cleanup 共用）。 */
+export const REPO_GIT_TIMEOUT_MS = 30_000;
+
 /**
  * 子进程跑 git 用的环境变量（T-086）：先剔掉继承来的所有 `GIT_` 开头的变量
  * （`GIT_DIR`、`GIT_WORK_TREE`、`GIT_INDEX_FILE`、`GIT_AUTHOR_*` / `GIT_COMMITTER_*`、

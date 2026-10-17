@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
+import { basename } from "node:path";
 import { EffortSchema } from "@bakacoding/types";
 import { z } from "zod";
+import { errnoCode, jsonErrorText, schemaIssues } from "./safe-error.js";
 
 const Int = z.number().int();
 const NonNegInt = Int.nonnegative();
@@ -180,20 +182,34 @@ export class ConfigError extends Error {
   }
 }
 
-/** 校验原始配置对象，返回错误列表（空表示通过）。 */
+export { formatConfigIssue } from "./safe-error.js";
+
+/**
+ * 校验原始配置对象，返回错误列表（空表示通过）。T-098：错误由 formatConfigIssue 拼，不含配置原值；
+ * 字段路径和未知键名本身也可能像密钥，最后再按 redact light 脱敏一次。
+ */
 export function validate(raw: unknown): string[] {
   const r = ConfigSchema.safeParse(raw);
   if (r.success) return [];
-  return r.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`);
+  return schemaIssues(r.error.issues);
 }
 
-/** 读取并校验配置文件；失败抛 ConfigError（不启动）。 */
+/**
+ * 读取并校验配置文件；失败抛 ConfigError（不启动）。T-098：错误不含文件内容和配置值；
+ * 读不到文件时只报文件名和错误码，不带完整路径。
+ */
 export function getConfig(path: string): Config {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (e) {
+    throw new ConfigError([`无法读取配置文件 ${basename(path)}（${errnoCode(e)}）`]);
+  }
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(path, "utf8"));
+    raw = JSON.parse(text);
   } catch (e) {
-    throw new ConfigError([`无法读取配置 ${path}：${(e as Error).message}`]);
+    throw new ConfigError([jsonErrorText(text, e, "配置文件")]);
   }
   const r = ConfigSchema.safeParse(raw);
   if (!r.success) throw new ConfigError(validate(raw));

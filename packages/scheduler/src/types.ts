@@ -66,6 +66,15 @@ export interface SchedulerWorktrees {
   ): MaybePromise<{ path: string; branch: string }>;
   /** 对应 4 的 cleanup(path) */
   cleanup(path: string): MaybePromise<unknown>;
+  /**
+   * 对应 4 的 cleanupMerged（T-094，可选）：单子合入后清该单所有轮次的 worktree 和已合入的本地分支。
+   * 9 在发完 interface_changed 后放到后台调用、不等它；结果里的 `errors` 和抛错都只交 onError。
+   * 停机后仍可能在跑：只碰 git 和文件系统，不写数据库。
+   */
+  cleanupMerged?(
+    ticket_id: string,
+    merged_into: string,
+  ): MaybePromise<{ errors?: readonly { target: string; message: string }[] } | void>;
 }
 
 /** 冲突复投请求：9 已建好新一轮 worktree，交给 8 重新编码、评审、开新 PR。 */
@@ -347,6 +356,8 @@ export interface QueueEntryView {
 }
 
 export interface Scheduler {
+  /** 合入目标分支（`deps.target`，默认 INTEGRATION_BRANCH），只读（T-094：组合根重启补清理用） */
+  readonly target: string;
   /** 启动：建 6（注入 eventContext），订阅 review_backlog / supervisor_backlog（T-038 起不再订阅 write_scope_requested） */
   start(): Promise<void>;
   /** 停止：停合并循环、取消等待中的定时器、停止派单，并中止交给 8 的 handle / resume（signal，T-039） */

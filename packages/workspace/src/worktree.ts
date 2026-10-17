@@ -3,7 +3,13 @@ import { existsSync } from "node:fs";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
-import { gitEnv } from "./git-env.js";
+import {
+  cleanupMergedWorktrees,
+  type CleanupMergedOptions,
+  type CleanupMergedResult,
+} from "./cleanup.js";
+import { withGitWriteLock } from "./git-lock.js";
+import { gitEnv, REPO_GIT_TIMEOUT_MS } from "./git-env.js";
 
 const run = promisify(execFile);
 
@@ -19,13 +25,20 @@ export interface WorktreeInfo {
   branch: string;
 }
 
-async function git(cwd: string, ...args: string[]): Promise<string> {
+/** T-094：每条 git 都带超时（默认 REPO_GIT_TIMEOUT_MS），挂住的 git 不会一直占着写锁。 */
+async function gitWithTimeout(timeout: number, cwd: string, args: string[]): Promise<string> {
   const { stdout } = await run("git", args, {
     cwd,
     env: gitEnv(),
+    timeout,
+    windowsHide: true,
     maxBuffer: 16 * 1024 * 1024,
   });
   return stdout.trim();
+}
+
+async function git(cwd: string, ...args: string[]): Promise<string> {
+  return gitWithTimeout(REPO_GIT_TIMEOUT_MS, cwd, args);
 }
 
 function assertTicket(ticket_id: string): void {
@@ -137,10 +150,22 @@ export async function ensureBakacodingIgnored(dir: string): Promise<boolean> {
 
 /** 每单 worktree 管理：路径 <repo>/.bakacoding/worktrees/<ticket_id>-r<n>，分支 bakacoding/<ticket_id>-r<n>。 */
 export class WorktreeManager {
-  private constructor(readonly repoRoot: string) {}
+  private constructor(
+    readonly repoRoot: string,
+    private readonly gitTimeoutMs: number = REPO_GIT_TIMEOUT_MS,
+  ) {}
 
-  static async open(dir: string): Promise<WorktreeManager> {
-    return new WorktreeManager(await git(resolve(dir), "rev-parse", "--show-toplevel"));
+  /** `git_timeout_ms`：本实例每条 git 的超时，默认 REPO_GIT_TIMEOUT_MS（T-094，测试用）。 */
+  static async open(dir: string, opts: { git_timeout_ms?: number } = {}): Promise<WorktreeManager> {
+    const t = opts.git_timeout_ms ?? REPO_GIT_TIMEOUT_MS;
+    return new WorktreeManager(
+      await gitWithTimeout(t, resolve(dir), ["rev-parse", "--show-toplevel"]),
+      t,
+    );
+  }
+
+  private git(...args: string[]): Promise<string> {
+    return gitWithTimeout(this.gitTimeoutMs, this.repoRoot, args);
   }
 
   /** 把整个 `.bakacoding/` 写进 .git/info/exclude（不改用户跟踪的 .gitignore）；幂等，旧行保留。 */
@@ -157,7 +182,7 @@ export class WorktreeManager {
     assertTicket(ticket_id);
     if (!Number.isInteger(resubmit_index) || resubmit_index < 0)
       throw new Error("resubmit_index 须为非负整数");
-    const sha = await git(this.repoRoot, "rev-parse", "--verify", `${base_commit}^{commit}`);
+    const sha = await this.git("rev-parse", "--verify", `${base_commit}^{commit}`);
     await this.ensureIgnored();
     const name = `${ticket_id}-r${resubmit_index}`;
     const path = join(this.repoRoot, WORKTREES_DIR, name);
@@ -165,12 +190,14 @@ export class WorktreeManager {
     if (existsSync(path)) throw new Error(`worktree 已存在：${path}`);
     await mkdir(join(this.repoRoot, WORKTREES_DIR), { recursive: true });
     // 新 worktree 只含已提交内容，不带入未跟踪文件（如密钥）。
-    await git(this.repoRoot, "worktree", "add", "-b", branch, path, sha);
+    await withGitWriteLock(this.repoRoot, () =>
+      this.git("worktree", "add", "-b", branch, path, sha),
+    );
     return { path, branch };
   }
 
   async list(): Promise<WorktreeInfo[]> {
-    const out = await git(this.repoRoot, "worktree", "list", "--porcelain");
+    const out = await this.git("worktree", "list", "--porcelain");
     const res: WorktreeInfo[] = [];
     let path = "";
     for (const line of out.split("\n")) {
@@ -186,19 +213,44 @@ export class WorktreeManager {
     return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
   }
 
-  /** 按 ticket_id（清掉该单所有轮次）或 worktree 路径清理：删 worktree 和对应分支。 */
+  /**
+   * 按 ticket_id（清掉该单所有轮次）或 worktree 路径清理：删 worktree 和对应分支。
+   * T-094 起持 withGitWriteLock、逐项处理：一项失败不影响其余，最后 prune；有失败时处理完再抛一个汇总错误。
+   */
   async cleanup(ticketIdOrPath: string): Promise<string[]> {
-    const all = await this.list();
     const byPath = ticketIdOrPath.includes("/") || ticketIdOrPath.includes("\\");
     if (!byPath) assertTicket(ticketIdOrPath);
-    const targets = byPath
-      ? all.filter((w) => resolve(w.path) === resolve(ticketIdOrPath))
-      : all.filter((w) => /^bakacoding\/(.+)-r\d+$/.exec(w.branch)?.[1] === ticketIdOrPath);
-    for (const w of targets) {
-      await git(this.repoRoot, "worktree", "remove", "--force", w.path);
-      await git(this.repoRoot, "branch", "-D", w.branch);
-    }
-    await git(this.repoRoot, "worktree", "prune");
-    return targets.map((w) => w.path);
+    return withGitWriteLock(this.repoRoot, async () => {
+      const all = await this.list();
+      const targets = byPath
+        ? all.filter((w) => resolve(w.path) === resolve(ticketIdOrPath))
+        : all.filter((w) => /^bakacoding\/(.+)-r\d+$/.exec(w.branch)?.[1] === ticketIdOrPath);
+      const done: string[] = [];
+      const failed: string[] = [];
+      for (const w of targets) {
+        try {
+          await this.git("worktree", "remove", "--force", w.path);
+          await this.git("branch", "-D", w.branch);
+          done.push(w.path);
+        } catch (err) {
+          failed.push(`${w.path}：${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      try {
+        await this.git("worktree", "prune");
+      } catch (err) {
+        failed.push(`worktree prune：${err instanceof Error ? err.message : String(err)}`);
+      }
+      if (failed.length) throw new Error(`清理 worktree 部分失败：${failed.join("；")}`);
+      return done;
+    });
+  }
+
+  /** 单子合入后清理（T-094），见 cleanup.ts 的 cleanupMergedWorktrees；从不抛错。 */
+  cleanupMerged(ticket_id: string, opts: CleanupMergedOptions): Promise<CleanupMergedResult> {
+    return cleanupMergedWorktrees(this.repoRoot, ticket_id, {
+      git_timeout_ms: this.gitTimeoutMs,
+      ...opts,
+    });
   }
 }
