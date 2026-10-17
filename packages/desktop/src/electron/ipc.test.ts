@@ -108,6 +108,7 @@ const PUSH_ONLY: readonly string[] = [
   IPC_CHANNELS.supervisorNotify,
   IPC_CHANNELS.highRiskPendingUpdate,
   IPC_CHANNELS.syncStateUpdate,
+  IPC_CHANNELS.appQuitting,
 ];
 const INVOKE_CHANNELS = Object.values(IPC_CHANNELS)
   .filter((c) => !PUSH_ONLY.includes(c))
@@ -431,6 +432,7 @@ describe("preload 暴露的只读 API", () => {
       "listInitialFiles",
       "markSupervisorReady",
       "onPendingHighRisk",
+      "onQuitting",
       "onSupervisorNotify",
       "onSyncState",
       "onUpdate",

@@ -9,7 +9,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { IPC_CHANNELS } from "../shared/api.js";
 import {
   countRunning,
+  lastRepoForStart,
   NotifyBuffer,
+  resolveRepoSource,
   startBackend,
   type BackendHandle,
   type BackendMode,
@@ -569,5 +571,42 @@ describe("重载 / 切换沿用原仓库来源（UI-03a 评审 B1）", () => {
     expect(start).toHaveBeenNthCalledWith(1, "/new");
     expect(start).toHaveBeenNthCalledWith(2, "/unzip", "cwd");
     expect(sw.status().repoSource).toBe("cwd");
+  });
+});
+
+describe("来源不明的只读占位后端重新连接（#130 评审小项，T-106）", () => {
+  /** 和 main.ts 的 start 一样：lastRepoForStart → resolveRepoSource（argv / env 都没给，cwd 是解压目录） */
+  function mainLikeStart(saved: string, mode: BackendMode) {
+    return vi.fn(async (repo?: string, source?: "arg" | "env" | "last_import" | "cwd") => {
+      const last = lastRepoForStart(repo, source, saved);
+      const { root, source: resolved } = resolveRepoSource([], {}, "/unzip", last);
+      const base = fake(root, { mode }).handle;
+      return {
+        ...base,
+        status: () => ({ mode, repoSource: resolved }),
+      } as unknown as BackendHandle;
+    });
+  }
+
+  it("按 cwd 传给 start；照 main 的组装方式解析，落到 process.cwd()、来源是 cwd，不按上次导入放开写操作", async () => {
+    // 组装失败的占位后端不带 repoSource；上次导入保存的正是这个仓库
+    const ro = readonlyBackend("/picked", "写入锁被占用（pid 1）");
+    expect(ro.status().repoSource).toBeUndefined();
+    const start = mainLikeStart("/picked", "live");
+    const sw = make(ro, start as unknown as (repo: string) => Promise<BackendHandle>);
+    await expect(sw.reconnect()).resolves.toEqual({ state: "reloaded" });
+    expect(start).toHaveBeenCalledWith("/picked", "cwd");
+    expect(sw.repoRoot()).toBe("/unzip");
+    expect(sw.status().repoSource).toBe("cwd");
+  });
+
+  it("再失败：占位后端仍不带来源（界面和主进程按 cwd 处理），不会变成 last_import", async () => {
+    const ro = readonlyBackend("/picked", "写入锁被占用（pid 1）");
+    const start = mainLikeStart("/picked", "readonly");
+    const sw = make(ro, start as unknown as (repo: string) => Promise<BackendHandle>);
+    await sw.reconnect();
+    expect(start).toHaveBeenCalledWith("/picked", "cwd");
+    expect(sw.status().mode).toBe("readonly");
+    expect(sw.status().repoSource).toBeUndefined();
   });
 });

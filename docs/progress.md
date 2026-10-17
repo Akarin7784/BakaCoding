@@ -159,6 +159,7 @@ flowchart BT
 | T-088 | 模块 3：界面保存密钥 `setUserSecret` / `clearUserSecret` / `secretStatus`（`secrets.ts`）：写 `HKCU\Environment` 并更新 `process.env`（`getSecret` 照旧读 `process.env`，保存后立即生效）；标记文件 `secret-markers.json`（`userData` 下）存 `{ source, saved_at, last4? }`，`last4` 只在保存时、值 ≥ 8 位才记；末 4 位对不上或变量没了时清标记；标记写失败回滚 HKCU 和 `process.env`；清除只清自己存的（`not_owned` / `not_set`）；密钥值不回传、不进日志 / 事件 / 标记文件；modules.md §3 同步。IPC 在 UI-03b。main `1b34694`，测试 104 个文件 / 1904 个 | 3 | 基础层开发 | 已合入 | #126 | `1b34694` |
 | T-107 | 模块 3：给 `powershellUserEnv()` 补测试（T-088 #126 评审跟进）：挪到内部文件 `secrets-powershell.ts`；mock `spawn` 断言启动参数和脚本文本里没有密钥值、值只在 stdin 里；名字拼进脚本前按白名单再核一次，不在白名单直接拒、不启动 PowerShell；Windows 默认路径（不注入 `userEnv`）保存再清除全程同样断言；接口不变，modules.md §3 同步。UI-03b 之前合入。main `7419998`，测试 105 个文件 / 1912 个 | 3 | 基础层开发 | 已合入 | #128 | `7419998` |
 | UI-03b | 模块 12 模型配置：密钥项、向导、「测试连接」；`secret:*` 和 `provider:test` IPC（UI-07 复用）；依赖 T-088（#126）、T-089 | 12 | 界面与诊断开发 | 等 T-089、T-108 | — | — |
+| T-106 | 模块 12 退出时显示「正在退出」（T-105 跟进）：主进程开始退出收尾时经新 IPC `app:quitting`（主进程 → 渲染进程，不带内容）通知一次，窗口已销毁就跳过、不影响退出；preload `onQuitting`；渲染进程在内容区标题栏下显示中性横幅 + 转圈，固定文案「正在退出…」，不是遮罩；Windows / Linux 点关闭时窗口先不关，等收尾结束统一关，重复点关闭不重复发起（`createWindowCloseHandler`）；`backend-switcher.ts` 来源不明的占位后端重连按 cwd 解析补注释和测试（#130 评审小项）；modules.md §12 同步 | 12 | 界面与诊断开发 | 待评审 | #PR | — |
 | T-109 | 界面：`App.status.test` 重新连接失败用例偶发超时（flaky），定位并修稳；preview.1 之后处理（UI-03a #130 评审跟进） | 12 | 界面与诊断开发 | 待开发（preview.1 之后） | — | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
