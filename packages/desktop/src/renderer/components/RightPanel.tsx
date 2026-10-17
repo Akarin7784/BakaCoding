@@ -3,6 +3,7 @@ import { Button } from "./ui/button";
 import { Separator } from "./ui/separator";
 import { StatusBadge } from "./ui/badge";
 import { cn } from "../lib/utils";
+import { MERGE_COPY, RESUBMIT_COPY } from "../lib/copy";
 import { ticketWarningLabel } from "./Escalations";
 import type { ProjectView } from "../mock/types";
 
@@ -40,7 +41,7 @@ export function RightPanel({
   return (
     <aside
       aria-label="侧边栏"
-      className="flex w-72 shrink-0 flex-col border-l border-border text-sm animate-fade-in"
+      className="flex w-72 shrink-0 flex-col border-l border-border bg-sidebar text-sm animate-fade-in"
     >
       <div data-testid="pool-status" className="flex gap-3 px-4 py-2 text-xs">
         {pool ? (
@@ -69,9 +70,9 @@ export function RightPanel({
               集成 {git.integration_branch}（领先 main {git.integration_ahead_of_main}）
             </div>
             {git.main_merge === "user" && (
-              <Button variant="outline" size="sm" disabled={git.integration_ahead_of_main === 0}>
+              <Button variant="secondary" size="sm" disabled={git.integration_ahead_of_main === 0}>
                 <GitMerge strokeWidth={1.5} />
-                合入 main
+                {MERGE_COPY.mergeMainAction}
               </Button>
             )}
           </>
@@ -96,10 +97,10 @@ export function RightPanel({
                 codes={view.warnings.filter((w) => w.ticket_id === pr.ticket_id).map((w) => w.code)}
               />
               <StatusBadge status={pr.status} />
-              <span className="text-xs text-muted-foreground" title="复投次数">
+              <span className="text-xs text-muted-foreground" title={RESUBMIT_COPY.countTitle}>
                 ×{pr.resubmit_count}
               </span>
-              <Button variant="ghost" size="icon" aria-label={`导出 ${pr.ticket_id} 诊断包`}>
+              <Button variant="secondary" size="icon-sm" aria-label={`导出 ${pr.ticket_id} 诊断包`}>
                 <Download strokeWidth={1.5} />
               </Button>
             </li>

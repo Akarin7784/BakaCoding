@@ -1,19 +1,10 @@
 import { TriangleAlert } from "lucide-react";
+import { ESCALATION_REASON_LABEL } from "../lib/copy";
 import type { EscalationView, TicketWarningView } from "../mock/types";
 import { sliceWarningsForDisplay, truncateDetail, type DedupedWarning } from "../lib/warnings";
 
-export const ESCALATION_REASON: Record<EscalationView["reason"], string> = {
-  review_limit: "评审复投超限",
-  conflict_limit: "冲突复投超限",
-  scope_lock_failed: "写入范围锁定失败",
-  resplit_limit: "重新拆单超限",
-  github_manual: "需人工处理 GitHub",
-  coder_failed: "编码多次未完成",
-  budget_exceeded: "本单预算用完",
-  internal_error: "内部错误",
-  merged_but: "合并后续步骤失败",
-  high_risk_rejected: "用户拒绝了高风险 PR",
-};
+/** 上报原因文案以 lib/copy.ts 为准，这里保留旧名。 */
+export const ESCALATION_REASON = ESCALATION_REASON_LABEL;
 
 /** 合并队列给不认识的 PR 上报时，requirement_id 填 `unattributed:<pr_id>`（T-035）。 */
 export const UNATTRIBUTED_PREFIX = "unattributed:";

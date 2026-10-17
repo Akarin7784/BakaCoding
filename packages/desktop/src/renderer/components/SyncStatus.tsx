@@ -35,7 +35,7 @@ export function SyncStatus({ state, now }: SyncStatusProps) {
         <span
           data-testid="sync-status-label"
           className={cn(
-            alert && "font-medium text-accent",
+            alert && "font-medium text-danger",
             view.tone === "ok" && "text-foreground",
           )}
         >
@@ -48,7 +48,7 @@ export function SyncStatus({ state, now }: SyncStatusProps) {
         <span
           data-testid="sync-hint"
           role={alert ? "alert" : undefined}
-          className={cn(alert && "text-accent")}
+          className={cn(alert && "text-danger")}
         >
           {view.hint}
         </span>

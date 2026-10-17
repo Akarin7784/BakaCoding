@@ -40,5 +40,7 @@ describe("HighRiskPanel（T-062）", () => {
     await waitFor(() =>
       expect(screen.getByTestId("high-risk-error").textContent).toBe("PR 已更新，请重新查看"),
     );
+    // UI-01：错误用 danger 红，不用强调蓝
+    expect(screen.getByTestId("high-risk-error").className).toContain("text-danger");
   });
 });

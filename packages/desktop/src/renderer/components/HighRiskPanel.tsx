@@ -96,7 +96,7 @@ export function HighRiskPanel({ items, disabled, onDecide }: HighRiskPanelProps)
                 </p>
               )}
               {errors[key] && (
-                <p role="alert" data-testid="high-risk-error" className="mt-2 text-xs text-accent">
+                <p role="alert" data-testid="high-risk-error" className="mt-2 text-xs text-danger">
                   {errors[key]}
                 </p>
               )}
@@ -111,7 +111,7 @@ export function HighRiskPanel({ items, disabled, onDecide }: HighRiskPanelProps)
                 </Button>
                 <Button
                   size="sm"
-                  variant="outline"
+                  variant="secondary"
                   disabled={disabled || busy === key}
                   data-testid="high-risk-reject"
                   onClick={() => void decide(item, "reject")}

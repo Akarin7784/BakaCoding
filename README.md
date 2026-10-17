@@ -239,6 +239,7 @@ pnpm --filter @bakacoding/desktop package:linux      # Linux 免安装目录，�
 ## 第三方声明
 
 - **lucide 图标**：应用图标基于 [lucide](https://lucide.dev) 的 Bot 图标，界面图标来自 [`lucide-react`](https://github.com/lucide-icons/lucide)，都是 [ISC 协议](https://github.com/lucide-icons/lucide/blob/main/LICENSE)：Copyright (c) 2026 Lucide Icons and Contributors。其中部分图标（如 `alert-circle`、`arrow-left`、`chevron-down`、`chevron-right`、`download`、`hash`）源自 [Feather](https://github.com/feathericons/feather)，按 MIT 协议使用：Copyright (c) 2013-present Cole Bemis。
+- **Inter 字体**：界面西文字体 [Inter](https://github.com/rsms/inter)（经 [`@fontsource-variable/inter`](https://fontsource.org/fonts/inter) 随包分发 latin / latin-ext 子集），[SIL Open Font License 1.1](https://github.com/rsms/inter/blob/master/LICENSE.txt)：Copyright 2016 The Inter Project Authors；许可全文随应用放在 `dist-renderer/licenses/Inter-OFL-1.1.txt`（源文件 `packages/desktop/public/licenses/`）。
 
 ## 许可证
 
