@@ -1387,3 +1387,76 @@ describe("T-066 checks 翻页 + commit status（C2）", () => {
     expect(res.some((r) => r.name === "p-100")).toBe(true);
   });
 });
+
+describe("merge 重试幂等（T-103）", () => {
+  /** 记 merged 时抛一次错，模拟 PUT merge 已成功、merged 还没记时进程中断。 */
+  function crashOnceOnMerged() {
+    const put = store.put.bind(store);
+    let armed = true;
+    store.put = (r: PrRecord) => {
+      if (armed && r.status === "merged") {
+        armed = false;
+        return Promise.reject(new Error("模拟中断"));
+      }
+      return put(r);
+    };
+  }
+  async function crashedMerge(ticket: string) {
+    await pr.openIntegration();
+    const { wt, branch } = await ticketBranch(ticket);
+    const id = await pr.open(ticket, wt, branch);
+    const head = await rev(wt, "HEAD");
+    crashOnceOnMerged();
+    await expect(pr.merge(id, INTEGRATION_BRANCH)).rejects.toThrow("模拟中断");
+    const pull = pullOf(branch)!;
+    expect(pull.merged).toBe(true);
+    expect((await store.get(id))?.status).toBe("open");
+    return { id, branch, head, mergeSha: pull.merge_commit_sha! };
+  }
+
+  it("远程 PR 已合入：重启后重合直接记已合入，不再推分支、不再 PUT，merge_sha 用 GitHub 的 merge_commit_sha", async () => {
+    const { id, branch, head, mergeSha } = await crashedMerge("T-31");
+    // GitHub 合入后自动删了 head 分支：重试不能把它推回去
+    await git(bare, ["update-ref", "-d", `refs/heads/${branch}`]);
+    const remoteInt = await rev(bare, `refs/heads/${INTEGRATION_BRANCH}`);
+    expect(remoteInt).toBe(mergeSha);
+    const puts = gh.calls.filter((c) => c.method === "PUT").length;
+
+    const r = await provider().merge(id, INTEGRATION_BRANCH);
+    expect(r).toEqual({ merged: true, sha: mergeSha, fast_forward: false });
+    expect(gh.calls.filter((c) => c.method === "PUT").length).toBe(puts);
+    expect(await remoteHas(`refs/heads/${branch}`)).toBe(false);
+    expect(await rev(bare, `refs/heads/${INTEGRATION_BRANCH}`)).toBe(remoteInt);
+    expect(await rev(repo, INTEGRATION_BRANCH)).toBe(mergeSha);
+    expect(await store.get(id)).toMatchObject({
+      status: "merged",
+      merged_into: INTEGRATION_BRANCH,
+      merge_sha: mergeSha,
+      head_sha: head,
+    });
+    expect(events).toEqual([]);
+  });
+
+  it("查 PR 时还没合入、PUT 回 405（已合入）：回查后按已合入处理，不返回 merge_blocked", async () => {
+    const { id, mergeSha } = await crashedMerge("T-32");
+    let gets = 0;
+    gh.override = (method, path) => {
+      if (method === "GET" && path === "/pulls/1" && gets++ === 0)
+        return new Response(
+          JSON.stringify({ number: 1, html_url: "u", state: "open", merged: false }),
+          { status: 200 },
+        );
+      if (method === "PUT" && path.endsWith("/merge"))
+        return new Response(JSON.stringify({ message: "Pull Request is not mergeable" }), {
+          status: 405,
+        });
+      return undefined;
+    };
+    const r = await provider().merge(id, INTEGRATION_BRANCH);
+    expect(r).toEqual({ merged: true, sha: mergeSha, fast_forward: false });
+    expect(gets).toBe(2);
+    expect(await rev(repo, INTEGRATION_BRANCH)).toBe(mergeSha);
+    expect(await store.get(id)).toMatchObject({ status: "merged", merge_sha: mergeSha });
+    expect(events).toEqual([]);
+  });
+});

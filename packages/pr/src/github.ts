@@ -346,6 +346,10 @@ export class GithubPrProvider implements PrProvider {
     const head = await revParse(cwd, rec.branch);
     if (opts?.expected_head !== undefined && opts.expected_head !== head)
       throw new ExpectedHeadMismatchError(pr_id, opts.expected_head, head);
+    // T-103：重试幂等。上次 PUT merge 已成功、但没来得及记 merged（中断、重启后重合）：先查远程 PR，
+    // 已合入就直接记已合入，不再推分支（GitHub 可能已自动删了分支，再推会把它建回来）、不再 PUT
+    const already = await this.mergedPull(rec);
+    if (already) return this.finishMerged(rec, already, target, head);
     // 原地复投的新提交只在本地：合并前先推上去（只推本单分支，不强推），再用 sha 校验
     await this.pushForMerge(rec, cwd);
     // T-066 C1：有 expected_head 时把它作为 GitHub merge 的 sha；否则用当前 HEAD
@@ -358,6 +362,9 @@ export class GithubPrProvider implements PrProvider {
     });
     if (res.status === 405 || res.status === 409) {
       const message = await this.responseMessage(res);
+      // T-103：GitHub 对已合入的 PR 再 PUT merge 回 405；回查一次，已合入（含查完 PR 到 PUT 之间被合入）按已合入处理
+      const merged = await this.mergedPull(rec);
+      if (merged) return this.finishMerged(rec, merged, target, head);
       await this.fetchRemote();
       const conflicted_files = await this.conflictedFiles(
         this.repo,
@@ -393,6 +400,46 @@ export class GithubPrProvider implements PrProvider {
       head_sha: head,
       status: "merged",
       merged_into: target,
+      merge_sha: sha,
+      updated_ts: this.now().toISOString(),
+    });
+    return { merged: true, sha, fast_forward: sha === head };
+  }
+
+  /** GET 远程 PR；已合入返回它，未合入（或没有 remote）返回 undefined。限流 / 鉴权照旧抛错。 */
+  private async mergedPull(rec: PrRecord): Promise<GhPull | undefined> {
+    if (!rec.remote) return undefined;
+    const op = "GET /pulls/{n}";
+    const res = await this.request(op, rec, "GET", `/pulls/${rec.remote.number}`);
+    if (!res.ok) throw await this.apiError(op, res);
+    const pull = (await res.json()) as GhPull;
+    return pull.merged || pull.merged_at ? pull : undefined;
+  }
+
+  /**
+   * 远程 PR 已合入（T-103）：fetch、把本地 target 快进到远端（advanceLocal 本身幂等：已一致不动、分叉只记日志），
+   * 记 merged。merge_sha 用 GitHub 的 merge_commit_sha，缺省时取远端 target 的 tip。
+   */
+  private async finishMerged(
+    rec: PrRecord,
+    pull: GhPull,
+    target: string,
+    head: string,
+  ): Promise<MergeResult> {
+    await this.fetchRemote();
+    const sha = pull.merge_commit_sha || (await revParse(this.repo, `${this.remote}/${target}`));
+    await this.advanceLocal(target, `${this.remote}/${target}`);
+    let base_sha = rec.base_sha;
+    if (rec.kind === "integration" && sha !== head) {
+      const r = await git(this.repo, ["merge-base", `${sha}^1`, head], { allowCodes: [1, 128] });
+      if (r.code === 0 && r.stdout.trim()) base_sha = r.stdout.trim();
+    }
+    await this.store.put({
+      ...rec,
+      base_sha,
+      head_sha: head,
+      status: "merged",
+      merged_into: pull.base?.ref ?? target,
       merge_sha: sha,
       updated_ts: this.now().toISOString(),
     });
