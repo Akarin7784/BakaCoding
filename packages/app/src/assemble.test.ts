@@ -1610,6 +1610,57 @@ describe("T-085 组合根：8 / 9 写状态都发 ticket_status_changed", () => 
   });
 });
 
+describe("T-096 App.stop() 等 9 收尾", () => {
+  it("重启补清理（T-094 sweepMergedLeftovers）挂着不返回：stop() 不等它", async () => {
+    const { storage, worktreeRoot } = setup();
+    mkdirSync(join(worktreeRoot, "T-A-r0"), { recursive: true });
+    saveTicket(storage, "T-A", "merged", fields());
+    let called = 0;
+    const { app } = await start({
+      storage,
+      worktreeRoot,
+      pr: fakePr().pr,
+      cleanupMerged: () => {
+        called++;
+        return new Promise(() => {}); // 永不返回
+      },
+    });
+    await vi.waitFor(() => expect(called).toBe(1));
+    await expect(app.stop()).resolves.toBeUndefined();
+  });
+  it("编码在途（runTicket 不理 signal）：stop() 等它返回才 resolve；库里单子状态 stop 前后一样，resolve 后不再写库", async () => {
+    const { storage, worktreeRoot } = setup();
+    saveTicket(storage, "req-1-1", "coding", fields());
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const runTicket = vi.fn(async () => {
+      await gate;
+      return { status: "done" as const, summary: "", changed_files: ["lib/a/x.ts"] };
+    });
+    const { pr, calls } = fakePr();
+    const { app } = await start({ storage, worktreeRoot, pr, runTicket });
+    await vi.waitFor(() => expect(runTicket).toHaveBeenCalled(), { timeout: 5000 });
+    const before = storage.listTickets().map((t) => [t.ticket_id, t.status]);
+    let done = false;
+    const p = app.stop().then(() => (done = true));
+    expect(app.stop()).toBeInstanceOf(Promise);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(done).toBe(false);
+    release();
+    await p;
+    expect(storage.listTickets().map((t) => [t.ticket_id, t.status])).toEqual(before);
+    expect(statusOf(storage, "req-1-1")).toBe("coding");
+    expect(calls.open).toEqual([]);
+    expect(calls.merge).toEqual([]);
+    const after = storage.listTickets().map((t) => [t.ticket_id, t.status]);
+    const events = storage.queryEvents().length;
+    await new Promise((r) => setTimeout(r, 20));
+    expect(storage.listTickets().map((t) => [t.ticket_id, t.status])).toEqual(after);
+    expect(storage.queryEvents().length).toBe(events);
+    expect(storage.queryEvents({ types: ["escalated"] })).toEqual([]);
+  });
+});
+
 describe("T-094：重启补清理已合入单的 worktree / 分支", () => {
   it("接管后、定时 sync 前，对 2 里已 merged 且还留着 worktree 或分支的单调 cleanupMerged；失败只警告", async () => {
     const { root, storage, worktreeRoot } = setup();

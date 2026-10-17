@@ -137,8 +137,36 @@ export interface App {
   pr: PrProvider;
   /** 启动时重启接管的结果（10 的 takeOver） */
   takeOver: TakeOverReport;
-  /** 停 9、退订 8 / 10 / 2 的订阅；不关存储 */
-  stop(): void;
+  /**
+   * 停 9、退订 8 / 10 / 2 的订阅；不关存储。退订和 9 的 stop 同步生效；返回的 Promise（T-096）等 9 的
+   * `stop()` 收尾（在途派单、复投 / 重审、合并循环、sync）后 resolve，之后再关库、放写锁。从不 reject。
+   */
+  stop(): Promise<void>;
+}
+
+/**
+ * T-042 C3：用户仓库里检出 main 的 worktree 路径，没有检出（或 git 出错）时 null。
+ * 仓库根优先取 `AppDeps.repoRoot`（T-094 加的，`createDefaultDeps` 传 4 的 `WorktreeManager.repoRoot`）；
+ * 没给时才按 `worktreeRoot = <repo>/.bakacoding/worktrees` 往上推两级（T-096）。从 assemble.ts 导出供测试。
+ */
+export async function userMainWorktreeFor(
+  deps: Pick<AppDeps, "repoRoot" | "worktreeRoot">,
+): Promise<string | null> {
+  const repo = deps.repoRoot ?? dirname(dirname(deps.worktreeRoot));
+  try {
+    const { stdout } = await promisify(execFile)("git", ["worktree", "list", "--porcelain"], {
+      cwd: repo,
+      encoding: "utf8",
+    });
+    let path: string | undefined;
+    for (const line of stdout.split("\n")) {
+      if (line.startsWith("worktree ")) path = line.slice(9);
+      else if (line === "branch refs/heads/main") return path ?? null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 /**
@@ -390,22 +418,7 @@ export async function assemble(deps: AppDeps): Promise<App> {
   /** T-042 C3：用户仓库是否正检出 main（本地模式合 main 会动工作区） */
   async function userMainWorktree(): Promise<string | null> {
     if (pr.kind !== "local") return null;
-    // worktreeRoot = <repo>/.bakacoding/worktrees
-    const repo = dirname(dirname(deps.worktreeRoot));
-    try {
-      const { stdout } = await promisify(execFile)("git", ["worktree", "list", "--porcelain"], {
-        cwd: repo,
-        encoding: "utf8",
-      });
-      let path: string | undefined;
-      for (const line of stdout.split("\n")) {
-        if (line.startsWith("worktree ")) path = line.slice(9);
-        else if (line === "branch refs/heads/main") return path ?? null;
-      }
-    } catch {
-      return null;
-    }
-    return null;
+    return userMainWorktreeFor(deps);
   }
 
   /**
@@ -744,6 +757,8 @@ export async function assemble(deps: AppDeps): Promise<App> {
           onError(err, "stop");
         }
       }
+      // T-096：9 的 stop() 已在上面同步调过；再调一次拿同一个 Promise，等在途工作收尾
+      return scheduler.stop().catch((err) => onError(err, "stop"));
     },
   };
 }

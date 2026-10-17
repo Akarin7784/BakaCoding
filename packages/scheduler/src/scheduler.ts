@@ -199,9 +199,17 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   const newId = deps.newId ?? randomUUID;
   const target = deps.target ?? INTEGRATION_BRANCH;
   const dirtyRetryMs = deps.target_dirty_retry_ms ?? DEFAULT_TARGET_DIRTY_RETRY_MS;
-  const onError =
+  const rawOnError =
     deps.onError ??
     ((e: unknown, t: string) => console.warn(`[scheduler] ${t}: ${(e as Error)?.message ?? e}`));
+  /** 注入的 onError 自己抛错时吞掉（T-096）：不让它变成 reject / 未处理的 rejection，也不打断收尾 */
+  const onError = (e: unknown, t: string): void => {
+    try {
+      rawOnError(e, t);
+    } catch {
+      /* onError 抛错：忽略 */
+    }
+  };
   const limits = deps.config.pipeline.resubmit_limits;
   const hardMax = deps.config.pipeline.concurrency_hard_max ?? Number.POSITIVE_INFINITY;
   const bp = new BackpressureController(deps.config);
@@ -262,6 +270,10 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
    */
   let pumpAgain = false;
   let stopped = false;
+  /** stop() 返回的 Promise（T-096）：重复调用返回同一个 */
+  let stopping: Promise<void> | undefined;
+  /** 在途的 sync（显式 sync() 和定时 sync）：stop() 等它们收尾（T-096） */
+  const syncs = new Set<Promise<unknown>>();
   /** 正在 step 里处理的单（出错时上报它） */
   let current: Entry | undefined;
   /** current 的合并已经成功（之后的收尾出错时 detail 用 merged_but） */
@@ -543,6 +555,11 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     e.busy = true;
     const p = task()
       .catch(async (err) => {
+        if (stopped) {
+          // stop() 之后才失败（T-096）：不上报、不改状态，留给下次启动的 takeOver
+          onError(err, e.ticket.ticket_id);
+          return;
+        }
         // 终态（如 sync 期间已标 merged / escalated）不覆盖，只记一笔（escalateOnError 里判断）
         await escalateOnError(e, `${kind}_error`, err);
       })
@@ -1043,6 +1060,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     // 合并日志定不了基线：和目标分支当前 HEAD 比，不同（或连基线都不知道）就保守地重审
     if (e.base_unknown) {
       const head = await deps.targetHead();
+      if (stopped) return false; // T-096：读 HEAD 期间 stop 了，不再重审，留在队里
       if (e.base_commit !== undefined && head === e.base_commit) {
         e.base_unknown = false;
         e.base_seq = mergeLog.length;
@@ -1064,10 +1082,16 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       e.base_seq = mergeLog.length;
     }
 
+    if (stopped) return false;
     let res: MergeResult;
     try {
       res = await requirePr().merge(pr_id, target);
     } catch (err) {
+      if (stopped) {
+        // T-096：stop 之后才失败：不上报、不改状态（仍是 merge_queued），留给下次启动的 takeOver
+        onError(err, id);
+        return false;
+      }
       const wait = rateLimitWait(err);
       if (wait !== undefined) {
         noteRateLimit(wait);
@@ -1092,6 +1116,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       }
       return true;
     }
+    // T-096：stop 之后才回来、没合进去（冲突 / target_dirty / merge_blocked）：不复投、不上报、不改状态，
+    // 仍是 merge_queued，下次启动由 takeOver 接回重试。合进去了照常收尾（代码已在目标分支上）
+    if (stopped && !res.merged) return false;
     e.rate_limit_streak = 0;
     if (!(!res.merged && !res.conflict && res.reason === "target_dirty")) e.target_dirty_streak = 0;
 
@@ -1148,6 +1175,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
             const e = current as Entry | undefined;
             // 已经合入、收尾（发 interface_changed 等）失败：状态保持 merged，发 escalated(merged_but)（T-038）
             if (e && currentMerged) await reportMergedBut(e, err);
+            else if (e && stopped)
+              onError(err, e.ticket.ticket_id); // T-096：stop 后不上报、不改状态
             else if (e) await escalateOnError(e, "merge_error", err);
             else onError(err, "(queue)");
             more = !stopped;
@@ -1258,6 +1287,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     );
     if (paused.length === 0 || stopped) return [];
     if ((budget ?? (await deps.budgetState())).daily_exhausted) return [];
+    if (stopped) return [];
     for (const e of paused) startResume(e);
     return paused.map((e) => e.ticket.ticket_id);
   }
@@ -1269,6 +1299,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   async function dispatchOnce(): Promise<string[]> {
     if (stopped || !pr) return [];
     const budget = await deps.budgetState();
+    if (stopped) return [];
     const state = backpressureFrom(budget);
     notePaused(state);
     // 闸门：反压暂停（评审积压、主管待办、待合并 PR 超限、当日预算用完）时不派新单、也不续跑
@@ -1491,7 +1522,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     syncTimer = syncTimers.setTimeout(() => {
       syncTimer = undefined;
       syncNextAt = null;
-      void runTimedSync();
+      void trackSync(runTimedSync());
     }, wait);
   }
 
@@ -1621,6 +1652,26 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   }
   const syncImpl = doSync;
 
+  /** 记下在途的 sync，stop() 等它收尾（T-096）；原样返回，不吞错 */
+  function trackSync<T>(p: Promise<T>): Promise<T> {
+    syncs.add(p);
+    const done = () => void syncs.delete(p);
+    p.then(done, done);
+    return p;
+  }
+
+  /** stop() 之后等所有在途工作收尾（T-096）：一轮收尾可能又引出新的（如合并循环补跑），循环到全部清空 */
+  async function drain(): Promise<void> {
+    for (;;) {
+      const inflight: Array<Promise<unknown>> = [...background, ...syncs];
+      if (pumping) inflight.push(pumping);
+      if (dispatchRunning) inflight.push(dispatchRunning);
+      if (dispatchQueued) inflight.push(dispatchQueued);
+      if (inflight.length === 0) return;
+      await Promise.allSettled(inflight);
+    }
+  }
+
   return {
     target,
     async start() {
@@ -1643,6 +1694,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       kickDispatch();
     },
     stop() {
+      if (stopping) return stopping;
       stopped = true;
       if (!abort.signal.aborted) {
         const reason = new Error("调度器已停止");
@@ -1655,6 +1707,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       for (const t of timers) clearTimeout(t);
       timers.clear();
       for (const wake of [...sleepers]) wake();
+      stopping = drain().catch((err) => onError(err, "(stop)"));
+      return stopping;
     },
     async enqueue(ticket) {
       if (entries.has(ticket.ticket_id)) throw new Error(`重复登记的单：${ticket.ticket_id}`);
@@ -1835,7 +1889,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     },
     eventContext,
     mergeResult: (pr_id) => results.get(pr_id),
-    sync: doSync,
+    sync: () => trackSync(doSync()),
     startSyncLoop() {
       if (syncLoopStarted || stopped || syncPollMs <= 0 || syncAuthDisabled) return;
       syncLoopStarted = true;

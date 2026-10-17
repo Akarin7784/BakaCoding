@@ -3086,6 +3086,202 @@ describe("T-064 定时 sync + 独占区域大小写 + adopt 已合入", () => {
   });
 });
 
+// ---------------- T-096：stop() 返回 Promise，等在途工作收尾 ----------------
+
+/** 把 harness 的 6 包一层：merge / sync 可以换成可控的实现。 */
+function controllablePr(
+  h: Harness,
+  over: {
+    merge?: (pr_id: string, target: string) => Promise<MergeResult>;
+    sync?: () => Promise<SyncChange[]>;
+  },
+) {
+  const orig = h.deps.createPr;
+  h.deps.createPr = async (args) => {
+    const base = await orig(args);
+    return { ...base, ...over };
+  };
+}
+
+const flush = async (n = 5) => {
+  for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 0));
+};
+
+describe("T-096 stop() 等在途工作收尾", () => {
+  it("S1. 在途的 handle（不理 signal）收尾前 stop() 不 resolve；收尾后 resolve；重复调用返回同一个 Promise", async () => {
+    const h = harness();
+    const d = withHandle(h);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { write_scope: ["a/**"] }));
+    await settle(s);
+    expect(d.handled).toEqual(["T-1"]);
+    let done = false;
+    const p = s.stop();
+    void p.then(() => (done = true));
+    expect(s.stop()).toBe(p);
+    await flush();
+    expect(done).toBe(false);
+    d.pending.get("T-1")!.reject(new Error("8 收尾时抛错"));
+    await p;
+    expect(done).toBe(true);
+    // 被取消的 handle：不上报、不改状态
+    expect(escalations(h)).toEqual([]);
+    expect(h.statuses).toEqual([["T-1", "pending"]]);
+  });
+
+  it("S2. 合并在途时 stop：merge 回来是冲突也不复投、不上报、不改状态；resolve 之后不再写库", async () => {
+    const h = harness();
+    const m = deferred<MergeResult>();
+    controllablePr(h, {
+      merge: (pr_id, target) => {
+        h.calls.push(`merge:${pr_id}:${target}`);
+        return m.promise;
+      },
+    });
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1" });
+    await vi.waitFor(() => expect(h.calls).toContain("merge:pr-1:bakacoding/integration"));
+    const before = [...h.statuses];
+    let done = false;
+    const p = s.stop().then(() => (done = true));
+    await flush();
+    expect(done).toBe(false);
+    m.resolve(conflict());
+    await p;
+    expect(h.statuses).toEqual(before);
+    expect(h.statuses.at(-1)).toEqual(["T-1", "merge_queued"]);
+    expect(s.status("T-1")).toBe("merge_queued");
+    expect(h.resubmit).not.toHaveBeenCalled();
+    expect(h.calls.filter((c) => c.startsWith("create:"))).toEqual([]);
+    expect(escalations(h)).toEqual([]);
+    const after = h.statuses.length;
+    const events = h.published.length;
+    await flush(10);
+    expect(h.statuses).toHaveLength(after);
+    expect(h.published).toHaveLength(events);
+  });
+
+  it("S3. 合并在途时 stop、merge 抛错：不上报 merge_error、不改状态，错误交 onError", async () => {
+    const h = harness();
+    const m = deferred<MergeResult>();
+    controllablePr(h, { merge: () => m.promise });
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1" });
+    await flush();
+    const before = [...h.statuses];
+    const p = s.stop();
+    m.reject(new Error("网络断了"));
+    await p;
+    expect(h.statuses).toEqual(before);
+    expect(s.status("T-1")).toBe("merge_queued");
+    expect(escalations(h)).toEqual([]);
+    expect(h.errors.map((e) => (e as Error).message)).toContain("网络断了");
+  });
+
+  it("S4. 冲突复投在途时 stop：等 8 返回才 resolve；8 在 stop 后抛错不上报、不改状态", async () => {
+    const h = harness();
+    const r = deferred<SubAgentOutcome>();
+    h.resubmit.mockImplementation(() => r.promise);
+    h.merges.set("pr-1", [conflict()]);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1" });
+    await vi.waitFor(() => expect(h.resubmit).toHaveBeenCalledTimes(1));
+    const before = [...h.statuses];
+    expect(before.at(-1)).toEqual(["T-1", "resubmitting"]);
+    let done = false;
+    const p = s.stop().then(() => (done = true));
+    await flush();
+    expect(done).toBe(false);
+    r.reject(new Error("8 被打断"));
+    await p;
+    expect(h.statuses).toEqual(before);
+    expect(s.status("T-1")).toBe("resubmitting");
+    expect(escalations(h)).toEqual([]);
+  });
+
+  it("S5. 在途的 sync：stop() 等它收尾", async () => {
+    const h = harness();
+    const sy = deferred<SyncChange[]>();
+    controllablePr(h, { sync: () => sy.promise });
+    const s = await started(h);
+    const syncing = s.sync();
+    let done = false;
+    const p = s.stop().then(() => (done = true));
+    await flush();
+    expect(done).toBe(false);
+    sy.resolve([]);
+    await p;
+    await expect(syncing).resolves.toEqual([]);
+  });
+
+  it("S6. onError 自己抛错：stop() 照常 resolve，不产生未处理的 rejection", async () => {
+    const h = harness();
+    const d = withHandle(h);
+    h.deps.onError = () => {
+      throw new Error("onError 坏了");
+    };
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown) => void unhandled.push(e);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const s = await started(h);
+      await s.enqueue(ticket("T-1", { write_scope: ["a/**"] }));
+      await settle(s);
+      const p = s.stop();
+      d.pending.get("T-1")!.reject(new Error("aborted"));
+      await expect(p).resolves.toBeUndefined();
+      await flush(10);
+      expect(unhandled).toEqual([]);
+      expect(escalations(h)).toEqual([]);
+
+      // 合并在途、stop 之后 merge 抛错：错误交给（会抛错的）onError，照样 resolve、不留未处理的 rejection
+      const h2 = harness();
+      h2.deps.onError = () => {
+        throw new Error("onError 坏了");
+      };
+      const m = deferred<MergeResult>();
+      controllablePr(h2, { merge: () => m.promise });
+      const s2 = await started(h2);
+      await s2.enqueue(ticket("T-1"));
+      await s2.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1" });
+      await flush();
+      const p2 = s2.stop();
+      m.reject(new Error("网络断了"));
+      await expect(p2).resolves.toBeUndefined();
+      await flush(10);
+      expect(unhandled).toEqual([]);
+      expect(s2.status("T-1")).toBe("merge_queued");
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("S8. 合入后清理（T-094 cleanupMerged）挂着不返回：stop() 不等它", async () => {
+    const h = harness();
+    let called = 0;
+    h.deps.worktrees.cleanupMerged = () => {
+      called++;
+      return new Promise(() => {}); // 永不返回
+    };
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/wt/T-1-r0" });
+    await vi.waitFor(() => expect(called).toBe(1));
+    expect(s.status("T-1")).toBe("merged");
+    await expect(s.stop()).resolves.toBeUndefined();
+  });
+
+  it("S7. 没有在途工作 / 没 start 过：stop() 直接 resolve", async () => {
+    const h = harness();
+    await expect(createScheduler(h.deps).stop()).resolves.toBeUndefined();
+    const s = await started(h);
+    await expect(s.stop()).resolves.toBeUndefined();
+  });
+});
+
 describe("T-094：合入后清理 worktree / 分支", () => {
   it("合入后在发完 interface_changed 之后调 cleanupMerged(ticket_id, 目标分支)", async () => {
     const h = harness();
