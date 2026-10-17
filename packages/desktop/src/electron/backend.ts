@@ -9,6 +9,7 @@ import {
   assemble,
   isTicketActive,
   createDefaultDeps,
+  ensureBakacodingIgnored,
   type App,
   type DefaultDepsHandle,
   type WriterLock,
@@ -37,7 +38,7 @@ import type {
 } from "../shared/api.js";
 import { DB_PATH_ENV, DEFAULT_DB_RELATIVE, resolveDbPath } from "./config.js";
 import { createSerialQueue, runSupervisorChat } from "./supervisor-chat.js";
-import { toDesktopSyncState, unavailableSyncState } from "./sync-state.js";
+import { errorDetail, toDesktopSyncState, unavailableSyncState } from "./sync-state.js";
 
 /** 仓库路径：`--repo` > BAKACODING_REPO > cwd */
 export const REPO_ENV = "BAKACODING_REPO";
@@ -85,6 +86,8 @@ export interface BackendOptions {
   onAssembled?: (app: App) => void;
   /** 测试注入：模块 3 的 importProject */
   importProject?: typeof importProjectDefault;
+  /** 测试注入：模块 4 的 ensureBakacodingIgnored（T-078） */
+  ensureIgnored?: (dir: string) => Promise<boolean>;
 }
 
 export interface BackendHandle {
@@ -334,6 +337,15 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
     }
     lock = undefined;
   };
+
+  // T-078：建写入锁 / 数据库之前先把 /.bakacoding/ 写进仓库的 .git/info/exclude；传仓库根（db 可能不在仓库里）。
+  // 失败只记 warn（只记 errorDetail），不挡启动。
+  try {
+    if (!(await (opts.ensureIgnored ?? ensureBakacodingIgnored)(repoRoot)))
+      logger.warn("仓库不是 git 仓库，未写 .git/info/exclude");
+  } catch (e) {
+    logger.warn(`写 .git/info/exclude 失败：${errorDetail(e)}`);
+  }
 
   const acquired = acquireWriterLock(dbPath);
   if ("heldBy" in acquired) {
