@@ -878,18 +878,18 @@ describe("T-041c judgeHighRiskOnTakeover（N4）", () => {
   });
 
   it("删除的 package.json、改名的文件、锁文件都算高风险；普通改动不算；diff 出错按高风险", async () => {
+    const judge = async (path: string, status: "added" | "modified" | "deleted" | "renamed") =>
+      (await judgeHighRiskOnTakeover(diffOf([{ path, status }]), "p")).high_risk;
+    expect(await judge("package.json", "deleted")).toBe(true);
+    expect(await judge("src/x.ts", "renamed")).toBe(true);
+    expect(await judge("sub/yarn.lock", "modified")).toBe(true);
+    expect(await judge("apps/web/pnpm-lock.yaml", "added")).toBe(true);
+    expect(await judge("src/x.ts", "modified")).toBe(false);
+    expect(await judge("docs/package.json.md", "modified")).toBe(false);
     expect(
-      await judgeHighRiskOnTakeover(diffOf([{ path: "package.json", status: "deleted" }]), "p"),
-    ).toBe(true);
-    expect(
-      await judgeHighRiskOnTakeover(diffOf([{ path: "src/x.ts", status: "renamed" }]), "p"),
-    ).toBe(true);
-    expect(
-      await judgeHighRiskOnTakeover(diffOf([{ path: "sub/yarn.lock", status: "modified" }]), "p"),
-    ).toBe(true);
-    expect(
-      await judgeHighRiskOnTakeover(diffOf([{ path: "src/x.ts", status: "modified" }]), "p"),
-    ).toBe(false);
+      (await judgeHighRiskOnTakeover(diffOf([{ path: "package.json", status: "deleted" }]), "p"))
+        .files,
+    ).toEqual([{ path: "package.json", status: "deleted", additions: 0, deletions: 0, patch: "" }]);
     const warned: string[] = [];
     expect(
       await judgeHighRiskOnTakeover(
@@ -901,7 +901,7 @@ describe("T-041c judgeHighRiskOnTakeover（N4）", () => {
         "p",
         (m) => void warned.push(m),
       ),
-    ).toBe(true);
+    ).toEqual({ high_risk: true, files: null });
     expect(warned[0]).toMatch(/按高风险处理/);
   });
 });
@@ -924,7 +924,9 @@ describe("T-041c 组合根：高风险闸门", () => {
     const f = fakePr();
     const closed: string[] = [];
     f.pr.close = async (id) => void closed.push(id);
+    const diffCalls: string[] = [];
     f.pr.diff = async (pr_id) => {
+      diffCalls.push(pr_id);
       if (pr_id === "local-req-1-1" && o.diffFails) throw new Error("diff 挂了");
       return {
         base_sha: HEAD,
@@ -944,11 +946,11 @@ describe("T-041c 组合根：高风险闸门", () => {
       ...(o.config ? { config: o.config } : {}),
       ...(o.scheduler ? { scheduler: o.scheduler } : {}),
     });
-    return { storage, app, calls: f.calls, closed, notified };
+    return { storage, app, calls: f.calls, closed, notified, pr: f.pr, diffCalls };
   }
 
   it("重启：按 diff 补判出高风险（删了 package.json、kind 不是 dependency）的单扣着并通知用户放行不保存；普通单照常合；放行后合入", async () => {
-    const { storage, app, calls, notified } = await restartSetup();
+    const { storage, app, calls, notified, diffCalls } = await restartSetup();
     expect(app.takeOver.adopted).toEqual(["req-1-1", "req-1-2"]);
     await app.scheduler.idle();
     expect(calls.merge).toEqual(["local-req-1-2"]);
@@ -959,10 +961,28 @@ describe("T-041c 组合根：高风险闸门", () => {
     expect(
       notified.filter((t) => /重启后.*req-1-1.*放行不跨重启保存.*再放行一次/.test(t)),
     ).toHaveLength(1);
+    // 理由和文件来自 N4 补判时那份 diff：每个 PR 只取一次 diff
     expect(app.supervisor.pendingHighRisk()).toEqual([
-      { ticket_id: "req-1-1", pr_id: "local-req-1-1" },
+      {
+        ticket_id: "req-1-1",
+        project_id: "proj-1",
+        pr_id: "local-req-1-1",
+        reasons: ["dependency_file"],
+        files: ["package.json"],
+        files_more: 0,
+        held_at: expect.any(String),
+      },
     ]);
-    expect(await app.supervisor.decideHighRisk("req-1-1", "release")).toEqual({ ok: true });
+    expect(diffCalls.filter((id) => id === "local-req-1-1")).toHaveLength(1);
+    // 按 pr_id 绑定：旧 / 错的 pr_id 抛 stale_pr
+    await expect(
+      app.supervisor.decideHighRisk("req-1-1", "local-old", "release"),
+    ).rejects.toMatchObject({ code: "stale_pr" });
+    expect(calls.merge).toEqual(["local-req-1-2"]);
+    expect(await app.supervisor.decideHighRisk("req-1-1", "local-req-1-1", "release")).toEqual({
+      decision: "release",
+      result: "released",
+    });
     await app.scheduler.idle();
     expect(calls.merge).toEqual(["local-req-1-2", "local-req-1-1"]);
     expect(statusOf(storage, "req-1-1")).toBe("merged");
@@ -983,9 +1003,9 @@ describe("T-041c 组合根：高风险闸门", () => {
   it("拒绝：关掉 PR、单子 escalated、escalated(high_risk_rejected) 落库，主管交用户、不重拆", async () => {
     const { storage, app, closed, notified } = await restartSetup();
     await app.scheduler.idle();
-    expect(await app.supervisor.decideHighRisk("req-1-1", "reject", "不要删依赖")).toEqual({
-      ok: true,
-    });
+    expect(
+      await app.supervisor.decideHighRisk("req-1-1", "local-req-1-1", "reject", "不要删依赖"),
+    ).toEqual({ decision: "reject", pr_close: "closed" });
     await vi.waitFor(() =>
       expect(notified.some((t) => /高风险 PR 被拒绝.*不重拆/.test(t))).toBe(true),
     );
@@ -997,6 +1017,35 @@ describe("T-041c 组合根：高风险闸门", () => {
         .map((e) => [e.ticket_id, (e.payload as { reason: string; detail?: string }).reason]),
     ).toEqual([["req-1-1", "high_risk_rejected"]]);
     expect(app.supervisor.pendingHighRisk()).toEqual([]);
+  });
+
+  it("拒绝时 6 的 sync 被限流：照样拒绝（escalated(high_risk_rejected)），本地 PR 记录不标关闭，记 unconfirmed，单子不再进合并队列", async () => {
+    const { storage, app, calls, closed, pr } = await restartSetup();
+    await app.scheduler.idle();
+    const err = new GithubRateLimitError(429, "sync", 60000);
+    pr.sync = async (): Promise<never> => {
+      throw err;
+    };
+    expect(
+      await app.supervisor.decideHighRisk("req-1-1", "local-req-1-1", "reject", "不要"),
+    ).toEqual({ decision: "reject", pr_close: "unconfirmed" });
+    expect(closed).toEqual([]);
+    expect((await storage.prStore<TicketPrRecord>().get("local-req-1-1"))?.status).toBe("open");
+    expect(statusOf(storage, "req-1-1")).toBe("escalated");
+    expect(
+      storage
+        .queryEvents({ types: ["escalated"] })
+        .map((e) => [e.ticket_id, (e.payload as { reason: string }).reason]),
+    ).toEqual([["req-1-1", "high_risk_rejected"]]);
+    expect(
+      (storage.getTicket("req-1-1")!.fields as { high_risk_close?: { state: string } })
+        .high_risk_close?.state,
+    ).toBe("unconfirmed");
+    await app.scheduler.idle();
+    expect(calls.merge).not.toContain("local-req-1-1");
+    expect(app.scheduler.snapshot().find((v) => v.ticket_id === "req-1-1")!.status).toBe(
+      "escalated",
+    );
   });
 
   it("反压暂停（待合并 PR 超限）时通知用户，写明其中几张是等裁决的高风险 PR", async () => {
@@ -1037,6 +1086,13 @@ describe("T-041c 组合根：高风险闸门", () => {
     const t = notifiedAll.find((x) => x.startsWith("已暂停派新单"))!;
     expect(t).toMatch(/待合并 PR 超过上限/);
     expect(t).toMatch(/待合并的 PR 共 2 张（上限 1），其中 2 张是等你裁决的高风险 PR/);
+    // 一直暂停着：再跑几轮派单 / 合并循环也只通知一次
+    for (let i = 0; i < 3; i++) {
+      await app.scheduler.dispatch();
+      await app.scheduler.sync();
+      await app.scheduler.idle();
+    }
+    expect(notifiedAll.filter((x) => x.startsWith("已暂停派新单"))).toHaveLength(1);
     expect(runTicket).not.toHaveBeenCalled();
   });
 
@@ -1057,7 +1113,9 @@ describe("T-041c 组合根：高风险闸门", () => {
     await app.scheduler.idle();
     expect(f.calls.merge).toEqual([]);
     expect(
-      notified.some((t) => /req-1-1 的 PR local-new-1 改动了依赖清单.*等你放行或拒绝/.test(t)),
+      notified.some((t) =>
+        /req-1-1 的 PR local-new-1 属于高风险 PR（依赖类单）.*等你放行或拒绝/.test(t),
+      ),
     ).toBe(true);
   });
 });
