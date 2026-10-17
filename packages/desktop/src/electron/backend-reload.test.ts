@@ -96,6 +96,35 @@ describe("BackendSwitcher.reload（T-093）", () => {
     expect(sw.status()).toEqual({ mode: "live" });
   });
 
+  it("T-096：拆旧的 stop() 是异步的（9 在收尾）：等它 resolve 之后才重新组装", async () => {
+    const old = fake("/r");
+    let finish!: () => void;
+    const order: string[] = [];
+    old.stop.mockImplementation(
+      () =>
+        new Promise<void>((r) => {
+          order.push("stop:begin");
+          finish = () => {
+            order.push("stop:end");
+            r();
+          };
+        }),
+    );
+    const next = fake("/r");
+    const start = vi.fn(async () => {
+      order.push("start");
+      return next.handle;
+    });
+    const sw = make(old.handle, start);
+    const p = sw.reload();
+    await vi.waitFor(() => expect(old.stop).toHaveBeenCalledTimes(1));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(start).not.toHaveBeenCalled();
+    finish();
+    await expect(p).resolves.toEqual({ state: "reloaded" });
+    expect(order).toEqual(["stop:begin", "stop:end", "start"]);
+  });
+
   it("重载前渲染已就绪：重建后新后端的通知直接送达", async () => {
     const old = fake("/r");
     const buf = new NotifyBuffer(200);
