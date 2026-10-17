@@ -1,9 +1,9 @@
-import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { SECRET_NAMES, type SecretName } from "./config.js";
+import { powershellUserEnv } from "./secrets-powershell.js";
 
 // T-088：界面保存 / 清除密钥（写 Windows 用户级环境变量 HKCU\Environment）。
 // 密钥值只进 HKCU 和 process.env，不回传、不写日志 / 事件 / 标记文件，错误只有错误码。
@@ -113,41 +113,6 @@ async function dropMarker(path: string, name: SecretName): Promise<void> {
   if (!markers[name]) return;
   delete markers[name];
   await writeMarkers(path, markers);
-}
-
-/** 默认 Windows 实现：值经 stdin 传给 PowerShell，不出现在命令行（进程列表看不到）。 */
-function powershellUserEnv(): UserEnvStore {
-  const run = (script: string, stdin?: string) =>
-    new Promise<string>((resolve, reject) => {
-      const p = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
-        stdio: ["pipe", "pipe", "ignore"],
-        windowsHide: true,
-      });
-      let out = "";
-      p.stdout.setEncoding("utf8").on("data", (d: string) => (out += d));
-      p.on("error", () => reject(new Error("PowerShell 启动失败")));
-      p.on("close", (code) =>
-        code === 0 ? resolve(out) : reject(new Error(`PowerShell 退出码 ${String(code)}`)),
-      );
-      p.stdin.end(stdin ?? "");
-    });
-  return {
-    async get(name) {
-      const out = await run(
-        `$v=[Environment]::GetEnvironmentVariable('${name}','User'); if ($null -ne $v) { [Console]::Out.Write('1' + $v) }`,
-      );
-      return out.startsWith("1") ? out.slice(1) : undefined;
-    },
-    async set(name, value) {
-      await run(
-        `[Console]::InputEncoding=[Text.Encoding]::UTF8; $v=[Console]::In.ReadToEnd(); [Environment]::SetEnvironmentVariable('${name}',$v,'User')`,
-        value,
-      );
-    },
-    async remove(name) {
-      await run(`[Environment]::SetEnvironmentVariable('${name}',$null,'User')`);
-    },
-  };
 }
 
 function resolveDeps(deps: SecretDeps) {
