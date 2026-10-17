@@ -7,7 +7,11 @@ import { ConfigError, getConfig } from "@bakacoding/config-budget";
 import { openStorage, type Storage } from "@bakacoding/storage";
 import { afterEach, describe, expect, it } from "vitest";
 import { assemble, type App } from "./assemble.js";
-import { createDefaultDeps, PrNotWiredError } from "./create-default-deps.js";
+import {
+  createDefaultDeps,
+  integrationTargetHead,
+  PrNotWiredError,
+} from "./create-default-deps.js";
 
 const examplePath = fileURLToPath(new URL("../../../config/models.example.json", import.meta.url));
 const pricingPath = fileURLToPath(new URL("../../../config/pricing.json", import.meta.url));
@@ -181,5 +185,73 @@ describe("createDefaultDeps（T-063）", () => {
     // 编码池注入的就是这一份：释放后登记表清空
     handle.registry.release("T-reg");
     expect(handle.registry.get("T-reg")).toBeUndefined();
+  });
+});
+
+describe("targetHead 读集成分支（T-079）", () => {
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+
+  /** main 上一个提交；检出 feature，上面有一个没合进 main 的提交 */
+  function repoOnFeature(): { root: string; db: string; main: string; feature: string } {
+    const root = mkdtempSync(join(tmpdir(), "bc-t079-"));
+    dirs.push(root);
+    git(root, "init", "-q", "-b", "main");
+    git(root, "config", "user.email", "t@test");
+    git(root, "config", "user.name", "t");
+    writeFileSync(join(root, "README.md"), "x\n");
+    git(root, "add", ".");
+    git(root, "commit", "-q", "-m", "init");
+    const main = git(root, "rev-parse", "HEAD");
+    git(root, "checkout", "-q", "-b", "feature");
+    writeFileSync(join(root, "feat.txt"), "f\n");
+    git(root, "add", ".");
+    git(root, "commit", "-q", "-m", "unmerged");
+    const feature = git(root, "rev-parse", "HEAD");
+    const dbDir = join(root, ".bakacoding");
+    mkdirSync(dbDir, { recursive: true });
+    return { root, db: join(dbDir, "bakacoding.db"), main, feature };
+  }
+
+  it("集成分支还没建：退回 main，不读检出的 feature HEAD", async () => {
+    const { root, main, feature } = repoOnFeature();
+    expect(await integrationTargetHead(root)).toBe(main);
+    expect(await integrationTargetHead(root)).not.toBe(feature);
+  });
+
+  it("仓库里没有 main（默认分支叫别的）：退回检出的 HEAD，不抛错", async () => {
+    const { root } = gitRepo();
+    git(root, "branch", "-m", "trunk");
+    expect(await integrationTargetHead(root)).toBe(git(root, "rev-parse", "HEAD"));
+  });
+
+  it("基线分支由参数给出：集成分支未建时读该分支，不写死 main", async () => {
+    const { root, main } = repoOnFeature();
+    git(root, "branch", "trunk", main);
+    git(root, "branch", "-D", "main");
+    expect(await integrationTargetHead(root, "trunk")).toBe(main);
+  });
+
+  it("集成分支已建且领先 main：读集成分支；组合根的 deps.targetHead 用的就是它", async () => {
+    const { root, db, main, feature } = repoOnFeature();
+    // 模拟单 1 已合入：集成分支 = main + 一个提交（不检出）
+    const tree = git(root, "rev-parse", `${main}^{tree}`);
+    const merged = git(root, "commit-tree", tree, "-p", main, "-m", "T-1 merged");
+    git(root, "update-ref", "refs/heads/bakacoding/integration", merged);
+    expect(await integrationTargetHead(root)).toBe(merged);
+
+    const storage = openDb(db);
+    const handle = await createDefaultDeps(getConfig(examplePath), storage, {
+      repoRoot: root,
+      notifyUser: () => {},
+      pricingPath,
+      env,
+      logger: { warn: () => {} },
+    });
+    disposers.push(handle.dispose);
+    const head = await handle.deps.targetHead();
+    expect(head).toBe(merged);
+    expect(head).not.toBe(feature);
+    expect(head).not.toBe(main);
   });
 });

@@ -15,7 +15,7 @@ import {
 import { createCoderPool } from "@bakacoding/coder-pool";
 import { createEventBus, type EventBus } from "@bakacoding/event-bus";
 import { createModelGateway } from "@bakacoding/model-gateway";
-import { createPrProvider, type PrProvider } from "@bakacoding/pr";
+import { createPrProvider, INTEGRATION_BRANCH, type PrProvider } from "@bakacoding/pr";
 import {
   createReviewPool,
   createRoundAssignmentStore,
@@ -80,6 +80,40 @@ async function gitRevParse(repoRoot: string, rev: string): Promise<string> {
     maxBuffer: 1024 * 1024,
   });
   return stdout.trim();
+}
+
+/**
+ * 基线分支，组合根唯一来源：同一个值传给 6（createPrProvider 的 baseBranch，T-076 建集成分支的起点）
+ * 和 9 / 10 的 targetHead（T-079），4/6/9 用同一个分支。配置里暂无此项，固定 main；
+ * GitHub 模式 github.ts 里另写死 "main"，与此一致。发版后改为自动识别仓库默认分支。
+ */
+const BASE_BRANCH = "main";
+
+async function refExists(repoRoot: string, ref: string): Promise<boolean> {
+  try {
+    await run("git", ["show-ref", "--verify", "--quiet", ref], { cwd: repoRoot });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * T-079：9 / 10 的 targetHead = 合入目标（集成分支）当前的提交，不是仓库检出的 HEAD。
+ * 集成分支还没建（新仓库第一张单合入前）时退回基线分支 baseBranch，和 6 建分支的起点一致（T-076）；
+ * 仓库里连基线分支都没有时才退回检出的 HEAD。
+ */
+export async function integrationTargetHead(
+  repoRoot: string,
+  baseBranch: string = BASE_BRANCH,
+): Promise<string> {
+  const ref = `refs/heads/${INTEGRATION_BRANCH}`;
+  if (await refExists(repoRoot, ref)) return gitRevParse(repoRoot, `${ref}^{commit}`);
+  const base = `refs/heads/${baseBranch}`;
+  if (await refExists(repoRoot, base)) return gitRevParse(repoRoot, `${base}^{commit}`);
+  // 连基线分支都没有（默认分支叫 master 等）：退回检出的 HEAD，保持启动不挂；
+  // 这种仓库 6 合入时 ensureBranch(..., baseBranch) 本来也会失败，属已知限制
+  return gitRevParse(repoRoot, "HEAD");
 }
 
 /**
@@ -194,6 +228,7 @@ export async function createDefaultDeps(
       const pr = await createPrProvider({
         store,
         repo: worktrees.repoRoot,
+        baseBranch: BASE_BRANCH,
         publish,
         eventContext,
         // 缺 GITHUB_TOKEN → createPrProvider 走本地模式，不抛
@@ -214,7 +249,7 @@ export async function createDefaultDeps(
       cleanup: (path) => worktrees.cleanup(path),
     },
     worktreeRoot,
-    targetHead: () => gitRevParse(worktrees.repoRoot, "HEAD"),
+    targetHead: () => integrationTargetHead(worktrees.repoRoot, BASE_BRANCH),
     notifyUser: opts.notifyUser,
     listFiles: async (_project_id, commit) => {
       const { stdout } = await run("git", ["ls-tree", "-r", "--name-only", commit], {

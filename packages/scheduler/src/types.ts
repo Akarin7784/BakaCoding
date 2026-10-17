@@ -183,7 +183,8 @@ export interface SchedulerDeps {
     backpressure: Config["backpressure"];
   };
   /**
-   * 目标分支（集成分支）当前 HEAD 的 sha，如 `git rev-parse <target>`。start() 时读一次作为合并日志的起点；
+   * 目标分支（集成分支）当前 HEAD 的 sha，如 `git rev-parse <target>`；不是仓库检出的 HEAD（T-079）。
+   * 集成分支还没建时退回基线分支（默认 main）。start() 时读一次作为合并日志的起点；
    * 合并日志定不了某张单的基线时（重启后、基线未知），合并前再读一次比对。
    */
   targetHead(): MaybePromise<string>;
