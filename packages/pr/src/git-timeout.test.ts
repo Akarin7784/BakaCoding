@@ -128,6 +128,22 @@ describe("本地 git 接 signal（T-110）", () => {
   });
 });
 
+describe("输出上限（同 T-110 之前 execFile 的 maxBuffer）", () => {
+  const YES = ["-c", "alias.y=!yes", "y"];
+  for (const remote of [false, true]) {
+    it(`${remote ? "远程" : "本地"}路径：超出上限 kill 子进程，抛 GitError（code null、退出码 null 文案），stdout 截到上限`, async () => {
+      const { e, ms } = await elapsed(git(root, YES, { remote, maxBuffer: 1000, timeoutMs: 0 }));
+      expect(e).toBeInstanceOf(GitError);
+      expect(e).not.toBeInstanceOf(GitTimeoutError);
+      const g = e as GitError;
+      expect(g.code).toBeNull();
+      expect(g.message).toBe(`git ${YES.join(" ")} 失败（退出码 null）：`);
+      expect(g.stdout.length).toBe(1000);
+      expect(ms).toBeLessThan(5_000);
+    });
+  }
+});
+
 describe("包入口（T-110）", () => {
   it("mergeCommitContaining 不再公开导出", () => {
     expect("mergeCommitContaining" in pub).toBe(false);

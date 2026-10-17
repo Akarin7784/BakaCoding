@@ -74,11 +74,20 @@ export interface GitOptions {
   timeoutMs?: number;
   /** 外部取消（T-110）；不传时取 `withGitSignal` 设下的当前 signal。中止时抛 `signal.reason`。 */
   signal?: AbortSignal;
+  /**
+   * stdout / stderr 各自的字节上限，默认 64 MiB（同 T-110 之前 execFile 的 maxBuffer）。超出时 kill 子进程，
+   * 抛 GitError：`code: null`，信息 `git … 失败（退出码 null）：<stderr>`，stdout / stderr 截到上限（与 execFile 一致）。
+   */
+  maxBuffer?: number;
 }
 
 const currentSignal = new AsyncLocalStorage<AbortSignal | undefined>();
 
-/** 在 fn（含其中所有异步续延）里调用的 git 默认带上这个 signal（T-110）。 */
+/**
+ * 在 fn（含其中所有异步续延）里调用的 git 默认带上这个 signal（T-110）。每次调用各自一份上下文，
+ * 并发的调用互不影响。signal 为 undefined 时沿用外层上下文：公开方法里再调另一个公开方法而没传 signal，
+ * 内层的 git 仍受外层调用的 signal 约束（内层是外层工作的一部分）。
+ */
 export function withGitSignal<T>(
   signal: AbortSignal | undefined,
   fn: () => Promise<T>,
@@ -122,7 +131,8 @@ export function git(
     const child = spawn("git", argv, { cwd, env, windowsHide: true });
     const out: Buffer[] = [];
     const err: Buffer[] = [];
-    let size = 0;
+    const limit = opts.maxBuffer ?? MAX_BUFFER;
+    const sizes = new Map<Buffer[], number>();
     let killedFor: "timeout" | "abort" | "buffer" | undefined;
     let settled = false;
     let timer: NodeJS.Timeout | undefined;
@@ -144,7 +154,16 @@ export function git(
       if (killedFor === "abort" && signal) return reject(abortError(signal));
       if (killedFor === "timeout")
         return reject(new GitTimeoutError(args, timeout, text(err), text(out)));
-      reject(new GitError(`git ${args.join(" ")} 输出超过上限`, args, null, text(err), text(out)));
+      const stderr = text(err);
+      reject(
+        new GitError(
+          `git ${args.join(" ")} 失败（退出码 null）：${stderr.trim()}`,
+          args,
+          null,
+          stderr,
+          text(out),
+        ),
+      );
     };
     function kill(why: "timeout" | "abort" | "buffer") {
       if (killedFor || settled) return;
@@ -153,10 +172,18 @@ export function git(
       grace = setTimeout(() => child.kill("SIGKILL"), GIT_KILL_GRACE_MS);
       grace.unref?.();
     }
+    // 与 execFile 的 maxBuffer 一致：每个流单独计，超出时保留到上限为止的部分并 kill
     const collect = (into: Buffer[]) => (b: Buffer) => {
-      size += b.length;
-      if (size > MAX_BUFFER) kill("buffer");
-      else into.push(b);
+      const have = sizes.get(into) ?? 0;
+      if (have >= limit) return;
+      if (have + b.length > limit) {
+        into.push(b.subarray(0, limit - have));
+        sizes.set(into, limit);
+        kill("buffer");
+        return;
+      }
+      into.push(b);
+      sizes.set(into, have + b.length);
     };
     child.stdout.on("data", collect(out));
     child.stderr.on("data", collect(err));
