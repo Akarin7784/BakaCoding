@@ -193,10 +193,14 @@ export async function importProject(
   } catch (e) {
     throw new ProjectImportError(`项目路径不存在或无法访问（${errnoCode(e)}）`);
   }
-  if (!(await stat(root)).isDirectory()) throw new ProjectImportError("项目路径不是目录");
-  const entries = (await readdir(root, { withFileTypes: true }))
-    .filter((d) => d.isFile() || d.isSymbolicLink())
-    .map((d) => d.name);
+  const st = await stat(root).catch((e: unknown) => {
+    throw new ProjectImportError(`项目路径无法访问（${errnoCode(e)}）`);
+  });
+  if (!st.isDirectory()) throw new ProjectImportError("项目路径不是目录");
+  const dirents = await readdir(root, { withFileTypes: true }).catch((e: unknown) => {
+    throw new ProjectImportError(`读不到项目目录（${errnoCode(e)}）`);
+  });
+  const entries = dirents.filter((d) => d.isFile() || d.isSymbolicLink()).map((d) => d.name);
   const detected = detectLanguages(entries, await loadLanguageManifests(opts.languagesFile));
   const config = await gitConfigText(root);
   const has_github_remote = config ? remoteUrls(config).some(isGithubUrl) : false;
