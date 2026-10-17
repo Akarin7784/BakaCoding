@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   INTEGRATION_BRANCH,
+  PrAlreadyMergedError,
   type EventContext,
   type MergeResult,
   type SyncChange,
@@ -13,6 +14,7 @@ import type {
   ChangedInterface,
   DependencyState,
   DispatchOutcome,
+  HighRiskHeldInfo,
   MergeResultRecord,
   PublishInput,
   Scheduler,
@@ -144,8 +146,14 @@ interface Entry {
   conflicted: boolean;
   base_changed: boolean;
   re_reviewed: boolean;
-  /** 8 在 submit 时打的高风险标记（依赖类单，T-038）；只打标，不扣留 */
+  /** 8 在 submit 时打的高风险标记（依赖类单，T-038）；闸门打开时扣留（T-041c） */
   high_risk: boolean;
+  /** 用户放行过的 PR（T-041c）：放行按 pr_id 绑定，冲突复投换了新 PR 就重新扣 */
+  released_pr: string | null;
+  /** 已经为哪个 PR 调过 onHighRiskHeld（同一 PR 只调一次） */
+  held_notified_pr: string | null;
+  /** 经 adopt 接回（重启接管）：第一次扣留时 cause 报 adopt */
+  adopted: boolean;
 }
 
 const TERMINAL: ReadonlySet<TicketStatus> = new Set(["merged", "escalated"]);
@@ -154,7 +162,7 @@ const union = (a: readonly string[], b: readonly string[]): string[] => [...new 
 const scopeOf = (t: SchedulerTicket): string[] =>
   t.write_scope && t.write_scope.length > 0 ? [...t.write_scope] : [...WHOLE_REPO_SCOPE];
 
-type EscalateReason = "github_manual" | "conflict_limit" | "internal_error";
+type EscalateReason = "github_manual" | "conflict_limit" | "internal_error" | "high_risk_rejected";
 
 export function createScheduler(deps: SchedulerDeps): Scheduler {
   const clock = deps.clock ?? defaultClock;
@@ -167,6 +175,10 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   const limits = deps.config.pipeline.resubmit_limits;
   const hardMax = deps.config.pipeline.concurrency_hard_max ?? Number.POSITIVE_INFINITY;
   const bp = new BackpressureController(deps.config);
+  /** 高风险闸门（T-041c）：默认关闭（只打标、照常合并）；组合根固定打开 */
+  const holdHighRisk = deps.holdHighRisk === true;
+  /** 上一次派单时是否反压暂停（onBackpressurePaused 只在变成暂停时调） */
+  let lastPaused = false;
   const zones = deps.exclusive_zones ?? DEFAULT_EXCLUSIVE_ZONES;
   /** 注入了 8 的 handle 才自动派单；否则只做合并队列（T-035 行为） */
   const autoDispatch = typeof deps.subAgent.handle === "function";
@@ -619,6 +631,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       base_changed: false,
       re_reviewed: false,
       high_risk: false,
+      released_pr: null,
+      held_notified_pr: null,
+      adopted: false,
     };
   }
 
@@ -851,12 +866,50 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     });
   }
 
+  /** 高风险闸门（T-041c）：闸门开、本单高风险、当前 PR 还没被用户放行 → 扣着，不出队。 */
+  function heldHighRisk(e: Entry): boolean {
+    return holdHighRisk && e.high_risk && e.pr_id !== null && e.released_pr !== e.pr_id;
+  }
+
+  /** 队里被扣着、还没为当前 PR 通知过的单：调一次 onHighRiskHeld（同一 PR 只调一次）。 */
+  function noteHeldHighRisk(): void {
+    for (const id of queue) {
+      const e = entries.get(id);
+      if (!e || e.status !== "merge_queued" || !heldHighRisk(e)) continue;
+      const pr_id = e.pr_id!;
+      if (e.held_notified_pr === pr_id) continue;
+      const cause: HighRiskHeldInfo["cause"] =
+        e.released_pr !== null
+          ? "resubmit"
+          : e.adopted && e.held_notified_pr === null
+            ? "adopt"
+            : "submit";
+      e.held_notified_pr = pr_id;
+      if (!deps.onHighRiskHeld) continue;
+      try {
+        deps.onHighRiskHeld({
+          ticket_id: id,
+          pr_id,
+          requirement_id: e.ticket.requirement_id,
+          cause,
+        });
+      } catch (err) {
+        onError(err, id);
+      }
+    }
+  }
+
   /** 尝试合并一张；返回 false 表示队列里没有可出队的单。 */
   async function step(): Promise<boolean> {
     if (stopped) return false;
+    noteHeldHighRisk();
     // 后台任务（复投、重审）进行中的单跳过、留在队里（T-061）：它可能已排回队里、busy 还没清，
     // 后台任务结束时会再触发一轮
-    const id = queue.find((t) => !entries.get(t)?.busy && dependencyState(t) === "ready");
+    // 被高风险闸门扣着的单留在队里、不挡后面不相干的单（T-041c）
+    const id = queue.find((t) => {
+      const q = entries.get(t);
+      return !!q && !q.busy && !heldHighRisk(q) && dependencyState(t) === "ready";
+    });
     if (!id) return false;
     const e = getEntry(id);
     current = e;
@@ -1024,7 +1077,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
 
   /** 反压信号：派单闸门和 backpressureState() 共用。 */
   function backpressureFrom(budget: { daily_exhausted: boolean }): BackpressureState {
-    const merge_queued = [...entries.values()].filter((e) => e.status === "merge_queued").length;
+    const queued = [...entries.values()].filter((e) => e.status === "merge_queued");
+    const merge_queued = queued.length;
+    const high_risk_held = queued.filter(heldHighRisk).length;
     const d = bp.decide(
       {
         review: reviewBacklog,
@@ -1043,9 +1098,22 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         in_review: reviewBacklog.pending,
         total: merge_queued + reviewBacklog.pending,
         limit: deps.config.backpressure.pending_pr_limit,
+        high_risk_held,
       },
       daily_budget_exhausted: budget.daily_exhausted,
     };
+  }
+
+  /** 反压从未暂停变成暂停时调一次 onBackpressurePaused（T-041c：通知里要写清其中几张是等裁决的高风险 PR）。 */
+  function notePaused(state: BackpressureState): void {
+    const was = lastPaused;
+    lastPaused = state.paused;
+    if (!state.paused || was || !deps.onBackpressurePaused) return;
+    try {
+      deps.onBackpressurePaused(state);
+    } catch (err) {
+      onError(err, "");
+    }
   }
 
   function pausedForBudget(): Entry[] {
@@ -1081,6 +1149,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     if (stopped || !pr) return [];
     const budget = await deps.budgetState();
     const state = backpressureFrom(budget);
+    notePaused(state);
     // 闸门：反压暂停（评审积压、主管待办、待合并 PR 超限、当日预算用完）时不派新单、也不续跑
     if (state.paused) return [];
     // 闸门打开：先把因当日预算暂停的单交回 8 续跑（它们本来就是在途的单），再派新单
@@ -1353,6 +1422,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         conflict: input.conflict_resubmits ?? e.round,
       };
       e.high_risk = input.high_risk === true;
+      e.adopted = true;
       // 重启后合并日志是空的：基线一般定不了（base_unknown），合并前和目标分支 HEAD 比，不同就保守重审
       e.base_commit = input.base_commit || undefined;
       const loc = locateBase(e.base_commit);
@@ -1465,6 +1535,38 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       }
       return changed;
     },
+    releaseHighRisk(ticket_id) {
+      const e = getEntry(ticket_id);
+      if (TERMINAL.has(e.status)) throw new Error(`单 ${ticket_id} 已是终态 ${e.status}，不能放行`);
+      if (!holdHighRisk) throw new Error(`高风险闸门没开，单 ${ticket_id} 不需要放行`);
+      if (!e.high_risk) throw new Error(`单 ${ticket_id} 不是高风险单，不需要放行`);
+      if (e.status !== "merge_queued" || e.pr_id === null)
+        throw new Error(`单 ${ticket_id} 不在合并队列里等裁决（${e.status}），不能放行`);
+      if (e.released_pr === e.pr_id) return "already";
+      e.released_pr = e.pr_id;
+      kick();
+      return "released";
+    },
+    async rejectHighRisk(ticket_id, detail) {
+      const e = getEntry(ticket_id);
+      if (TERMINAL.has(e.status)) throw new Error(`单 ${ticket_id} 已是终态 ${e.status}，不能拒绝`);
+      if (!e.high_risk) throw new Error(`单 ${ticket_id} 不是高风险单`);
+      if (e.busy || current === e)
+        throw new Error(`单 ${ticket_id} 正在合并或后台处理中（${e.status}），稍后再拒绝`);
+      if (e.pr_id) {
+        try {
+          await requirePr().close(e.pr_id, `高风险 PR 被用户拒绝：${detail}`.slice(0, 500));
+        } catch (err) {
+          if (err instanceof PrAlreadyMergedError) {
+            onError(err, ticket_id);
+            throw new Error(`单 ${ticket_id} 的 PR ${e.pr_id} 已经合入，不能拒绝`, { cause: err });
+          }
+          // 关不掉也照常上报，PR 留给用户处理
+          onError(err, ticket_id);
+        }
+      }
+      await escalate(e, "high_risk_rejected", detail.slice(0, 500));
+    },
     dependencyState: (id) => dependencyState(id),
     status: (id) => entries.get(id)?.status,
     snapshot: () =>
@@ -1479,6 +1581,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         coding: e.coding && !TERMINAL.has(e.status),
         locked_scope: e.lock_scope && !TERMINAL.has(e.status) ? [...e.lock_scope] : null,
         high_risk: e.high_risk,
+        held_high_risk: !TERMINAL.has(e.status) && e.status === "merge_queued" && heldHighRisk(e),
       })),
     async idle() {
       for (;;) {
