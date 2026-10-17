@@ -12,6 +12,8 @@ import { usePendingHighRisk } from "./data/usePendingHighRisk";
 import { useSyncState } from "./data/useSyncState";
 import { useProjectActions } from "./data/useProjectActions";
 import { useBackendStatus } from "./data/useBackendStatus";
+import { useQuitting } from "./data/useQuitting";
+import { QuittingBanner } from "./components/QuittingBanner";
 import { ReadonlyBanner } from "./components/ReadonlyBanner";
 import { StatusDot } from "./components/StatusDot";
 import { attentionItems, globalLevel, runningCount } from "./lib/globalStatus";
@@ -55,6 +57,8 @@ export interface AppProps {
   api?: BakaDesktopApi | null;
   /** 导入成功后重新加载界面（T-072）；测试注入 */
   onReload?: () => void;
+  /** 测试 / 截图注入「正在退出」（T-106）；有 api 时以主进程的 app:quitting 为准。 */
+  quitting?: boolean;
 }
 
 export function App(props: AppProps) {
@@ -70,6 +74,7 @@ export function App(props: AppProps) {
   const syncState = useSyncState(api, props.syncState ?? null);
   const actions = useProjectActions(api, props.onReload);
   const backend = useBackendStatus(api);
+  const quitting = useQuitting(api, props.quitting ?? false);
   const backendReadonly = backend.readonly;
   const [reconnecting, setReconnecting] = useState(false);
   const layout = useLayout();
@@ -252,6 +257,7 @@ export function App(props: AppProps) {
           onToggleRightPanel={layout.toggleRightPanel}
           insetRight={panelDocked ? 0 : inset.right}
         />
+        {quitting && <QuittingBanner />}
         {backendReadonly && backend.status && (
           <ReadonlyBanner
             status={backend.status}

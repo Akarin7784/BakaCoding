@@ -4,6 +4,7 @@ import { EscalatedSchema, type Diff, type EventOf, type PrStatus } from "@bakaco
 import { git, GitError } from "./git.js";
 import {
   LocalPrProvider,
+  mergeCommitContaining,
   PrAlreadyMergedError,
   PrNotFoundError,
   type GitWriteLock,
@@ -13,7 +14,9 @@ import {
   INTEGRATION_BRANCH,
   ExpectedHeadMismatchError,
   SyncPartialError,
+  abortReason,
   type CheckResult,
+  type PrCallOptions,
   type Logger,
   type MergeResult,
   type PrProvider,
@@ -65,7 +68,12 @@ export interface GithubPrProviderOptions extends LocalPrProviderOptions {
   logger?: Logger;
   /** git 远程名，默认 origin */
   remote?: string;
+  /** 每个 GitHub REST 请求的超时（含读响应体），默认 GITHUB_REQUEST_TIMEOUT_MS；0 不限时（T-102a） */
+  requestTimeoutMs?: number;
 }
+
+/** GitHub REST 请求级超时（T-102a）：从发请求到读完响应体，与 REPO_GIT_TIMEOUT_MS 一致。 */
+export const GITHUB_REQUEST_TIMEOUT_MS = 30_000;
 
 /** 响应头里既没有 retry-after 也没有可用的 x-ratelimit-reset 时建议的等待时间 */
 export const RATE_LIMIT_DEFAULT_WAIT_MS = 60_000;
@@ -114,6 +122,18 @@ export class GithubApiError extends Error {
   ) {
     super(message);
     this.name = "GithubApiError";
+  }
+}
+
+/** GitHub REST 请求超时（T-102a）：status 为 null；可重试，6 不重试、不上报。 */
+export class GithubTimeoutError extends GithubApiError {
+  readonly retryable = true as const;
+  constructor(
+    op: string,
+    readonly timeout_ms: number,
+  ) {
+    super(`GitHub API 请求超时（${timeout_ms}ms，${op}）`, null, op);
+    this.name = "GithubTimeoutError";
   }
 }
 
@@ -198,6 +218,7 @@ export class GithubPrProvider implements PrProvider {
   private readonly now: () => Date;
   /** T-094：本地快进 target 那段持 git 写锁（见 LocalPrProviderOptions.gitWriteLock） */
   private readonly gitWriteLock: GitWriteLock;
+  private readonly requestTimeoutMs: number;
 
   constructor(opts: GithubPrProviderOptions) {
     this.local = new LocalPrProvider(opts);
@@ -213,20 +234,30 @@ export class GithubPrProvider implements PrProvider {
     this.remote = opts.remote ?? "origin";
     this.now = opts.now ?? (() => new Date());
     this.gitWriteLock = opts.gitWriteLock ?? ((fn) => fn());
+    this.requestTimeoutMs = opts.requestTimeoutMs ?? GITHUB_REQUEST_TIMEOUT_MS;
   }
 
-  commitPatch(ticket_id: string, worktree_path: string, patch: string): Promise<string> {
-    return this.local.commitPatch(ticket_id, worktree_path, patch);
+  commitPatch(
+    ticket_id: string,
+    worktree_path: string,
+    patch: string,
+    opts?: PrCallOptions,
+  ): Promise<string> {
+    return this.local.commitPatch(ticket_id, worktree_path, patch, opts);
   }
 
   /**
    * 本地提交后只推本单分支（快进，不强推），再开远程 PR（已有就复用）；复投时推新提交，PR 自动更新。
    * push 或开 PR 失败：本地提交保留，抛错；下次 commitWorktree / merge / checks 时补做。
    */
-  async commitWorktree(ticket_id: string, worktree_path: string): Promise<string> {
-    const sha = await this.local.commitWorktree(ticket_id, worktree_path);
+  async commitWorktree(
+    ticket_id: string,
+    worktree_path: string,
+    opts?: PrCallOptions,
+  ): Promise<string> {
+    const sha = await this.local.commitWorktree(ticket_id, worktree_path, opts);
     const rec = await this.openTicketRecord(ticket_id, worktree_path);
-    if (rec) await this.publishTicket(rec);
+    if (rec) await this.publishTicket(rec, opts?.signal);
     return sha;
   }
 
@@ -235,7 +266,9 @@ export class GithubPrProvider implements PrProvider {
    * 远程关闭失败时本地已是 closed，重复调用会再试一次 PATCH（GitHub 上关闭已关闭的 PR 无副作用）。
    * T-066 B4：PATCH 失败时 GET 远程；若已合入则改回 merged（清 closed_by），抛 PrAlreadyMergedError，不把合入记成 closed。
    */
-  async close(pr_id: string, reason: string): Promise<void> {
+  async close(pr_id: string, reason: string, opts?: PrCallOptions): Promise<void> {
+    const signal = opts?.signal;
+    if (signal?.aborted) throw abortReason(signal);
     const rec = await this.mustGet(pr_id);
     if (rec.status === "merged") throw new PrAlreadyMergedError(pr_id);
     // 用户在 GitHub 上关的（sync 同步来的）：已是 closed，幂等
@@ -253,22 +286,34 @@ export class GithubPrProvider implements PrProvider {
     }
     if (!cur.remote) return;
     const op = "PATCH /pulls/{n}";
-    const res = await this.request(op, cur, "PATCH", `/pulls/${cur.remote.number}`, {
-      state: "closed",
-    });
+    const res = await this.request(
+      op,
+      cur,
+      "PATCH",
+      `/pulls/${cur.remote.number}`,
+      { state: "closed" },
+      signal,
+    );
     if (!res.ok) {
-      await this.recoverMergedAfterCloseFail(cur);
+      await this.recoverMergedAfterCloseFail(cur, signal);
       throw await this.apiError(op, res);
     }
   }
 
   /** PATCH close 失败后 GET 远程：已合入则本地改回 merged，抛 PrAlreadyMergedError。 */
-  private async recoverMergedAfterCloseFail(cur: PrRecord): Promise<void> {
+  private async recoverMergedAfterCloseFail(cur: PrRecord, signal?: AbortSignal): Promise<void> {
     if (!cur.remote) return;
     const getOp = "GET /pulls/{n}";
     let getRes: Response;
     try {
-      getRes = await this.request(getOp, cur, "GET", `/pulls/${cur.remote.number}`);
+      getRes = await this.request(
+        getOp,
+        cur,
+        "GET",
+        `/pulls/${cur.remote.number}`,
+        undefined,
+        signal,
+      );
     } catch {
       return; // GET 也失败（限流等）：保留 closed，让调用方按原错误重试
     }
@@ -298,16 +343,21 @@ export class GithubPrProvider implements PrProvider {
     throw new PrAlreadyMergedError(cur.pr_id);
   }
 
-  diff(pr_id: string): Promise<Diff> {
-    return this.local.diff(pr_id);
+  diff(pr_id: string, opts?: PrCallOptions): Promise<Diff> {
+    return this.local.diff(pr_id, opts);
   }
 
   /**
    * 只建本地记录并确保远程有集成分支；不推工作分支、不开远程 PR（此时分支还没有提交，
    * GitHub 会回 422 No commits between）。远程 PR 在第一次 commitWorktree 之后才有。
    */
-  async open(ticket_id: string, worktree_path: string, branch: string): Promise<string> {
-    const pr_id = await this.local.open(ticket_id, worktree_path, branch);
+  async open(
+    ticket_id: string,
+    worktree_path: string,
+    branch: string,
+    opts?: PrCallOptions,
+  ): Promise<string> {
+    const pr_id = await this.local.open(ticket_id, worktree_path, branch, opts);
     await this.ensureRemoteIntegration();
     return pr_id;
   }
@@ -315,26 +365,29 @@ export class GithubPrProvider implements PrProvider {
   async openIntegration(
     branch: string = INTEGRATION_BRANCH,
     target: string = "main",
+    opts?: PrCallOptions,
   ): Promise<string> {
-    const pr_id = await this.local.openIntegration(branch, target);
+    const pr_id = await this.local.openIntegration(branch, target, opts);
     const rec = await this.mustGet(pr_id);
     if (rec.remote) return pr_id;
     // 集成分支要先在远程存在（单张 PR 以它为 base）；比 target 没有新提交时先不开 PR，merge 时补开
     await this.push(this.repo, branch);
     if (await this.hasCommits(this.repo, branch, target))
-      await this.attachPull(pr_id, branch, target, `集成分支 ${branch} → ${target}`);
+      await this.attachPull(pr_id, branch, target, `集成分支 ${branch} → ${target}`, opts?.signal);
     return pr_id;
   }
 
   async merge(
     pr_id: string,
     target: string,
-    opts?: { expected_head?: string },
+    opts?: { expected_head?: string; signal?: AbortSignal },
   ): Promise<MergeResult> {
+    const signal = opts?.signal;
+    if (signal?.aborted) throw abortReason(signal);
     let rec = await this.mustGet(pr_id);
     if (rec.status === "merged" || rec.status === "closed")
       throw new Error(`PR 已${rec.status === "merged" ? "合并" : "关闭"}：${pr_id}`);
-    if (!rec.remote) rec = await this.backfillRemote(rec);
+    if (!rec.remote) rec = await this.backfillRemote(rec, signal);
     if (!rec.remote)
       throw new Error(
         `PR 还没有对应的 GitHub PR（分支 ${rec.branch} 比 base 没有新提交）：${pr_id}`,
@@ -348,7 +401,7 @@ export class GithubPrProvider implements PrProvider {
       throw new ExpectedHeadMismatchError(pr_id, opts.expected_head, head);
     // T-103：重试幂等。上次 PUT merge 已成功、但没来得及记 merged（中断、重启后重合）：先查远程 PR，
     // 已合入就直接记已合入，不再推分支（GitHub 可能已自动删了分支，再推会把它建回来）、不再 PUT
-    const already = await this.mergedPull(rec);
+    const already = await this.mergedPull(rec, signal);
     if (already) return this.finishMerged(rec, already, target, head);
     // 原地复投的新提交只在本地：合并前先推上去（只推本单分支，不强推），再用 sha 校验
     await this.pushForMerge(rec, cwd);
@@ -356,14 +409,19 @@ export class GithubPrProvider implements PrProvider {
     const mergeSha = opts?.expected_head ?? head;
 
     const op = "PUT /pulls/{n}/merge";
-    const res = await this.request(op, rec, "PUT", `/pulls/${rec.remote.number}/merge`, {
-      sha: mergeSha,
-      merge_method: "merge",
-    });
+    const res = await this.request(
+      op,
+      rec,
+      "PUT",
+      `/pulls/${rec.remote.number}/merge`,
+      { sha: mergeSha, merge_method: "merge" },
+      signal,
+    );
     if (res.status === 405 || res.status === 409) {
       const message = await this.responseMessage(res);
       // T-103：GitHub 对已合入的 PR 再 PUT merge 回 405；回查一次，已合入（含查完 PR 到 PUT 之间被合入）按已合入处理
-      const merged = await this.mergedPull(rec);
+      // 回查用同一个 signal；回查超时 / 中止直接抛出，不判冲突也不判 merge_blocked（T-102a）
+      const merged = await this.mergedPull(rec, signal);
       if (merged) return this.finishMerged(rec, merged, target, head);
       await this.fetchRemote();
       const conflicted_files = await this.conflictedFiles(
@@ -407,10 +465,17 @@ export class GithubPrProvider implements PrProvider {
   }
 
   /** GET 远程 PR；已合入返回它，未合入（或没有 remote）返回 undefined。限流 / 鉴权照旧抛错。 */
-  private async mergedPull(rec: PrRecord): Promise<GhPull | undefined> {
+  private async mergedPull(rec: PrRecord, signal?: AbortSignal): Promise<GhPull | undefined> {
     if (!rec.remote) return undefined;
     const op = "GET /pulls/{n}";
-    const res = await this.request(op, rec, "GET", `/pulls/${rec.remote.number}`);
+    const res = await this.request(
+      op,
+      rec,
+      "GET",
+      `/pulls/${rec.remote.number}`,
+      undefined,
+      signal,
+    );
     if (!res.ok) throw await this.apiError(op, res);
     const pull = (await res.json()) as GhPull;
     return pull.merged || pull.merged_at ? pull : undefined;
@@ -418,7 +483,8 @@ export class GithubPrProvider implements PrProvider {
 
   /**
    * 远程 PR 已合入（T-103）：fetch、把本地 target 快进到远端（advanceLocal 本身幂等：已一致不动、分叉只记日志），
-   * 记 merged。merge_sha 用 GitHub 的 merge_commit_sha，缺省时取远端 target 的 tip。
+   * 记 merged。merge_sha 用 GitHub 的 merge_commit_sha；缺省时（T-102a）沿远端 target 的第一父链找把 head
+   * 带进来的提交（与本地实现同一个 mergeCommitContaining；当时是快进则为 head），不取 target 最新提交。
    */
   private async finishMerged(
     rec: PrRecord,
@@ -427,7 +493,13 @@ export class GithubPrProvider implements PrProvider {
     head: string,
   ): Promise<MergeResult> {
     await this.fetchRemote();
-    const sha = pull.merge_commit_sha || (await revParse(this.repo, `${this.remote}/${target}`));
+    const sha =
+      pull.merge_commit_sha ||
+      (await mergeCommitContaining(
+        this.repo,
+        await revParse(this.repo, `${this.remote}/${target}`),
+        head,
+      ));
     await this.advanceLocal(target, `${this.remote}/${target}`);
     let base_sha = rec.base_sha;
     if (rec.kind === "integration" && sha !== head) {
@@ -446,7 +518,9 @@ export class GithubPrProvider implements PrProvider {
     return { merged: true, sha, fast_forward: sha === head };
   }
 
-  async checks(pr_id: string): Promise<CheckResult[]> {
+  async checks(pr_id: string, opts?: PrCallOptions): Promise<CheckResult[]> {
+    const signal = opts?.signal;
+    if (signal?.aborted) throw abortReason(signal);
     const rec = await this.mustGet(pr_id);
     const live = rec.status === "open" || rec.status === "conflict";
     const sha = live ? await revParse(cwdOf(rec), rec.branch) : rec.head_sha;
@@ -457,9 +531,9 @@ export class GithubPrProvider implements PrProvider {
       rec.kind === "ticket" &&
       (!rec.remote || (await this.remoteHead(rec.branch)) !== sha)
     )
-      await this.publishTicket(rec);
-    const runs = await this.fetchAllCheckRuns(rec, sha);
-    const statuses = await this.fetchCommitStatuses(rec, sha);
+      await this.publishTicket(rec, signal);
+    const runs = await this.fetchAllCheckRuns(rec, sha, signal);
+    const statuses = await this.fetchCommitStatuses(rec, sha, signal);
     return [...runs, ...statuses];
   }
 
@@ -468,7 +542,11 @@ export class GithubPrProvider implements PrProvider {
    * T-069：不再以「本页不足 100 条」为止，服务端每页给得少时也不漏后页）；最多 MAX_CHECK_PAGES 页，
    * 超出抛错（不静默漏掉后面的失败）。
    */
-  private async fetchAllCheckRuns(rec: PrRecord, sha: string): Promise<CheckResult[]> {
+  private async fetchAllCheckRuns(
+    rec: PrRecord,
+    sha: string,
+    signal?: AbortSignal,
+  ): Promise<CheckResult[]> {
     const op = "GET /commits/{sha}/check-runs";
     const out: CheckResult[] = [];
     for (let page = 1; ; page++) {
@@ -479,6 +557,8 @@ export class GithubPrProvider implements PrProvider {
         rec,
         "GET",
         `/commits/${sha}/check-runs?per_page=100&page=${page}`,
+        undefined,
+        signal,
       );
       if (!res.ok) throw await this.apiError(op, res);
       const body = (await res.json()) as {
@@ -511,7 +591,11 @@ export class GithubPrProvider implements PrProvider {
    * total_count（或某页为空）；最多 MAX_CHECK_PAGES 页，超出抛错。顶层 state 为 failure / error
    * 却没收集到任何失败条目时，补一条失败结果，不让评审绕过 CI。
    */
-  private async fetchCommitStatuses(rec: PrRecord, sha: string): Promise<CheckResult[]> {
+  private async fetchCommitStatuses(
+    rec: PrRecord,
+    sha: string,
+    signal?: AbortSignal,
+  ): Promise<CheckResult[]> {
     const op = "GET /commits/{sha}/status";
     const out: CheckResult[] = [];
     let state: string | undefined;
@@ -523,6 +607,8 @@ export class GithubPrProvider implements PrProvider {
         rec,
         "GET",
         `/commits/${sha}/status?per_page=100&page=${page}`,
+        undefined,
+        signal,
       );
       if (!res.ok) throw await this.apiError(op, res);
       const body = (await res.json()) as {
@@ -553,7 +639,9 @@ export class GithubPrProvider implements PrProvider {
    * T-066 B1：中途出错时，若已收集到变化，抛 SyncPartialError（带 changes）；否则抛原始错误。
    * 已落库的变化不会在下次 sync 再报（记录已非 open），调用方须先应用 error.changes。
    */
-  async sync(): Promise<SyncChange[]> {
+  async sync(opts?: PrCallOptions): Promise<SyncChange[]> {
+    const signal = opts?.signal;
+    if (signal?.aborted) throw abortReason(signal);
     const changes: SyncChange[] = [];
     try {
       const records = (await this.store.list()).map(assertPrRecord);
@@ -561,7 +649,14 @@ export class GithubPrProvider implements PrProvider {
         if (rec.closed_by === "bakacoding") continue;
         if (!rec.remote || (rec.status !== "open" && rec.status !== "conflict")) continue;
         const op = "GET /pulls/{n}";
-        const res = await this.request(op, rec, "GET", `/pulls/${rec.remote.number}`);
+        const res = await this.request(
+          op,
+          rec,
+          "GET",
+          `/pulls/${rec.remote.number}`,
+          undefined,
+          signal,
+        );
         if (!res.ok) throw await this.apiError(op, res);
         const pull = (await res.json()) as GhPull;
         if (pull.state !== "closed") continue;
@@ -604,9 +699,9 @@ export class GithubPrProvider implements PrProvider {
    * push 和开 PR（先查同名 open PR，有就复用），写回 remote。分支比 base 没有新提交时什么都不做
    * （不推工作分支、不开 PR，避免 422），返回的记录仍没有 remote。
    */
-  private async backfillRemote(rec: PrRecord): Promise<PrRecord> {
+  private async backfillRemote(rec: PrRecord, signal?: AbortSignal): Promise<PrRecord> {
     if (rec.kind === "ticket") {
-      await this.publishTicket(rec);
+      await this.publishTicket(rec, signal);
     } else {
       await this.push(rec.repo_path, rec.branch);
       if (await this.hasCommits(rec.repo_path, rec.branch, rec.base_branch))
@@ -615,6 +710,7 @@ export class GithubPrProvider implements PrProvider {
           rec.branch,
           rec.base_branch,
           `集成分支 ${rec.branch} → ${rec.base_branch}`,
+          signal,
         );
     }
     return this.mustGet(rec.pr_id);
@@ -624,12 +720,12 @@ export class GithubPrProvider implements PrProvider {
    * 单张 PR 上远程：确保集成分支在远程；分支有新提交才推本单分支（只推 refs/heads/<branch>，快进，
    * 远程已分叉时上报并抛 GithubBranchDivergedError，不强推），没有 remote 时开 PR（有同名 PR 就复用）。
    */
-  private async publishTicket(rec: TicketPrRecord): Promise<void> {
+  private async publishTicket(rec: TicketPrRecord, signal?: AbortSignal): Promise<void> {
     await this.ensureRemoteIntegration();
     if (!(await this.hasCommits(rec.worktree_path, rec.branch, INTEGRATION_BRANCH))) return;
     await this.pushTicket(rec, rec.worktree_path);
     if (!rec.remote)
-      await this.attachPull(rec.pr_id, rec.branch, INTEGRATION_BRANCH, rec.ticket_id);
+      await this.attachPull(rec.pr_id, rec.branch, INTEGRATION_BRANCH, rec.ticket_id, signal);
   }
 
   /** commitWorktree 刚提交的那条记录（与本地实现同样的匹配规则）。 */
@@ -667,21 +763,29 @@ export class GithubPrProvider implements PrProvider {
     return out.trim().split(/\s+/)[0] || undefined;
   }
 
-  private async attachPull(pr_id: string, head: string, base: string, title: string) {
+  private async attachPull(
+    pr_id: string,
+    head: string,
+    base: string,
+    title: string,
+    signal?: AbortSignal,
+  ) {
     const rec = await this.mustGet(pr_id);
     const listOp = "GET /pulls";
     const q = `/pulls?state=open&head=${encodeURIComponent(`${this.gh.owner}:${head}`)}&base=${encodeURIComponent(base)}`;
-    const found = await this.request(listOp, rec, "GET", q);
+    const found = await this.request(listOp, rec, "GET", q, undefined, signal);
     if (!found.ok) throw await this.apiError(listOp, found);
     let pull = ((await found.json()) as GhPull[])[0];
     if (!pull) {
       const op = "POST /pulls";
-      const res = await this.request(op, rec, "POST", "/pulls", {
-        title,
-        head,
-        base,
-        body: `由 BakaCoding 创建（${pr_id}）。`,
-      });
+      const res = await this.request(
+        op,
+        rec,
+        "POST",
+        "/pulls",
+        { title, head, base, body: `由 BakaCoding 创建（${pr_id}）。` },
+        signal,
+      );
       if (!res.ok) throw await this.apiError(op, res);
       pull = (await res.json()) as GhPull;
     }
@@ -787,7 +891,9 @@ export class GithubPrProvider implements PrProvider {
     method: string,
     path: string,
     body?: unknown,
+    signal?: AbortSignal,
   ): Promise<Response> {
+    if (signal?.aborted) throw abortReason(signal);
     const url = `${this.apiBase}/repos/${encodeURIComponent(this.gh.owner)}/${encodeURIComponent(this.gh.name)}${path}`;
     const init: RequestInit = {
       method,
@@ -800,15 +906,32 @@ export class GithubPrProvider implements PrProvider {
       },
     };
     if (body !== undefined) init.body = JSON.stringify(body);
+    // T-102a：请求级超时与外部 signal 合并；计时覆盖到读完响应体（读完后返回缓冲好的 Response）
+    const timeoutMs = this.requestTimeoutMs;
+    const timeout = new AbortController();
+    const timer = timeoutMs > 0 ? setTimeout(() => timeout.abort(), timeoutMs) : undefined;
+    const signals = [timeout.signal, ...(signal ? [signal] : [])];
+    init.signal = signals.length === 1 ? timeout.signal : AbortSignal.any(signals);
     let res: Response;
     try {
-      res = await this.fetchFn(url, init);
+      const raw = await this.fetchFn(url, init);
+      const buf = await raw.arrayBuffer();
+      const empty = raw.status === 204 || raw.status === 205 || raw.status === 304;
+      res = new Response(empty ? null : buf, {
+        status: raw.status,
+        statusText: raw.statusText,
+        headers: raw.headers,
+      });
     } catch (err) {
+      if (signal?.aborted) throw abortReason(signal);
+      if (timeout.signal.aborted) throw new GithubTimeoutError(op, timeoutMs);
       throw new GithubApiError(
         `GitHub API 请求失败（${op}）：${this.scrub(String((err as Error)?.message ?? err))}`,
         null,
         op,
       );
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
     const wait = this.rateLimitWait(res);
     if (wait !== undefined) throw new GithubRateLimitError(res.status, op, Math.ceil(wait));

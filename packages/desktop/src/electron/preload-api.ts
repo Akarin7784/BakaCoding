@@ -119,5 +119,12 @@ export function createDesktopApi(ipc: IpcRendererLike, platform: string): BakaDe
       ipc.invoke(IPC_CHANNELS.secretClear, { name }) as Promise<DesktopSecretClearResult>,
     testProvider: (target: DesktopProviderTarget) =>
       ipc.invoke(IPC_CHANNELS.providerTest, target) as Promise<DesktopProviderTestResult>,
+    onQuitting(listener: () => void) {
+      const wrapped = () => listener();
+      ipc.on(IPC_CHANNELS.appQuitting, wrapped);
+      return () => {
+        ipc.removeListener(IPC_CHANNELS.appQuitting, wrapped);
+      };
+    },
   });
 }

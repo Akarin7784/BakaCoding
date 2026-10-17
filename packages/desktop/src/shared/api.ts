@@ -63,6 +63,8 @@ export const IPC_CHANNELS = {
   secretClear: "bakacoding:secret:clear",
   /** invoke（UI-03b，UI-07 复用）：测试连接，接 1 的 testConnection。 */
   providerTest: "bakacoding:provider:test",
+  /** 主进程 → 渲染进程：开始退出收尾，界面显示「正在退出…」；不带内容，每次退出只发一次（T-106）。 */
+  appQuitting: "bakacoding:app:quitting",
 } as const;
 
 /** 界面主题偏好（与渲染进程 lib/theme.ts 的 THEME_PREFERENCES 一致，测试锁住）。 */
@@ -343,6 +345,8 @@ export interface BakaDesktopApi {
   clearSecret?(name: DesktopSecretName): Promise<DesktopSecretClearResult>;
   /** 测试连接（UI-03b）：只发一个极小请求，计入台账（记在主管名下）。 */
   testProvider?(target: DesktopProviderTarget): Promise<DesktopProviderTestResult>;
+  /** 订阅「正在退出」（T-106），返回取消订阅函数；旧版 preload / 测试假 API 可以没有。 */
+  onQuitting?(listener: () => void): () => void;
 }
 
 /** 界面能保存的密钥名（与 3 的 SECRET_NAMES 一致，测试锁住）。 */

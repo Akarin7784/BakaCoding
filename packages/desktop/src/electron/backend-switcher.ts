@@ -343,6 +343,9 @@ export class BackendSwitcher implements BackendHandle {
       } catch {
         /* 拆旧失败也继续尝试重新组装 */
       }
+      // 来源不明（组装失败的只读占位后端没带 repoSource）时按 cwd 传：main 的 lastRepoForStart 对 cwd
+      // 不传「上次导入」，新后端按 --repo > BAKACODING_REPO > process.cwd() 解析，可能不是原来的 repo。
+      // 这只会更严（cwd 来源不给初始化 / 首次提交 / 新建 main），不会把它当成上次导入而放开写操作（#130 评审，T-106 测试锁住）。
       const next = await this.tryStart(repo, source ?? "cwd");
       if (this.stopped) {
         await this.discard(next.handle);

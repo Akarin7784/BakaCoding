@@ -11,6 +11,7 @@ export function Banner({
   tone = "danger",
   label,
   testId,
+  iconClassName,
 }: {
   icon?: LucideIcon;
   children: ReactNode;
@@ -19,6 +20,8 @@ export function Banner({
   /** 读屏用的区域名 */
   label: string;
   testId?: string;
+  /** 图标额外的类名（如退出中的转圈，T-106） */
+  iconClassName?: string;
 }) {
   return (
     <section
@@ -36,7 +39,11 @@ export function Banner({
           size={16}
           strokeWidth={1.5}
           aria-hidden
-          className={cn("shrink-0", tone === "danger" ? "text-danger" : "text-muted-foreground")}
+          className={cn(
+            "shrink-0",
+            tone === "danger" ? "text-danger" : "text-muted-foreground",
+            iconClassName,
+          )}
         />
       )}
       <div className="min-w-0 flex-1 break-words">{children}</div>

@@ -3,6 +3,7 @@ import { REPO_GIT_TIMEOUT_MS } from "@bakacoding/app";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createQuitGuard,
+  createWindowCloseHandler,
   QUIT_STOP_TIMEOUT_MS,
   QUIT_STOP_TIMEOUT_WARN,
   type QuitEventLike,
@@ -144,5 +145,137 @@ describe("createQuitGuard（T-105）", () => {
     await vi.advanceTimersByTimeAsync(QUIT_STOP_TIMEOUT_MS * 2);
     expect(warn).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("退出时通知渲染进程（T-106）", () => {
+  it("第一次拦下时、stop() 之前调一次 onStopping；收尾中重复触发不再调；自己发起的那次也不调", async () => {
+    const d = deferred();
+    const order: string[] = [];
+    const onStopping = vi.fn(() => order.push("notify"));
+    const g = createQuitGuard({
+      onStopping,
+      stop: () => {
+        order.push("stop");
+        return d.promise;
+      },
+      quit: () => order.push("quit"),
+      warn: () => {},
+    });
+    g.onBeforeQuit(ev());
+    g.onBeforeQuit(ev());
+    g.onBeforeQuit(ev());
+    expect(onStopping).toHaveBeenCalledTimes(1);
+    d.resolve();
+    await g.settled();
+    g.onBeforeQuit(ev());
+    expect(onStopping).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(["notify", "stop", "quit"]);
+  });
+
+  it("onStopping 抛错（比如窗口已销毁）不影响收尾和退出", async () => {
+    const stop = vi.fn(async () => {});
+    const quit = vi.fn();
+    const g = createQuitGuard({
+      onStopping: () => {
+        throw new Error("Object has been destroyed");
+      },
+      stop,
+      quit,
+      warn: () => {},
+    });
+    const e = ev();
+    expect(() => g.onBeforeQuit(e)).not.toThrow();
+    expect(e.prevented).toBe(1);
+    await g.settled();
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(quit).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("窗口关闭按钮（T-106）", () => {
+  function closeEv() {
+    const e = {
+      prevented: 0,
+      preventDefault() {
+        e.prevented += 1;
+      },
+    };
+    return e;
+  }
+
+  it("Windows / Linux 空闲时点关闭：窗口先不关，发起退出", () => {
+    for (const platform of ["win32", "linux"]) {
+      const quit = vi.fn();
+      const h = createWindowCloseHandler({ guard: { state: () => "idle" }, platform, quit });
+      const e = closeEv();
+      h(e);
+      expect(e.prevented, platform).toBe(1);
+      expect(quit, platform).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("收尾中再点关闭：仍拦下，不再发起退出；收尾结束（done）后放行", () => {
+    let state: "idle" | "stopping" | "done" = "stopping";
+    const quit = vi.fn();
+    const h = createWindowCloseHandler({ guard: { state: () => state }, platform: "win32", quit });
+    const e1 = closeEv();
+    const e2 = closeEv();
+    h(e1);
+    h(e2);
+    expect([e1.prevented, e2.prevented]).toEqual([1, 1]);
+    expect(quit).not.toHaveBeenCalled();
+    state = "done";
+    const e3 = closeEv();
+    h(e3);
+    expect(e3.prevented).toBe(0);
+    expect(quit).not.toHaveBeenCalled();
+  });
+
+  it("macOS 空闲时关窗口不退出程序（放行，行为不变）；收尾中照样拦下", () => {
+    let state: "idle" | "stopping" = "idle";
+    const quit = vi.fn();
+    const h = createWindowCloseHandler({ guard: { state: () => state }, platform: "darwin", quit });
+    const e1 = closeEv();
+    h(e1);
+    expect(e1.prevented).toBe(0);
+    state = "stopping";
+    const e2 = closeEv();
+    h(e2);
+    expect(e2.prevented).toBe(1);
+    expect(quit).not.toHaveBeenCalled();
+  });
+
+  it("和 quit guard 连起来：连点三次关闭，只 stop 一次、只通知一次、只退出一次，窗口最后才放行", async () => {
+    const d = deferred();
+    const stop = vi.fn(() => d.promise);
+    const onStopping = vi.fn();
+    let windowClosed = false;
+    // 模拟 app.quit()：先 before-quit，没被拦下才关窗口（再走一次 close）
+    const appQuit = vi.fn(() => {
+      const bq = ev();
+      g.onBeforeQuit(bq);
+      if (bq.prevented) return;
+      const ce = closeEv();
+      onClose(ce);
+      if (!ce.prevented) windowClosed = true;
+    });
+    const g = createQuitGuard({ stop, onStopping, quit: appQuit, warn: () => {} });
+    const onClose = createWindowCloseHandler({ guard: g, platform: "win32", quit: appQuit });
+    for (let i = 0; i < 3; i++) {
+      const ce = closeEv();
+      onClose(ce);
+      expect(ce.prevented).toBe(1);
+    }
+    expect(windowClosed).toBe(false);
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(onStopping).toHaveBeenCalledTimes(1);
+    d.resolve();
+    await g.settled();
+    expect(windowClosed).toBe(true);
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(onStopping).toHaveBeenCalledTimes(1);
+    // 第一次点关闭发起 1 次，收尾结束 guard 自己发起 1 次
+    expect(appQuit).toHaveBeenCalledTimes(2);
   });
 });
