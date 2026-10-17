@@ -41,12 +41,15 @@ describe("prStore 凭据检查（T-058）", () => {
     ["ssh://git@", "ssh://git@github.com/o/r.git"],
     ["ssh://git@ 带端口", "ssh://git@gitlab.example.com:2222/o/r.git"],
     ["https://user@", "https://eva@github.com/o/r.git"],
-    ["https://user@ 带邮箱编码", "https://eva%40corp.com@git.example.com/r.git"],
+    ["https://user@ 带点和连字符", "https://eva.m-1@github.com/o/r.git"],
     ["SSH 简写", "git@github.com:o/r.git"],
     ["普通 https", "https://github.com/o/r.git"],
     ["无关查询参数", "https://github.com/o/r/pull/3?tab=files&page=2"],
     ["token 参数为空", "https://example.com/r.git?token="],
     ["git+ssh 用户名", "git+ssh://git@github.com/o/r.git"],
+    ["前后有空格的普通 URL", "  https://github.com/o/r.git  "],
+    ["无关的 # 片段", "https://github.com/o/r/pull/3#discussion_r1"],
+    ["文字里嵌普通 URL", "见 https://github.com/o/r/pull/3 和 ssh://git@github.com/o/r.git"],
   ])("放行：%s", async (_n, url) => {
     const store = open().prStore<Rec>();
     const r = { ...base, remote: { number: 1, url } };
@@ -68,6 +71,34 @@ describe("prStore 凭据检查（T-058）", () => {
     ["查询参数 api_key", "https://example.com/x?api_key=abc"],
     ["预签名 URL", "https://bucket.s3.amazonaws.com/a?X-Amz-Signature=deadbeef"],
     ["大小写混写的参数名", "https://example.com/x?Access-Token=abc"],
+    // #58 评审阻塞 1：没有前缀的 token 当用户名
+    ["40 位十六进制用户名", "https://a1b2c3d4e5f60718293a4b5c6d7e8f9012345678@github.com/o/r"],
+    ["长串 base64 用户名（纯字母数字）", "https://AbCdEfGhIjKlMnOpQrStUvWx@github.com/o/r"],
+    ["base64 用户名带 =", "https://dGhpc2lzYXRva2Vu=@github.com/o/r"],
+    ["用户名带 % 编码（白名单外的字符）", "https://eva%40corp.com@git.example.com/r.git"],
+    ["用户名超过 39 个字符", "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@github.com/o/r"],
+    // 阻塞 2：非 http(s) 也查 token 前缀和长串用户名
+    ["git:// 用户名像 token", "git://ghp_abcdefghijklmnop@github.com/o/r.git"],
+    ["ftp:// 用户名像 token", "ftp://ghp_abcdefghijklmnop@example.com/x"],
+    ["ssh:// 用户名像 token", "ssh://ghp_abcdefghijklmnop@github.com/o/r.git"],
+    [
+      "ssh:// 40 位十六进制用户名",
+      "ssh://a1b2c3d4e5f60718293a4b5c6d7e8f9012345678@github.com/o/r.git",
+    ],
+    // 阻塞 3：%3A 编码的冒号
+    ["用户名里 %3A 编码的冒号", "https://x%3Atok@h/r"],
+    ["用户名里小写 %3a", "https://x%3atok@h/r"],
+    // 一起补上
+    ["# 后面的 access_token", "https://app.example.com/cb#access_token=abc"],
+    ["# 后面带路径再带参数", "https://app.example.com/#/cb?token=abc"],
+    ["参数名末尾的 []", "https://example.com/x?token[]=abc"],
+    ["# 里参数名末尾的 []", "https://example.com/x#api_key[]=abc"],
+    ["前面有空格", "  https://eva:ghp_abc@github.com/o/r.git"],
+    ["嵌在文字里的 user:pass@", "克隆地址 https://eva:tok@github.com/o/r.git 已配置"],
+    ["嵌在文字里的 token 用户名", "clone https://ghp_abcdefghijklmnop@github.com/o/r"],
+    ["嵌在文字里的查询参数 token", "回调 https://example.com/x?token=abc 已收到"],
+    ["https:/\\ 反斜杠写法", "https:/\\user:tok@h/r"],
+    ["https: 不带斜杠", "https:user:tok@h/r"],
   ])("拒写：%s", async (_n, url) => {
     const store = open().prStore<Rec>();
     await expect(store.put({ ...base, remote: { number: 1, url } })).rejects.toThrow(

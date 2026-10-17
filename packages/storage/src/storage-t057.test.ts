@@ -78,4 +78,36 @@ describe("fields 损坏只警告一次（T-057）", () => {
     ro.listTickets();
     expect(roWarns).toHaveLength(1);
   });
+
+  it("修好后读到正常值会清掉记录，再坏还会再警告（T-058 顺手补）", () => {
+    const path = tmpDb();
+    const warns: string[] = [];
+    const s = openStorage({ path, logger: { warn: (m) => warns.push(m) } });
+    opened.push(s);
+    s.saveTicket(base);
+    corrupt(path, "R-1-1", "{bad");
+    s.getTicket("R-1-1");
+    corrupt(path, "R-1-1", JSON.stringify({ write_scope: ["a/**"] }));
+    expect(s.getTicket("R-1-1")!.fields).toEqual({ write_scope: ["a/**"] });
+    corrupt(path, "R-1-1", "{bad again");
+    s.getTicket("R-1-1");
+    expect(warns).toHaveLength(2);
+  });
+
+  it("logger.warn 抛错时读取照常返回，不抛错（T-058 顺手补）", () => {
+    const path = tmpDb();
+    const s = openStorage({
+      path,
+      logger: {
+        warn: () => {
+          throw new Error("logger 坏了");
+        },
+      },
+    });
+    opened.push(s);
+    s.saveTicket(base);
+    corrupt(path, "R-1-1", "{bad");
+    expect(s.getTicket("R-1-1")!.fields).toBeNull();
+    expect(s.listTickets()).toHaveLength(1);
+  });
 });
