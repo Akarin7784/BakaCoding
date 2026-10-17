@@ -140,7 +140,10 @@ export function globWithinScope(g: string, scope: readonly string[]): boolean {
   return scope.some((s) => containedFrom(gs, 0, segs(s), 0));
 }
 
-/** 被裁掉的读写条目：原条目和裁剪原因。 */
+/**
+ * 被裁剪的条目：原条目和原因。`rw` + `outside_write_scope` 已降为 `ro`；`rw` + `unsafe_glob` 已丢掉；
+ * `ro` + `unsafe_glob` 已原位改成 `deny`（T-038）。
+ */
 export interface CutEntry {
   entry: PermissionEntry;
   /** `unsafe_glob`：glob 本身不安全（`isUnsafeGlob`）；`outside_write_scope`：不在写入范围和已批准范围里 */
@@ -164,8 +167,13 @@ function effectiveScope(write_scope: readonly string[] | undefined): {
 }
 
 /**
- * 按写入范围（加上已批准的范围）裁剪一份清单：`rw` 条目不安全、或不完全落在「写入范围 ∪ 已批准范围」里的降为 `ro`；
- * `ro` / `deny` 原样；顺序不变。已批准范围里不安全的条目同样忽略。生成和每次读回需求单记录都走这一步（T-048 #47 修复）。
+ * 按写入范围（加上已批准的范围）裁剪一份清单（T-048 #47 修复；T-038 按 蓝色大肥鱼 裁定改规则），清单「后面覆盖前面」：
+ * - 不安全（`isUnsafeGlob`）的 `rw` 条目丢掉，记 `cut`（`unsafe_glob`）；
+ * - 不安全的 `ro` 条目不丢，原位改成 `deny`，也记 `cut`（`unsafe_glob`）（它本意是收紧，丢掉或保留为 ro 都可能让前面更宽的 `rw` 生效；
+ *   模块 4 只保留不安全的 `deny`，minimatch 解析 `..` 后它照样能盖住对应路径）；
+ * - 安全但不完全落在「写入范围 ∪ 已批准范围」里的 `rw` 降为 `ro`，记 `cut`（`outside_write_scope`）；
+ * - 其余（安全的 `ro`、所有 `deny`）原样；顺序不变。已批准范围里不安全的条目同样忽略。
+ * 生成和每次读回需求单记录都走这一步。
  */
 export function clampPermissionList(
   list: readonly PermissionEntry[],
@@ -175,16 +183,20 @@ export function clampPermissionList(
   const { scope, ignored } = effectiveScope(write_scope);
   const allowed = [...scope, ...safeScope(granted_scope)];
   const cut: CutEntry[] = [];
-  const out: PermissionEntry[] = list.map((e) => {
-    if (e.level !== "rw") return { glob: e.glob, level: e.level };
-    if (isUnsafeGlob(e.glob)) {
+  const out: PermissionEntry[] = [];
+  for (const e of list) {
+    if (e.level === "deny") {
+      out.push({ glob: e.glob, level: e.level });
+    } else if (isUnsafeGlob(e.glob)) {
       cut.push({ entry: { glob: e.glob, level: e.level }, reason: "unsafe_glob" });
-      return { glob: e.glob, level: "ro" };
+      if (e.level === "ro") out.push({ glob: e.glob, level: "deny" });
+    } else if (e.level === "ro" || globWithinScope(e.glob, allowed)) {
+      out.push({ glob: e.glob, level: e.level });
+    } else {
+      cut.push({ entry: { glob: e.glob, level: e.level }, reason: "outside_write_scope" });
+      out.push({ glob: e.glob, level: "ro" });
     }
-    if (globWithinScope(e.glob, allowed)) return { glob: e.glob, level: e.level };
-    cut.push({ entry: { glob: e.glob, level: e.level }, reason: "outside_write_scope" });
-    return { glob: e.glob, level: "ro" };
-  });
+  }
   return {
     permission_list: PermissionListSchema.parse(
       out.length > 0 ? out : [{ glob: "**", level: "deny" }],
@@ -197,8 +209,8 @@ export function clampPermissionList(
 /**
  * 按单生成三级权限清单（T-048，格式与默认拒绝沿用 `@bakacoding/types` / 模块 4，T-011）：
  * - 起点：需求单带的 `permission_list`（主管拆单时的建议，模型产出）；没带就用「全仓只读 + 写入范围读写」。
- * - 裁剪（`clampPermissionList`）：`rw` 条目不安全（`..` 等，见 `isUnsafeGlob`）或不在写入范围内的降为 `ro`，
- *   记进 `cut` 由调用方记日志；`ro` / `deny` 原样保留。
+ * - 裁剪（`clampPermissionList`）：不安全（`..` 等，见 `isUnsafeGlob`）的 `rw` 丢掉、`ro` 原位改 `deny`；
+ *   不在写入范围内的 `rw` 降为 `ro`；裁掉 / 降级的记进 `cut` 由调用方记日志；其余原样保留。
  * - 没写写入范围的单按整个仓库 `**` 处理（与 9 一致），只裁不安全的条目；写入范围里不安全的条目不匹配任何东西。
  * - 结果一定非空：空清单在需求单记录里表示「8 还没生成」，所以真没条目时写一条显式的 `** deny`（效果同默认拒绝）。
  */

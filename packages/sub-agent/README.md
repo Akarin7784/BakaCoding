@@ -35,4 +35,4 @@ const outcome = await subAgent.handle(ticket);
 - 复投（评审不过、编码池 `gave_up` / `turn_limit` / 没改动 / 提交失败）都在同一 worktree、同一 PR 上进行，计入评审复投计数；超过 `pipeline.resubmit_limits.review` 上报。
 - 当日预算用完不上报、不计复投，返回 `requeue_budget` 和续跑凭据，第二天用 `resume(ticket, token)` 续跑。
 - 7 的复投成员持久化：`createRoundAssignmentStore({ rounds: storageRoundSource(storage) })`（T-045 起按单号走 2 的 `listPrRounds`，不再需要 `projectOf`）。
-- 每单权限清单（T-048）：第一次编码前按单上的建议和 `write_scope` 生成（超出写入范围的写权限降为只读并记日志），写进 2 的需求单记录；之后每次调编码池和评审前都从记录读。批准的写入范围用 `recordGrantedScope` 或经 `scopeRequests` 自动写回。同一单不能同时有两个 `runTicket`（4 的登记表按 `ticket_id` 释放），8 在进程内守住。
+- 每单权限清单（T-048）：第一次编码前按单上的建议和 `write_scope` 生成（超出写入范围的写权限降为只读、不安全的写权限丢掉、不安全的只读改成 deny，并记日志），写进 2 的需求单记录；之后每次调编码池和评审前都从记录读。批准的写入范围用 `recordGrantedScope` 或经 `scopeRequests` 自动写回。同一单不能同时有两个 `runTicket`（4 的登记表按 `ticket_id` 释放），8 在进程内守住。

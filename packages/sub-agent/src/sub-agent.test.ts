@@ -1259,7 +1259,7 @@ describe("T-048 每单权限清单（以 2 的需求单记录为准）", () => {
     expect(r.store.set).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0]![0]).toMatch(
-      /\[bakacoding\/sub-agent\] T-1 .*2 条写权限超出写入范围 \[src\/a\/\*\*\].*src\/\*\*（outside_write_scope）, package\.json/,
+      /\[bakacoding\/sub-agent\] T-1 .*2 条权限超出写入范围 \[src\/a\/\*\*\].*src\/\*\*（outside_write_scope）, package\.json/,
     );
   });
 
@@ -1282,7 +1282,7 @@ describe("T-048 每单权限清单（以 2 的需求单记录为准）", () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it("#47：记录里的非空清单带逃逸 / 范围外的 rw 时重查降为只读、记日志、写回记录；批准过的范围保留", async () => {
+  it("#47：记录里的非空清单带逃逸的 rw 丢掉、范围外的 rw 降为只读、记日志、写回记录；批准过的范围保留", async () => {
     const r = recordStore([
       { glob: "**", level: "ro" },
       { glob: "src/a/**", level: "rw" },
@@ -1300,7 +1300,6 @@ describe("T-048 每单权限清单（以 2 的需求单记录为准）", () => {
     const fixed = [
       { glob: "**", level: "ro" },
       { glob: "src/a/**", level: "rw" },
-      { glob: "src/a/../../**", level: "ro" },
       { glob: "lib/**", level: "ro" },
       { glob: "docs/**", level: "rw" },
     ];

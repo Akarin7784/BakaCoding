@@ -329,7 +329,7 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
     if (r.cut.length === 0) return;
     const scope = t.write_scope?.length ? t.write_scope.join(", ") : "**";
     logger.warn(
-      `[bakacoding/sub-agent] ${t.ticket_id} ${when}权限清单里有 ${r.cut.length} 条写权限超出写入范围 [${scope}] 或不安全，已降为只读：${r.cut.map((c) => `${c.entry.glob}（${c.reason}）`).join(", ")}`,
+      `[bakacoding/sub-agent] ${t.ticket_id} ${when}权限清单里有 ${r.cut.length} 条权限超出写入范围 [${scope}] 或不安全，已裁剪（范围外的 rw 降为只读，不安全的 rw 丢掉、ro 改为 deny）：${r.cut.map((c) => `${c.entry.glob}（${c.reason}）`).join(", ")}`,
     );
   }
 
