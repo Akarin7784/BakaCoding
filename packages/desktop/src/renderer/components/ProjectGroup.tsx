@@ -1,8 +1,8 @@
 import { ChevronDown, ChevronRight, PanelRight } from "lucide-react";
 import { AgentIcon } from "./AgentIcon";
 import { Button } from "./ui/button";
+import { EscalationItem } from "./Escalations";
 import type {
-  EscalationView,
   FlashCallSummary,
   GroupMessageEvent,
   GroupMessageKind,
@@ -15,16 +15,6 @@ const KIND_LABEL: Record<GroupMessageKind, string> = {
   review_verdict: "评审结论",
   resubmit: "复投记录",
   escalation: "上报",
-};
-
-const ESCALATION_REASON: Record<EscalationView["reason"], string> = {
-  review_limit: "评审复投超限",
-  conflict_limit: "冲突复投超限",
-  scope_lock_failed: "写入范围锁定失败",
-  resplit_limit: "重新拆单超限",
-  github_manual: "需人工处理 GitHub",
-  coder_failed: "编码多次未完成",
-  budget_exceeded: "本单预算用完",
 };
 
 function FlashCalls({ ids, calls }: { ids: string[]; calls: Record<string, FlashCallSummary> }) {
@@ -99,10 +89,7 @@ export function ProjectGroup({
           className="border-b border-border px-4 py-2 text-sm"
         >
           {view.escalations.map((e) => (
-            <li key={e.event_id} data-testid="escalation">
-              需要人工介入 · {e.ticket_id ?? e.requirement_id} · {ESCALATION_REASON[e.reason]}
-              {e.detail ? `：${e.detail}` : ""}
-            </li>
+            <EscalationItem key={e.event_id} e={e} />
           ))}
         </ul>
       )}

@@ -4,14 +4,22 @@ import { ConversationList, type Selection } from "./components/Sidebar";
 import { SupervisorChat } from "./components/SupervisorChat";
 import { ProjectGroup } from "./components/ProjectGroup";
 import { RightPanel } from "./components/RightPanel";
+import { UnattributedPanel } from "./components/Escalations";
 import { useDesktopData } from "./data/useDesktopData";
 import * as mock from "./mock/data";
-import type { FlashCallSummary, ProjectView, SupervisorMessage } from "./mock/types";
+import type {
+  EscalationView,
+  FlashCallSummary,
+  ProjectView,
+  SupervisorMessage,
+} from "./mock/types";
 
 export interface AppProps {
   projects?: ProjectView[];
   supervisorMessages?: SupervisorMessage[];
   flashCalls?: Record<string, FlashCallSummary>;
+  /** 找不到所属项目的上报（T-049）。 */
+  unattributed?: EscalationView[];
   /** 数据来源；默认取 preload 暴露的 window.bakacoding，传 null 强制用假数据。 */
   api?: BakaDesktopApi | null;
 }
@@ -27,6 +35,7 @@ export function App(props: AppProps) {
   const live = useDesktopData(api);
   const projects = props.projects ?? live?.projects ?? mock.projects;
   const flashCalls = props.flashCalls ?? live?.flashCalls ?? mock.flashCalls;
+  const unattributed = props.unattributed ?? live?.unattributed ?? [];
   // 主管对话的历史还没有落库来源，接入真实数据时先从空对话开始。
   const supervisorMessages = props.supervisorMessages ?? (live ? [] : mock.supervisorMessages);
 
@@ -58,8 +67,15 @@ export function App(props: AppProps) {
         </div>
       )}
       <div className="flex min-h-0 flex-1">
-        <ConversationList projects={projects} selection={selection} onSelect={select} />
-        {selection.kind === "supervisor" || !current ? (
+        <ConversationList
+          projects={projects}
+          unattributedCount={unattributed.length}
+          selection={selection}
+          onSelect={select}
+        />
+        {selection.kind === "unattributed" ? (
+          <UnattributedPanel escalations={unattributed} />
+        ) : selection.kind === "supervisor" || !current ? (
           <SupervisorChat initial={supervisorMessages} />
         ) : (
           <ProjectGroup
@@ -69,7 +85,7 @@ export function App(props: AppProps) {
             onToggleSidebar={() => setSidebarOpen((o) => !o)}
           />
         )}
-        {sidebarOpen && current && (
+        {sidebarOpen && current && selection.kind !== "unattributed" && (
           <RightPanel
             view={current}
             onOpenTopic={(rid) => {

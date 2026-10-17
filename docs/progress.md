@@ -37,8 +37,8 @@ flowchart BT
   classDef doing fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef done fill:#dcfce7,stroke:#16a34a,color:#14532d
 
-  class M0,M2,M5,M6,M7,M11,M12,T done
-  class M1,M3,M4,M8,M9 doing
+  class M0,M2,M5,M6,M7,M11,T done
+  class M1,M3,M4,M8,M9,M12 doing
   class M10 todo
 ```
 
@@ -97,6 +97,7 @@ flowchart BT
 | T-043 | 不可信文本包装与转义：评审池的需求单 / 摘要 / 架构约束 / diff 与编码池 feedback 统一包进带 nonce 的 `untrusted` 区块；转义前做 NFKC、忽略零宽字符和软连字符；共用函数放 `@bakacoding/types`；nonce 不进编码池公共前缀 | 5、7 | 执行层开发 | 已合入 | #35 | `876cac0` |
 | T-044 | 模块 5/7 把 `signal` 透传给模型调用 | 5、7 | 执行层开发 | 未开始 | — | — |
 | T-045 | 模块 7 `storageRoundSource` 改用 `listPrRounds(ticket_id)` | 7 | 执行层开发 | 未开始 | — | — |
+| T-049 | 桌面界面：找不到项目的 `escalated`（含合并队列的 `unattributed:<pr_id>`）进侧栏「未归属」，显示 PR 号、原因、说明；`merged_but:` 标「代码已进集成分支」 | 12 | 界面与诊断开发 | 待评审 | — | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045 是执行层跟进单。
 

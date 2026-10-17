@@ -22,3 +22,7 @@
 - `pnpm rebuild:electron`：用 `@electron/rebuild` 为当前 Electron 版本另编一份 better-sqlite3，放到 `native/electron/better_sqlite3.node`（已 gitignore），主进程通过 `nativeBinding` 加载。不就地重编，也不放进 postinstall：better-sqlite3 在 pnpm 下只有一份，被模块 2 和 Node 下的 vitest 共用。
   - better-sqlite3 已升到 12.x（T-026），在 Electron 44.9.0 下能编过并正常加载；T-027 实测窗口能显示真实库的数据（#22 里 ABI 报错的已知问题已解决）。
   - `@bakacoding/storage` 打包进主进程，`better-sqlite3` 保持 external、运行时从本包的 `node_modules` 加载，所以本包仍直接依赖 better-sqlite3：这也是 `rebuild:electron` 编译的那一份，两者版本一致。
+
+## 未归属的上报（T-049）
+
+对不上任何项目的 `escalated`（比如合并队列对认不出的 PR 用 `unattributed:<pr_id>` 作需求号）不再丢掉，而是放进侧栏最后的「未归属」：显示 PR 号（或单号 / 需求号）、原因和说明；说明以 `merged_but:` 开头的标「代码已进集成分支」。没有这类上报时侧栏不显示这一项。

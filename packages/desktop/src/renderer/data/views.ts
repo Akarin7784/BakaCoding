@@ -31,6 +31,8 @@ export function applyUpdate(state: LiveState, u: DesktopUpdate): LiveState {
 export interface LiveViews {
   projects: ProjectView[];
   flashCalls: Record<string, FlashCallSummary>;
+  /** 找不到所属项目的上报（如 `unattributed:<pr_id>`、需求号对不上任何项目），按 seq 顺序。 */
+  unattributed: EscalationView[];
 }
 
 export function buildViews(state: LiveState): LiveViews {
@@ -79,11 +81,11 @@ export function buildViews(state: LiveState): LiveViews {
     }
   }
 
+  const unattributed: EscalationView[] = [];
   for (const e of state.events) {
     if (e.type !== "escalated") continue;
     const pid = reqProject.get(e.requirement_id);
     const view = pid ? projects.get(pid) : undefined;
-    if (!view) continue;
     const esc: EscalationView = {
       event_id: e.event_id,
       ts: e.ts,
@@ -92,7 +94,9 @@ export function buildViews(state: LiveState): LiveViews {
       reason: e.payload.reason,
       ...(e.payload.detail !== undefined ? { detail: e.payload.detail } : {}),
     };
-    view.escalations.push(esc);
+    // 找不到项目的不丢，放进「未归属」（T-049）。
+    if (view) view.escalations.push(esc);
+    else unattributed.push(esc);
   }
 
   for (const t of state.tickets) {
@@ -114,5 +118,5 @@ export function buildViews(state: LiveState): LiveViews {
       title: requirement_id,
     }));
   }
-  return { projects: [...projects.values()], flashCalls };
+  return { projects: [...projects.values()], flashCalls, unattributed };
 }
