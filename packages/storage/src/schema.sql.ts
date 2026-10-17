@@ -1,5 +1,25 @@
-// 表结构。只加表、加列，不改不删（升级时按 user_version 依次执行）。
-export const MIGRATIONS: string[] = [
+import type Database from "better-sqlite3";
+
+/** 一步升级：一段 SQL，或需要在 JS 里回填数据时用函数。在同一个事务里执行。 */
+export type Migration = string | ((db: Database.Database) => void);
+
+/** 把 ISO 时间转成 UTC 毫秒数；解析不了返回 null。 */
+export function isoToMs(ts: string): number | null {
+  const ms = Date.parse(ts);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+// 时间列存一份毫秒数（*_ms），比较和排序都用它：ISO 文本带不带毫秒按文本比会排错（T-022 a）。
+const TS_MS_COLUMNS: [table: string, text_col: string, ms_col: string][] = [
+  ["events", "ts", "ts_ms"],
+  ["call_log", "ts", "ts_ms"],
+  ["backlog_metrics", "ts", "ts_ms"],
+  ["tickets", "created_at", "created_at_ms"],
+  ["decisions", "ts", "ts_ms"],
+];
+
+// 表结构。只加表、加列、加索引，不改不删数据（升级时按 user_version 依次执行）。
+export const MIGRATIONS: Migration[] = [
   /* v1 */ `
   CREATE TABLE lease (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -161,4 +181,20 @@ export const MIGRATIONS: string[] = [
   CREATE INDEX ledger_day ON ledger(day);
   CREATE INDEX ledger_ticket ON ledger(ticket_id);
   `,
+  /* v2（T-022）：毫秒时间列并回填；events.seq 唯一 */
+  (db) => {
+    for (const [table, textCol, msCol] of TS_MS_COLUMNS) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${msCol} INTEGER`);
+      const rows = db.prepare(`SELECT rowid AS id, ${textCol} AS t FROM ${table}`).all() as {
+        id: number;
+        t: string;
+      }[];
+      const upd = db.prepare(`UPDATE ${table} SET ${msCol} = ? WHERE rowid = ?`);
+      for (const r of rows) upd.run(isoToMs(r.t), r.id);
+      db.exec(`CREATE INDEX ${table}_${msCol} ON ${table}(${msCol})`);
+    }
+    // 旧库里如果已经有重复 seq，这里会失败，升级中止、库保持 v1，不会悄悄丢数据
+    db.exec("DROP INDEX IF EXISTS events_seq");
+    db.exec("CREATE UNIQUE INDEX events_seq_unique ON events(seq)");
+  },
 ];

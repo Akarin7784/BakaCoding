@@ -21,7 +21,7 @@ import {
   type TicketRecord,
   type TicketStatus,
 } from "@bakacoding/types";
-import { MIGRATIONS } from "./schema.sql.js";
+import { isoToMs, MIGRATIONS } from "./schema.sql.js";
 
 export interface StorageOptions {
   /** 数据库文件路径；测试可用 ":memory:"。 */
@@ -112,6 +112,43 @@ export interface PurgeResult {
   purged_calls: number;
 }
 
+/** 从总线落库失败的一条记录。 */
+export interface IngestFailure {
+  event_id: string;
+  type: string;
+  seq: number;
+  error: Error;
+}
+
+export interface AttachOptions {
+  /** 从总线落库失败时调用，默认 `console.error`。失败同时计入 `health()`。 */
+  onError?: (failure: IngestFailure) => void;
+}
+
+/** 存储当前状态，界面和主管据此发现落库失败（T-022 c）。 */
+export interface StorageHealth {
+  /** 没有落库失败、租约还在手里、库没关。 */
+  ok: boolean;
+  /** 租约丢了（续租失败或写入时发现被接管）；之后所有写入都会失败。 */
+  lease_lost: boolean;
+  closed: boolean;
+  /** 从总线落库失败的累计次数。 */
+  ingest_failures: number;
+  /** 最近一次落库失败。 */
+  last_failure?: { event_id: string; type: string; seq: number; message: string; at: string };
+}
+
+/** 同一个 seq 已被另一条事件占用（`events.seq` 唯一）。 */
+export class StorageSeqConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "StorageSeqConflictError";
+  }
+}
+
+/** 模块 6 允许的 PR 记录类型。 */
+export const PR_RECORD_KINDS = ["ticket", "integration"] as const;
+
 export interface BusLike {
   subscribe(type: "*", handler: (event: BakaEvent) => void | Promise<void>): () => void;
 }
@@ -138,7 +175,9 @@ export interface Storage {
   /** 给模块 6 注入的 PR 记录存储；`kind` 单独成列并原样存回，缺 `kind` 的记录拒绝写入。 */
   prStore<T extends PrRecordLike>(): PrRecordStore<T>;
   /** 用 "*" 订阅总线全部事件落库，返回取消订阅函数。 */
-  attach(bus: BusLike): () => void;
+  attach(bus: BusLike, options?: AttachOptions): () => void;
+  /** 当前状态：落库失败次数、最近一次失败、租约是否丢失。 */
+  health(): StorageHealth;
   /** 库里最大 seq + 1，空库为 0；启动时传给总线的 `initialSeq`。 */
   nextSeq(): number;
   queryEvents(filter?: EventFilter): BakaEvent[];
@@ -192,6 +231,11 @@ export function openStorage(options: StorageOptions): Storage {
   db.pragma("foreign_keys = ON");
   db.pragma("busy_timeout = 5000");
   migrate(db);
+  const toMs = (ts: string, field: string): number => {
+    const ms = isoToMs(ts);
+    if (ms === null) throw new RangeError(`${field} 不是合法的 ISO 时间：${ts}`);
+    return ms;
+  };
 
   // ---------- 租约 ----------
   const acquire = db.transaction(() => {
@@ -208,22 +252,29 @@ export function openStorage(options: StorageOptions): Storage {
     ).run(owner, t + ttl);
   });
   try {
-    acquire();
+    acquire.immediate();
   } catch (e) {
     db.close();
     throw e;
   }
   const renewStmt = db.prepare("UPDATE lease SET expires_at = ? WHERE id = 1 AND owner = ?");
+  let leaseLost = false;
+  let ingestFailures = 0;
+  let lastFailure: StorageHealth["last_failure"];
   /** 每次写入前续租并确认租约仍在自己手里。 */
   function holdLease(): void {
     const r = renewStmt.run(now().getTime() + ttl, owner);
-    if (r.changes === 0) throw new StorageLeaseError("租约已被另一个写入者接管，本进程不能再写入");
+    if (r.changes === 0) {
+      leaseLost = true;
+      throw new StorageLeaseError("租约已被另一个写入者接管，本进程不能再写入");
+    }
   }
   const timer = setInterval(
     () => {
       try {
         holdLease();
       } catch (e) {
+        leaseLost = true;
         console.error("[storage] 续租失败", e);
       }
     },
@@ -239,7 +290,8 @@ export function openStorage(options: StorageOptions): Storage {
     });
     return (...args: A) => {
       if (closed) throw new Error("存储已关闭");
-      return tx(...args);
+      // IMMEDIATE：事务一开始就拿写锁，两个进程同时写时由 busy_timeout 排队，不会中途报 SQLITE_BUSY
+      return tx.immediate(...args);
     };
   }
 
@@ -257,13 +309,14 @@ export function openStorage(options: StorageOptions): Storage {
   // ---------- 语句 ----------
   const st = {
     insertEvent: db.prepare(
-      `INSERT OR IGNORE INTO events (event_id, seq, type, ts, trace_id, span_id, parent_span_id, requirement_id, ticket_id, project_id, payload)
-       VALUES (@event_id, @seq, @type, @ts, @trace_id, @span_id, @parent_span_id, @requirement_id, @ticket_id, @project_id, @payload)`,
+      `INSERT INTO events (event_id, seq, type, ts, ts_ms, trace_id, span_id, parent_span_id, requirement_id, ticket_id, project_id, payload)
+       VALUES (@event_id, @seq, @type, @ts, @ts_ms, @trace_id, @span_id, @parent_span_id, @requirement_id, @ticket_id, @project_id, @payload)
+       ON CONFLICT(event_id) DO NOTHING`,
     ),
     insertCall: db.prepare(
-      `INSERT OR IGNORE INTO call_log (event_id, ts, requirement_id, ticket_id, role, provider, model, effort, prompt, output,
+      `INSERT OR IGNORE INTO call_log (event_id, ts, ts_ms, requirement_id, ticket_id, role, provider, model, effort, prompt, output,
         prompt_chars, output_chars, summary, input_tokens, output_tokens, cache_hit_input_tokens, cache_hit, latency_ms, cost, is_resubmit, rate_limited_retry)
-       VALUES (@event_id, @ts, @requirement_id, @ticket_id, @role, @provider, @model, @effort, @prompt, @output,
+       VALUES (@event_id, @ts, @ts_ms, @requirement_id, @ticket_id, @role, @provider, @model, @effort, @prompt, @output,
         @prompt_chars, @output_chars, @summary, @input_tokens, @output_tokens, @cache_hit_input_tokens, @cache_hit, @latency_ms, @cost, @is_resubmit, @rate_limited_retry)`,
     ),
     insertProject: db.prepare(
@@ -272,6 +325,11 @@ export function openStorage(options: StorageOptions): Storage {
     insertGroup: db.prepare(
       "INSERT OR IGNORE INTO groups (project_id, created_at, created_by_event) VALUES (?, ?, ?)",
     ),
+    // 群消息只在需求还没登记项目时登记，不覆盖已有归属（T-022 f）
+    insertRequirementIfAbsent: db.prepare(
+      "INSERT OR IGNORE INTO requirements (requirement_id, project_id) VALUES (?, ?)",
+    ),
+    seqOwner: db.prepare("SELECT event_id FROM events WHERE seq = ?"),
     upsertRequirement: db.prepare(
       "INSERT INTO requirements (requirement_id, project_id) VALUES (?, ?) ON CONFLICT(requirement_id) DO UPDATE SET project_id = excluded.project_id",
     ),
@@ -280,7 +338,7 @@ export function openStorage(options: StorageOptions): Storage {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     insertBacklog: db.prepare(
-      "INSERT OR IGNORE INTO backlog_metrics (event_id, ts, kind, pending, capacity) VALUES (?, ?, ?, ?, ?)",
+      "INSERT OR IGNORE INTO backlog_metrics (event_id, ts, ts_ms, kind, pending, capacity) VALUES (?, ?, ?, ?, ?, ?)",
     ),
     projectOfRequirement: db.prepare(
       "SELECT project_id FROM requirements WHERE requirement_id = ?",
@@ -293,6 +351,13 @@ export function openStorage(options: StorageOptions): Storage {
   // ---------- 事件落库 ----------
   const ingest = write((input: BakaEvent) => {
     const e = EventSchema.parse(input);
+    const ts_ms = toMs(e.ts, "ts");
+    const seqRow = st.seqOwner.get(e.seq) as { event_id: string } | undefined;
+    if (seqRow && seqRow.event_id !== e.event_id) {
+      throw new StorageSeqConflictError(
+        `seq ${e.seq} 已被事件 ${seqRow.event_id} 占用，事件 ${e.event_id} 不能写入`,
+      );
+    }
     let project_id: string | null = null;
     let payload: Row = deepRedact(e.payload as Row);
 
@@ -314,7 +379,7 @@ export function openStorage(options: StorageOptions): Storage {
       case "group_message": {
         const p = e.payload;
         project_id = p.project_id;
-        st.upsertRequirement.run(e.requirement_id, p.project_id);
+        st.insertRequirementIfAbsent.run(e.requirement_id, p.project_id);
         st.insertGroupMessage.run(
           e.event_id,
           e.seq,
@@ -336,6 +401,7 @@ export function openStorage(options: StorageOptions): Storage {
         st.insertCall.run({
           event_id: e.event_id,
           ts: e.ts,
+          ts_ms,
           requirement_id: e.requirement_id,
           ticket_id: e.ticket_id,
           role: p.role,
@@ -365,7 +431,14 @@ export function openStorage(options: StorageOptions): Storage {
       }
       case "review_backlog":
       case "supervisor_backlog":
-        st.insertBacklog.run(e.event_id, e.ts, e.type, e.payload.pending, e.payload.capacity);
+        st.insertBacklog.run(
+          e.event_id,
+          e.ts,
+          ts_ms,
+          e.type,
+          e.payload.pending,
+          e.payload.capacity,
+        );
         break;
       default:
         break;
@@ -380,6 +453,7 @@ export function openStorage(options: StorageOptions): Storage {
       seq: e.seq,
       type: e.type,
       ts: e.ts,
+      ts_ms,
       trace_id: e.trace_id,
       span_id: e.span_id,
       parent_span_id: e.parent_span_id,
@@ -437,19 +511,23 @@ export function openStorage(options: StorageOptions): Storage {
       args.push(...f.types);
     }
     if (f.from !== undefined) {
-      where.push("e.ts >= ?");
-      args.push(f.from);
+      where.push("e.ts_ms >= ?");
+      args.push(toMs(f.from, "from"));
     }
     if (f.to !== undefined) {
-      where.push("e.ts <= ?");
-      args.push(f.to);
+      where.push("e.ts_ms <= ?");
+      args.push(toMs(f.to, "to"));
     }
     if (f.after_seq !== undefined) {
       where.push("e.seq > ?");
       args.push(f.after_seq);
     }
+    if (f.limit !== undefined && (!Number.isInteger(f.limit) || f.limit <= 0)) {
+      throw new RangeError(`limit 须为正整数，收到 ${f.limit}`);
+    }
+    if (f.limit !== undefined) args.push(f.limit);
     const sql = `SELECT e.* FROM events e LEFT JOIN requirements rq ON rq.requirement_id = e.requirement_id
-      ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY e.seq ${f.limit ? `LIMIT ${Math.floor(f.limit)}` : ""}`;
+      ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY e.seq ${f.limit !== undefined ? "LIMIT ?" : ""}`;
     return (db.prepare(sql).all(...args) as Row[]).map(rowToEvent);
   }
 
@@ -457,12 +535,12 @@ export function openStorage(options: StorageOptions): Storage {
   const saveTicket = write((t: TicketInput) => {
     st.upsertRequirement.run(t.requirement_id, t.project_id);
     db.prepare(
-      `INSERT INTO tickets (ticket_id, project_id, requirement_id, created_at, ticket_text, decomposition_summary, status, outcome,
+      `INSERT INTO tickets (ticket_id, project_id, requirement_id, created_at, created_at_ms, ticket_text, decomposition_summary, status, outcome,
         base_commit, permission_list, context_snippets, ci_checks)
-       VALUES (@ticket_id, @project_id, @requirement_id, @created_at, @ticket_text, @decomposition_summary, @status, @outcome,
+       VALUES (@ticket_id, @project_id, @requirement_id, @created_at, @created_at_ms, @ticket_text, @decomposition_summary, @status, @outcome,
         @base_commit, @permission_list, @context_snippets, @ci_checks)
        ON CONFLICT(ticket_id) DO UPDATE SET project_id = excluded.project_id, requirement_id = excluded.requirement_id,
-        created_at = excluded.created_at, ticket_text = excluded.ticket_text, decomposition_summary = excluded.decomposition_summary,
+        created_at = excluded.created_at, created_at_ms = excluded.created_at_ms, ticket_text = excluded.ticket_text, decomposition_summary = excluded.decomposition_summary,
         status = excluded.status, outcome = excluded.outcome, base_commit = excluded.base_commit,
         permission_list = excluded.permission_list, context_snippets = excluded.context_snippets, ci_checks = excluded.ci_checks`,
     ).run({
@@ -470,6 +548,7 @@ export function openStorage(options: StorageOptions): Storage {
       project_id: t.project_id,
       requirement_id: t.requirement_id,
       created_at: t.created_at,
+      created_at_ms: toMs(t.created_at, "created_at"),
       ticket_text: r(t.ticket_text),
       decomposition_summary:
         t.decomposition_summary === undefined ? null : r(t.decomposition_summary),
@@ -497,10 +576,17 @@ export function openStorage(options: StorageOptions): Storage {
     if (typeof record.kind !== "string" || record.kind === "") {
       throw new TypeError(`PR 记录 ${record.pr_id} 缺少 kind，不能写入`);
     }
+    if (!(PR_RECORD_KINDS as readonly string[]).includes(record.kind)) {
+      throw new TypeError(
+        `PR 记录 ${record.pr_id} 的 kind 只能是 ${PR_RECORD_KINDS.join(" / ")}，收到 ${record.kind}`,
+      );
+    }
+    // 轻脱敏；pr_id 和 kind 是键，原样保留
+    const stored = { ...deepRedact(record), pr_id: record.pr_id, kind: record.kind };
     db.prepare(
       `INSERT INTO pr_records (pr_id, kind, record, saved_at) VALUES (?, ?, ?, ?)
        ON CONFLICT(pr_id) DO UPDATE SET kind = excluded.kind, record = excluded.record, saved_at = excluded.saved_at`,
-    ).run(record.pr_id, record.kind, JSON.stringify(record), now().toISOString());
+    ).run(record.pr_id, record.kind, JSON.stringify(stored), now().toISOString());
   });
 
   function readPrRow<T extends PrRecordLike>(row: { kind: string; record: string }): T {
@@ -552,19 +638,19 @@ export function openStorage(options: StorageOptions): Storage {
       args.push(f.requirement_id);
     }
     if (f.from !== undefined) {
-      where.push("t.created_at >= ?");
-      args.push(f.from);
+      where.push("t.created_at_ms >= ?");
+      args.push(toMs(f.from, "from"));
     }
     if (f.to !== undefined) {
-      where.push("t.created_at <= ?");
-      args.push(f.to);
+      where.push("t.created_at_ms <= ?");
+      args.push(toMs(f.to, "to"));
     }
     const rows = db
       .prepare(
         `SELECT t.*, m.result AS merge_result, (ev.ticket_id IS NOT NULL) AS in_eval FROM tickets t
          LEFT JOIN merge_results m ON m.ticket_id = t.ticket_id
          LEFT JOIN eval_set ev ON ev.ticket_id = t.ticket_id
-         WHERE ${where.join(" AND ")} ORDER BY t.created_at, t.ticket_id`,
+         WHERE ${where.join(" AND ")} ORDER BY t.created_at_ms, t.ticket_id`,
       )
       .all(...args) as Row[];
     const roundsStmt = db.prepare(
@@ -606,8 +692,8 @@ export function openStorage(options: StorageOptions): Storage {
         content: r(d.content),
       };
       db.prepare(
-        "INSERT OR IGNORE INTO decisions (decision_id, project_id, ts, content) VALUES (?, ?, ?, ?)",
-      ).run(out.decision_id, out.project_id, out.ts, out.content);
+        "INSERT OR IGNORE INTO decisions (decision_id, project_id, ts, ts_ms, content) VALUES (?, ?, ?, ?, ?)",
+      ).run(out.decision_id, out.project_id, out.ts, toMs(out.ts, "ts"), out.content);
       return out;
     },
   );
@@ -622,11 +708,11 @@ export function openStorage(options: StorageOptions): Storage {
 
   const purgeExpired = write((): PurgeResult => {
     const t = now();
-    const cutoff = new Date(t.getTime() - retentionDays * DAY_MS).toISOString();
+    const cutoff = t.getTime() - retentionDays * DAY_MS;
     const res = db
       .prepare(
         `UPDATE call_log SET prompt = NULL, output = NULL, purged_at = ?
-         WHERE purged_at IS NULL AND ts < ?
+         WHERE purged_at IS NULL AND ts_ms < ?
            AND (ticket_id IS NULL OR ticket_id NOT IN (SELECT ticket_id FROM eval_set))`,
       )
       .run(t.toISOString(), cutoff);
@@ -671,8 +757,41 @@ export function openStorage(options: StorageOptions): Storage {
 
   return {
     ingest,
-    attach(bus) {
-      return bus.subscribe("*", (e) => ingest(e));
+    attach(bus, opts = {}) {
+      const onError =
+        opts.onError ??
+        ((f: IngestFailure) =>
+          console.error(`[storage] 事件落库失败 ${f.type} seq=${f.seq} ${f.event_id}`, f.error));
+      return bus.subscribe("*", (e) => {
+        try {
+          ingest(e);
+        } catch (err) {
+          const error = err instanceof Error ? err : new Error(String(err));
+          ingestFailures++;
+          lastFailure = {
+            event_id: e.event_id,
+            type: e.type,
+            seq: e.seq,
+            message: error.message,
+            at: now().toISOString(),
+          };
+          try {
+            onError({ event_id: e.event_id, type: e.type, seq: e.seq, error });
+          } catch (cbErr) {
+            console.error("[storage] onError 回调出错", cbErr);
+          }
+        }
+      });
+    },
+    health() {
+      const h: StorageHealth = {
+        ok: !leaseLost && !closed && ingestFailures === 0,
+        lease_lost: leaseLost,
+        closed,
+        ingest_failures: ingestFailures,
+      };
+      if (lastFailure) h.last_failure = { ...lastFailure };
+      return h;
     },
     nextSeq() {
       const row = db.prepare("SELECT MAX(seq) AS m FROM events").get() as { m: number | null };
@@ -691,7 +810,7 @@ export function openStorage(options: StorageOptions): Storage {
     listDecisions(project_id) {
       return db
         .prepare(
-          "SELECT decision_id, project_id, ts, content FROM decisions WHERE project_id = ? ORDER BY ts, rowid",
+          "SELECT decision_id, project_id, ts, content FROM decisions WHERE project_id = ? ORDER BY ts_ms, rowid",
         )
         .all(project_id) as Decision[];
     },
@@ -712,12 +831,14 @@ export function openStorage(options: StorageOptions): Storage {
       );
     },
     backlogMetrics(kind, from, to) {
+      const fromMs = from === undefined ? null : toMs(from, "from");
+      const toMsV = to === undefined ? null : toMs(to, "to");
       return db
         .prepare(
           `SELECT ts, pending, capacity FROM backlog_metrics WHERE kind = ?
-           AND (? IS NULL OR ts >= ?) AND (? IS NULL OR ts <= ?) ORDER BY ts`,
+           AND (? IS NULL OR ts_ms >= ?) AND (? IS NULL OR ts_ms <= ?) ORDER BY ts_ms, rowid`,
         )
-        .all(kind, from ?? null, from ?? null, to ?? null, to ?? null) as BacklogMetric[];
+        .all(kind, fromMs, fromMs, toMsV, toMsV) as BacklogMetric[];
     },
     markForEvalSet,
     purgeExpired,
@@ -754,9 +875,13 @@ export function openStorage(options: StorageOptions): Storage {
 function migrate(db: Database.Database): void {
   const current = db.pragma("user_version", { simple: true }) as number;
   for (let v = current; v < MIGRATIONS.length; v++) {
+    const step = MIGRATIONS[v]!;
     db.transaction(() => {
-      db.exec(MIGRATIONS[v]!);
+      // 事务里再读一次版本：两个进程同时打开时，后拿到写锁的那个不重复升级
+      if ((db.pragma("user_version", { simple: true }) as number) !== v) return;
+      if (typeof step === "string") db.exec(step);
+      else step(db);
       db.pragma(`user_version = ${v + 1}`);
-    })();
+    }).immediate();
   }
 }
