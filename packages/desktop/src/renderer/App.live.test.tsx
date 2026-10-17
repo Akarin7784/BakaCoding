@@ -173,4 +173,36 @@ describe("渲染进程从 preload API 读真实数据", () => {
     render(<App api={null} />);
     expect(screen.getByRole("button", { name: /baka-todo/ })).toBeTruthy();
   });
+
+  it("找不到项目的上报出现在侧栏「未归属」里，带 PR 号和「代码已进集成分支」提示（T-049）", async () => {
+    const { api } = fakeApi({
+      ...snapshot,
+      events: [
+        ...events,
+        {
+          ...base(5, "unattributed:pr-42", null),
+          type: "escalated",
+          payload: { reason: "github_manual", detail: "merged_but: interface_changed 发送失败" },
+        } satisfies BakaEvent as UiEvent,
+      ],
+      last_seq: 5,
+    });
+    render(<App api={api} />);
+    const btn = await screen.findByRole("button", { name: /未归属/ });
+    expect(btn.textContent).toContain("1");
+    fireEvent.click(btn);
+    const alert = screen.getByRole("alert", { name: "需要人工介入" });
+    expect(alert.textContent).toContain(
+      "需要人工介入 · PR pr-42 · 需人工处理 GitHub（代码已进集成分支）：merged_but: interface_changed 发送失败",
+    );
+    // 项目里的上报不受影响
+    fireEvent.click(screen.getByRole("button", { name: /real-proj/ }));
+    expect(screen.getByRole("alert", { name: "需要人工介入" }).textContent).toContain("T-2");
+  });
+
+  it("没有未归属的上报时侧栏不显示这一项", async () => {
+    render(<App api={fakeApi(snapshot).api} />);
+    await screen.findByRole("button", { name: /real-proj/ });
+    expect(screen.queryByRole("button", { name: /未归属/ })).toBeNull();
+  });
 });
