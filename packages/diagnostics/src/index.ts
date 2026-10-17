@@ -3,7 +3,7 @@ export const MODULE_ID = 11 as const;
 export const MODULE_NAME = "@bakacoding/diagnostics" as const;
 
 export * from "./schema.js";
-export { buildPackage, diffToUnified, PACKAGE_FILES } from "./build.js";
+export { buildPackage, diffToUnified, isEnvFile, PACKAGE_FILES } from "./build.js";
 export { exportPackage, packageToZip, readPackage, zipToPackage } from "./pack.js";
 export { toSweBenchJsonl, type SweBenchInstance } from "./swebench.js";
 export { FullRedactor, safeZipPath } from "./redaction.js";

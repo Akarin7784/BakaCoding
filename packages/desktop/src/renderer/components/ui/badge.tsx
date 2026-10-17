@@ -1,21 +1,28 @@
-// 状态徽标：强调色只用在这里（运行、复投、冲突、已合并），其余状态用中性色。
+// 状态徽标：强调色只用在这里（编码中、复投、冲突、已合并），其余状态用中性色。
+import type { TicketStatus } from "@bakacoding/types";
 import { cn } from "../../lib/utils";
-import type { PrStatus } from "../../mock/types";
 
-const ACCENT: ReadonlySet<PrStatus> = new Set(["running", "resubmitting", "conflict", "merged"]);
+export const ACCENT_STATUSES: ReadonlySet<TicketStatus> = new Set<TicketStatus>([
+  "coding",
+  "resubmitting",
+  "conflict",
+  "merged",
+]);
 
-const LABEL: Record<PrStatus, string> = {
-  queued: "排队",
-  running: "运行",
+export const STATUS_LABEL: Record<TicketStatus, string> = {
+  pending: "排队",
+  coding: "编码中",
   in_review: "评审中",
   resubmitting: "复投",
+  merge_queued: "等待合并",
   conflict: "冲突",
+  re_reviewing: "重新评审",
   merged: "已合并",
-  escalated: "已上报",
+  escalated: "需要人工介入",
 };
 
-export function StatusBadge({ status }: { status: PrStatus }) {
-  const accent = ACCENT.has(status);
+export function StatusBadge({ status }: { status: TicketStatus }) {
+  const accent = ACCENT_STATUSES.has(status);
   return (
     <span
       data-status={status}
@@ -25,7 +32,7 @@ export function StatusBadge({ status }: { status: PrStatus }) {
         accent ? "border-accent text-accent" : "border-border text-muted-foreground",
       )}
     >
-      {LABEL[status]}
+      {STATUS_LABEL[status]}
     </span>
   );
 }

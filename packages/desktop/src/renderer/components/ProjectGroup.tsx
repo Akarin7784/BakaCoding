@@ -99,7 +99,7 @@ export function ProjectGroup({
             </summary>
             <div className="mt-2 space-y-3 pl-5">
               {view.messages
-                .filter((m) => m.payload.requirement_id === r.requirement_id)
+                .filter((m) => m.requirement_id === r.requirement_id)
                 .map((m) => (
                   <Message key={m.event_id} m={m} calls={calls} />
                 ))}
