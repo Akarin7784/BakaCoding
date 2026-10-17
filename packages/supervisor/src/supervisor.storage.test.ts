@@ -61,6 +61,7 @@ function supervisorOn(storage: Storage, outputs: string[], warns: string[] = [])
     },
     getConfig: () => ({
       roles: { supervisor: { provider: "deepseek", model: "deepseek-flash", effort: "max" } },
+      pipeline: { resplit_limit: 2 },
     }),
     promptTemplate: async () => "桩模板",
     storage,
@@ -307,6 +308,7 @@ function baseDeps(storage: Storage): SupervisorDeps {
     },
     getConfig: () => ({
       roles: { supervisor: { provider: "deepseek", model: "deepseek-flash", effort: "max" } },
+      pipeline: { resplit_limit: 2 },
     }),
     promptTemplate: async () => "桩模板",
     storage,
@@ -331,6 +333,7 @@ function supervisorWithEnqueue(storage: Storage, enqueue: SupervisorDeps["enqueu
       },
       getConfig: () => ({
         roles: { supervisor: { provider: "deepseek", model: "deepseek-flash", effort: "max" } },
+        pipeline: { resplit_limit: 2 },
       }),
       promptTemplate: async () => "桩模板",
       storage,
