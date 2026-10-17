@@ -2,6 +2,8 @@
 export const MODULE_ID = 4 as const;
 export const MODULE_NAME = "@bakacoding/workspace" as const;
 export * from "./worktree.js";
+export * from "./cleanup.js";
+export * from "./git-lock.js";
 export * from "./tools.js";
 export * from "./permissions.js";
 export {

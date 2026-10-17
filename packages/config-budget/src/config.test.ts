@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { ConfigError, ConfigSchema, getConfig, getSecret, validate } from "./config.js";
@@ -35,7 +37,7 @@ describe("config", () => {
     expect(validate(a).join()).toMatch(/roles\.supervisor/);
     const b = minimal();
     (b.roles.supervisor as { effort: string }).effort = "high";
-    expect(validate(b).join()).toMatch(/固定为 max/);
+    expect(validate(b).join()).toMatch(/roles\.supervisor\.effort: 应为 "max"/);
   });
   it("daily_micro_usd 必填且为正整数", () => {
     const a = minimal() as Record<string, unknown>;
@@ -73,6 +75,76 @@ describe("config", () => {
   });
   it("getConfig 失败抛 ConfigError", () => {
     expect(() => getConfig("/nonexistent/x.json")).toThrow(ConfigError);
+  });
+});
+
+describe("配置错误不带原值（T-098）", () => {
+  const SECRET = "sk-mySecretishValue12345";
+  const errorsOf = (fn: () => unknown): string[] => {
+    try {
+      fn();
+    } catch (e) {
+      expect(e).toBeInstanceOf(ConfigError);
+      return (e as ConfigError).errors.concat((e as Error).message);
+    }
+    throw new Error("应当抛 ConfigError");
+  };
+  const writeTmp = (text: string) => {
+    const dir = mkdtempSync(join(tmpdir(), "bc-t098-"));
+    const p = join(dir, "models.json");
+    writeFileSync(p, text);
+    return { dir, p };
+  };
+  const clean = (errs: string[], ...raws: string[]) => {
+    const all = errs.join("\n");
+    for (const r of raws) expect(all).not.toContain(r);
+    expect(all).not.toMatch(/received/i);
+  };
+
+  it("validate：怪值不出现在错误里", () => {
+    const bad = [
+      { ...minimal(), budget: { daily_micro_usd: SECRET } },
+      { ...minimal(), roles: { supervisor: { provider: "deepseek", model: "m", effort: SECRET } } },
+      { ...minimal(), $schema_version: SECRET },
+      { ...minimal(), pipeline: { max_turns: -7_654_321 } },
+    ];
+    for (const raw of bad) {
+      const errs = validate(raw);
+      expect(errs.length).toBeGreaterThan(0);
+      clean(errs, SECRET, "7654321");
+    }
+  });
+  it("validate：未知键名像密钥时也脱敏", () => {
+    const errs = validate({ ...minimal(), [SECRET]: 1 });
+    expect(errs.join()).toMatch(/未知字段/);
+    clean(errs, SECRET);
+  });
+  it("validate 和 getConfig 的校验错误一致", () => {
+    const raw = { ...minimal(), budget: { daily_micro_usd: "x" } };
+    const { p } = writeTmp(JSON.stringify(raw));
+    expect(errorsOf(() => getConfig(p)).slice(0, -1)).toEqual(validate(raw));
+  });
+  it("getConfig：坏 JSON 只报行列号，不拼原文", () => {
+    const text = `{\n  "roles": {},\n  "k": "${SECRET}" x\n}`;
+    const { p, dir } = writeTmp(text);
+    const errs = errorsOf(() => getConfig(p));
+    expect(errs[0]).toBe("配置文件不是合法 JSON（第 3 行第 35 列）");
+    clean(errs, SECRET, dir);
+  });
+  it("getConfig：整个文件就是密钥时只说不是合法 JSON", () => {
+    const { p, dir } = writeTmp(SECRET);
+    const errs = errorsOf(() => getConfig(p));
+    expect(errs[0]).toBe("配置文件不是合法 JSON");
+    clean(errs, SECRET, "sk-", dir);
+  });
+  it("getConfig：空文件", () => {
+    const { p } = writeTmp("");
+    expect(errorsOf(() => getConfig(p))[0]).toBe("配置文件不是合法 JSON");
+  });
+  it("getConfig：读不到文件只报文件名和错误码", () => {
+    const errs = errorsOf(() => getConfig("/nonexistent/dir-abc/models.json"));
+    expect(errs[0]).toBe("无法读取配置文件 models.json（ENOENT）");
+    clean(errs, "dir-abc");
   });
 });
 
