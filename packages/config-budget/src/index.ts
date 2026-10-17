@@ -10,3 +10,4 @@ export * from "./prompts.js";
 export * from "./project.js";
 export * from "./credential.js";
 export * from "./credential-cases.js";
+export * from "./secrets.js";
