@@ -104,6 +104,43 @@ export interface ModelGateway {
   ): Promise<CallResult>;
   rateLimitState(target?: RateLimitTarget): RateLimitState;
   capabilities(provider: string): Capabilities;
+  /**
+   * T-089 测试连接（界面 `provider:test`）：发一个极小请求（`max_tokens: 1`、关思考、不重试），照常预占预算、发 call_completed 计入台账，
+   * 记在主管名下（`role: "supervisor"`、`requirement_id: "provider_test"`、`ticket_id: null`）。从不因调用失败抛错，取消时抛 AbortError。
+   */
+  testConnection(
+    target: { provider: string; model?: string },
+    options?: { signal?: AbortSignal },
+  ): Promise<TestConnectionResult>;
+}
+
+export type TestConnectionFailure =
+  | "budget_exhausted"
+  | "no_secret"
+  | "auth_failed"
+  | "quota_exhausted"
+  | "rate_limited"
+  | "network"
+  | "config_error"
+  | "http_error";
+export type TestConnectionResult =
+  | { ok: true; latency_ms: number; cost_micro_usd: number }
+  | { ok: false; reason: TestConnectionFailure; status?: number };
+
+/** 测试连接记在主管名下的需求号。 */
+export const PROVIDER_TEST_REQUIREMENT_ID = "provider_test" as const;
+const PROVIDER_TEST_PROMPT = "ping";
+
+/** 不是 ModelGatewayError 的取密钥错误（模块 3 getSecret 缺变量时抛的普通 Error）。 */
+class MissingSecretError extends Error {}
+
+interface RunOptions {
+  /** 覆盖 max_tokens（预占也按它估） */
+  maxTokens?: number;
+  /** 不重试（测试连接） */
+  noRetry?: boolean;
+  /** 不发降档警告（测试连接固定用 off） */
+  quietEffort?: boolean;
 }
 
 const ADAPTERS: Record<Protocol, ProtocolAdapter> = {
@@ -138,7 +175,11 @@ export function createModelGateway(opts: CreateModelGatewayOptions): ModelGatewa
     const name = credential_ref.startsWith("env:") ? credential_ref.slice(4) : "";
     if (!(SECRET_NAMES as readonly string[]).includes(name))
       throw new ModelGatewayError(`不支持的凭据引用 ${credential_ref}`, "CONFIG");
-    return getSecret(name as SecretName);
+    try {
+      return getSecret(name as SecretName);
+    } catch (e) {
+      throw new MissingSecretError(e instanceof Error ? e.message : "缺少密钥");
+    }
   }
 
   async function publishCompleted(
@@ -180,7 +221,11 @@ export function createModelGateway(opts: CreateModelGatewayOptions): ModelGatewa
     }
   }
 
-  async function run(req: ChatRequest, promptText?: string): Promise<ChatResult> {
+  async function run(
+    req: ChatRequest,
+    promptText?: string,
+    runOpts: RunOptions = {},
+  ): Promise<ChatResult> {
     // ---- 校验（不发请求、不发事件） ----
     const ctx = CallCtxSchema.parse(req.ctx);
     RoleSchema.parse(req.role);
@@ -196,7 +241,7 @@ export function createModelGateway(opts: CreateModelGatewayOptions): ModelGatewa
     checkToolPairing(req.messages);
     const caps = capabilitiesFor(req.provider, conf.protocol);
     const mapped = mapEffort(caps, req.effort, modelConf.thinking_enabled ?? true);
-    if (mapped.warning)
+    if (mapped.warning && !runOpts.quietEffort)
       warn({
         provider: req.provider,
         model: req.model,
@@ -209,6 +254,7 @@ export function createModelGateway(opts: CreateModelGatewayOptions): ModelGatewa
 
     const key = apiKey(conf.credential_ref);
     const maxTokens =
+      runOpts.maxTokens ??
       modelConf.max_tokens ??
       (conf.protocol === "anthropic-messages" ? caps.default_max_tokens : undefined);
     const adapter = ADAPTERS[conf.protocol];
@@ -235,7 +281,7 @@ export function createModelGateway(opts: CreateModelGatewayOptions): ModelGatewa
       req.model,
       {
         input: body.length,
-        output: modelConf.max_tokens ?? caps.default_max_tokens,
+        output: runOpts.maxTokens ?? modelConf.max_tokens ?? caps.default_max_tokens,
         cache_hit_input: 0,
       },
       new Date(clock.now()),
@@ -365,7 +411,7 @@ export function createModelGateway(opts: CreateModelGatewayOptions): ModelGatewa
           const wait = limiter.backoff(retries + 1, f.retryAfterMs);
           limiter.mark429(req.provider, req.model, wait);
         }
-        if (!f.retryable || retries >= limiter.maxRetries) throw f.error;
+        if (!f.retryable || runOpts.noRetry || retries >= limiter.maxRetries) throw f.error;
         retries += 1;
         if (f.error.code === "RATE_LIMIT") rateLimited += 1;
         // 每次重试前检查 signal：sleep 收到取消会立刻 reject
@@ -438,5 +484,60 @@ export function createModelGateway(opts: CreateModelGatewayOptions): ModelGatewa
     },
     rateLimitState: (target) => limiter.state(target),
     capabilities,
+    async testConnection(target, options) {
+      let model = target.model;
+      try {
+        model ??= Object.keys(providerConf(target.provider).models)[0];
+      } catch {
+        return { ok: false, reason: "config_error" };
+      }
+      if (!model) return { ok: false, reason: "config_error" };
+      try {
+        const r = await run(
+          {
+            role: "supervisor",
+            provider: target.provider,
+            model,
+            effort: "off",
+            system: "",
+            tools: [],
+            messages: [{ role: "user", content: PROVIDER_TEST_PROMPT }],
+            ctx: {
+              role: "supervisor",
+              requirement_id: PROVIDER_TEST_REQUIREMENT_ID,
+              ticket_id: null,
+              is_resubmit: false,
+              trace: { trace_id: newId(), span_id: newId(), parent_span_id: null },
+            },
+            ...(options?.signal ? { signal: options.signal } : {}),
+          },
+          PROVIDER_TEST_PROMPT,
+          { maxTokens: 1, noRetry: true, quietEffort: true },
+        );
+        return { ok: true, latency_ms: r.latency_ms, cost_micro_usd: r.cost };
+      } catch (e) {
+        if (isAbortError(e) || options?.signal?.aborted) throw abortError(e);
+        if (e instanceof BudgetExceededError) return { ok: false, reason: "budget_exhausted" };
+        if (e instanceof MissingSecretError) return { ok: false, reason: "no_secret" };
+        if (e instanceof ModelGatewayError) {
+          const status = e.status !== undefined ? { status: e.status } : {};
+          switch (e.code) {
+            case "AUTH":
+              return { ok: false, reason: "auth_failed", ...status };
+            case "QUOTA":
+              return { ok: false, reason: "quota_exhausted", ...status };
+            case "RATE_LIMIT":
+              return { ok: false, reason: "rate_limited", ...status };
+            case "NETWORK":
+              return { ok: false, reason: "network" };
+            case "CONFIG":
+              return { ok: false, reason: "config_error" };
+            default:
+              return { ok: false, reason: "http_error", ...status };
+          }
+        }
+        return { ok: false, reason: "http_error" };
+      }
+    },
   };
 }
