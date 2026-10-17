@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`f072c29` · main 上测试：65 个测试文件、1474 个测试全部通过 · 更新日期：2026-10-18（UTC+8）
+> 上次更新时 main：`46d7a2d` · main 上测试：65 个测试文件、1474 个测试全部通过 · 更新日期：2026-10-18（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -127,6 +127,7 @@ flowchart BT
 | T-070 | 模块 10：高风险待裁决不计入主管待办（去掉与 9 `pending_pr_limit` 的反压双计） | 10 | 编排层开发 | 已合入 | #75 | `61716e3` |
 | T-071 | 模块 12：桌面端接入主管对话，新增 IPC `supervisor:chat` 转给 10 的 `chat()`；渲染全部 5 种回复（answer / ask_project / decision_saved / dispatched / split_failed）；只读 / 未接线 / chat() 抛错返回 ok:false，原因脱敏 + 截断后显示；等待中禁用发送，一次只发一条 | 12 | 界面与诊断开发 | 已合入 | #79 | `3305a79` |
 | T-072 | 模块 12：导入项目（`project:import`：git 仓库 + config/models.json / pricing.json 检查，3 的 validate / loadPricing 校验；忙时拒绝；拆旧后端、在新仓库重新组装、3 的 importProject 发 project_created；路径记在 userData）；「导出」接 11 诊断包（`diagnostics:export`，最近 24 小时，默认存到下载目录）；只读设置页（`settings:get`，后端只读时 mode 为 readonly，显示「只读」）；设了 BAKACODING_CONFIG 时导入改为校验它指向的文件并在结果里写明；选中项目时也能和主管对话并带 project_id；对话记录移出组件、主进程串行 chat()；T-071 评审跟进（脱敏测试、错误名过滤、按码点截断）；#82 评审跟进：新仓库失败时用原仓库重组、再失败进只读且如实说明，失败后保留渲染就绪，导出路径按真实路径 + path.relative 判断（win32 不区分大小写），拆后端的退订 / sync 停止有测试，导入支持 `--config`（优先于 BAKACODING_CONFIG）、空 BAKACODING_CONFIG 按未设 | 12 | 界面与诊断开发 | 待评审 | #82 | — |
+| T-073 | 模块 12 打包：Windows x64 免安装 zip（electron-builder，`package:win` / `package:linux`），版本 1.0.0-preview；`electron` 固定 43.8.0（ABI 148），better-sqlite3 用 12.12.0 官方 electron-v148 预编译包，原生模块 asarUnpack | 12 | 界面与诊断开发 | 已合入 | #80 | `46d7a2d` |
 | T-074 | 模块 12：修 IPC handler 参数下标（Electron 第一个参数是 event），high-risk:decide 拿错参数；测试 fake ipc 先传 event，锁住所有带参数的通道 | 12 | 界面与诊断开发 | 已合入 | #81 | `d996617` |
 | T-075 | 桌面 exe 图标（`packages/desktop/build/icon.ico`，16–256 多尺寸，极简机器人） | 12 | 界面与诊断开发 | 已合入 | #83 | `f072c29` |
 
@@ -192,6 +193,8 @@ flowchart BT
 - 已解决（T-066）：7 / 10 发 `review_backlog` / `supervisor_backlog` 时 `requirement_id` / `ticket_id` 为 null，trace 新开。
 - 模块 12（T-067）：测试没锁住脱敏顺序（先把环境变量里的密钥值替换成 `[REDACTED:变量名]`，再跑 `redact(text, "light")`），也没锁住 `serveSyncState` 的 `clearInterval`。定时器要等应用退出才停，关窗口时不停；没有窗口时会跳过，没有危害。不开单。
 - 模块 6（T-069）：响应里没有 `total_count` 时没有测试，代码会在当页停止翻页。不开单。
+- 模块 12（T-073）：桌面端暂用 Electron 43.8.0（better-sqlite3 尚无 Electron 44/ABI 149 预编译），上游出了再升。
+- 模块 12（T-073）：开发用 better-sqlite3 12.11.1，打包用 12.12.0 electron-v148 预编译（lib/ 逐字节相同，仅 SQLite 版本不同）。
 
 ### 不对应需求单的 PR
 
