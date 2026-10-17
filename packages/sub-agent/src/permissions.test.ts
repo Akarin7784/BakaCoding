@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openStorage, type Storage } from "@bakacoding/storage";
-import { permissionFor } from "@bakacoding/workspace";
+import { isUnsafeGlob as workspaceIsUnsafeGlob, permissionFor } from "@bakacoding/workspace";
 import {
   appendGrantedScope,
   clampPermissionList,
@@ -98,6 +98,25 @@ describe("#47 安全修复：.. / . / 绝对路径等不能逃出写入范围", 
       "src/.env.example",
     ])
       expect(isUnsafeGlob(g), g).toBe(false);
+  });
+
+  it("isUnsafeGlob 与模块 4 的 isUnsafeGlob 结果一致（转调，@deprecated）", () => {
+    const patterns = [
+      "src/../**",
+      "/etc/**",
+      "src/../src/secret/**",
+      "~/x",
+      "src/{a,../x}",
+      "src\\a.ts",
+      "src/**",
+      "src/*.ts",
+      "src/{a,b}.ts",
+      "docs/a.md",
+      ".github/**",
+    ];
+    for (const g of patterns) expect(isUnsafeGlob(g), g).toBe(workspaceIsUnsafeGlob(g));
+    expect(patterns.filter(isUnsafeGlob)).toEqual(patterns.slice(0, 6));
+    expect(isUnsafeGlob).toBe(workspaceIsUnsafeGlob);
   });
 
   it("写入范围 src/** 时，这些 glob 都不算在范围内；写入范围不写（**）时也一样", () => {

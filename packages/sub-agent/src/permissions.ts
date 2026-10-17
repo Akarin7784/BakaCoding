@@ -1,5 +1,5 @@
 import type { Storage, TicketInput } from "@bakacoding/storage";
-import { permissionFor } from "@bakacoding/workspace";
+import { isUnsafeGlob as workspaceIsUnsafeGlob, permissionFor } from "@bakacoding/workspace";
 import {
   PermissionListSchema,
   type BakaEvent,
@@ -85,36 +85,12 @@ const isGlobstar = (seg: string): boolean => seg.includes("**");
 const hasWildcard = (seg: string): boolean => /[*?[\]{}()]/.test(seg);
 
 /**
- * 不安全的 glob（安全修复，#47 评审）：可能经 `..` / `.` 等解析逃出写入范围、或被 minimatch 当成特殊语法的，
- * 一律不算落在任何写入范围里（写权限降为只读）；出现在写入范围里时该条范围不匹配任何东西。保守判断：
- * - 任何位置出现 `..`（含花括号、extglob 里的）；`.` 段、空段（`a//b`、开头或结尾的 `/`）；
- * - 绝对路径（`/` 开头）、盘符（`C:`）、`~` 开头、反斜杠（Windows 分隔符或 minimatch 转义）、NUL；
- * - `!` / `#` 开头（minimatch 的否定 / 注释）；
- * - 花括号或小括号里出现 `/`，或有一个备选正好是 `.`（展开后可能多出 / 少掉路径段）。
+ * 不安全的 glob：转用模块 4 的 `isUnsafeGlob`（T-051，全项目只此一份规则），这里保留同名导出。
+ * 可能经 `..` / `.` 等解析逃出写入范围、或被 minimatch 当成特殊语法的，一律不算落在任何写入范围里；
+ * 出现在写入范围里时该条范围不匹配任何东西。规则见模块 4（`@bakacoding/workspace` 的 guard.ts）。
+ * @deprecated 以模块 4（`@bakacoding/workspace`）的 `isUnsafeGlob` 为准；这里只是转调，保留名字兼容已有调用方。
  */
-export function isUnsafeGlob(g: string): boolean {
-  if (g.length === 0) return true;
-  if (/[\\\0]/.test(g)) return true;
-  if (/^[/~!#]/.test(g) || /^[A-Za-z]:/.test(g)) return true;
-  if (g.includes("..")) return true;
-  if (g.split("/").some((seg) => seg === "" || seg === ".")) return true;
-  let depth = 0;
-  let alt = "";
-  for (const c of g) {
-    if (c === "{" || c === "(") {
-      depth++;
-      alt = "";
-    } else if (c === "}" || c === ")" || ((c === "," || c === "|") && depth > 0)) {
-      if (depth > 0 && alt === ".") return true;
-      if (c === "}" || c === ")") depth = Math.max(0, depth - 1);
-      alt = "";
-    } else if (depth > 0) {
-      if (c === "/") return true;
-      alt += c;
-    }
-  }
-  return false;
-}
+export const isUnsafeGlob: (g: string) => boolean = workspaceIsUnsafeGlob;
 
 /** 写入范围里去掉不安全的条目（它们不匹配任何东西）。 */
 export function safeScope(scope: readonly string[]): string[] {

@@ -15,6 +15,7 @@
     "@bakacoding/pr": "workspace:*",
     "@bakacoding/storage": "workspace:*",
     "@bakacoding/sub-agent": "workspace:*",
-    "@bakacoding/types": "workspace:*"
+    "@bakacoding/types": "workspace:*",
+    "@bakacoding/workspace": "workspace:*"
   }
 }

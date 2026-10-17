@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { getConfig } from "@bakacoding/config-budget";
 import { GithubRateLimitError, type MergeResult, type SyncChange } from "@bakacoding/pr";
 import { EventSchema, type Diff, type EventOf, type TicketStatus } from "@bakacoding/types";
+import { isUnsafeGlob as workspaceIsUnsafeGlob } from "@bakacoding/workspace";
 import {
   BackpressureController,
   createScheduler,
@@ -1712,9 +1713,29 @@ describe("#47 安全修复：写入范围里的 .. / . / 绝对路径", () => {
       expect(inExclusiveZone(g, DEFAULT_EXCLUSIVE_ZONES), g).toBe(true);
     }
     expect(globsOverlap("src/../**", "lib/a.ts")).toBe(true);
-    for (const g of ["src/**", "src/{a,b}.ts", "lib/", ".github/**"])
+    // T-051 起与模块 4 同一份规则：结尾的 `/`（空段）也算不安全
+    expect(isUnsafeScope("lib/")).toBe(true);
+    for (const g of ["src/**", "src/{a,b}.ts", ".github/**"])
       expect(isUnsafeScope(g), g).toBe(false);
     expect(globsOverlap("src/**", "lib/a.ts")).toBe(false);
+  });
+
+  it("isUnsafeScope 与模块 4 的 isUnsafeGlob 结果一致（转调，@deprecated）", () => {
+    const patterns = [
+      "src/../**",
+      "/etc/**",
+      "src/../src/secret/**",
+      "C:/x",
+      "src//a",
+      "!src/a",
+      "src/**",
+      "src/*.ts",
+      "src/{a,b}.ts",
+      ".github/**",
+      "packages/*/package.json",
+    ];
+    for (const g of patterns) expect(isUnsafeScope(g), g).toBe(workspaceIsUnsafeGlob(g));
+    expect(patterns.filter(isUnsafeScope)).toEqual(patterns.slice(0, 6));
   });
 
   it("D15. 调度：写入范围 src/../** 的单与 lib/a.ts 的单不同时派", async () => {
