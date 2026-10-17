@@ -126,7 +126,7 @@ flowchart BT
 | T-069 | 模块 6：check-runs 翻页以 total_count 为准，不再遇到本页不足 100 条就停 | 6 | 执行层开发 | 已合入 | #76 | `4e518fd` |
 | T-070 | 模块 10：高风险待裁决不计入主管待办（去掉与 9 `pending_pr_limit` 的反压双计） | 10 | 编排层开发 | 已合入 | #75 | `61716e3` |
 | T-071 | 模块 12：桌面端接入主管对话，新增 IPC `supervisor:chat` 转给 10 的 `chat()`；渲染全部 5 种回复（answer / ask_project / decision_saved / dispatched / split_failed）；只读 / 未接线 / chat() 抛错返回 ok:false，原因脱敏 + 截断后显示；等待中禁用发送，一次只发一条 | 12 | 界面与诊断开发 | 已合入 | #79 | `3305a79` |
-| T-072 | 模块 12：导入项目（`project:import`：git 仓库 + config/models.json / pricing.json 检查，3 的 validate / loadPricing 校验；忙时拒绝；拆旧后端、在新仓库重新组装、3 的 importProject 发 project_created；路径记在 userData）；「导出」接 11 诊断包（`diagnostics:export`，最近 24 小时，默认存到下载目录）；只读设置页（`settings:get`）；选中项目时也能和主管对话并带 project_id；对话记录移出组件、主进程串行 chat()；T-071 评审跟进（脱敏测试、错误名过滤、按码点截断） | 12 | 界面与诊断开发 | 待评审 | #PR | — |
+| T-072 | 模块 12：导入项目（`project:import`：git 仓库 + config/models.json / pricing.json 检查，3 的 validate / loadPricing 校验；忙时拒绝；拆旧后端、在新仓库重新组装、3 的 importProject 发 project_created；路径记在 userData）；「导出」接 11 诊断包（`diagnostics:export`，最近 24 小时，默认存到下载目录）；只读设置页（`settings:get`）；选中项目时也能和主管对话并带 project_id；对话记录移出组件、主进程串行 chat()；T-071 评审跟进（脱敏测试、错误名过滤、按码点截断） | 12 | 界面与诊断开发 | 待评审 | #82 | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
