@@ -115,6 +115,18 @@ describe("open / diff", () => {
     });
     expect(by["package.json"]).toBeUndefined();
   });
+  it("删掉 package.json 时 path 就是原路径，不带 old_path", async () => {
+    await writeFile(join(repo, "package.json"), '{\n  "name": "demo"\n}\n');
+    await commitAll(repo, "add package.json");
+    const wt = await worktree("feat/pkg-delete");
+    await git(wt, ["rm", "package.json"]);
+    await commitAll(wt, "delete package.json");
+    const id = await pr.open("T-pkg-del", wt, "feat/pkg-delete");
+    const d = await pr.diff(id);
+    const by = Object.fromEntries(d.files.map((f) => [f.path, f]));
+    expect(by["package.json"]).toMatchObject({ path: "package.json", status: "deleted" });
+    expect(by["package.json"]).not.toHaveProperty("old_path");
+  });
   it("未知 pr_id 抛 PrNotFoundError；checks 为空；sync 无操作", async () => {
     await expect(pr.diff("nope")).rejects.toBeInstanceOf(PrNotFoundError);
     const wt = await worktree("feat/c");
