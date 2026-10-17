@@ -222,14 +222,15 @@ export const PR_RECORD_KINDS = ["ticket", "integration"] as const;
 /** 带 scheme 的 URL（`https://`、`ssh://` 等）；SSH 简写 `git@host:o/r.git` 和路径不算。 */
 const SCHEME_URL = /^[a-z][a-z0-9+.-]*:\/\//i;
 /** 嵌在文字里的带 scheme 的 URL，逐个检查。 */
-const EMBEDDED_URL = /[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi;
+const EMBEDDED_URL = /[a-z][a-z0-9+.-]{0,31}:\/\/[^\s"'<>]+/gi;
 /** 解析失败时的保守兜底（T-058 之前的规则）：`scheme://` 后面紧跟 `xxx@` 就当带凭据。 */
 const LEGACY_CREDENTIAL_URL = /^[a-z][a-z0-9+.-]*:\/\/[^/\s@]+@/i;
 /**
  * 整个字符串里任何位置出现 `scheme:` 后接 `user:pass@`（斜杠、反斜杠可有可无）都算，
  * 用来拦 `https:/\user:tok@h`、`https:user:tok@h`、嵌在文字里的 URL 这类 URL 解析器认不全的写法。
  */
-const EMBEDDED_USERINFO_PASSWORD = /[a-z][a-z0-9+.-]*:[/\\]*[^\s/\\@:]+:[^\s/\\@]*@/i;
+const EMBEDDED_USERINFO_PASSWORD =
+  /[a-z][a-z0-9+.-]{0,31}:[/\\]{0,8}[^\s/\\@:]{1,256}:[^\s/\\@]{0,256}@/i;
 /** 用户名本身像 token（任何 scheme 都查，如 `https://ghp_xxx@`、`ssh://ghp_xxx@`）。 */
 const TOKEN_LIKE_USER =
   /^(gh[pousr]_|github_pat_|glpat-|xox[abposr]-|sk-|x-access-token$|oauth2$)/i;
@@ -300,10 +301,13 @@ function isCredentialSingleUrl(v: string): boolean {
  */
 function isCredentialUrl(input: string): boolean {
   const v = input.trim();
-  if (EMBEDDED_USERINFO_PASSWORD.test(v)) return true;
+  // 两条全文搜索的正则都限定了各段长度，避免长字符串上平方级回溯（#58 评审）。
+  if (v.includes("@") && EMBEDDED_USERINFO_PASSWORD.test(v)) return true;
   if (SCHEME_URL.test(v) && isCredentialSingleUrl(v)) return true;
-  for (const m of v.matchAll(EMBEDDED_URL)) {
-    if (isCredentialSingleUrl(m[0])) return true;
+  if (v.includes("://")) {
+    for (const m of v.matchAll(EMBEDDED_URL)) {
+      if (isCredentialSingleUrl(m[0])) return true;
+    }
   }
   return false;
 }

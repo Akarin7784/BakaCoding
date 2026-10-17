@@ -119,4 +119,21 @@ describe("prStore 凭据检查（T-058）", () => {
   it("closed_by 在 PR_STRUCTURAL_FIELDS 里", () => {
     expect(PR_STRUCTURAL_FIELDS.has("closed_by")).toBe(true);
   });
+
+  it.each([
+    ["纯字母", () => "a".repeat(100_000)],
+    ["a:a:a…", () => "a:".repeat(50_000)],
+    ["a:a:a… 末尾带 @", () => `${"a:".repeat(50_000)}@`],
+    ["https://u:u:…", () => `https://${"u:".repeat(50_000)}`],
+    ["https://u:u:… 末尾带 @", () => `https://${"u:".repeat(50_000)}@`],
+    ["反复的 https://", () => "https://".repeat(12_500)],
+    ["反复的 a@", () => "a@".repeat(50_000)],
+  ])("10 万字符输入不出现平方级耗时：%s", async (_n, build) => {
+    const store = open().prStore<Rec>();
+    const url = build();
+    expect(url.length).toBeGreaterThanOrEqual(100_000);
+    const t0 = performance.now();
+    await store.put({ ...base, remote: { number: 1, url } }).catch(() => undefined);
+    expect(performance.now() - t0).toBeLessThan(500);
+  });
 });
