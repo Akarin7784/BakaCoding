@@ -19,6 +19,12 @@ function firstSegmentNotLiteral(glob: string): boolean {
   return GLOB_CHARS.test(glob.split("/")[0] ?? "");
 }
 
+/**
+ * 首尾空白（Unicode 空白，含全角空格、换行）：T-041b 起直接拒绝，不 trim。
+ * T-041c 补：零宽空格 U+200B 和 U+FEFF（BOM）也算——`\s` 不含 U+200B，U+FEFF 显式列出以免依赖引擎细节。
+ */
+const EDGE_WHITESPACE = /^[\s\u200B\uFEFF]|[\s\u200B\uFEFF]$/u;
+
 export interface ValidateWriteScopeOptions {
   origin: TicketOrigin;
   /** 字面路径是否为基线上的目录；给了才判「裸目录」 */
@@ -29,7 +35,8 @@ export interface ValidateWriteScopeOptions {
  * 校验一张单的写入范围。
  * - split 单：必填非空；第一段不是字面量（整仓 `**`、`*`、`{**,x}` 等）无效；
  * - manual / test 单：不给，或任一条第一段不是字面量，都按 `["**"]`，`defaulted: true`（调用方发 ticket_warning）；
- * - 两者都不许：以 `/` 结尾、`isUnsafeGlob` 为真、写成裸目录名（应写 `dir/**`）。
+ * - 两者都不许：首尾带空白（T-041b，报 `write_scope_unsafe`；手动单也直接报错，不按 `**` 兜底）、以 `/` 结尾、
+ *   `isUnsafeGlob` 为真、写成裸目录名（应写 `dir/**`）。
  */
 export function validateWriteScope(
   scope: string[] | undefined,
@@ -50,6 +57,14 @@ export function validateWriteScope(
   for (const entry of scope) {
     if (typeof entry !== "string" || entry.length === 0) {
       errors.push({ code: "write_scope_unsafe", entry: String(entry), message: "空的写入范围" });
+    } else if (EDGE_WHITESPACE.test(entry)) {
+      // T-041b：首尾带空白（含全是空白）直接拒绝、不 trim；要先于「第一段非字面量」判断，
+      // 否则手动单的 " **" 会被当成整仓 ** 悄悄放行
+      errors.push({
+        code: "write_scope_unsafe",
+        entry,
+        message: "写入范围首尾不能有空白（空格、制表符、换行、全角空格等）；中间的空格可以保留",
+      });
     } else if (entry.endsWith("/")) {
       errors.push({
         code: "write_scope_trailing_slash",

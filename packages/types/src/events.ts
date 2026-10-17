@@ -104,6 +104,7 @@ export const ESCALATION_REASONS = [
   "budget_exceeded", // 模块 8：本单预算用完，不复投，主管直接交给用户
   "internal_error", // 模块 8：评审调用、写轮次记录、读预算出错等内部异常，detail 写 `<阶段>_error: …`；主管直接交给用户，不重拆
   "merged_but", // 模块 9（T-038）：已合入集成分支、之后的收尾出错；单子状态保持 merged，detail 写 `merged_but: …`
+  "high_risk_rejected", // 模块 9（T-041c）：用户拒绝了高风险 PR（依赖类单）；PR 已关，detail 写用户给的原因；主管不重拆
 ] as const;
 export const EscalatedSchema = ev("escalated", {
   reason: z.enum(ESCALATION_REASONS),
@@ -154,8 +155,18 @@ export const GroupMessageSchema = ev("group_message", {
  * 单级警告的代码（T-040）：所有需求单级别的警告都用 `ticket_warning`，代码只加不改。
  * - `write_scope_defaulted`：手动 / 测试单没给写入范围（或给了第一段不是字面量的范围，如 `**`），按 `**` 处理。
  * - `fields_invalid`：需求单的结构化字段缺失、损坏或不合格式（含写入范围复查不过），这张单不能续跑。
+ * - `requirement_truncated`（T-041b）：需求原文超过上限（20000 码点），存进需求单字段时截断了；重拆只能看到截断后的原文。
+ *   每个拆单批次只发一条，挂在这一批的第一张单上，`detail` 列出整批单号。
+ * - `pr_close_failed`（T-041b）：重拆前关旧 PR 失败（先同步远端状态，同步或关闭出错）；在确认旧 PR 已关或不存在之前不重拆，
+ *   主管会按 30 秒、2 分钟、10 分钟重试，仍失败就交给用户。
  */
-export const TICKET_WARNING_CODES = ["write_scope_defaulted", "fields_invalid"] as const;
+export const TICKET_WARNING_CODES = [
+  "write_scope_defaulted",
+  "fields_invalid",
+  "requirement_truncated",
+  "pr_close_failed",
+  "high_risk_reject_not_applied", // T-041c：拒绝高风险 PR 时已关（或试图关）PR，但 9 那边拒绝没生效（如 PR 中途换了，stale_pr）
+] as const;
 export type TicketWarningCode = (typeof TICKET_WARNING_CODES)[number];
 /** ticket_warning 是单级事件，ticket_id 必须非 null。 */
 export const TicketWarningSchema = ev("ticket_warning", {
