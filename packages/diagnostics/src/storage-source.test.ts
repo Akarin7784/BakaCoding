@@ -3,6 +3,7 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { CREDENTIAL_CASES } from "@bakacoding/config-budget";
 import { openStorage, type Storage } from "@bakacoding/storage";
 import type { BakaEvent, DiagnosticsSource } from "@bakacoding/types";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -57,7 +58,7 @@ function ev(
         },
       } as BakaEvent;
     case "escalated":
-      return { ...common, type, payload: { reason: "review_limit" } } as BakaEvent;
+      return { ...common, type, payload: { reason: "review_limit", ...extra } } as BakaEvent;
     case "call_completed":
       return {
         ...common,
@@ -377,4 +378,102 @@ describe("需求单 fields 不进诊断包（T-056）", () => {
     expect(JSON.stringify(await leaky.queryTickets({ project_id: "P-1" }))).toContain(MARK_VAL);
     await expectNoFields(leaky);
   });
+});
+
+// T-060：凭据 URL 的各种写法（#58 / T-059 定的那张清单）放进事件 detail 和消息正文，
+// 从存储端到端导出后，包里任何文件都查不到凭据值。落库有轻脱敏、导出有完整脱敏，两道都算数，测的是最终结果。
+// 假凭据全部运行时拼出来，源码里不出现完整的 token 字面量。
+describe("凭据 URL 各种写法不进诊断包（T-060）", () => {
+  const HEX40 = "0123456789abcdef".repeat(3).slice(0, 40);
+  // 写法清单和模块 2、3 共用一份（T-059 的 CREDENTIAL_CASES）
+  const REJECT = CREDENTIAL_CASES.filter((c) => c.expect === "reject").map(
+    (c) => [c.name, c.build()] as const,
+  );
+  const ALLOW = CREDENTIAL_CASES.filter((c) => c.expect === "allow").map(
+    (c) => [c.name, c.build().text] as const,
+  );
+
+  async function exportT2() {
+    const out_dir = mkdtempSync(path.join(dir, "out-"));
+    const zip_path = await exportPackage(
+      { project_id: "P-1", scope: { kind: "ticket", ticket_id: "T-2" } },
+      { source, out_dir, now: () => new Date("2026-10-17T07:00:00Z") },
+    );
+    const entries = readZip(readFileSync(zip_path));
+    return { zip_path, entries };
+  }
+
+  it("清单非空", () => {
+    expect(REJECT.length).toBeGreaterThan(0);
+    expect(ALLOW.length).toBeGreaterThan(0);
+  });
+
+  it.each(REJECT)("%s：detail 和消息正文里的凭据都被抹掉", async (_label, { text, secret }) => {
+    expect(secret.length).toBeGreaterThan(0);
+    storage.ingest(
+      ev("escalated", "2026-10-10T01:00:00.999Z", "R-1", "T-2", { detail: `push 失败：${text}` }),
+    );
+    storage.ingest(
+      ev("group_message", "2026-10-10T01:00:00.999Z", "R-1", "T-2", { content: text }),
+    );
+    const { zip_path, entries } = await exportT2();
+    for (const s of [
+      ...entries.map((e) => e.name),
+      ...entries.map((e) => e.data.toString("utf8")),
+    ]) {
+      expect(s).not.toContain(secret);
+    }
+    // 两条事件确实进了包（不是靠没导出来「通过」）
+    const pkg = await readPackage(zip_path);
+    expect(pkg.events.some((e) => e.type === "escalated" && e.ticket_id === "T-2")).toBe(true);
+    expect(
+      pkg.events.filter((e) => e.type === "group_message" && e.ticket_id === "T-2"),
+    ).toHaveLength(2);
+  });
+
+  it.each(ALLOW)("%s：放行的写法不被当成凭据 URL", async (_label, text) => {
+    storage.ingest(
+      ev("escalated", "2026-10-10T01:00:00.999Z", "R-1", "T-2", { detail: `push 失败：${text}` }),
+    );
+    const { zip_path } = await exportT2();
+    const pkg = await readPackage(zip_path);
+    const esc = pkg.events.find((e) => e.type === "escalated" && e.ticket_id === "T-2");
+    const detail = esc?.type === "escalated" ? (esc.payload.detail ?? "") : "";
+    expect(detail.startsWith("push 失败：")).toBe(true);
+    expect(detail).not.toContain("[REDACTED:url_credentials]");
+  });
+
+  it("40 位十六进制用户名由 url_credentials 规则拦下，不是碰巧被邮箱规则抹掉", async () => {
+    storage.ingest(
+      ev("escalated", "2026-10-10T01:00:00.999Z", "R-1", "T-2", {
+        detail: `push 失败：https://${HEX40}@github.com/o/r`,
+      }),
+    );
+    const { zip_path } = await exportT2();
+    const pkg = await readPackage(zip_path);
+    const esc = pkg.events.find((e) => e.type === "escalated" && e.ticket_id === "T-2");
+    const detail = esc?.type === "escalated" ? (esc.payload.detail ?? "") : "";
+    expect(detail).not.toContain(HEX40);
+    expect(detail).toContain("[REDACTED:url_credentials]");
+    expect(detail).not.toContain("[REDACTED:email]");
+  });
+  // 10 万字符的 detail 导出不能卡住（T-059 修 redact 的平方级耗时；修复前 full 档 `a.a.…` 约 23 秒）
+  it.each([
+    ["a.a.…", "a.".repeat(50_000)],
+    ["纯字母", "a".repeat(100_000)],
+    ["a@a@…", "a@".repeat(50_000)],
+    ["a:a:…", "a:".repeat(50_000)],
+    ["https://u:u:…", `https://u:${"u:".repeat(50_000)}`],
+  ])(
+    "10 万字符的 %s detail 导出在 500ms 内",
+    async (_label, big) => {
+      storage.ingest(ev("escalated", "2026-10-10T01:00:00.999Z", "R-1", "T-2", { detail: big }));
+      const t0 = performance.now();
+      const { zip_path } = await exportT2();
+      expect(performance.now() - t0).toBeLessThan(500);
+      const pkg = await readPackage(zip_path);
+      expect(pkg.events.some((e) => e.type === "escalated" && e.ticket_id === "T-2")).toBe(true);
+    },
+    120_000,
+  );
 });
