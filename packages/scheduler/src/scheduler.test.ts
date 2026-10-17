@@ -7,7 +7,13 @@ import {
   BackpressureController,
   createScheduler,
   type ConflictResubmitRequest,
+  type DispatchOutcome,
   type ReReviewRequest,
+  type Scheduler,
+  DEFAULT_EXCLUSIVE_ZONES,
+  globsOverlap,
+  matchesAny,
+  sampleOf,
   type ResumeOutcome,
   type SchedulerDeps,
   type SchedulerTicket,
@@ -59,6 +65,8 @@ interface Harness {
   errors: unknown[];
   head: { sha: string };
   diffFails: Set<string>;
+  /** 直接触发某个订阅（T-039：write_scope_requested 等），返回 handler 的结果 */
+  fire(type: string, event: unknown): unknown;
 }
 
 function harness(over: { pending_pr_limit?: number; conflict_limit?: number } = {}): Harness {
@@ -183,6 +191,7 @@ function harness(over: { pending_pr_limit?: number; conflict_limit?: number } = 
     daily,
     emit: (type: string, payload: { pending: number; capacity: number }) =>
       handlers.get(type)?.({ type, payload }),
+    fire: (type: string, event: unknown) => handlers.get(type)?.(event),
     resubmit,
     reReview,
     resume,
@@ -303,12 +312,12 @@ describe("模块 9 合并队列（T-035）", () => {
     await s.idle();
     expect(h.calls).toEqual([
       "merge:pr-1:bakacoding/integration",
-      "create:T-1:bakacoding/integration:r1",
+      `create:T-1:${SHA("a")}:r1`, // T-039：从目标分支 HEAD 的 sha 建，不再传分支名
       "resubmit:T-1:r1",
       "close:pr-1:冲突复投，由 pr-100 取代",
       "cleanup:/wt/T-1-r0",
       "merge:pr-100:bakacoding/integration",
-      "create:T-1:bakacoding/integration:r2",
+      `create:T-1:${SHA("a")}:r2`, // T-039：从目标分支 HEAD 的 sha 建，不再传分支名
       "resubmit:T-1:r2",
       "close:pr-100:冲突复投，由 pr-101 取代",
       "cleanup:/wt/T-1-r1",
@@ -320,6 +329,7 @@ describe("模块 9 合并队列（T-035）", () => {
       conflicted_files: ["a.ts"],
       previous_pr_id: "pr-1",
       worktree_path: "/wt/T-1-r1",
+      base_commit: SHA("a"),
       resubmit_counts: { review: 0, conflict: 1 },
     });
     expect(escalations(h).map((e) => e.payload)).toEqual([
@@ -1131,5 +1141,503 @@ describe("BackpressureController", () => {
       reasons: ["supervisor_backlog", "pending_pr_limit", "daily_budget"],
     });
     expect(c.decide(input(0), 0)).toEqual({ paused: false, concurrency: 8, reasons: [] });
+  });
+});
+
+// ---------------- T-039：派单、写入范围锁、编码槽位、终态保护 ----------------
+
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+/** 注入 8 的 handle：每张单一个可控的 deferred，模拟 8 编码 / 评审中。 */
+function withHandle(h: Harness, opts: { max?: number; hard?: number } = {}) {
+  const pending = new Map<string, ReturnType<typeof deferred<DispatchOutcome>>>();
+  const handled: string[] = [];
+  const handle = vi.fn((t: SchedulerTicket) => {
+    handled.push(t.ticket_id);
+    const d = deferred<DispatchOutcome>();
+    pending.set(t.ticket_id, d);
+    return d.promise;
+  });
+  h.deps.subAgent.handle = handle;
+  h.deps.dispatch_poll_ms = 0;
+  if (opts.max !== undefined) h.deps.config.pipeline.concurrency_max = opts.max;
+  if (opts.hard !== undefined) h.deps.config.pipeline.concurrency_hard_max = opts.hard;
+  return { pending, handled, handle };
+}
+
+/** 等自动派单、合并循环、后台收尾都跑完（handle 还挂着时 idle() 会一直等，所以不用它）。 */
+async function settle(s: Scheduler): Promise<void> {
+  for (let i = 0; i < 5; i++) {
+    await new Promise((r) => setTimeout(r, 0));
+    await s.dispatch();
+  }
+}
+
+/** 模拟 8 评审通过：先调 9 的 submit，再让 handle 返回 merge_queued。 */
+async function pass(
+  s: Scheduler,
+  d: ReturnType<typeof withHandle>,
+  id: string,
+  pr_id = `pr-${id}`,
+): Promise<void> {
+  await s.submit({ ticket_id: id, pr_id, worktree_path: `/wt/${id}-r0`, round: 0 });
+  d.pending.get(id)!.resolve({ kind: "merge_queued", pr_id });
+  await settle(s);
+}
+
+describe("T-039 派单与编码槽位", () => {
+  it("D1. 入队即派给 8 的 handle；槽位按 concurrency_max 限，submit 后让出槽位，下一张接着派；9 不写进队前的状态", async () => {
+    const h = harness();
+    const d = withHandle(h, { max: 2 });
+    const s = await started(h);
+    for (const id of ["T-1", "T-2", "T-3"])
+      await s.enqueue(ticket(id, { write_scope: [`src/${id}/**`] }));
+    await settle(s);
+    expect(d.handled).toEqual(["T-1", "T-2"]);
+    expect(
+      s
+        .snapshot()
+        .filter((v) => v.coding)
+        .map((v) => v.ticket_id),
+    ).toEqual(["T-1", "T-2"]);
+
+    await pass(s, d, "T-1");
+    expect(d.handled).toEqual(["T-1", "T-2", "T-3"]);
+    expect(s.status("T-1")).toBe("merged");
+    // 9 只写 pending（登记）和交队之后的状态；coding / in_review 由 8 写
+    expect(h.statuses.filter(([, st]) => st === "coding" || st === "in_review")).toEqual([]);
+    // 同一张单只派一次
+    await settle(s);
+    expect(d.handle).toHaveBeenCalledTimes(3);
+  });
+
+  it("D2. concurrency_hard_max 封顶", async () => {
+    const h = harness();
+    const d = withHandle(h, { max: 4, hard: 1 });
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { write_scope: ["a/**"] }));
+    await s.enqueue(ticket("T-2", { write_scope: ["b/**"] }));
+    await settle(s);
+    expect(d.handled).toEqual(["T-1"]);
+  });
+
+  it("D3. 写入范围锁：重叠的单不同时派，前一张合入释放锁后再派；不重叠的照常并行；没写范围按整个仓库", async () => {
+    const h = harness();
+    const d = withHandle(h);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { write_scope: ["src/a/**"] }));
+    await s.enqueue(ticket("T-2", { write_scope: ["src/a/x.ts"] })); // 与 T-1 重叠
+    await s.enqueue(ticket("T-3", { write_scope: ["src/b/**"] }));
+    await s.enqueue(ticket("T-4")); // 没写范围：与所有单互斥
+    await settle(s);
+    expect(d.handled).toEqual(["T-1", "T-3"]);
+    expect(s.snapshot().find((v) => v.ticket_id === "T-1")!.locked_scope).toEqual(["src/a/**"]);
+
+    await pass(s, d, "T-1");
+    expect(d.handled).toEqual(["T-1", "T-3", "T-2"]);
+    expect(s.snapshot().find((v) => v.ticket_id === "T-1")!.locked_scope).toBeNull();
+
+    await pass(s, d, "T-3");
+    await pass(s, d, "T-2");
+    expect(d.handled).toEqual(["T-1", "T-3", "T-2", "T-4"]);
+  });
+
+  it("D4. 独占区域单独排队：两张碰独占区域的单即使文件不同也不同时持锁，普通单不受影响", async () => {
+    const h = harness();
+    const d = withHandle(h);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { write_scope: ["pnpm-lock.yaml"] }));
+    await s.enqueue(ticket("T-2", { write_scope: ["packages/x/package.json"] }));
+    await s.enqueue(ticket("T-3", { write_scope: ["src/a.ts"] }));
+    await settle(s);
+    expect(d.handled).toEqual(["T-1", "T-3"]);
+    // 8 上报（进队前）：9 只改内存状态、释放锁，不写 TicketStatus
+    d.pending.get("T-1")!.resolve({ kind: "escalated", pr_id: null });
+    await settle(s);
+    expect(s.status("T-1")).toBe("escalated");
+    expect(h.statuses.filter(([id]) => id === "T-1")).toEqual([["T-1", "pending"]]);
+    expect(d.handled).toEqual(["T-1", "T-3", "T-2"]);
+  });
+
+  it("D5. lock()：不重叠 ok 并入本单锁；与在途单重叠 fail 且不改锁；终态 fail；未登记报错", async () => {
+    const h = harness();
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.enqueue(ticket("T-2"));
+    expect(s.lock("T-1", ["src/a/**"])).toBe("ok");
+    expect(s.lock("T-1", ["src/c.ts"])).toBe("ok");
+    expect(s.lock("T-2", ["src/a/b.ts"])).toBe("fail");
+    expect(s.lock("T-2", ["src/b/**"])).toBe("ok");
+    expect(s.snapshot().map((v) => v.locked_scope)).toEqual([
+      ["src/a/**", "src/c.ts"],
+      ["src/b/**"],
+    ]);
+    h.merges.set("pr-1", [
+      { merged: false, conflict: false, reason: "merge_blocked", detail: "x" },
+    ]);
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1" });
+    await s.idle();
+    expect(s.status("T-1")).toBe("escalated");
+    expect(s.lock("T-1", ["z/**"])).toBe("fail");
+    // T-1 终态后锁释放：T-2 可以拿 src/a
+    expect(s.lock("T-2", ["src/a/b.ts"])).toBe("ok");
+    expect(() => s.lock("T-x", ["a"])).toThrow(/未登记/);
+  });
+
+  it("D6. write_scope_requested：能加锁回 granted 并扩大写入范围；重叠回 denied 并上报 scope_lock_failed（不改状态）；未登记的单 denied", async () => {
+    const h = harness();
+    const d = withHandle(h);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { write_scope: ["src/a/**"] }));
+    await s.enqueue(ticket("T-2", { write_scope: ["src/b/**"] }));
+    await settle(s);
+    const req = (ticket_id: string, request_id: string, requested_scope: string[]) => ({
+      type: "write_scope_requested",
+      event_id: `e-${request_id}`,
+      seq: 1,
+      ts: "2026-10-17T08:00:00.000Z",
+      requirement_id: "req-1",
+      ticket_id,
+      trace_id: "trace-1",
+      span_id: "span-4",
+      parent_span_id: null,
+      payload: { request_id, requested_scope, reason: "需要改公共函数" },
+    });
+    await h.fire("write_scope_requested", req("T-1", "r1", ["src/c.ts"]));
+    await h.fire("write_scope_requested", req("T-2", "r2", ["src/a/x.ts"]));
+    await h.fire("write_scope_requested", req("T-9", "r3", ["x"]));
+    const replies = h.published
+      .filter((e) => e.type.startsWith("write_scope_") || e.type === "escalated")
+      .map((e) => [e.type, e.ticket_id, e.payload]);
+    expect(replies).toEqual([
+      ["write_scope_granted", "T-1", { request_id: "r1", granted_scope: ["src/c.ts"] }],
+      [
+        "write_scope_denied",
+        "T-2",
+        {
+          request_id: "r2",
+          requested_scope: ["src/a/x.ts"],
+          reason: "申请的范围与在途单 T-1 的写入范围重叠",
+        },
+      ],
+      [
+        "escalated",
+        "T-2",
+        {
+          reason: "scope_lock_failed",
+          resubmit_counts: { review: 0, conflict: 0 },
+          detail: "申请的范围与在途单 T-1 的写入范围重叠：src/a/x.ts",
+        },
+      ],
+      [
+        "write_scope_denied",
+        "T-9",
+        { request_id: "r3", requested_scope: ["x"], reason: "调度器没有登记这张单：T-9" },
+      ],
+    ]);
+    expect(s.snapshot().find((v) => v.ticket_id === "T-1")!.locked_scope).toEqual([
+      "src/a/**",
+      "src/c.ts",
+    ]);
+    expect(s.status("T-2")).toBe("pending"); // 进队前状态归 8，9 不改
+    expect(d.handled).toEqual(["T-1", "T-2"]);
+  });
+
+  it("D7. 依赖没合入不派，合入后派", async () => {
+    const h = harness();
+    const d = withHandle(h);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { write_scope: ["a/**"] }));
+    await s.enqueue(ticket("T-2", { write_scope: ["b/**"], depends_on: ["T-1"] }));
+    await settle(s);
+    expect(d.handled).toEqual(["T-1"]);
+    await pass(s, d, "T-1");
+    expect(d.handled).toEqual(["T-1", "T-2"]);
+  });
+
+  it("D8. 反压闸门：评审积压暂停、待合并 PR 超限都不派；回落后按恢复节奏派", async () => {
+    const h = harness({ pending_pr_limit: 1 });
+    const d = withHandle(h);
+    const s = await started(h);
+    h.emit("review_backlog", { pending: 100, capacity: 2 });
+    await s.enqueue(ticket("T-1", { write_scope: ["a/**"] }));
+    await settle(s);
+    expect(d.handled).toEqual([]);
+    h.emit("review_backlog", { pending: 2, capacity: 2 }); // 2 > pending_pr_limit 1：仍暂停
+    await settle(s);
+    expect(d.handled).toEqual([]);
+    h.emit("review_backlog", { pending: 0, capacity: 2 });
+    await settle(s);
+    // 积压回落后按 recover_interval_min 逐步恢复槽位（并发从 0 回到 1 要等一个间隔）
+    expect(d.handled).toEqual([]);
+    await h.deps.clock!.sleep(h.deps.config.backpressure.recover_interval_min * 60_000);
+    await settle(s);
+    expect(d.handled).toEqual(["T-1"]);
+  });
+
+  it("D9. 当日预算：用完停派；8 返回 requeue_budget 的单不当新单再派；预算重置后先交回 8 的 resume 续跑，再派新单", async () => {
+    const h = harness();
+    const d = withHandle(h);
+    h.resume.mockImplementation(async (t, token) => {
+      h.calls.push(`resume:${t.ticket_id}:${JSON.stringify(token)}`);
+      return { kind: "requeue_budget", resume: token };
+    });
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { write_scope: ["a/**"] }));
+    await settle(s);
+    expect(d.handled).toEqual(["T-1"]);
+    h.daily.exhausted = true;
+    d.pending.get("T-1")!.resolve({ kind: "requeue_budget", resume: { tok: 1 } });
+    await s.enqueue(ticket("T-2", { write_scope: ["b/**"] }));
+    await settle(s);
+    expect(d.handled).toEqual(["T-1"]);
+    expect(s.budgetPaused()).toEqual(["T-1"]);
+    expect(h.resume).not.toHaveBeenCalled();
+
+    h.daily.exhausted = false;
+    expect(await s.dispatch()).toEqual(["T-2"]);
+    expect(h.calls.filter((c) => c.startsWith("resume:"))).toEqual(['resume:T-1:{"tok":1}']);
+    expect(d.handled).toEqual(["T-1", "T-2"]); // T-1 没被当新单重派
+    await settle(s);
+    expect(s.budgetPaused()).toEqual(["T-1"]); // 续跑又碰上预算用完：继续等
+    // 自动派单不会马上又续跑（budgetState 还没反映出来时不空转），等一个轮询间隔后再试
+    expect(h.resume).toHaveBeenCalledTimes(1);
+    await h.deps.clock!.sleep(60_000);
+    await settle(s);
+    expect(h.resume).toHaveBeenCalledTimes(2);
+  });
+
+  it("D10. priority=deferred：闲时开关打开且不是闲时不派，normal 照常；进入闲时后派", async () => {
+    const h = harness();
+    const d = withHandle(h);
+    const budget = { daily_exhausted: false, offpeak_preference: true, offpeak_now: false };
+    h.deps.budgetState = () => budget;
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { write_scope: ["a/**"], priority: "deferred" }));
+    await s.enqueue(ticket("T-2", { write_scope: ["b/**"] }));
+    await settle(s);
+    expect(d.handled).toEqual(["T-2"]);
+    budget.offpeak_now = true;
+    await settle(s);
+    expect(d.handled).toEqual(["T-2", "T-1"]);
+  });
+
+  it("D11. 闲时开关关着时 deferred 照常派", async () => {
+    const h = harness();
+    const d = withHandle(h);
+    h.deps.budgetState = () => ({
+      daily_exhausted: false,
+      offpeak_preference: false,
+      offpeak_now: false,
+    });
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { priority: "deferred" }));
+    await settle(s);
+    expect(d.handled).toEqual(["T-1"]);
+  });
+
+  it("D12. handle 抛错（8 没接住）：9 上报 internal_error（dispatch_error），状态 escalated，释放锁", async () => {
+    const h = harness();
+    const d = withHandle(h);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { write_scope: ["a/**"] }));
+    await s.enqueue(ticket("T-2", { write_scope: ["a/b.ts"] }));
+    await settle(s);
+    d.pending.get("T-1")!.reject(new Error("找不到需求单"));
+    await settle(s);
+    expect(escalations(h).map((e) => [e.ticket_id, e.payload])).toEqual([
+      [
+        "T-1",
+        {
+          reason: "internal_error",
+          resubmit_counts: { review: 0, conflict: 0 },
+          detail: "dispatch_error: 找不到需求单",
+        },
+      ],
+    ]);
+    expect(s.status("T-1")).toBe("escalated");
+    expect(d.handled).toEqual(["T-1", "T-2"]);
+  });
+
+  it("D13. 不注入 handle：不自动派单（T-035 行为）；dispatch() 只续跑预算暂停的单", async () => {
+    const h = harness();
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    expect(await s.dispatch()).toEqual([]);
+    expect(s.snapshot()[0]).toMatchObject({ coding: false, locked_scope: null });
+  });
+});
+
+describe("T-039 冲突复投传 sha 基线", () => {
+  it("S1. 冲突复投先读目标分支 HEAD，从这个 sha 建 r<n+1>，同一个 sha 交给 8；新 PR 的基线认得出，不多余重审", async () => {
+    const h = harness();
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.enqueue(ticket("T-2", { interfaces: [{ file: "x.ts", symbol: "x" }] }));
+    h.merges.set("pr-1", [merged("c")]);
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("a") });
+    await s.idle();
+    h.merges.set("pr-2", [conflict(["y.ts"])]);
+    h.merges.set("pr-100", [merged("d")]);
+    await s.submit({ ticket_id: "T-2", pr_id: "pr-2", worktree_path: "/2", base_commit: SHA("c") });
+    await s.idle();
+    expect(h.calls).toContain(`create:T-2:${SHA("c")}:r1`);
+    expect(h.resubmit.mock.calls[0]![0].base_commit).toBe(SHA("c"));
+    expect(h.reReview).not.toHaveBeenCalled();
+    expect(s.status("T-2")).toBe("merged");
+    expect(s.mergeResult("pr-100")).toMatchObject({ merged: true, base_changed: false });
+  });
+});
+
+describe("T-039 终态保护", () => {
+  it("G1. 重审进行中 sync 已标 merged，重审再抛错：状态保持 merged，不发 escalated，只调 onError", async () => {
+    const h = harness();
+    const gate = deferred<SubAgentOutcome>();
+    h.reReview.mockImplementationOnce(() => gate.promise);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("9") });
+    await vi.waitFor(() => expect(h.reReview).toHaveBeenCalledTimes(1));
+    h.syncChanges.push({ pr_id: "pr-1", from: "open", to: "merged" });
+    await s.sync();
+    expect(s.status("T-1")).toBe("merged");
+    gate.reject(new Error("review pool down"));
+    await s.idle();
+    expect(s.status("T-1")).toBe("merged");
+    expect(escalations(h)).toEqual([]);
+    expect(h.statuses.filter(([, st]) => st === "escalated")).toEqual([]);
+    expect(h.errors.map((e) => (e as Error).message)).toEqual(["review pool down"]);
+  });
+
+  it("G2. 冲突复投进行中 sync 已标 merged，8 再抛错：不改成 escalated", async () => {
+    const h = harness();
+    const gate = deferred<SubAgentOutcome>();
+    h.resubmit.mockImplementationOnce(() => gate.promise);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    h.merges.set("pr-1", [conflict()]);
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("a") });
+    await vi.waitFor(() => expect(h.resubmit).toHaveBeenCalledTimes(1));
+    h.syncChanges.push({ pr_id: "pr-1", from: "conflict", to: "merged" });
+    await s.sync();
+    gate.reject(new Error("coder crashed"));
+    await s.idle();
+    expect(s.status("T-1")).toBe("merged");
+    expect(escalations(h)).toEqual([]);
+    expect(h.errors.map((e) => (e as Error).message)).toEqual(["coder crashed"]);
+  });
+
+  it("G3. 派单的 handle 返回前单子已被 sync 标 merged，handle 再抛错：不覆盖", async () => {
+    const h = harness();
+    const d = withHandle(h);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await settle(s);
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/wt/T-1-r0" });
+    // 合并循环先合掉
+    await settle(s);
+    expect(s.status("T-1")).toBe("merged");
+    d.pending.get("T-1")!.reject(new Error("late failure"));
+    await settle(s);
+    expect(s.status("T-1")).toBe("merged");
+    expect(escalations(h)).toEqual([]);
+  });
+});
+
+describe("T-039 写入范围 glob", () => {
+  it("globsOverlap：按段比较，** 匹配零段或多段，字面量不同不重叠", () => {
+    const yes: Array<[string, string]> = [
+      ["src/a/**", "src/a/x.ts"],
+      ["src/**", "src/a/b/c.ts"],
+      ["**", "anything/at/all"],
+      ["**/package.json", "packages/x/package.json"],
+      ["src/*.ts", "src/a.ts"],
+      ["src/*.ts", "src/*.js"], // 同段两边都带通配：保守算重叠
+      ["./src/a.ts", "src/a.ts"],
+      ["src/a/**", "src/a"],
+    ];
+    const no: Array<[string, string]> = [
+      ["src/a/**", "src/b/**"],
+      ["src/a.ts", "src/b.ts"],
+      ["src/*.ts", "src/a.js"],
+      ["src/a/x.ts", "src/a"],
+      ["**/package.json", "src/a.ts"],
+      ["lib/**", "src/**"],
+    ];
+    for (const [a, b] of yes) {
+      expect(globsOverlap(a, b), `${a} vs ${b}`).toBe(true);
+      expect(globsOverlap(b, a), `${b} vs ${a}`).toBe(true);
+    }
+    for (const [a, b] of no) {
+      expect(globsOverlap(a, b), `${a} vs ${b}`).toBe(false);
+      expect(globsOverlap(b, a), `${b} vs ${a}`).toBe(false);
+    }
+  });
+
+  it("独占区域按代表路径判断：config/** 和 package.json 算，src/** 不算", () => {
+    expect(sampleOf("config/**")).toBe("config/x");
+    expect(sampleOf("src/*.ts")).toBe("src/x.ts");
+    expect(matchesAny(sampleOf("config/**"), DEFAULT_EXCLUSIVE_ZONES)).toBe(true);
+    expect(matchesAny(sampleOf("packages/a/package.json"), DEFAULT_EXCLUSIVE_ZONES)).toBe(true);
+    expect(matchesAny(sampleOf("db/migrations/001.sql"), DEFAULT_EXCLUSIVE_ZONES)).toBe(true);
+    expect(matchesAny(sampleOf("src/**"), DEFAULT_EXCLUSIVE_ZONES)).toBe(false);
+    expect(matchesAny(sampleOf("src/a.ts"), DEFAULT_EXCLUSIVE_ZONES)).toBe(false);
+  });
+});
+
+describe("T-039 取消信号", () => {
+  it("C1. handle / resume 收到 9 的 signal；stop() 中止它，8 抛出的 reason 不上报、不改状态", async () => {
+    const h = harness();
+    const d = withHandle(h);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { write_scope: ["a/**"] }));
+    await settle(s);
+    const opts = d.handle.mock.calls[0]![1] as { signal: AbortSignal };
+    expect(opts.signal).toBeInstanceOf(AbortSignal);
+    expect(opts.signal.aborted).toBe(false);
+    opts.signal.addEventListener("abort", () => d.pending.get("T-1")!.reject(opts.signal.reason));
+    s.stop();
+    expect(opts.signal.aborted).toBe(true);
+    expect((opts.signal.reason as Error).name).toBe("AbortError");
+    await s.idle();
+    expect(escalations(h)).toEqual([]);
+    expect(s.status("T-1")).toBe("pending");
+    expect(h.statuses).toEqual([["T-1", "pending"]]);
+    expect((h.errors[0] as Error).name).toBe("AbortError");
+  });
+
+  it("C2. 续跑被 stop() 取消：凭据放回，单子仍在等续跑，不上报", async () => {
+    const h = harness();
+    const d = withHandle(h);
+    let resumeSignal: AbortSignal | undefined;
+    h.resume.mockImplementation(
+      (_t, _token, o?: { signal?: AbortSignal }) =>
+        new Promise((_, reject) => {
+          resumeSignal = o?.signal;
+          o?.signal?.addEventListener("abort", () => reject(o.signal!.reason));
+        }),
+    );
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { write_scope: ["a/**"] }));
+    await settle(s);
+    h.daily.exhausted = true;
+    d.pending.get("T-1")!.resolve({ kind: "requeue_budget", resume: { tok: 1 } });
+    await settle(s);
+    h.daily.exhausted = false;
+    await s.dispatch();
+    expect(resumeSignal).toBeInstanceOf(AbortSignal);
+    s.stop();
+    await s.idle();
+    expect(escalations(h)).toEqual([]);
+    expect(s.budgetPaused()).toEqual(["T-1"]);
+    expect(s.snapshot()[0]).toMatchObject({ status: "pending", budget_paused: true });
   });
 });

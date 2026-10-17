@@ -5,13 +5,14 @@ import {
   type MergeResult,
   type SyncChange,
 } from "@bakacoding/pr";
-import type { TicketStatus } from "@bakacoding/types";
+import type { EventOf, TicketStatus } from "@bakacoding/types";
 import { BackpressureController } from "./backpressure.js";
-import { matchesAny } from "./glob.js";
+import { matchesAny, sampleOf, scopesOverlap } from "./glob.js";
 import type {
   BackpressureState,
   ChangedInterface,
   DependencyState,
+  DispatchOutcome,
   MergeResultRecord,
   PublishInput,
   Scheduler,
@@ -29,6 +30,58 @@ export const DEFAULT_TARGET_DIRTY_RETRY_MS = 30_000;
 export const TARGET_DIRTY_MAX_RETRIES = 10;
 /** 找不到所属单的 PR：最小上下文里 requirement_id / trace_id 的前缀（types 要求 requirement_id 非空） */
 export const UNATTRIBUTED_PREFIX = "unattributed:";
+/** 派单轮询默认间隔（毫秒） */
+export const DEFAULT_DISPATCH_POLL_MS = 60_000;
+/** 没写写入范围的单按整个仓库加锁 */
+export const WHOLE_REPO_SCOPE: readonly string[] = ["**"];
+
+/**
+ * 默认独占区域（PD §4：依赖清单、锁文件、全局配置、迁移、公共类型属于独占区域，单独排队）。
+ * 公共类型的位置因项目而异，这里只列常见的 `types` 目录和声明文件；项目可用 `deps.exclusive_zones` 整体替换。
+ */
+export const DEFAULT_EXCLUSIVE_ZONES: readonly string[] = [
+  // 依赖清单
+  "package.json",
+  "**/package.json",
+  "pnpm-workspace.yaml",
+  "requirements*.txt",
+  "**/requirements*.txt",
+  "pyproject.toml",
+  "**/pyproject.toml",
+  "go.mod",
+  "**/go.mod",
+  "Cargo.toml",
+  "**/Cargo.toml",
+  "Gemfile",
+  "pom.xml",
+  "**/pom.xml",
+  "build.gradle*",
+  "**/build.gradle*",
+  // 锁文件
+  "pnpm-lock.yaml",
+  "package-lock.json",
+  "**/package-lock.json",
+  "yarn.lock",
+  "**/yarn.lock",
+  "**/*.lock",
+  "go.sum",
+  "**/go.sum",
+  // 全局配置
+  "tsconfig*.json",
+  "tsconfig.base.json",
+  "eslint.config.*",
+  ".eslintrc*",
+  ".prettierrc*",
+  "vitest.config.*",
+  "config/**",
+  ".github/**",
+  // 迁移
+  "**/migrations/**",
+  "**/migration/**",
+  // 公共类型
+  "**/types/**",
+  "**/*.d.ts",
+];
 
 const defaultClock: SchedulerClock = {
   now: () => Date.now(),
@@ -89,12 +142,29 @@ interface Entry {
   pending_replace: { old_pr_id: string; old_worktree: string | null } | undefined;
   /** 正在 resume 中（8 会在评审通过时调 submit，所以不设 busy） */
   resuming: boolean;
+  /**
+   * 续跑又碰上预算用完（8 再次返回 requeue_budget）后，自动派单在这个时刻之前不再续跑它，
+   * 免得 3 的 budgetState 还没反映出来时反复续跑空转（T-039）。显式调 resumeBudgetPaused() 不受限。
+   */
+  resume_not_before: number;
+  /** 9 已经把这张单交给 8 的 handle（只派一次；之后的复投、续跑走各自入口） */
+  dispatched: boolean;
+  /** 占着编码槽位：handle 已开始、还没返回也还没 submit（T-039） */
+  coding: boolean;
+  /** 持有的写入范围锁；null 为没持锁。到终态自动不算（见 holders()） */
+  lock_scope: string[] | null;
   conflicted: boolean;
   base_changed: boolean;
   re_reviewed: boolean;
 }
 
 const TERMINAL: ReadonlySet<TicketStatus> = new Set(["merged", "escalated"]);
+
+const union = (a: readonly string[], b: readonly string[]): string[] => [...new Set([...a, ...b])];
+const scopeOf = (t: SchedulerTicket): string[] =>
+  t.write_scope && t.write_scope.length > 0 ? [...t.write_scope] : [...WHOLE_REPO_SCOPE];
+
+type EscalateReason = "github_manual" | "conflict_limit" | "internal_error";
 
 export function createScheduler(deps: SchedulerDeps): Scheduler {
   const clock = deps.clock ?? defaultClock;
@@ -105,7 +175,20 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     deps.onError ??
     ((e: unknown, t: string) => console.warn(`[scheduler] ${t}: ${(e as Error)?.message ?? e}`));
   const limits = deps.config.pipeline.resubmit_limits;
+  const hardMax = deps.config.pipeline.concurrency_hard_max ?? Number.POSITIVE_INFINITY;
   const bp = new BackpressureController(deps.config);
+  const zones = deps.exclusive_zones ?? DEFAULT_EXCLUSIVE_ZONES;
+  /** 注入了 8 的 handle 才自动派单；否则只做合并队列（T-035 行为） */
+  const autoDispatch = typeof deps.subAgent.handle === "function";
+  const pollMs = deps.dispatch_poll_ms ?? DEFAULT_DISPATCH_POLL_MS;
+  const resumeBackoffMs = pollMs > 0 ? pollMs : DEFAULT_DISPATCH_POLL_MS;
+  let pollTimer: ReturnType<typeof setInterval> | undefined;
+  let dispatchRunning: Promise<string[]> | undefined;
+  let dispatchQueued: Promise<string[]> | undefined;
+  /** stop() 时中止：传给 8 的 handle / resume，8 再原样传给 5 / 7（T-039） */
+  const abort = new AbortController();
+  /** 被 stop() 取消的 8 调用：不上报、不改状态，只记一笔 */
+  const cancelled = (): boolean => abort.signal.aborted;
 
   const entries = new Map<string, Entry>();
   const prToTicket = new Map<string, string>();
@@ -145,6 +228,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   async function setStatus(e: Entry, status: TicketStatus): Promise<void> {
     e.status = status;
     await deps.tickets.setStatus(e.ticket.ticket_id, status);
+    // 终态释放写入范围锁、可能让依赖它的单就绪：再派一轮
+    if (TERMINAL.has(status)) kickDispatch();
   }
 
   function removeFromQueue(ticket_id: string): void {
@@ -166,9 +251,20 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
 
   async function escalate(
     e: Entry,
-    reason: "github_manual" | "conflict_limit",
+    reason: EscalateReason,
     detail?: string,
+    opts: { overrideTerminal?: boolean } = {},
   ): Promise<void> {
+    if (TERMINAL.has(e.status) && !opts.overrideTerminal) {
+      // 不覆盖终态（如 sync 已标 merged）：只记一笔，不改状态、不发上报
+      onError(
+        new Error(
+          `${e.ticket.ticket_id} 已是终态 ${e.status}，不再改成 escalated：${detail ?? reason}`,
+        ),
+        e.ticket.ticket_id,
+      );
+      return;
+    }
     removeFromQueue(e.ticket.ticket_id);
     e.status = "escalated"; // 先改内存状态：后面持久化或发事件失败也不会再出队
     await setStatus(e, "escalated");
@@ -192,16 +288,119 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     }
   }
 
-  /** 出错的单直接上报 github_manual；上报本身再失败也只调 onError，保证队列继续。 */
-  async function escalateOnError(e: Entry, prefix: string, err: unknown): Promise<void> {
+  /**
+   * 出错的单直接上报（默认 github_manual）；上报本身再失败也只调 onError，保证队列继续。
+   * 单子已是终态（merged / escalated）时不覆盖，只调 onError（T-039）。唯一例外是合并循环里本单刚合并成功、
+   * 收尾出错的 `merged_but`（已定：状态改 escalated 交主管），由调用方显式传 overrideTerminal。
+   */
+  async function escalateOnError(
+    e: Entry,
+    prefix: string,
+    err: unknown,
+    opts: { reason?: EscalateReason; overrideTerminal?: boolean } = {},
+  ): Promise<void> {
     onError(err, e.ticket.ticket_id);
+    if (TERMINAL.has(e.status) && !opts.overrideTerminal) return;
     try {
-      await escalate(e, "github_manual", `${prefix}: ${errorMessage(err)}`.slice(0, 500));
+      await escalate(
+        e,
+        opts.reason ?? "github_manual",
+        `${prefix}: ${errorMessage(err)}`.slice(0, 500),
+        { overrideTerminal: opts.overrideTerminal },
+      );
     } catch (err2) {
       removeFromQueue(e.ticket.ticket_id);
       e.status = "escalated";
       onError(err2, e.ticket.ticket_id);
     }
+  }
+
+  // ---------- 写入范围锁（T-039） ----------
+
+  /**
+   * 写入范围是否落在独占区域：任一条 glob 的代表路径匹配某个独占区域（`sampleOf`）。不用「可能重叠」判断，
+   * 否则 `src/**` 这种目录范围会因为理论上可能含 package.json 而全都变成独占。
+   */
+  const isExclusive = (scope: readonly string[]): boolean =>
+    scope.some((g) => matchesAny(sampleOf(g), zones));
+
+  /** 持锁中的其他单（终态的单自动不算：合并或上报即释放）。 */
+  function holders(except?: Entry): Entry[] {
+    return [...entries.values()].filter(
+      (o) => o !== except && o.lock_scope !== null && !TERMINAL.has(o.status),
+    );
+  }
+
+  /**
+   * 把 scope 并进 e 的锁：与其他持锁单可能重叠，或要独占区域而另一张独占单正持锁，就失败且不改锁。
+   * 返回冲突的单号。
+   */
+  function tryLock(
+    e: Entry,
+    scope: readonly string[],
+  ): { ok: true } | { ok: false; with: string[]; exclusive: boolean } {
+    const want = union(e.lock_scope ?? [], scope);
+    const others = holders(e);
+    const clash = others.filter((o) => scopesOverlap(want, o.lock_scope!));
+    if (clash.length > 0)
+      return { ok: false, with: clash.map((o) => o.ticket.ticket_id), exclusive: false };
+    if (isExclusive(want)) {
+      const ex = others.filter((o) => isExclusive(o.lock_scope!));
+      if (ex.length > 0)
+        return { ok: false, with: ex.map((o) => o.ticket.ticket_id), exclusive: true };
+    }
+    e.lock_scope = want;
+    return { ok: true };
+  }
+
+  /** 4 发来的写入范围申请：重新加锁，成功回 granted，失败回 denied 并上报 scope_lock_failed。 */
+  async function onScopeRequest(ev: EventOf<"write_scope_requested">): Promise<void> {
+    const { request_id, requested_scope } = ev.payload;
+    const e = entries.get(ev.ticket_id);
+    const ctx = e
+      ? common(e.ticket)
+      : {
+          event_id: newId(),
+          ts: new Date(clock.now()).toISOString(),
+          requirement_id: ev.requirement_id,
+          ticket_id: ev.ticket_id,
+          trace_id: ev.trace_id,
+          span_id: newId(),
+          parent_span_id: ev.span_id,
+        };
+    const deny = async (reason: string) => {
+      await deps.bus.publish({
+        ...ctx,
+        type: "write_scope_denied",
+        payload: { request_id, requested_scope: [...requested_scope], reason },
+      });
+    };
+    if (!e) return deny(`调度器没有登记这张单：${ev.ticket_id}`);
+    if (TERMINAL.has(e.status)) return deny(`单子已是终态 ${e.status}`);
+    const r = tryLock(e, requested_scope);
+    if (r.ok) {
+      e.ticket.write_scope = union(e.ticket.write_scope ?? [], requested_scope);
+      await deps.bus.publish({
+        ...ctx,
+        type: "write_scope_granted",
+        payload: { request_id, granted_scope: [...requested_scope] },
+      });
+      return;
+    }
+    const why = r.exclusive
+      ? `申请的范围碰到独占区域，独占区域正被 ${r.with.join("、")} 占用`
+      : `申请的范围与在途单 ${r.with.join("、")} 的写入范围重叠`;
+    await deny(why);
+    // 加锁失败上报主管（modules.md §9）。进队前的状态归 8，9 不改 TicketStatus，只发事件
+    await deps.bus.publish({
+      ...common(e.ticket),
+      type: "escalated",
+      payload: {
+        reason: "scope_lock_failed",
+        resubmit_counts: { ...e.counts },
+        detail: `${why}：${requested_scope.join(", ")}`.slice(0, 500),
+      },
+    });
   }
 
   function dependencyState(ticket_id: string, seen = new Set<string>()): DependencyState {
@@ -240,16 +439,14 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     e.busy = true;
     const p = task()
       .catch(async (err) => {
-        if (e.status === "escalated") {
-          onError(err, e.ticket.ticket_id);
-          return;
-        }
+        // 终态（如 sync 期间已标 merged / escalated）不覆盖，只记一笔（escalateOnError 里判断）
         await escalateOnError(e, `${kind}_error`, err);
       })
       .finally(() => {
         e.busy = false;
         background.delete(p);
         kick();
+        kickDispatch();
       });
     background.add(p);
   }
@@ -278,7 +475,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       .filter((o) => o !== e && !TERMINAL.has(o.status))
       .filter(
         (o) =>
-          files.some((f) => matchesAny(f, o.ticket.write_scope ?? [])) ||
+          files.some((f) => matchesAny(f, union(o.ticket.write_scope ?? [], o.lock_scope ?? []))) ||
           (o.ticket.interfaces ?? []).some(
             (i) =>
               files.includes(i.file) ||
@@ -316,10 +513,21 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     });
   }
 
+  /**
+   * 基线在合并日志里的位置：本会话内某次合并的 sha → 之后的合并才算基线前进；start() 时的目标分支 HEAD →
+   * 本会话的合并都算；都不是（或拿不到）→ 记录不足，合并前和目标分支 HEAD 比。
+   */
+  function locateBase(base: string | undefined): { seq: number; unknown: boolean } {
+    const i = base ? mergeLog.map((m) => m.sha).lastIndexOf(base) : -1;
+    if (i >= 0) return { seq: i + 1, unknown: false };
+    if (base && base === startHead) return { seq: 0, unknown: false };
+    return { seq: mergeLog.length, unknown: true };
+  }
+
   async function finishSubAgent(
     e: Entry,
     res: SubAgentOutcome,
-    base_seq: number,
+    base: { seq: number; unknown: boolean; commit?: string },
     replace?: {
       old_pr_id: string;
       old_worktree: string | null;
@@ -373,8 +581,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       return;
     }
     if (res.review_resubmits !== undefined) e.counts.review = res.review_resubmits;
-    e.base_seq = base_seq;
-    e.base_unknown = false;
+    e.base_seq = base.seq;
+    e.base_unknown = base.unknown;
+    if (base.commit !== undefined) e.base_commit = base.commit;
     await setStatus(e, "merge_queued");
   }
 
@@ -428,10 +637,13 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     e.resume_token = undefined;
     e.resuming = true;
     const p = (async () => {
-      const res = await deps.subAgent.resume(e.ticket, token);
+      const res = await deps.subAgent.resume(e.ticket, token, { signal: abort.signal });
       if (res.kind === "requeue_budget") {
         // 又碰上预算用完：继续等
-        if (!TERMINAL.has(e.status)) e.resume_token = res.resume;
+        if (!TERMINAL.has(e.status)) {
+          e.resume_token = res.resume;
+          e.resume_not_before = clock.now() + resumeBackoffMs;
+        }
         return;
       }
       if (res.kind === "escalated") {
@@ -450,7 +662,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         throw new Error(`resume 返回 merge_queued，但 ${e.ticket.ticket_id} 未经 submit 入队`);
     })()
       .catch(async (err) => {
-        if (e.status === "escalated") {
+        if (cancelled()) {
+          // stop() 取消：凭据放回，单子保持 pending，下次启动后可以续跑
+          if (!TERMINAL.has(e.status) && e.resume_token === undefined) e.resume_token = token;
           onError(err, e.ticket.ticket_id);
           return;
         }
@@ -460,6 +674,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         e.resuming = false;
         background.delete(p);
         kick();
+        kickDispatch();
       });
     background.add(p);
   }
@@ -471,8 +686,11 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     const round = e.round + 1;
     track(e, "resubmit", async () => {
       await setStatus(e, "resubmitting");
-      const base_seq = mergeLog.length;
-      const wt = await deps.worktrees.create(e.ticket.ticket_id, target, round);
+      // T-039：先读目标分支 HEAD，再从这个 sha 建 r<n+1>，把同一个 sha 作为 base_commit 交给 8。
+      // 合并循环可能同时在合并别的单，用 sha 建 worktree 才能保证 worktree 的基线就是报给 8 / submit 的那个
+      const base_commit = await deps.targetHead();
+      const base = locateBase(base_commit);
+      const wt = await deps.worktrees.create(e.ticket.ticket_id, base_commit, round);
       let res: SubAgentOutcome;
       try {
         res = await deps.subAgent.resubmitConflict({
@@ -480,7 +698,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           round,
           worktree_path: wt.path,
           branch: wt.branch,
-          base_commit: target,
+          base_commit,
           conflicted_files,
           previous_pr_id: old_pr_id,
           resubmit_counts: { ...e.counts },
@@ -491,13 +709,18 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         e.own_worktree = true;
         throw err;
       }
-      await finishSubAgent(e, res, base_seq, {
-        old_pr_id,
-        old_worktree,
-        old_own_worktree,
-        new_worktree: wt.path,
-        round,
-      });
+      await finishSubAgent(
+        e,
+        res,
+        { ...base, commit: base_commit },
+        {
+          old_pr_id,
+          old_worktree,
+          old_own_worktree,
+          new_worktree: wt.path,
+          round,
+        },
+      );
       if (e.status === "merge_queued" && !queue.includes(e.ticket.ticket_id))
         queue.push(e.ticket.ticket_id);
     });
@@ -516,7 +739,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         merged_since: since.map((m) => ({ ticket_id: m.ticket_id, sha: m.sha, files: m.files })),
         ...(target_head !== undefined ? { base_unknown: true, target_head } : {}),
       });
-      await finishSubAgent(e, res, base_seq);
+      await finishSubAgent(e, res, { seq: base_seq, unknown: false });
       // 重审不改变排队位置：回到队首
       if (e.status === "merge_queued" && !queue.includes(e.ticket.ticket_id))
         queue.unshift(e.ticket.ticket_id);
@@ -642,7 +865,11 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
             // 出错的单上报 github_manual，队列继续
             const e = current as Entry | undefined;
             // 已经合入、收尾（发 interface_changed 等）失败：detail 用 merged_but，提醒主管代码已在集成分支上
-            if (e) await escalateOnError(e, currentMerged ? "merged_but" : "merge_error", err);
+            if (e)
+              await escalateOnError(e, currentMerged ? "merged_but" : "merge_error", err, {
+                // 已定：本单刚合并成功、收尾失败时状态改 escalated 交主管（只有这一处允许覆盖 merged）
+                overrideTerminal: currentMerged,
+              });
             else onError(err, "(queue)");
             more = !stopped;
           }
@@ -683,6 +910,164 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     });
   }
 
+  // ---------- 派单与编码槽位（T-039） ----------
+
+  /** 反压信号：派单闸门和 backpressureState() 共用。 */
+  function backpressureFrom(budget: { daily_exhausted: boolean }): BackpressureState {
+    const merge_queued = [...entries.values()].filter((e) => e.status === "merge_queued").length;
+    const d = bp.decide(
+      {
+        review: reviewBacklog,
+        supervisor: supervisorBacklog,
+        merge_queued,
+        daily_exhausted: budget.daily_exhausted,
+      },
+      clock.now(),
+    );
+    return {
+      ...d,
+      review_backlog: { ...reviewBacklog },
+      supervisor_backlog: supervisorBacklog ? { ...supervisorBacklog } : null,
+      pending_prs: {
+        merge_queued,
+        in_review: reviewBacklog.pending,
+        total: merge_queued + reviewBacklog.pending,
+        limit: deps.config.backpressure.pending_pr_limit,
+      },
+      daily_budget_exhausted: budget.daily_exhausted,
+    };
+  }
+
+  function pausedForBudget(): Entry[] {
+    return [...entries.values()].filter(
+      (e) => (e.resume_token !== undefined || e.resuming) && !TERMINAL.has(e.status),
+    );
+  }
+
+  /** 预算重置后续跑：把预算暂停的单交回 8 的 resume。 */
+  async function resumePaused(
+    budget?: { daily_exhausted: boolean },
+    auto = false,
+  ): Promise<string[]> {
+    const now = clock.now();
+    const paused = [...entries.values()].filter(
+      (e) =>
+        e.resume_token !== undefined &&
+        !e.resuming &&
+        !TERMINAL.has(e.status) &&
+        (!auto || e.resume_not_before <= now),
+    );
+    if (paused.length === 0 || stopped) return [];
+    if ((budget ?? (await deps.budgetState())).daily_exhausted) return [];
+    for (const e of paused) startResume(e);
+    return paused.map((e) => e.ticket.ticket_id);
+  }
+
+  /** 占着编码槽位的单：9 派出、还没 submit 的，以及正在预算续跑的。 */
+  const slotsInUse = (): number =>
+    [...entries.values()].filter((e) => !TERMINAL.has(e.status) && (e.coding || e.resuming)).length;
+
+  async function dispatchOnce(): Promise<string[]> {
+    if (stopped || !pr) return [];
+    const budget = await deps.budgetState();
+    const state = backpressureFrom(budget);
+    // 闸门：反压暂停（评审积压、主管待办、待合并 PR 超限、当日预算用完）时不派新单、也不续跑
+    if (state.paused) return [];
+    // 闸门打开：先把因当日预算暂停的单交回 8 续跑（它们本来就是在途的单），再派新单
+    await resumePaused(budget, true);
+    if (!autoDispatch) return [];
+    const limit = Math.min(state.concurrency, hardMax);
+    let used = slotsInUse();
+    const waitingBudget = new Set(pausedForBudget().map((e) => e.ticket.ticket_id));
+    const waitOffpeak = budget.offpeak_preference === true && budget.offpeak_now === false;
+    const out: string[] = [];
+    for (const e of entries.values()) {
+      if (used >= limit || stopped) break;
+      const id = e.ticket.ticket_id;
+      if (e.status !== "pending" || e.dispatched || e.pr_id !== null || waitingBudget.has(id))
+        continue;
+      if (dependencyState(id) !== "ready") continue;
+      if (e.ticket.priority === "deferred" && waitOffpeak) continue;
+      if (!tryLock(e, scopeOf(e.ticket)).ok) continue;
+      startHandle(e);
+      used++;
+      out.push(id);
+    }
+    return out;
+  }
+
+  /** 串行派单：同一时刻只跑一轮，期间再来的请求合并成下一轮。 */
+  function dispatch(): Promise<string[]> {
+    if (dispatchQueued) return dispatchQueued;
+    if (dispatchRunning) {
+      const q = dispatchRunning
+        .catch(() => [])
+        .then(() => {
+          dispatchQueued = undefined;
+          return runDispatch();
+        });
+      dispatchQueued = q;
+      return q;
+    }
+    return runDispatch();
+  }
+  function runDispatch(): Promise<string[]> {
+    const p = dispatchOnce().finally(() => {
+      if (dispatchRunning === p) dispatchRunning = undefined;
+    });
+    dispatchRunning = p;
+    return p;
+  }
+
+  /** 有变化时自动派单（只在注入了 8 的 handle 时）；不会产生未处理的 rejection。 */
+  function kickDispatch(): void {
+    if (!autoDispatch || stopped || !pr) return;
+    dispatch().catch((err) => onError(err, "(dispatch)"));
+  }
+
+  /**
+   * 交给 8 的 handle。进队前的状态（coding / in_review / resubmitting / pending / escalated / merge_queued）
+   * 都由 8 写，9 这里只改内存里的状态，不调 tickets.setStatus；8 没接住的异常由 9 上报 internal_error。
+   */
+  function startHandle(e: Entry): void {
+    const handle = deps.subAgent.handle!;
+    e.dispatched = true;
+    e.coding = true;
+    const p = (async () => {
+      const res: DispatchOutcome = await handle(e.ticket, { signal: abort.signal });
+      if (TERMINAL.has(e.status)) return;
+      if (res.kind === "requeue_budget") {
+        // 8 已写 pending：存续跑凭据，预算重置后由 dispatch 交回 8 的 resume
+        if (e.status === "pending") e.resume_token = res.resume;
+        return;
+      }
+      if (res.kind === "escalated") {
+        // 8 已写 escalated 并发了上报：9 只更新内存（释放锁）
+        removeFromQueue(e.ticket.ticket_id);
+        e.status = "escalated";
+        return;
+      }
+      // merge_queued：8 已经调过 submit（9 的 submit 记下了 pr_id 并入队）；这里只核对
+      if (e.pr_id === null)
+        throw new Error(`handle 返回 merge_queued，但 ${e.ticket.ticket_id} 未经 submit 入队`);
+    })()
+      .catch(async (err) => {
+        if (cancelled()) {
+          // stop() 取消：不上报、不改状态（8 停在原状态），只记一笔
+          onError(err, e.ticket.ticket_id);
+          return;
+        }
+        await escalateOnError(e, "dispatch_error", err, { reason: "internal_error" });
+      })
+      .finally(() => {
+        e.coding = false;
+        background.delete(p);
+        kick();
+        kickDispatch();
+      });
+    background.add(p);
+  }
+
   const eventContext = ({
     pr_id,
     ticket_id,
@@ -720,14 +1105,35 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       unsubs.push(
         deps.bus.subscribe("review_backlog", (ev) => {
           reviewBacklog = { pending: ev.payload.pending, capacity: ev.payload.capacity };
+          kickDispatch();
         }),
         deps.bus.subscribe("supervisor_backlog", (ev) => {
           supervisorBacklog = { pending: ev.payload.pending, capacity: ev.payload.capacity };
+          kickDispatch();
+        }),
+        deps.bus.subscribe("write_scope_requested", async (ev) => {
+          try {
+            await onScopeRequest(ev);
+          } catch (err) {
+            onError(err, ev.ticket_id);
+          }
         }),
       );
+      if (autoDispatch && pollMs > 0) {
+        pollTimer = setInterval(kickDispatch, pollMs);
+        (pollTimer as { unref?: () => void }).unref?.();
+      }
+      kickDispatch();
     },
     stop() {
       stopped = true;
+      if (!abort.signal.aborted) {
+        const reason = new Error("调度器已停止");
+        reason.name = "AbortError";
+        abort.abort(reason);
+      }
+      if (pollTimer !== undefined) clearInterval(pollTimer);
+      pollTimer = undefined;
       for (const u of unsubs.splice(0)) u();
       for (const t of timers) clearTimeout(t);
       timers.clear();
@@ -752,13 +1158,24 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         resume_token: undefined,
         pending_replace: undefined,
         resuming: false,
+        resume_not_before: 0,
+        dispatched: false,
+        coding: false,
+        lock_scope: null,
         conflicted: false,
         base_changed: false,
         re_reviewed: false,
       };
       entries.set(ticket.ticket_id, e);
       await setStatus(e, "pending");
+      kickDispatch();
     },
+    lock(ticket_id, write_scope) {
+      const e = getEntry(ticket_id);
+      if (TERMINAL.has(e.status)) return "fail";
+      return tryLock(e, write_scope).ok ? "ok" : "fail";
+    },
+    dispatch,
     async submit({ ticket_id, pr_id, worktree_path, round, review_resubmits, base_commit }) {
       const e = getEntry(ticket_id);
       if (TERMINAL.has(e.status)) throw new Error(`单 ${ticket_id} 已是终态 ${e.status}`);
@@ -785,22 +1202,15 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         }
       }
       e.base_commit = base || undefined;
-      const i = base ? mergeLog.map((m) => m.sha).lastIndexOf(base) : -1;
-      if (i >= 0) {
-        // 本会话内某次合并的结果：只有它之后的合并才算基线前进
-        e.base_seq = i + 1;
-        e.base_unknown = false;
-      } else if (base && base === startHead) {
-        // 启动时的目标分支 HEAD：本会话的合并都在它之后
-        e.base_seq = 0;
-        e.base_unknown = false;
-      } else {
-        // 记录不足以判断：合并前和目标分支 HEAD 比，不同就重审
-        e.base_unknown = true;
-      }
+      const loc = locateBase(base);
+      // 记录不足以判断（unknown）时，合并前和目标分支 HEAD 比，不同就重审
+      e.base_unknown = loc.unknown;
+      if (!loc.unknown) e.base_seq = loc.seq;
       prToTicket.set(pr_id, ticket_id);
       if (queue.includes(ticket_id)) throw new Error(`单 ${ticket_id} 已在合并队列中`);
       e.resume_token = undefined;
+      // 交进合并队列即让出编码槽位（等待评审 / 合并不占槽位）
+      e.coding = false;
       await setStatus(e, "merge_queued");
       queue.push(ticket_id);
       if (e.pending_replace) {
@@ -812,6 +1222,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         }
       }
       kick();
+      kickDispatch();
     },
     eventContext,
     mergeResult: (pr_id) => results.get(pr_id),
@@ -850,46 +1261,16 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           onError(err, e.ticket.ticket_id);
         }
       }
-      if (applied.length) kick();
+      if (applied.length) {
+        kick();
+        kickDispatch();
+      }
       return applied;
     },
-    async resumeBudgetPaused() {
-      const paused = [...entries.values()].filter(
-        (e) => e.resume_token !== undefined && !e.resuming && !TERMINAL.has(e.status),
-      );
-      if (paused.length === 0 || stopped) return [];
-      if ((await deps.budgetState()).daily_exhausted) return [];
-      for (const e of paused) startResume(e);
-      return paused.map((e) => e.ticket.ticket_id);
-    },
-    budgetPaused: () =>
-      [...entries.values()]
-        .filter((e) => (e.resume_token !== undefined || e.resuming) && !TERMINAL.has(e.status))
-        .map((e) => e.ticket.ticket_id),
+    resumeBudgetPaused: () => resumePaused(),
+    budgetPaused: () => pausedForBudget().map((e) => e.ticket.ticket_id),
     async backpressureState(): Promise<BackpressureState> {
-      const budget = await deps.budgetState();
-      const merge_queued = [...entries.values()].filter((e) => e.status === "merge_queued").length;
-      const d = bp.decide(
-        {
-          review: reviewBacklog,
-          supervisor: supervisorBacklog,
-          merge_queued,
-          daily_exhausted: budget.daily_exhausted,
-        },
-        clock.now(),
-      );
-      return {
-        ...d,
-        review_backlog: { ...reviewBacklog },
-        supervisor_backlog: supervisorBacklog ? { ...supervisorBacklog } : null,
-        pending_prs: {
-          merge_queued,
-          in_review: reviewBacklog.pending,
-          total: merge_queued + reviewBacklog.pending,
-          limit: deps.config.backpressure.pending_pr_limit,
-        },
-        daily_budget_exhausted: budget.daily_exhausted,
-      };
+      return backpressureFrom(await deps.budgetState());
     },
     dependencyState: (id) => dependencyState(id),
     status: (id) => entries.get(id)?.status,
@@ -902,10 +1283,14 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         resubmit_counts: { ...e.counts },
         dependency: dependencyState(e.ticket.ticket_id),
         budget_paused: e.resume_token !== undefined || e.resuming,
+        coding: e.coding && !TERMINAL.has(e.status),
+        locked_scope: e.lock_scope && !TERMINAL.has(e.status) ? [...e.lock_scope] : null,
       })),
     async idle() {
       for (;;) {
         if (pumping) await pumping;
+        else if (dispatchQueued) await dispatchQueued.catch(() => undefined);
+        else if (dispatchRunning) await dispatchRunning.catch(() => undefined);
         else if (background.size) await Promise.all([...background]);
         else return;
       }
