@@ -349,8 +349,14 @@ export interface QueueEntryView {
 export interface Scheduler {
   /** 启动：建 6（注入 eventContext），订阅 review_backlog / supervisor_backlog（T-038 起不再订阅 write_scope_requested） */
   start(): Promise<void>;
-  /** 停止：停合并循环、取消等待中的定时器、停止派单，并中止交给 8 的 handle / resume（signal，T-039） */
-  stop(): void;
+  /**
+   * 停止：停合并循环、取消等待中的定时器、停止派单，并中止交给 8 的 handle / resume（signal，T-039）。
+   * 这些同步生效（T-096 前后不变）。返回的 Promise（T-096）在在途的派单 / 续跑、冲突复投 / 重审、
+   * 合并循环和 sync 都收尾之后才 resolve；之后 9 不再写库、不再发事件。从不 reject，出错照旧交给
+   * `onError`（`onError` 自己抛错也不会 reject）。重复调用返回同一个 Promise。9 不设总超时，上限由调用方定。
+   * 被 stop 中止或在 stop 之后才失败的调用不上报、不复投、不改状态，留给下次启动的 takeOver。
+   */
+  stop(): Promise<void>;
   /** 登记一张单（状态 pending）。重复登记同一单号报错。注入了 8 的 handle 时随即尝试派单。 */
   enqueue(ticket: SchedulerTicket): Promise<void>;
   /**
