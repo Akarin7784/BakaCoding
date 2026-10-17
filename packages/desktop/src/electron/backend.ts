@@ -1,5 +1,6 @@
 // T-063：桌面主进程后端——拿写入锁、组装组合根、takeOver；失败则退回只读。
-import { copyFile, mkdtemp, rm } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { copyFile, lstat, mkdtemp, rm, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -484,7 +485,7 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
           },
           { source: storage.diagnosticsSource(), out_dir, now: () => now },
         );
-        await copyFile(zip, target);
+        await copyExclusive(zip, target);
         return target;
       } finally {
         await rm(out_dir, { recursive: true, force: true });
@@ -507,3 +508,20 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
 }
 
 export { resolveDbPath, DB_PATH_ENV, DEFAULT_DB_RELATIVE };
+
+/**
+ * 复制到 target，不跟随符号链接：用 COPYFILE_EXCL（O_EXCL，目标已存在含悬空链接都失败）。
+ * 目标已存在且是普通文件（保存框里选了覆盖）→ 删掉再 EXCL 复制一次；是链接或别的就报错。
+ */
+export async function copyExclusive(src: string, target: string): Promise<void> {
+  try {
+    await copyFile(src, target, fsConstants.COPYFILE_EXCL);
+    return;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+  }
+  const st = await lstat(target);
+  if (!st.isFile()) throw new Error("保存位置已存在且不是普通文件（可能是符号链接），已拒绝");
+  await unlink(target);
+  await copyFile(src, target, fsConstants.COPYFILE_EXCL);
+}

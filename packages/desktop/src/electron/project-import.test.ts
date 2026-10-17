@@ -28,7 +28,7 @@ import { BackendSwitcher } from "./backend-switcher.js";
 import type { IpcMainLike } from "./ipc.js";
 import { checkProjectDir, repoLockedBy, REPO_LOCKED_REASON } from "./project-import.js";
 import { inside } from "./project-settings-ipc.js";
-import { NotifyBuffer } from "./backend.js";
+import { copyExclusive, NotifyBuffer } from "./backend.js";
 import type { App } from "@bakacoding/app";
 import { symlinkSync } from "node:fs";
 import path from "node:path";
@@ -44,6 +44,12 @@ const pricingPath = fileURLToPath(new URL("../../../../config/pricing.json", imp
 // 按格式拼的假密钥（11 的完整脱敏按格式识别）
 const FAKE_GH = `ghp_${"A1b2C3d4E5".repeat(4)}`;
 const FAKE_DS = `sk-${"f00dfeed".repeat(4)}`;
+
+function evilError(msg: string): Error {
+  const e = new Error(msg);
+  e.name = "Evil<img src=x>\n[REDACTED]ghp_" + "x".repeat(8);
+  return e;
+}
 
 let dirs: string[] = [];
 afterEach(() => {
@@ -492,6 +498,58 @@ describe("project:import / diagnostics:export / settings:get IPC（T-072）", ()
     expect(c.saveLastRepo).not.toHaveBeenCalled();
   });
 
+  it("#82 复查：project:import 把 argv 传给 checkProjectDir（--config 指向的文件不存在 → 拒绝并写明 --config）", async () => {
+    const good = repo();
+    const { ipc, invoke } = fakeIpc();
+    const c = deps({ pickDirectory: async () => good, argv: ["--config", "nope/models.json"] });
+    serveProjectSettings(ipc, c.d);
+    const r = await invoke<{ ok: false; reason: string }>(IPC_CHANNELS.projectImport);
+    expect(r.ok).toBe(false);
+    expect(r.reason).toContain("当前使用 --config 指定的配置，但文件不存在");
+    expect(c.backend.switchTo).not.toHaveBeenCalled();
+  });
+
+  it("#82 复查：新后端已在运行但导入失败 → 仍记下路径，原因原样返回", async () => {
+    const good = repo();
+    const { ipc, invoke } = fakeIpc();
+    const c = deps({ pickDirectory: async () => good });
+    c.backend.switchTo.mockResolvedValueOnce({
+      ok: false,
+      switched: true,
+      reason: "已切换到新仓库，但导入项目失败：Error：bad",
+    } as never);
+    serveProjectSettings(ipc, c.d);
+    const r = await invoke<{ ok: false; reason: string }>(IPC_CHANNELS.projectImport);
+    expect(r.reason).toContain("导入项目失败");
+    expect(c.saveLastRepo).toHaveBeenCalledWith(good);
+  });
+
+  it("#82 复查：导出出错时恶意 e.name 经 sanitizeErrorName 过滤", async () => {
+    const outZip = join(tmp("bc-out-"), "x.zip");
+    const { ipc, invoke } = fakeIpc();
+    const c = deps({ pickSavePath: async () => outZip });
+    c.backend.exportDiagnostics.mockRejectedValueOnce(evilError("boom"));
+    serveProjectSettings(ipc, c.d);
+    const r = await invoke<{ ok: false; reason: string }>(IPC_CHANNELS.diagnosticsExport);
+    expect(r.reason).toContain("导出失败");
+    expect(r.reason).not.toMatch(/[<>\n]/);
+    expect(r.reason).not.toContain("<img");
+  });
+
+  it("#82 复查：导出目标是符号链接 → 拒绝，不跟进去", async () => {
+    const base = tmp("bc-sl-");
+    const target = join(base, "x.zip");
+    symlinkSync(join(base, "elsewhere.zip"), target);
+    const { ipc, invoke } = fakeIpc();
+    const c = deps({ pickSavePath: async () => target });
+    serveProjectSettings(ipc, c.d);
+    await expect(invoke(IPC_CHANNELS.diagnosticsExport)).resolves.toEqual({
+      ok: false,
+      reason: "保存位置是符号链接，请换个位置",
+    });
+    expect(c.backend.exportDiagnostics).not.toHaveBeenCalled();
+  });
+
   it("导出：默认存到下载目录；取消；仓库里拒绝；出错脱敏", async () => {
     const seen: string[] = [];
     const { ipc, invoke } = fakeIpc();
@@ -516,16 +574,17 @@ describe("project:import / diagnostics:export / settings:get IPC（T-072）", ()
       reason: "不能把诊断包保存到仓库目录里，请换个位置",
     });
 
+    const outZip = join(tmp("bc-out-"), "x.zip");
     const { ipc: i3, invoke: v3 } = fakeIpc();
-    const c3 = deps({ pickSavePath: async () => "/out/x.zip" });
+    const c3 = deps({ pickSavePath: async () => outZip });
     serveProjectSettings(i3, c3.d);
     await expect(v3(IPC_CHANNELS.diagnosticsExport)).resolves.toEqual({
       ok: true,
-      path: "/out/x.zip",
+      path: outZip,
     });
 
     const { ipc: i4, invoke: v4 } = fakeIpc();
-    const c4 = deps({ pickSavePath: async () => "/out/x.zip" });
+    const c4 = deps({ pickSavePath: async () => outZip });
     c4.backend.exportDiagnostics.mockRejectedValueOnce(new Error(`EACCES ${FAKE_DS}`));
     serveProjectSettings(i4, c4.d);
     const r4 = await v4<{ ok: false; reason: string }>(IPC_CHANNELS.diagnosticsExport);
@@ -621,7 +680,7 @@ describe("评审跟进（T-072 #82）", () => {
   // ---- 2. 切换 / 导入失败后保留渲染就绪 ----
   function fakeBackend(
     repoRoot: string,
-    opts: { mode?: "live" | "readonly"; importFails?: boolean } = {},
+    opts: { mode?: "live" | "readonly"; importFails?: boolean | Error } = {},
   ) {
     const buf = new NotifyBuffer(200);
     const handle = {
@@ -632,7 +691,7 @@ describe("评审跟进（T-072 #82）", () => {
       busyCount: () => 0,
       repoRoot: () => repoRoot,
       importCurrentRepo: async () => {
-        if (opts.importFails) throw new Error("bad");
+        if (opts.importFails) throw opts.importFails === true ? new Error("bad") : opts.importFails;
         return { project_id: "p", name: "p", path: repoRoot } as Project;
       },
       stop: async () => {},
@@ -669,6 +728,33 @@ describe("评审跟进（T-072 #82）", () => {
     expect(got).toEqual(["回来之后"]);
   });
 
+  it("#82 复查：导入失败时恶意 e.name 被过滤，switched 为 true，消息写明导入失败", async () => {
+    const old = fakeBackend("/a");
+    const next = fakeBackend("/b", { importFails: evilError("bad") });
+    const sw = new BackendSwitcher(old.handle, async () => next.handle);
+    const r = await sw.switchTo("/b");
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.switched).toBe(true);
+    expect(r.reason).toContain("导入项目失败");
+    expect(r.reason).not.toContain("<img");
+    expect(r.reason).not.toMatch(/[<>\n]/);
+  });
+
+  it("#82 复查：新仓库组装抛错时恶意 e.name 被过滤", async () => {
+    const old = fakeBackend("/a");
+    const back = fakeBackend("/a");
+    const sw = new BackendSwitcher(old.handle, async (r) => {
+      if (r === "/b") throw evilError("start failed");
+      return back.handle;
+    });
+    const r = await sw.switchTo("/b");
+    expect(r.ok === false && r.reason).toContain("已回到原仓库");
+    if (r.ok) return;
+    expect(r.reason).not.toContain("<img");
+    expect(r.reason).not.toMatch(/[<>\n]/);
+  });
+
   it("切换成功：就绪清掉，新后端先缓冲，等渲染进程重载后 ready 再回放", async () => {
     const old = fakeBackend("/a");
     const next = fakeBackend("/b");
@@ -697,6 +783,55 @@ describe("评审跟进（T-072 #82）", () => {
     expect(inside(join(base, "repo-other", "x.zip"), r)).toBe(false);
     expect(inside(join(tmp("bc-else-"), "x.zip"), r)).toBe(false);
     expect(inside(r, r)).toBe(true);
+  });
+
+  it("#82 复查：悬空符号链接指向仓库里还不存在的文件 → 算在里面", () => {
+    const base = tmp("bc-dl-");
+    const r = join(base, "repo");
+    const out = join(base, "out");
+    mkdirSync(r, { recursive: true });
+    mkdirSync(out, { recursive: true });
+    symlinkSync(join(r, "new.zip"), join(out, "x.zip"));
+    expect(inside(join(out, "x.zip"), r)).toBe(true);
+  });
+
+  it("#82 复查：<out>/link/../x.zip（link 指向 <repo>/sub）不做词法规范化 → 算在里面", () => {
+    const base = tmp("bc-dd-");
+    const r = join(base, "repo");
+    const out = join(base, "out");
+    mkdirSync(join(r, "sub"), { recursive: true });
+    mkdirSync(out, { recursive: true });
+    symlinkSync(join(r, "sub"), join(out, "link"), "dir");
+    // 不能用 join（会先把 .. 消掉）
+    expect(inside(`${out}/link/../x.zip`, r)).toBe(true);
+    expect(inside(`${out}/x.zip`, r)).toBe(false);
+  });
+
+  it("#82 复查：配置来源写进错误信息（--config / BAKACODING_CONFIG）", () => {
+    const d = repo();
+    const a = checkProjectDir(d, { BAKACODING_CONFIG: "env-missing.json" }, []);
+    expect(a.ok === false && a.reason).toContain(
+      "当前使用 BAKACODING_CONFIG 指定的配置，但文件不存在",
+    );
+    const b = checkProjectDir(d, { BAKACODING_CONFIG: "env-missing.json" }, [
+      "--config=cli-missing.json",
+    ]);
+    expect(b.ok === false && b.reason).toContain("当前使用 --config 指定的配置，但文件不存在");
+    expect(b.ok === false && b.reason).toContain("cli-missing.json");
+  });
+
+  it("#82 复查：copyExclusive 不跟随符号链接（含悬空），普通文件可覆盖", async () => {
+    const base = tmp("bc-cx-");
+    const src = join(base, "src.zip");
+    writeFileSync(src, "new");
+    const link = join(base, "link.zip");
+    symlinkSync(join(base, "victim.zip"), link);
+    await expect(copyExclusive(src, link)).rejects.toThrow("不是普通文件");
+    expect(existsSync(join(base, "victim.zip"))).toBe(false);
+    const plain = join(base, "plain.zip");
+    writeFileSync(plain, "old");
+    await copyExclusive(src, plain);
+    expect(readFileSync(plain, "utf8")).toBe("new");
   });
 
   it("inside：Windows 不区分大小写（可注入平台）", () => {

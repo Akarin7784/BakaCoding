@@ -4,7 +4,10 @@ import type { PendingHighRisk } from "@bakacoding/supervisor";
 import type { BackendHandle, NotifyMessage } from "./backend.js";
 import { sanitizeErrorName, sanitizeSyncErrorMessage, unavailableSyncState } from "./sync-state.js";
 
-export type SwitchResult = { ok: true; project: Project } | { ok: false; reason: string };
+export type SwitchResult =
+  | { ok: true; project: Project }
+  /** switched：新仓库已在运行（只是导入失败），调用方据此记下路径 */
+  | { ok: false; reason: string; switched?: true };
 
 /**
  * 包一层 BackendHandle：IPC 层只拿这个；切换时把 onNotify / onPendingHighRisk 的订阅转到新后端，
@@ -110,7 +113,15 @@ export class BackendSwitcher implements BackendHandle {
         this.restoreReady(wasReady);
         const name = sanitizeErrorName(e instanceof Error ? e.name : "Error");
         const msg = e instanceof Error ? `${name}：${e.message}` : String(e);
-        return { ok: false, reason: sanitizeSyncErrorMessage(`导入失败：${msg}`, this.env, 2000) };
+        return {
+          ok: false,
+          switched: true,
+          reason: sanitizeSyncErrorMessage(
+            `已切换到新仓库，但导入项目失败：${msg}`,
+            this.env,
+            2000,
+          ),
+        };
       }
     } finally {
       this.switching = false;

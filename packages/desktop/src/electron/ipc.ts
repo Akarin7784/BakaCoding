@@ -19,6 +19,7 @@ import {
   envPresence,
   EXPORT_REASON_MAX,
   inside,
+  isSymlinkTarget,
   type ProjectSettingsDeps,
 } from "./project-settings-ipc.js";
 import { sanitizeErrorName, sanitizeSyncErrorMessage } from "./sync-state.js";
@@ -222,7 +223,11 @@ export function serveProjectSettings(ipc: IpcMainLike, deps: ProjectSettingsDeps
       } satisfies DesktopImportResult;
     }
     const r = await deps.backend.switchTo(path.resolve(dir));
-    if (!r.ok) return { ok: false, reason: r.reason } satisfies DesktopImportResult;
+    if (!r.ok) {
+      // 新后端已经在跑、只是 importProject 失败：记下的路径要和实际运行的仓库一致
+      if (r.switched) deps.saveLastRepo(path.resolve(dir));
+      return { ok: false, reason: r.reason } satisfies DesktopImportResult;
+    }
     deps.saveLastRepo(path.resolve(dir));
     return {
       ok: true,
@@ -236,6 +241,12 @@ export function serveProjectSettings(ipc: IpcMainLike, deps: ProjectSettingsDeps
     const target = await deps.pickSavePath(path.join(deps.downloadsDir, defaultExportName(at)));
     if (!target)
       return { ok: false, canceled: true, reason: "已取消" } satisfies DesktopExportResult;
+    if (isSymlinkTarget(target)) {
+      return {
+        ok: false,
+        reason: "保存位置是符号链接，请换个位置",
+      } satisfies DesktopExportResult;
+    }
     if (inside(target, deps.backend.repoRoot())) {
       return {
         ok: false,

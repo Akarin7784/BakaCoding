@@ -1,5 +1,5 @@
 // T-072：project:import / diagnostics:export / settings:get 的依赖与辅助函数；handler 本身在 ipc.ts 的 serveProjectSettings。
-import { realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { SECRET_NAMES } from "@bakacoding/config-budget";
 import type { DesktopSettings } from "../shared/api.js";
@@ -41,35 +41,56 @@ export interface InsideOptions {
   platform?: NodeJS.Platform;
   /** 默认 fs.realpathSync.native */
   realpath?: (p: string) => string;
+  /** 默认 fs.lstatSync；路径不存在时返回 null */
+  lstat?: (p: string) => { isSymbolicLink(): boolean } | null;
+  /** 相对路径的基准，默认 process.cwd() */
+  cwd?: string;
   /** 默认 node:path（测试 Windows 时可传 path.win32） */
   pathImpl?: typeof path;
 }
 
-/** 解析符号链接；路径不存在时解析最近一个存在的上级，再接上余下部分。 */
-function realpathExisting(p: string, realpath: (p: string) => string, pathImpl: typeof path) {
-  let cur = pathImpl.resolve(p);
-  const rest: string[] = [];
-  for (;;) {
-    try {
-      return pathImpl.join(realpath(cur), ...rest.reverse());
-    } catch {
-      const parent = pathImpl.dirname(cur);
-      if (parent === cur) return pathImpl.join(cur, ...rest.reverse());
-      rest.push(pathImpl.basename(cur));
-      cur = parent;
-    }
+function defaultLstat(p: string) {
+  try {
+    return lstatSync(p);
+  } catch {
+    return null;
   }
 }
 
+/** 目标本身是符号链接（含悬空链接）？是就不跟进去，直接拒绝。 */
+export function isSymlinkTarget(target: string, opts: InsideOptions = {}): boolean {
+  return (opts.lstat ?? defaultLstat)(target)?.isSymbolicLink() ?? false;
+}
+
 /**
- * child 是否在 parent 里（含相等）。两边都先 realpath（child 可能还不存在，取存在的上级），
- * 再看 path.relative：`..foo` 这类以两个点开头的目录名算在里面；指进仓库的符号链接也算在里面。
+ * 保存目标 child 是否要当作「在 parent 里」拒绝。保守判断：拿不准就算在里面。
+ * - 不做词法规范化（`link/../x` 里的 `..` 交给真实路径解析）：相对路径只拼上 cwd 前缀；
+ * - 目标本身是符号链接（含悬空）→ 拒绝；basename 为空 / `.` / `..` → 拒绝；
+ * - realpath(dirname(child))，失败就拒绝（不往上找）；接上 basename；
+ * - 与 realpath(parent) 比 path.relative：rel 为 `""` 或不以 `..` 段开头、也不是绝对路径即在里面；
+ *   `..foo` 这类目录名算在里面；win32 不区分大小写。
  */
 export function inside(child: string, parent: string, opts: InsideOptions = {}): boolean {
   const pathImpl = opts.pathImpl ?? path;
   const realpath = opts.realpath ?? ((p: string) => realpathSync.native(p));
-  let a = realpathExisting(parent, realpath, pathImpl);
-  let b = realpathExisting(child, realpath, pathImpl);
+  const cwd = opts.cwd ?? process.cwd();
+  const abs = pathImpl.isAbsolute(child) ? child : `${cwd}${pathImpl.sep}${child}`;
+  if (isSymlinkTarget(abs, opts)) return true;
+  const base = pathImpl.basename(abs);
+  if (base === "" || base === "." || base === "..") return true;
+  let dir: string;
+  try {
+    dir = realpath(pathImpl.dirname(abs));
+  } catch {
+    return true;
+  }
+  let a: string;
+  try {
+    a = realpath(parent);
+  } catch {
+    a = pathImpl.resolve(parent);
+  }
+  let b = pathImpl.join(dir, base);
   if ((opts.platform ?? process.platform) === "win32") {
     a = a.toLowerCase();
     b = b.toLowerCase();
