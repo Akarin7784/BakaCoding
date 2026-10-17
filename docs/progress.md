@@ -153,7 +153,7 @@ flowchart BT
 | T-104 | 模块 3：`importProject` 对根目录 `stat` / `readdir` 出错也包成 `ProjectImportError`，只报错误码（「项目路径无法访问（EACCES）」「读不到项目目录（EACCES）」），不带路径和原 message（T-099 后续）；modules.md §3 同步。main `2903399`，测试 93 个文件 / 1809 个 | 3 | 基础层开发 | 已合入 | #116 | `2903399` |
 | T-101 | 模块 9 / 组合根：`listFiles`、`userMainWorktreeFor` 的 git 调用统一走 repoGit + `gitEnv()` + 超时（T-096 评审跟进）；preview.1 之后 | 9 | 编排层开发 | 待开发 | — | — |
 | T-102 | 模块 8 + 6：`resubmitConflict` / `reReview` 接收 stop 的 signal；模块 6 GitHub 请求加请求级超时（T-096 已知缺口）；preview.1 之后 | 8 / 6 | 编排层开发、执行层开发 | 待开发 | — | — |
-| T-103 | 模块 6：合并重试幂等；preview.1 之前 | 6 | 执行层开发 | 开发中 | — | — |
+| T-103 | 模块 6：合并重试幂等。本地 `merge` 在锁内读到 target 后先查 head 是否已被 target 包含，是则直接记 merged（`merge_sha` 取把 head 带进 target 的那个提交：快进为 head，非快进为当时的合并提交），不再 commit-tree、不动 target；GitHub `merge` 推分支前先查远程 PR，已合入则不推不 PUT，fetch、快进本地 target 后记 merged（`merge_sha` 用 `merge_commit_sha`），PUT 回 405 / 409 时也回查；接口不变，modules.md §6 同步。来源：编排层分析 2026-10-18，preview.1 之前 | 6 | 执行层开发 | 待评审 | #117 | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
