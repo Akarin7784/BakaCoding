@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`d2899c5` · main 上测试：79 个测试文件、1639 个测试全部通过 · 更新日期：2026-10-18（UTC+8）
+> 上次更新时 main：`42795c2` · main 上测试：81 个测试文件、1670 个测试全部通过 · 更新日期：2026-10-18（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -139,8 +139,9 @@ flowchart BT
 | UI-01 | 模块 12 设计 token、主题、字体与基础组件（`docs/ui-design.md` §5、§6，`01b15dd`）：§5.1 浅 / 深两套 OKLCH 颜色 token（danger 红与 accent 蓝分开，错误提示改用 danger）；主题跟随系统 / 浅 / 深，偏好存 localStorage，写到 `<html data-theme>`，设置页加主题切换；字体西文 Inter（随包 latin / latin-ext 子集，OFL）+ Segoe UI Variable / 微软雅黑 UI，正文 14px，代码字体栈；间距、圆角、阴影、动效 token，尊重减少动态效果；按钮只留 primary / secondary / danger 三种（34 / 28 高），danger 只能经确认框的 `DialogDangerButton` 用；补 shadcn 组件 Dialog、DropdownMenu、Tooltip、Toast（sonner）、Tabs、Input、Select、Switch、ScrollArea、Collapsible、Command；`StatusIcon`（9 个状态 → lucide 图标，§5.2）；文案表 `lib/copy.ts`（merged「已合入」、合入 main「已合入 main」、复投「重写」），测试搜 `packages/desktop/src` 不得出现旧叫法；新依赖 `radix-ui`、`sonner`、`cmdk`、`@fontsource-variable/inter`；IPC 与布局不变。main `e44f4a5`，测试 78 个文件 / 1619 个 | 12 | 界面与诊断开发 | 已合入 | #93 | `e44f4a5` |
 | T-095 | 根目录 `pnpm typecheck` 在干净检出上报 TS6310：根脚本是 `tsc -b --noEmit`，而 TypeScript project references 要求被引用项目能写出声明文件，CLI 的 `--noEmit` 会关掉整张依赖图的 emit；最小修复是把根 `typecheck` 改成 `tsc -b`（与 `build` 相同，会写出 dist）。干净检出（`pnpm install`、无先验 build）根目录 typecheck 通过；回滚 `--noEmit` 后 TS6310 复现；`pnpm build` / `test` / `lint` / `format:check` / `pnpm -r typecheck` 不受影响。README 开发者指南同步说明。 | 工具链 / 12 | 界面与诊断开发 | 已合入 | #96 | `fe8207c` |
 | T-093 | 界面：IPC `backend:reload` / `backend:reconnect`（同一仓库停起后端，复用 `BackendSwitcher` 的拆旧 / 组装；只在没有编码、评审、合并队列中的单、也没有主管对话在途时执行，否则排队（只等排队时在途的单，防饿死）、空闲后自动重载；退出时不泄漏新后端；重复请求合并；起不来退只读，原因去掉绝对路径和密钥值；`backend:status` 加可选 `reload` 进度；预算当日已用从台账恢复）；modules.md §12 同步。main `d2899c5`，测试 79 个文件 / 1639 个 | 12 | 界面与诊断开发 | 已合入 | #95 | `d2899c5` |
+| T-086 | 模块 4：新增仓库检查与修复组（`docs/ui-design.md` §4.1、§7，经 `@bakacoding/app` 再导出，界面只调用）：`checkRepo(dir)` 只读逐项检查 git / commit / main / ignored（code `not_git` / `no_commits` / `no_main` / `not_ignored`，`no_main` 带 `current`，与 T-084 同名；dir 必须本身是仓库根），身份只回是否已配；`initRepo` 建目录、`git init`、HEAD 指向 main，身份只写本仓库 `.git/config`，再写 exclude；`listInitialCommitFiles` 列确认框文件，默认排除 `.env` 类、私钥类（同 `isProtectedPath`，`.env.example` 不排除）和 `.bakacoding/`；`initialCommit` 只在无提交时执行，只提交 include 里列出的文件（混进别的整体拒绝），可空提交，用临时索引建树、不跑 hooks，提交到 main 并重置暂存区；`createMainBranch` 从当前 HEAD 只新建 main，不切换、不改名、不删；所有 git 调用带超时，失败抛 `RepoFixError { code }`，文案不含路径和 git 原始输出；modules.md 同步。main `42795c2`，测试 81 个文件 / 1670 个 | 4 | 基础层开发 | 已合入 | #97 | `42795c2` |
 | T-096 | 组合根 `app.stop()` 改成返回 `Promise<void>`，等 `scheduler.stop()` 等异步收尾结束后再关库（现在 `assemble.ts:597` 是同步的，不等 promise）；属于 app 接口改动，接口先在群里报；桌面端 switcher 已统一 `await backend.stop()`，不用再改。来源：蓝色大肥鱼评审 #95。排在 T-084、T-085 之后，不阻塞 UI-03 和发版 | 组合根 / 9 | 编排层开发 | 待开工 | — | — |
-| T-097 | 模块 4、6 现有的 `git()` 调用改用 T-086 的 `gitEnv()`，不再继承 `GIT_` 开头的环境变量（T-094 #101 已知缺口）；模块 4 归基础层、模块 6 归执行层，两边各开一个 PR，都补「设了 `GIT_DIR` 不影响目标仓库」的测试。依赖 #97 合入。来源：蓝色大肥鱼 2026-10-18 | 4 / 6 | 基础层开发、执行层开发 | 待开工 | — | — |
+| T-097 | 模块 4、6 现有的 `git()` 调用改用 T-086 的 `gitEnv()`，不再继承 `GIT_` 开头的环境变量（T-094 #101 已知缺口）；模块 4 归基础层、模块 6 归执行层，两边各开一个 PR，都补「设了 `GIT_DIR` 不影响目标仓库」的测试。依赖 #97 合入。模块 4 顺带：worktree.ts git() 加超时、repo.test GIT_AUTHOR_* 用例改为断言提交作者取自仓库配置、注明 gitEnv 仅用于本地仓库操作。来源：蓝色大肥鱼 2026-10-18 | 4 / 6 | 基础层开发、执行层开发 | 待开工 | — | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
