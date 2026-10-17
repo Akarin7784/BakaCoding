@@ -8,7 +8,8 @@ export interface WireInput {
   api_key: string;
   model: string;
   effort: Effort;
-  max_tokens: number;
+  /** 不传就用服务端默认值 */
+  max_tokens?: number;
   system: string;
   tools: readonly ToolDefinition[];
   messages: readonly ChatMessage[];
@@ -29,6 +30,8 @@ export interface Parsed {
 
 export interface ProtocolAdapter {
   build(input: WireInput, caps: Capabilities): HttpRequest;
+  /** 只取用量：先于 parse 调，回复内容解析失败时仍按实际 token 计费 */
+  usage(json: unknown): Tokens | null;
   parse(json: unknown): Parsed;
 }
 
@@ -138,7 +141,7 @@ export const anthropicAdapter: ProtocolAdapter = {
     const body: Record<string, unknown> = {
       model: input.model,
       stream: false,
-      max_tokens: input.max_tokens,
+      ...(input.max_tokens !== undefined ? { max_tokens: input.max_tokens } : {}),
       messages,
       thinking: { type: input.effort === "off" ? "disabled" : "enabled" },
       ...(input.effort === "off"
@@ -186,17 +189,20 @@ export const anthropicAdapter: ProtocolAdapter = {
         tool_calls.push({ id: b.id as string, name: b.name as string, input: b.input ?? {} });
       }
     }
-    const u = r.usage === undefined ? null : obj(r.usage);
+    return { content, tool_calls, reasoning, tokens: anthropicAdapter.usage(json) };
+  },
+
+  usage(json) {
+    const raw = obj(json).usage;
+    if (raw === undefined) return null;
+    const u = obj(raw);
     // Anthropic 语义：input_tokens 不含缓存读写部分；这里的 input 是全部输入（含命中）
-    const hit = u ? nonNeg(u.cache_read_input_tokens) : 0;
-    const tokens = u
-      ? {
-          input: nonNeg(u.input_tokens) + hit + nonNeg(u.cache_creation_input_tokens),
-          output: nonNeg(u.output_tokens),
-          cache_hit_input: hit,
-        }
-      : null;
-    return { content, tool_calls, reasoning, tokens };
+    const hit = nonNeg(u.cache_read_input_tokens);
+    return {
+      input: nonNeg(u.input_tokens) + hit + nonNeg(u.cache_creation_input_tokens),
+      output: nonNeg(u.output_tokens),
+      cache_hit_input: hit,
+    };
   },
 };
 
@@ -211,6 +217,9 @@ export const openaiAdapter: ProtocolAdapter = {
         messages.push({
           role: "assistant",
           content: m.content || null,
+          ...(caps.reasoning_passback && m.reasoning?.length
+            ? { reasoning_content: m.reasoning.map((r) => r.text).join("") }
+            : {}),
           ...(m.tool_calls.length
             ? {
                 tool_calls: m.tool_calls.map((c) => ({
@@ -236,8 +245,11 @@ export const openaiAdapter: ProtocolAdapter = {
       body: {
         model: input.model,
         stream: false,
-        max_tokens: input.max_tokens,
+        ...(input.max_tokens !== undefined ? { max_tokens: input.max_tokens } : {}),
         messages,
+        ...(caps.thinking_toggle
+          ? { thinking: { type: input.effort === "off" ? "disabled" : "enabled" } }
+          : {}),
         ...(effortValue ? { reasoning_effort: effortValue } : {}),
         ...(input.tools.length
           ? {
@@ -274,24 +286,25 @@ export const openaiAdapter: ProtocolAdapter = {
       typeof msg.reasoning_content === "string" && msg.reasoning_content
         ? [{ text: msg.reasoning_content }]
         : [];
-    const u = r.usage === undefined ? null : obj(r.usage);
-    // prompt_tokens 已含缓存命中；命中数取 prompt_tokens_details.cached_tokens 或 DeepSeek 的 prompt_cache_hit_tokens
-    const tokens = u
-      ? (() => {
-          const input = nonNeg(u.prompt_tokens);
-          const hit = Math.min(
-            input,
-            nonNeg(obj(u.prompt_tokens_details).cached_tokens) || nonNeg(u.prompt_cache_hit_tokens),
-          );
-          return { input, output: nonNeg(u.completion_tokens), cache_hit_input: hit };
-        })()
-      : null;
     return {
       content: typeof msg.content === "string" ? msg.content : "",
       tool_calls,
       reasoning,
-      tokens,
+      tokens: openaiAdapter.usage(json),
     };
+  },
+
+  usage(json) {
+    const raw = obj(json).usage;
+    if (raw === undefined) return null;
+    const u = obj(raw);
+    // prompt_tokens 已含缓存命中；命中数取 prompt_tokens_details.cached_tokens 或 DeepSeek 的 prompt_cache_hit_tokens
+    const input = nonNeg(u.prompt_tokens);
+    const hit = Math.min(
+      input,
+      nonNeg(obj(u.prompt_tokens_details).cached_tokens) || nonNeg(u.prompt_cache_hit_tokens),
+    );
+    return { input, output: nonNeg(u.completion_tokens), cache_hit_input: hit };
   },
 };
 

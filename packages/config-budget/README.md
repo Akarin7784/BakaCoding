@@ -28,5 +28,6 @@
 - `createBudget({ budget, pricing, ledger, now? })`：`budget` 取配置里的 `budget` 段，`ledger` 是启动时注入的 `LedgerStore`（模块 2 实现，本包不依赖存储）。
 - `attach(bus, { onError })`：订阅 `call_completed` 记一笔，`entry_id` 取 `event_id`（重放不重复计费），闲时按事件 `ts` 用 `isOffpeak` 判断；落库失败交给 `onError`（默认 `console.error`），不抛给总线。
 - `recordCost(entry)`：手工补记一条 `LedgerEntry`。
-- `budgetState(ticket_id?)`：当日（UTC）上限、已花、复投、剩余、`daily_exhausted`，每单上限（每日预算 × `per_ticket_ratio`，向下取整），按角色分列，`offpeak_now`、`offpeak_preference`；传 `ticket_id` 时另带该单累计花费（含复投、不分日期）和 `exhausted`。已花 ≥ 上限即 exhausted。模块 1 每次调用前先查。
+- `budgetState(ticket_id?)`：当日（UTC）上限、已花、复投、剩余、`daily_exhausted`，每单上限（每日预算 × `per_ticket_ratio`，向下取整），按角色分列，`offpeak_now`、`offpeak_preference`；传 `ticket_id` 时另带该单累计花费（含复投、不分日期）和 `exhausted`。已花 ≥ 上限即 exhausted。另带进行中调用的预占额（`reserved_today_micro_usd`，单的 `reserved_micro_usd`）。
+- `reserve({ ticket_id, amount_micro_usd })`：模块 1 每次调用前预占。已花 + 其他调用的预占 ≥ 每日或每单上限时返回 `{ ok: false, scope }`，否则记下并返回 `release()`。预占与释放串行执行；预占只在进程内存里。
 - `computeCost(pricing, model, tokens, at)`：缓存命中输入、未命中输入、输出分别按单价计，按调用时刻选高峰或闲时价，向上取整到微美元；模型不在 `pricing.json` 里直接报错。

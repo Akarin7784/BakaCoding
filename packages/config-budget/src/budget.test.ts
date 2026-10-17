@@ -142,6 +142,7 @@ describe("budgetState / recordCost", () => {
       spent_micro_usd: 1549,
       resubmit_micro_usd: 200,
       remaining_micro_usd: 48_451,
+      reserved_micro_usd: 0,
       exhausted: false,
       by_role: { coder: 1499, sub_agent: 50, reviewer: 0, supervisor: 0 },
     });
@@ -178,6 +179,66 @@ describe("budgetState / recordCost", () => {
   it("非法条目直接拒绝", async () => {
     const b = createBudget({ budget: budgetCfg, pricing, ledger: memLedger() });
     await expect(b.recordCost(entry({ cost_micro_usd: 1.5 }))).rejects.toThrow();
+  });
+});
+
+describe("reserve：调用前预占", () => {
+  const mk = (ledger = memLedger()) =>
+    createBudget({
+      budget: { ...budgetCfg, daily_micro_usd: 1000, per_ticket_ratio: 0.5 },
+      pricing,
+      ledger,
+      now: () => new Date("2026-10-17T12:00:00Z"),
+    });
+
+  it("预占计入其他调用的判断；释放后恢复；budgetState 显示预占", async () => {
+    const b = mk();
+    const a = await b.reserve({ ticket_id: "T-1", amount_micro_usd: 600 });
+    expect(a.ok).toBe(true);
+    let s = await b.budgetState("T-1");
+    expect(s.reserved_today_micro_usd).toBe(600);
+    expect(s.ticket!.reserved_micro_usd).toBe(600);
+    // 本单：已花 0 + 预占 600 >= 每单上限 500
+    expect(await b.reserve({ ticket_id: "T-1", amount_micro_usd: 1 })).toEqual({
+      ok: false,
+      scope: "ticket",
+    });
+    // 其他单还能占：每日已花 0 + 预占 600 < 1000
+    const c = await b.reserve({ ticket_id: "T-2", amount_micro_usd: 400 });
+    expect(c.ok).toBe(true);
+    // 每日：预占 1000 >= 1000
+    expect(await b.reserve({ ticket_id: null, amount_micro_usd: 1 })).toEqual({
+      ok: false,
+      scope: "daily",
+    });
+    if (a.ok) {
+      await a.release();
+      await a.release();
+    }
+    s = await b.budgetState("T-1");
+    expect(s.reserved_today_micro_usd).toBe(400);
+    expect(s.ticket!.reserved_micro_usd).toBe(0);
+    expect((await b.reserve({ ticket_id: null, amount_micro_usd: 1 })).ok).toBe(true);
+  });
+
+  it("并发预占串行判断：前面的预占已占满，后面的都拒绝", async () => {
+    const b = mk();
+    const rs = await Promise.all(
+      [1, 2, 3].map(() => b.reserve({ ticket_id: null, amount_micro_usd: 600 })),
+    );
+    // 0 < 1000 放行；600 < 1000 放行；1200 >= 1000 拒绝
+    expect(rs.map((r) => r.ok)).toEqual([true, true, false]);
+  });
+
+  it("已花加预占判断：台账里的实际花费也算", async () => {
+    const ledger = memLedger();
+    const b = mk(ledger);
+    await b.recordCost(entry({ entry_id: "a", ticket_id: "T-1", cost_micro_usd: 500 }));
+    expect(await b.reserve({ ticket_id: "T-1", amount_micro_usd: 1 })).toEqual({
+      ok: false,
+      scope: "ticket",
+    });
+    await expect(b.reserve({ ticket_id: null, amount_micro_usd: -1 })).rejects.toThrow(RangeError);
   });
 });
 

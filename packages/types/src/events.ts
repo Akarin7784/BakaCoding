@@ -66,6 +66,18 @@ export const CallCompletedSchema = ev("call_completed", {
   cost: MicroUsdSchema,
   is_resubmit: z.boolean(),
   rate_limited_retry: z.number().int().nonnegative(),
+  error: z
+    .object({
+      code: z
+        .string()
+        .min(1)
+        .describe(
+          "模块 1 的错误码：AUTH / QUOTA / RATE_LIMIT / INVALID_REQUEST / CONTEXT_WINDOW_EXCEEDED / SERVER / NETWORK / BAD_RESPONSE / CONFIG，取消为 ABORTED",
+        ),
+    })
+    .nullable()
+    .optional()
+    .describe("调用失败时的标记；成功为 null。旧事件没有这个字段，按成功处理"),
 });
 const TicketRequired = { ticket_id: Id.describe("写入范围申请所属单号，必填") };
 export const WriteScopeRequestedSchema = ev("write_scope_requested", {

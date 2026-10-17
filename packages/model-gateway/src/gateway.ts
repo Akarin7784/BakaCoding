@@ -31,6 +31,7 @@ import {
   checkToolPairing,
   classifyError,
   openaiAdapter,
+  type Parsed,
   type ProtocolAdapter,
 } from "./wire.js";
 
@@ -42,21 +43,25 @@ export interface GatewayConfig {
       base_url: string;
       protocol: Protocol;
       credential_ref: string;
-      models: Record<string, { thinking_enabled?: boolean }>;
+      request_timeout_ms?: number;
+      models: Record<string, { thinking_enabled?: boolean; max_tokens?: number }>;
     }
   >;
 }
 
-/** 只用到 budgetState 的这几个字段；模块 3 的 Budget 在结构上满足它。 */
+/** 只用到 reserve；模块 3 的 Budget 在结构上满足它。 */
 export interface GatewayBudget {
-  budgetState(ticket_id?: string): Promise<{
-    daily_exhausted: boolean;
-    ticket?: { exhausted: boolean };
-  }>;
+  reserve(req: {
+    ticket_id: string | null;
+    amount_micro_usd: number;
+  }): Promise<{ ok: true; release(): Promise<void> } | { ok: false; scope: "daily" | "ticket" }>;
 }
 
+export const DEFAULT_REQUEST_TIMEOUT_MS = 600_000;
+const RETRY_STATUS = new Set([500, 502, 503, 504]);
+
 type CallCompleted = EventOf<"call_completed">;
-/** 与模块 0 的 PublishInput 兼容：seq / event_id / ts 由总线补。 */
+/** 与模块 0 的 PublishInput 兼容：seq / event_id / ts 由总线补。payload.error 成功为 null，失败为 { code }。 */
 export type CallCompletedInput = Omit<CallCompleted, "seq" | "event_id" | "ts">;
 
 export interface EffortWarning {
@@ -78,8 +83,6 @@ export interface CreateModelGatewayOptions {
   fetch?: typeof fetch;
   clock?: Partial<Clock>;
   rateLimit?: RateLimitOptions;
-  /** 覆盖能力表里的 max_tokens 默认值 */
-  maxTokens?: number;
   /** 降档警告，默认 console.warn */
   onWarning?: (w: EffortWarning) => void;
   /** 发 call_completed 失败（调用本身已成功），默认 console.error */
@@ -144,6 +147,7 @@ export function createModelGateway(opts: CreateModelGatewayOptions): ModelGatewa
     prompt: string,
     output: string,
     stats: { tokens: Tokens; latency_ms: number; cost: number; rate_limited_retry: number },
+    error: { code: string } | null,
   ) {
     const ctx = req.ctx;
     try {
@@ -168,6 +172,7 @@ export function createModelGateway(opts: CreateModelGatewayOptions): ModelGatewa
           cost: stats.cost,
           is_resubmit: ctx.is_resubmit,
           rate_limited_retry: stats.rate_limited_retry,
+          error,
         },
       });
     } catch (e) {
@@ -202,12 +207,6 @@ export function createModelGateway(opts: CreateModelGatewayOptions): ModelGatewa
     const effort = mapped.effort;
     req.signal?.throwIfAborted();
 
-    // ---- 预算：调用前查 3 ----
-    const state = await opts.budget.budgetState(ctx.ticket_id ?? undefined);
-    if (state.daily_exhausted) throw new BudgetExceededError("daily", "当日预算已用完");
-    if (state.ticket?.exhausted)
-      throw new BudgetExceededError("ticket", `需求单 ${ctx.ticket_id} 的预算已用完`);
-
     const key = apiKey(conf.credential_ref);
     const adapter = ADAPTERS[conf.protocol];
     const http = adapter.build(
@@ -216,13 +215,36 @@ export function createModelGateway(opts: CreateModelGatewayOptions): ModelGatewa
         api_key: key,
         model: req.model,
         effort,
-        max_tokens: opts.maxTokens ?? caps.default_max_tokens,
+        ...(modelConf.max_tokens !== undefined ? { max_tokens: modelConf.max_tokens } : {}),
         system: req.system,
         tools: req.tools,
         messages: req.messages,
       },
       caps,
     );
+    const body = JSON.stringify(http.body);
+
+    // ---- 预算：按「输入估算 + 输出上限」预占，结束后按实际费用结算 ----
+    // 输入按请求体字符数估（每个字符最多算一个 token，偏高），按未命中价；输出按 max_tokens（没配就按能力表默认值）
+    const estimate = computeCost(
+      opts.pricing,
+      req.model,
+      {
+        input: body.length,
+        output: modelConf.max_tokens ?? caps.default_max_tokens,
+        cache_hit_input: 0,
+      },
+      new Date(clock.now()),
+    ).cost_micro_usd;
+    const hold = await opts.budget.reserve({
+      ticket_id: ctx.ticket_id,
+      amount_micro_usd: estimate,
+    });
+    if (!hold.ok)
+      throw hold.scope === "daily"
+        ? new BudgetExceededError("daily", "当日预算已用完")
+        : new BudgetExceededError("ticket", `需求单 ${ctx.ticket_id} 的预算已用完`);
+
     const scrub = (s: string) => (key ? s.split(key).join("***") : s);
     // prompt 记全部模型输入；本轮回复的思考内容也只记在这里（桌面会遮蔽 prompt），不进 output
     const promptOf = (reasoning: readonly { text: string; signature?: string }[]) => {
@@ -236,81 +258,139 @@ export function createModelGateway(opts: CreateModelGatewayOptions): ModelGatewa
         ...(reasoning.length ? { reply_reasoning: reasoning } : {}),
       });
     };
+    const timeoutMs = conf.request_timeout_ms ?? DEFAULT_REQUEST_TIMEOUT_MS;
     const startedAt = new Date(clock.now());
-    let retries = 0;
     const elapsed = () => Math.max(0, Math.round(clock.now() - startedAt.getTime()));
+    let retries = 0;
+    let rateLimited = 0;
+    let sent = false;
+    // 回复里已经拿到的用量：之后才失败也按实际 token 计费
+    let tokens: Tokens = ZERO;
+    let reasoning: Parsed["reasoning"] = [];
 
     try {
       for (;;) {
+        req.signal?.throwIfAborted();
         await limiter.acquire(req.provider, req.signal);
-        let res: Response;
-        try {
-          res = await doFetch(http.url, {
-            method: "POST",
-            headers: http.headers,
-            body: JSON.stringify(http.body),
-            redirect: "error",
-            ...(req.signal ? { signal: req.signal } : {}),
-          });
-        } catch (e) {
-          if (isAbortError(e) || req.signal?.aborted) throw e;
-          throw new ModelGatewayError(scrub(`请求服务商失败：${(e as Error).message}`), "NETWORK");
-        }
-        if (!res.ok) {
-          const text = await res.text();
-          let raw: unknown;
-          try {
-            raw = JSON.parse(text);
-          } catch {
-            // 网关返回非 JSON 时以 HTTP 状态为准
-          }
-          const c = classifyError(res.status, raw, res.headers);
-          if (c.code === "RATE_LIMIT") {
-            const wait = limiter.backoff(retries + 1, c.retryAfterMs);
-            limiter.mark429(req.provider, req.model, wait);
-            if (retries < limiter.maxRetries) {
-              retries += 1;
-              await limiter.sleep(wait, req.signal);
-              continue;
-            }
-          }
-          throw new ModelGatewayError(scrub(c.message), c.code, res.status);
-        }
+        const timeout = new AbortController();
+        const cancelTimer = clock.setTimer(timeoutMs, () => timeout.abort());
+        const signal = req.signal ? AbortSignal.any([req.signal, timeout.signal]) : timeout.signal;
+        let failure: { error: ModelGatewayError; retryAfterMs?: number; retryable: boolean };
         let json: unknown;
         try {
-          json = await res.json();
+          sent = true;
+          const res = await doFetch(http.url, {
+            method: "POST",
+            headers: http.headers,
+            body,
+            redirect: "error",
+            signal,
+          });
+          if (res.ok) {
+            json = await res.json();
+          } else {
+            const text = await res.text();
+            let raw: unknown;
+            try {
+              raw = JSON.parse(text);
+            } catch {
+              // 网关返回非 JSON 时以 HTTP 状态为准
+            }
+            const c = classifyError(res.status, raw, res.headers);
+            throw Object.assign(new ModelGatewayError(scrub(c.message), c.code, res.status), {
+              retryAfterMs: c.retryAfterMs,
+              retryable: c.code === "RATE_LIMIT" || RETRY_STATUS.has(res.status),
+            });
+          }
         } catch (e) {
-          if (isAbortError(e) || req.signal?.aborted) throw e;
-          throw new ModelGatewayError("服务商返回的不是 JSON", "BAD_RESPONSE", res.status);
+          if (req.signal?.aborted) throw e;
+          if (e instanceof ModelGatewayError) {
+            const x = e as ModelGatewayError & { retryAfterMs?: number; retryable?: boolean };
+            failure = {
+              error: x,
+              ...(x.retryAfterMs !== undefined ? { retryAfterMs: x.retryAfterMs } : {}),
+              retryable: x.retryable ?? false,
+            };
+          } else if (timeout.signal.aborted) {
+            failure = {
+              error: new ModelGatewayError(`请求服务商超时（${timeoutMs}ms）`, "NETWORK"),
+              retryable: true,
+            };
+          } else if (e instanceof SyntaxError) {
+            failure = {
+              error: new ModelGatewayError("服务商返回的不是 JSON", "BAD_RESPONSE"),
+              retryable: false,
+            };
+          } else {
+            failure = {
+              error: new ModelGatewayError(
+                scrub(`请求服务商失败：${(e as Error).message}`),
+                "NETWORK",
+              ),
+              retryable: true,
+            };
+          }
+        } finally {
+          cancelTimer();
         }
-        const parsed = adapter.parse(json);
-        const tokens = parsed.tokens ?? ZERO;
-        const cost = computeCost(opts.pricing, req.model, tokens, startedAt).cost_micro_usd;
-        const stats = {
-          tokens,
-          cache_hit: tokens.cache_hit_input > 0,
-          latency_ms: elapsed(),
-          cost,
-          rate_limited_retry: retries,
-        };
-        const names = parsed.tool_calls.map((c) => c.name);
-        const output =
-          promptText !== undefined || names.length === 0
-            ? parsed.content
-            : `${parsed.content}\n[tool_calls] ${names.join(", ")}`;
-        await publishCompleted(req, effort, promptOf(parsed.reasoning), output, stats);
-        return { ...parsed, ...stats, effort };
+
+        if (json !== undefined) {
+          tokens = adapter.usage(json) ?? ZERO;
+          const parsed = adapter.parse(json);
+          reasoning = parsed.reasoning;
+          const cost = computeCost(opts.pricing, req.model, tokens, startedAt).cost_micro_usd;
+          const stats = {
+            tokens,
+            cache_hit: tokens.cache_hit_input > 0,
+            latency_ms: elapsed(),
+            cost,
+            rate_limited_retry: rateLimited,
+          };
+          const names = parsed.tool_calls.map((c) => c.name);
+          const output =
+            promptText !== undefined || names.length === 0
+              ? parsed.content
+              : `${parsed.content}\n[tool_calls] ${names.join(", ")}`;
+          await publishCompleted(req, effort, promptOf(parsed.reasoning), output, stats, null);
+          return { ...parsed, ...stats, effort };
+        }
+
+        const f = failure!;
+        if (f.error.code === "RATE_LIMIT") {
+          const wait = limiter.backoff(retries + 1, f.retryAfterMs);
+          limiter.mark429(req.provider, req.model, wait);
+        }
+        if (!f.retryable || retries >= limiter.maxRetries) throw f.error;
+        retries += 1;
+        if (f.error.code === "RATE_LIMIT") rateLimited += 1;
+        // 每次重试前检查 signal：sleep 收到取消会立刻 reject
+        await limiter.sleep(limiter.backoff(retries, f.retryAfterMs), req.signal);
       }
     } catch (e) {
-      // 已经开始调用：失败或取消也发 call_completed，用量未知时按 0 记
-      await publishCompleted(req, effort, promptOf([]), "", {
-        tokens: ZERO,
-        latency_ms: elapsed(),
-        cost: 0,
-        rate_limited_retry: retries,
-      });
-      if (isAbortError(e) || req.signal?.aborted) throw abortError(e);
+      const aborted = isAbortError(e) || req.signal?.aborted === true;
+      // 请求一次都没发出去就取消：不发 call_completed
+      if (sent) {
+        const code = aborted ? "ABORTED" : e instanceof ModelGatewayError ? e.code : "BAD_RESPONSE";
+        let cost = 0;
+        try {
+          cost = computeCost(opts.pricing, req.model, tokens, startedAt).cost_micro_usd;
+        } catch {
+          // 用量本身不合法时按 0 记，错误码已经标明失败
+        }
+        await publishCompleted(
+          req,
+          effort,
+          promptOf(reasoning),
+          "",
+          { tokens, latency_ms: elapsed(), cost, rate_limited_retry: rateLimited },
+          { code },
+        );
+      }
+      if (aborted) throw abortError(e);
       throw e;
+    } finally {
+      // call_completed 发布时总线会等台账写完，所以释放放在最后
+      await hold.release();
     }
   }
 

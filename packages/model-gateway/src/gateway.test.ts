@@ -10,6 +10,9 @@ import {
   OPENAI_CHAT,
   ModelGatewayError,
   RateLimiter,
+  DEEPSEEK_OPENAI,
+  DEFAULT_REQUEST_TIMEOUT_MS,
+  realClock,
   type CallCompletedInput,
   type ChatMessage,
   type GatewayConfig,
@@ -70,8 +73,9 @@ const anthropicOk = (over: Record<string, unknown> = {}) =>
 
 function setup(
   opts: {
-    responses?: (Response | Error)[];
-    budget?: { daily_exhausted: boolean; ticket?: { exhausted: boolean } };
+    responses?: (Response | Error | ((init: RequestInit) => Promise<Response>))[];
+    config?: GatewayConfig;
+    budget?: { ok: false; scope: "daily" | "ticket" };
     rateLimit?: ConstructorParameters<typeof RateLimiter>[0];
   } = {},
 ) {
@@ -86,32 +90,67 @@ function setup(
     const next = queue.shift();
     if (!next) throw new Error("no more responses");
     if (next instanceof Error) throw next;
+    if (typeof next === "function") return next(init!);
     return next;
   });
   const warnings: string[] = [];
-  const budgetState = vi.fn(async () => opts.budget ?? { daily_exhausted: false });
+  const timers: { ms: number; fn: () => void }[] = [];
+  let cancelled = 0;
+  const releasedAtPublish: number[] = [];
+  const holds: { ticket_id: string | null; amount_micro_usd: number; released: number }[] = [];
+  const reserve = vi.fn(async (r: { ticket_id: string | null; amount_micro_usd: number }) => {
+    if (opts.budget) return opts.budget;
+    const h = { ...r, released: 0 };
+    holds.push(h);
+    return {
+      ok: true as const,
+      release: async () => {
+        h.released += 1;
+      },
+    };
+  });
   const gw = createModelGateway({
-    getConfig: () => config,
+    getConfig: () => opts.config ?? config,
     pricing,
-    budget: { budgetState },
+    budget: { reserve },
     publish: (e) => {
       events.push(e);
+      releasedAtPublish.push(holds.reduce((a, h) => a + h.released, 0));
     },
     getSecret: () => KEY,
     fetch: fetchFn as unknown as typeof fetch,
     clock: {
       now: () => now,
       random: () => 0,
-      sleep: async (ms) => {
+      sleep: async (ms, signal) => {
+        signal?.throwIfAborted();
         sleeps.push(ms);
         now += ms;
+      },
+      setTimer: (ms, fn) => {
+        timers.push({ ms, fn });
+        return () => {
+          cancelled += 1;
+        };
       },
     },
     ...(opts.rateLimit ? { rateLimit: opts.rateLimit } : {}),
     onWarning: (w) => warnings.push(w.message),
     newId: () => "span-new",
   });
-  return { gw, events, requests, sleeps, fetchFn, warnings, budgetState };
+  return {
+    gw,
+    events,
+    requests,
+    sleeps,
+    fetchFn,
+    warnings,
+    reserve,
+    holds,
+    releasedAtPublish,
+    timers,
+    cancelled: () => cancelled,
+  };
 }
 
 const baseReq = {
@@ -134,7 +173,6 @@ describe("chat：DeepSeek Anthropic 兼容接口", () => {
     expect(r.body).toMatchObject({
       model: "deepseek-flash",
       stream: false,
-      max_tokens: 256_000,
       system: "SYS",
       thinking: { type: "enabled" },
       output_config: { effort: "low" },
@@ -142,6 +180,8 @@ describe("chat：DeepSeek Anthropic 兼容接口", () => {
       messages: [{ role: "user", content: [{ type: "text", text: "改 a.ts" }] }],
     });
     expect(r.body).not.toHaveProperty("budget_tokens");
+    // 模型配置没填 max_tokens：不传，用服务端默认值
+    expect(r.body).not.toHaveProperty("max_tokens");
   });
 
   it("off 档：thinking disabled，不带 output_config", async () => {
@@ -318,7 +358,7 @@ describe("chat：OpenAI 兼容接口", () => {
 
 describe("预算", () => {
   it("当日预算用完：抛 BUDGET_EXCEEDED，不发请求也不发事件", async () => {
-    const { gw, fetchFn, events } = setup({ budget: { daily_exhausted: true } });
+    const { gw, fetchFn, events } = setup({ budget: { ok: false, scope: "daily" } });
     const p = gw.chat({ ...baseReq, ctx: ctx() });
     await expect(p).rejects.toBeInstanceOf(BudgetExceededError);
     await expect(p).rejects.toMatchObject({ code: "BUDGET_EXCEEDED", scope: "daily" });
@@ -326,19 +366,17 @@ describe("预算", () => {
     expect(events).toHaveLength(0);
   });
 
-  it("本单预算用完：按 ticket_id 查", async () => {
-    const { gw, budgetState } = setup({
-      budget: { daily_exhausted: false, ticket: { exhausted: true } },
-    });
+  it("本单预算用完：按 ticket_id 预占", async () => {
+    const { gw, reserve } = setup({ budget: { ok: false, scope: "ticket" } });
     await expect(gw.chat({ ...baseReq, ctx: ctx() })).rejects.toMatchObject({
       code: "BUDGET_EXCEEDED",
       scope: "ticket",
     });
-    expect(budgetState).toHaveBeenCalledWith("T-1");
+    expect(reserve.mock.calls[0]![0].ticket_id).toBe("T-1");
   });
 
-  it("没有单号（主管）：不传 ticket_id", async () => {
-    const { gw, budgetState } = setup();
+  it("没有单号（主管）：ticket_id 为 null，只占每日预算", async () => {
+    const { gw, reserve } = setup();
     await gw.call(
       "supervisor",
       "deepseek",
@@ -347,7 +385,56 @@ describe("预算", () => {
       "hi",
       ctx({ role: "supervisor", ticket_id: null }),
     );
-    expect(budgetState).toHaveBeenCalledWith(undefined);
+    expect(reserve.mock.calls[0]![0].ticket_id).toBeNull();
+  });
+
+  it("预占 = 请求体字符数按未命中价 + 输出上限按输出价；发完事件后释放一次", async () => {
+    const { gw, holds, requests, events, releasedAtPublish } = setup();
+    const r = await gw.chat({ ...baseReq, ctx: ctx() });
+    const bodyLen = String(requests[0]!.init.body).length;
+    const expected = computeCost(
+      pricing,
+      "deepseek-flash",
+      { input: bodyLen, output: DEEPSEEK_ANTHROPIC.default_max_tokens, cache_hit_input: 0 },
+      new Date(T0),
+    ).cost_micro_usd;
+    expect(holds[0]!.amount_micro_usd).toBe(expected);
+    expect(holds[0]!.amount_micro_usd).toBeGreaterThan(r.cost);
+    // 发事件时还没释放（总线会等台账写完），之后释放一次
+    expect(releasedAtPublish).toEqual([0]);
+    expect(holds[0]!.released).toBe(1);
+    expect(events).toHaveLength(1);
+  });
+
+  it("模型配了 max_tokens：请求里带上，预占按它估", async () => {
+    const cfg: GatewayConfig = {
+      providers: {
+        deepseek: {
+          ...config.providers.deepseek!,
+          models: { "deepseek-flash": { max_tokens: 4096 } },
+        },
+      },
+    };
+    const { gw, holds, requests } = setup({ config: cfg });
+    await gw.chat({ ...baseReq, ctx: ctx() });
+    expect(requests[0]!.body.max_tokens).toBe(4096);
+    const bodyLen = String(requests[0]!.init.body).length;
+    expect(holds[0]!.amount_micro_usd).toBe(
+      computeCost(
+        pricing,
+        "deepseek-flash",
+        { input: bodyLen, output: 4096, cache_hit_input: 0 },
+        new Date(T0),
+      ).cost_micro_usd,
+    );
+  });
+
+  it("失败也释放预占", async () => {
+    const { gw, holds } = setup({ responses: [json(400, { error: { message: "bad" } })] });
+    await expect(gw.chat({ ...baseReq, ctx: ctx() })).rejects.toMatchObject({
+      code: "INVALID_REQUEST",
+    });
+    expect(holds[0]!.released).toBe(1);
   });
 });
 
@@ -393,7 +480,12 @@ describe("429 与限流", () => {
       status: 429,
     });
     expect(events).toHaveLength(1);
-    expect(events[0]!.payload).toMatchObject({ cost: 0, output: "", rate_limited_retry: 2 });
+    expect(events[0]!.payload).toMatchObject({
+      cost: 0,
+      output: "",
+      rate_limited_retry: 2,
+      error: { code: "RATE_LIMIT" },
+    });
     expect(
       gw.rateLimitState({ provider: "deepseek", model: "deepseek-flash" }).models[0]!.limited,
     ).toBe(true);
@@ -402,7 +494,7 @@ describe("429 与限流", () => {
   it("令牌桶按服务商共享：容量用完后排队，补充后放行", async () => {
     const lim = new RateLimiter(
       { capacity: 1, refill_per_sec: 50 },
-      { now: Date.now, random: () => 0, sleep: async () => {} },
+      { ...realClock, random: () => 0, sleep: async () => {} },
     );
     await lim.acquire("deepseek");
     let done = false;
@@ -416,7 +508,7 @@ describe("429 与限流", () => {
   it("排队时取消：出队并 reject", async () => {
     const lim = new RateLimiter(
       { capacity: 1, refill_per_sec: 0.001 },
-      { now: Date.now, random: () => 0, sleep: async () => {} },
+      { ...realClock, random: () => 0, sleep: async () => {} },
     );
     await lim.acquire("p");
     const ac = new AbortController();
@@ -428,23 +520,65 @@ describe("429 与限流", () => {
 });
 
 describe("取消与错误", () => {
-  it("请求中途取消：抛 AbortError，仍发 call_completed", async () => {
+  it("请求还没发出去就取消：抛 AbortError，不发 call_completed", async () => {
     const ac = new AbortController();
-    const abortErr = Object.assign(new Error("aborted"), { name: "AbortError" });
-    const { gw, events } = setup({ responses: [abortErr] });
     ac.abort();
-    // 先放行一次：signal 在 acquire 前已取消也应抛 AbortError
+    const a = setup();
+    await expect(a.gw.chat({ ...baseReq, ctx: ctx(), signal: ac.signal })).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    // chat() 返回后、fetch 之前取消
+    const ac2 = new AbortController();
+    const b = setup();
+    const p = b.gw.chat({ ...baseReq, ctx: ctx(), signal: ac2.signal });
+    ac2.abort();
+    await expect(p).rejects.toMatchObject({ name: "AbortError" });
+    expect(a.fetchFn).not.toHaveBeenCalled();
+    expect(b.fetchFn).not.toHaveBeenCalled();
+    expect(a.events).toHaveLength(0);
+    expect(b.events).toHaveLength(0);
+    expect(b.holds[0]!.released).toBe(1);
+  });
+
+  it("请求中途取消：中止 HTTP 请求，抛 AbortError，发 call_completed（error ABORTED）", async () => {
+    const ac = new AbortController();
+    let seenSignal: AbortSignal | undefined;
+    const { gw, events } = setup({
+      responses: [
+        (init) =>
+          new Promise<Response>((_, reject) => {
+            seenSignal = init.signal!;
+            init.signal!.addEventListener("abort", () =>
+              reject(Object.assign(new Error("aborted"), { name: "AbortError" })),
+            );
+            ac.abort();
+          }),
+      ],
+    });
     await expect(gw.chat({ ...baseReq, ctx: ctx(), signal: ac.signal })).rejects.toMatchObject({
       name: "AbortError",
     });
-    const ac2 = new AbortController();
-    const s2 = setup({ responses: [abortErr] });
-    const p = s2.gw.chat({ ...baseReq, ctx: ctx(), signal: ac2.signal });
-    ac2.abort();
-    await expect(p).rejects.toMatchObject({ name: "AbortError" });
-    expect(s2.events).toHaveLength(1);
-    expect(s2.events[0]!.payload).toMatchObject({ cost: 0, output: "" });
-    expect(events).toHaveLength(0);
+    expect(seenSignal!.aborted).toBe(true);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.payload).toMatchObject({ cost: 0, output: "", error: { code: "ABORTED" } });
+  });
+
+  it("重试前检查 signal：退避期间取消就不再发请求", async () => {
+    const ac = new AbortController();
+    const { gw, fetchFn, events } = setup({
+      responses: [
+        async () => {
+          ac.abort();
+          return json(503, { error: { message: "busy" } });
+        },
+        anthropicOk(),
+      ],
+    });
+    await expect(gw.chat({ ...baseReq, ctx: ctx(), signal: ac.signal })).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(events[0]!.payload.error).toEqual({ code: "ABORTED" });
   });
 
   it("401：AUTH，错误信息里不带密钥", async () => {
@@ -504,5 +638,212 @@ describe("call()：单轮包装", () => {
     expect(requests[0]!.body).not.toHaveProperty("system");
     expect(events[0]!.payload.prompt).toBe("评审这个 diff\n\n[reasoning]\n想一想");
     expect(events[0]!.payload.output).toBe("先读文件");
+  });
+});
+
+describe("重试：5xx、连接错误、超时", () => {
+  it("500/502/503/504 重试后成功；rate_limited_retry 只数 429", async () => {
+    const { gw, sleeps, events, fetchFn } = setup({
+      responses: [
+        json(503, { error: { message: "busy" } }),
+        json(502, "bad gateway"),
+        json(500, { error: { message: "oops" } }),
+        anthropicOk(),
+      ],
+    });
+    const r = await gw.chat({ ...baseReq, ctx: ctx() });
+    expect(fetchFn).toHaveBeenCalledTimes(4);
+    expect(sleeps).toEqual([1000, 2000, 4000]);
+    expect(r.rate_limited_retry).toBe(0);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.payload.error).toBeNull();
+  });
+
+  it("最多重试 3 次：第 4 次失败抛 SERVER，事件标 error", async () => {
+    const r504 = () => json(504, { error: { message: "timeout" } });
+    const { gw, fetchFn, events } = setup({ responses: [r504(), r504(), r504(), r504()] });
+    await expect(gw.chat({ ...baseReq, ctx: ctx() })).rejects.toMatchObject({
+      code: "SERVER",
+      status: 504,
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(4);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.payload).toMatchObject({ cost: 0, error: { code: "SERVER" } });
+  });
+
+  it("429 与 5xx 合计算重试次数", async () => {
+    const { gw, fetchFn } = setup({
+      responses: [
+        json(429, { error: { type: "rate_limit_error", message: "x" } }),
+        json(503, {}),
+        json(429, { error: { type: "rate_limit_error", message: "x" } }),
+        json(503, {}),
+      ],
+    });
+    await expect(gw.chat({ ...baseReq, ctx: ctx() })).rejects.toMatchObject({ status: 503 });
+    expect(fetchFn).toHaveBeenCalledTimes(4);
+  });
+
+  it("响应到达前的连接错误重试；400 和 501 不重试", async () => {
+    const ok = setup({ responses: [new TypeError("fetch failed"), anthropicOk()] });
+    await ok.gw.chat({ ...baseReq, ctx: ctx() });
+    expect(ok.fetchFn).toHaveBeenCalledTimes(2);
+
+    const net = setup({
+      responses: [1, 2, 3, 4].map(() => new TypeError(`connect ECONNREFUSED ${KEY}`)),
+    });
+    const p = net.gw.chat({ ...baseReq, ctx: ctx() });
+    await expect(p).rejects.toMatchObject({ code: "NETWORK" });
+    await expect(p).rejects.not.toThrow(KEY);
+    expect(net.events[0]!.payload.error).toEqual({ code: "NETWORK" });
+
+    for (const status of [400, 501]) {
+      const s = setup({ responses: [json(status, { error: { message: "no" } }), anthropicOk()] });
+      await expect(s.gw.chat({ ...baseReq, ctx: ctx() })).rejects.toBeInstanceOf(ModelGatewayError);
+      expect(s.fetchFn).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("请求超时（默认 10 分钟，可按服务商配置）：中止请求，按连接错误重试", async () => {
+    const hang = (init: RequestInit) =>
+      new Promise<Response>((_, reject) => {
+        init.signal!.addEventListener("abort", () =>
+          reject(Object.assign(new Error("aborted"), { name: "AbortError" })),
+        );
+      });
+    const s = setup({ responses: [hang, anthropicOk()] });
+    const p = s.gw.chat({ ...baseReq, ctx: ctx() });
+    await vi.waitFor(() => expect(s.timers).toHaveLength(1));
+    expect(s.timers[0]!.ms).toBe(DEFAULT_REQUEST_TIMEOUT_MS);
+    expect(DEFAULT_REQUEST_TIMEOUT_MS).toBe(600_000);
+    s.timers[0]!.fn();
+    const r = await p;
+    expect(s.fetchFn).toHaveBeenCalledTimes(2);
+    expect(r.content).toBe("先读文件");
+    expect(s.cancelled()).toBe(2);
+
+    const cfg: GatewayConfig = {
+      providers: { deepseek: { ...config.providers.deepseek!, request_timeout_ms: 5000 } },
+    };
+    const t = setup({ config: cfg, responses: [hang] });
+    const p2 = t.gw.chat({ ...baseReq, ctx: ctx() });
+    p2.catch(() => {});
+    await vi.waitFor(() => expect(t.timers).toHaveLength(1));
+    expect(t.timers[0]!.ms).toBe(5000);
+  });
+});
+
+describe("用量与失败计费", () => {
+  it("Anthropic usage 换算：input = input_tokens + cache_read + cache_creation，cache_hit_input = cache_read，费用按命中 / 未命中两档", async () => {
+    const { gw, events } = setup({
+      responses: [
+        anthropicOk({
+          usage: {
+            input_tokens: 100,
+            cache_read_input_tokens: 900,
+            cache_creation_input_tokens: 30,
+            output_tokens: 50,
+          },
+        }),
+      ],
+    });
+    const r = await gw.chat({ ...baseReq, ctx: ctx() });
+    expect(r.tokens).toEqual({ input: 1030, output: 50, cache_hit_input: 900 });
+    const rate = pricing.models["deepseek-flash"]!.offpeak;
+    expect(r.cost).toBe(
+      Math.ceil(
+        (900 * rate.input_cache_hit + 130 * rate.input_cache_miss + 50 * rate.output) / 1e6,
+      ),
+    );
+    expect(events[0]!.payload.tokens).toEqual(r.tokens);
+    expect(events[0]!.payload.error).toBeNull();
+  });
+
+  it("回复里有用量、内容解析失败：抛 BAD_RESPONSE，按实际 token 计费", async () => {
+    const { gw, events } = setup({
+      responses: [
+        json(200, {
+          content: [{ type: "tool_use", name: "read" }],
+          usage: { input_tokens: 10, output_tokens: 5 },
+        }),
+      ],
+    });
+    await expect(gw.chat({ ...baseReq, ctx: ctx() })).rejects.toMatchObject({
+      code: "BAD_RESPONSE",
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]!.payload.tokens).toEqual({ input: 10, output: 5, cache_hit_input: 0 });
+    expect(events[0]!.payload.cost).toBeGreaterThan(0);
+    expect(events[0]!.payload.error).toEqual({ code: "BAD_RESPONSE" });
+  });
+});
+
+describe("DeepSeek OpenAI 兼容接口", () => {
+  it("thinking 开关、max 档、带 tools 时 assistant 回传 reasoning_content", async () => {
+    const cfg: GatewayConfig = {
+      providers: {
+        deepseek: {
+          base_url: "https://api.deepseek.com",
+          protocol: "openai-chat",
+          credential_ref: "env:DEEPSEEK_API_KEY",
+          models: { "deepseek-flash": {} },
+        },
+      },
+    };
+    const { gw, requests, warnings } = setup({
+      config: cfg,
+      responses: [
+        json(200, {
+          choices: [{ message: { content: "ok", reasoning_content: "r2" } }],
+          usage: { prompt_tokens: 20, completion_tokens: 3, prompt_cache_hit_tokens: 5 },
+        }),
+      ],
+    });
+    expect(gw.capabilities("deepseek")).toBe(DEEPSEEK_OPENAI);
+    const r = await gw.chat({
+      ...baseReq,
+      effort: "max",
+      messages: [
+        { role: "user", content: "x" },
+        {
+          role: "assistant",
+          content: "",
+          reasoning: [{ text: "r1" }],
+          tool_calls: [{ id: "c1", name: "read", input: {} }],
+        },
+        { role: "tool", tool_call_id: "c1", name: "read", content: "1", is_error: false },
+      ],
+      ctx: ctx(),
+    });
+    const body = requests[0]!.body;
+    expect(requests[0]!.url).toBe("https://api.deepseek.com/chat/completions");
+    expect(body).toMatchObject({ thinking: { type: "enabled" }, reasoning_effort: "max" });
+    expect(body).not.toHaveProperty("max_tokens");
+    expect((body.messages as Record<string, unknown>[])[2]).toMatchObject({
+      role: "assistant",
+      reasoning_content: "r1",
+    });
+    expect(warnings).toHaveLength(0);
+    expect(r.reasoning).toEqual([{ text: "r2" }]);
+    expect(r.tokens).toEqual({ input: 20, output: 3, cache_hit_input: 5 });
+  });
+
+  it("通用 OpenAI 接口不带 thinking，也不回传 reasoning_content", async () => {
+    const { gw, requests } = setup({
+      responses: [json(200, { choices: [{ message: { content: "ok" } }] })],
+    });
+    await gw.chat({
+      ...baseReq,
+      provider: "oai",
+      messages: [
+        { role: "user", content: "x" },
+        { role: "assistant", content: "a", reasoning: [{ text: "r1" }], tool_calls: [] },
+        { role: "user", content: "y" },
+      ],
+      ctx: ctx(),
+    });
+    const body = requests[0]!.body;
+    expect(body).not.toHaveProperty("thinking");
+    expect((body.messages as Record<string, unknown>[])[2]).not.toHaveProperty("reasoning_content");
   });
 });

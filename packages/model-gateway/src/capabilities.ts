@@ -15,8 +15,15 @@ export interface Capabilities {
   ignored_fields: readonly string[];
   /** 工具调用不能并行时由本地保证串行（DeepSeek 忽略 disable_parallel_tool_use） */
   serial_tools_local: boolean;
-  /** 单次请求的输出上限 */
+  /**
+   * 只用于预算预占的输出上限估算：模型配置没填 max_tokens 时请求里不传 max_tokens（用服务端默认值），
+   * 预占按这个值估。
+   */
   default_max_tokens: number;
+  /** 请求体带 thinking: { type: enabled | disabled } 开关 */
+  thinking_toggle: boolean;
+  /** OpenAI 协议下 assistant 消息把思考内容写回 reasoning_content（DeepSeek 带 tools 时必须回传） */
+  reasoning_passback: boolean;
   source: string;
 }
 
@@ -33,11 +40,31 @@ export const DEEPSEEK_ANTHROPIC: Capabilities = {
   ignored_fields: ["budget_tokens", "cache_control", "disable_parallel_tool_use"],
   serial_tools_local: true,
   default_max_tokens: 256_000,
+  thinking_toggle: true,
+  reasoning_passback: true,
   source:
     "https://github.com/deepseek-ai/deepseek-harness/tree/dsh-v0.2.1-alpha.5/packages/llm/llm-deepseek/src/serialize.ts",
 };
 
-/** OpenAI 兼容接口（备选）：reasoning_effort 只有 low / high 两档可对应，max 降到 high。 */
+/**
+ * DeepSeek OpenAI 兼容接口（备选）：thinking 开关 + reasoning_effort（low / high / max）。
+ * 带 tools 的请求必须把之前所有轮次的 reasoning_content 原样回传，否则返回 400；
+ * 不带 tools 时回传会被忽略。依据 https://api-docs.deepseek.com/guides/thinking_mode 。
+ */
+export const DEEPSEEK_OPENAI: Capabilities = {
+  protocol: "openai-chat",
+  effort_field: "reasoning_effort",
+  efforts: ["off", "low", "high", "max"],
+  effort_values: { low: "low", high: "high", max: "max" },
+  ignored_fields: ["temperature", "presence_penalty", "frequency_penalty"],
+  serial_tools_local: true,
+  default_max_tokens: 256_000,
+  thinking_toggle: true,
+  reasoning_passback: true,
+  source: "https://api-docs.deepseek.com/guides/thinking_mode",
+};
+
+/** 通用 OpenAI 兼容接口：reasoning_effort 只有 low / high 两档可对应，max 降到 high。 */
 export const OPENAI_CHAT: Capabilities = {
   protocol: "openai-chat",
   effort_field: "reasoning_effort",
@@ -46,17 +73,19 @@ export const OPENAI_CHAT: Capabilities = {
   ignored_fields: [],
   serial_tools_local: true,
   default_max_tokens: 32_000,
+  thinking_toggle: false,
+  reasoning_passback: false,
   source: "https://platform.openai.com/docs/api-reference/chat/create",
 };
 
-/** 按服务商 id 定的能力表；没列的服务商按配置里的 protocol 取通用表。 */
-export const PROVIDER_CAPABILITIES: Readonly<Record<string, Capabilities>> = {
-  deepseek: DEEPSEEK_ANTHROPIC,
+/** 按服务商 id 和协议定的能力表；没列的按配置里的 protocol 取通用表。 */
+export const PROVIDER_CAPABILITIES: Readonly<Record<string, readonly Capabilities[]>> = {
+  deepseek: [DEEPSEEK_ANTHROPIC, DEEPSEEK_OPENAI],
 };
 
 export function capabilitiesFor(provider: string, protocol: Protocol): Capabilities {
-  const known = PROVIDER_CAPABILITIES[provider];
-  if (known && known.protocol === protocol) return known;
+  const known = PROVIDER_CAPABILITIES[provider]?.find((c) => c.protocol === protocol);
+  if (known) return known;
   return protocol === "anthropic-messages"
     ? { ...DEEPSEEK_ANTHROPIC, source: "Anthropic Messages 通用能力表" }
     : OPENAI_CHAT;

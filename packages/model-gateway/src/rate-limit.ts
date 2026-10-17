@@ -5,7 +5,7 @@ export interface RateLimitOptions {
   capacity?: number;
   /** 每秒补充令牌数，默认 4 */
   refill_per_sec?: number;
-  /** 429 最多重试次数，默认 5（同 harness 默认重试次数） */
+  /** 429、500/502/503/504、连接错误和超时合计最多重试次数，默认 3 */
   max_retries?: number;
   /** 指数退避基数，默认 1000ms：第 n 次重试等 base × 2^(n-1)，加 0~50% 抖动，上限 max_backoff_ms */
   base_backoff_ms?: number;
@@ -17,6 +17,8 @@ export interface Clock {
   now: () => number;
   sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   random: () => number;
+  /** 定时器（请求超时用），返回取消函数 */
+  setTimer: (ms: number, fn: () => void) => () => void;
 }
 
 interface Bucket {
@@ -45,7 +47,7 @@ export class RateLimiter {
   ) {
     this.capacity = opts.capacity ?? 8;
     this.refillPerSec = opts.refill_per_sec ?? 4;
-    this.maxRetries = opts.max_retries ?? 5;
+    this.maxRetries = opts.max_retries ?? 3;
     this.base = opts.base_backoff_ms ?? 1000;
     this.maxBackoff = opts.max_backoff_ms ?? 60_000;
     if (!(this.capacity >= 1) || !(this.refillPerSec > 0))
@@ -103,7 +105,7 @@ export class RateLimiter {
     }, wait);
   }
 
-  /** 第 attempt 次（从 1 起）429 重试前等多久；服务商给了 retry-after 就取两者较大值。 */
+  /** 第 attempt 次（从 1 起）重试前等多久；服务商给了 retry-after 就取两者较大值。 */
   backoff(attempt: number, retryAfterMs?: number): number {
     const exp = Math.min(this.maxBackoff, this.base * 2 ** (attempt - 1));
     const jittered = Math.min(this.maxBackoff, Math.round(exp * (1 + 0.5 * this.clock.random())));
@@ -163,6 +165,10 @@ export class RateLimiter {
 
 export const realClock: Clock = {
   now: () => Date.now(),
+  setTimer: (ms, fn) => {
+    const t = setTimeout(fn, ms);
+    return () => clearTimeout(t);
+  },
   random: () => Math.random(),
   sleep: (ms, signal) =>
     new Promise((resolve, reject) => {
