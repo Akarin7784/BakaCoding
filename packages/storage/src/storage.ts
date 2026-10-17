@@ -44,6 +44,8 @@ export interface StorageOptions {
    * 见 `packages/desktop/scripts/rebuild-electron.mjs`；不传则用 Node 默认的那份。
    */
   nativeBinding?: string;
+  /** 警告输出（T-055：需求单 `fields` 读出损坏时记一条），默认 `console.warn`。 */
+  logger?: { warn(message: string): void };
 }
 
 /** 另一个写入者持有未过期的租约，或本进程的租约已被别人接管。 */
@@ -98,6 +100,42 @@ export interface TicketInput {
   permission_list: PermissionList;
   context_snippets: RawFile[];
   ci_checks?: CiCheck[];
+  /**
+   * 结构化字段（T-055）：`write_scope`、`interfaces`、`depends_on`、`priority`、`kind`、`origin`、trace 等，
+   * 字段由调用方（10）定义，2 只按 JSON 原样存取、不脱敏。必须是能 JSON 往返的普通对象。
+   * 不传时保留库里已有的值（8 回写权限清单时不带它，不会把它冲掉）；传 `{}` 才清空。
+   */
+  fields?: TicketFields;
+}
+
+/** 需求单结构化字段：能 JSON 往返的普通对象。 */
+export type TicketFields = { [key: string]: JsonValue };
+export type JsonValue =
+  string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+
+/** getTicket / listTickets 读出的一行（不含 PR 轮次，轮次用 listPrRounds）。 */
+export interface StoredTicket {
+  ticket_id: string;
+  project_id: string;
+  requirement_id: string;
+  created_at: string;
+  ticket_text: string;
+  decomposition_summary?: string;
+  status?: TicketStatus;
+  outcome?: OutcomeLabel;
+  base_commit: string;
+  permission_list: PermissionList;
+  context_snippets: RawFile[];
+  ci_checks?: CiCheck[];
+  /** 旧记录（T-055 之前写入）或从没存过时为 null */
+  fields: TicketFields | null;
+}
+
+/** listTickets 的过滤条件，全部可选；结果按 created_at、ticket_id 升序。 */
+export interface TicketFilter {
+  project_id?: string;
+  requirement_id?: string;
+  status?: TicketStatus;
 }
 
 /** savePrRecord 的入参：一轮 PR 记录。同一单同一轮重复保存会覆盖（幂等）。 */
@@ -108,6 +146,8 @@ export interface PrRoundInput extends RoundRecord {
 /** listProjects 的一行：`created_at` 为「项目已创建」事件里的 ISO 时间。 */
 export interface ProjectRow {
   project_id: string;
+  /** 项目名（「项目已创建」事件里的 name，T-055 起返回） */
+  name: string;
   created_at: string;
 }
 
@@ -260,6 +300,10 @@ export interface Storage {
   /** 登记需求属于哪个项目，用于按项目过滤事件。保存单或群消息时会自动登记。 */
   registerRequirement(requirement_id: string, project_id: string): void;
   saveTicket(ticket: TicketInput): void;
+  /** 按单号读一张需求单（T-055），不存在返回 undefined。 */
+  getTicket(ticket_id: string): StoredTicket | undefined;
+  /** 按项目 / 需求 / 状态列出需求单（T-055），按 created_at、ticket_id 升序。 */
+  listTickets(filter?: TicketFilter): StoredTicket[];
   savePrRecord(round: PrRoundInput): void;
   saveMergeResult(ticket_id: string, result: DiagMergeResult): void;
   /** 查询需求单记录（含各轮 PR 记录和合并结果）；from / to 按 created_at 过滤。 */
@@ -297,6 +341,8 @@ export interface ReadonlyStorageOptions {
   path: string;
   /** 同 `StorageOptions.nativeBinding`。 */
   nativeBinding?: string;
+  /** 同 `StorageOptions.logger`。 */
+  logger?: { warn(message: string): void };
 }
 
 /** 只读打开返回的类型：只有读方法；prStore 只有 get / list。 */
@@ -307,6 +353,8 @@ export type ReadonlyStorage = Pick<
   | "maxSeq"
   | "queryEvents"
   | "query"
+  | "getTicket"
+  | "listTickets"
   | "listPrRounds"
   | "listDecisions"
   | "listProjects"
@@ -345,6 +393,7 @@ export function openStorageReadonly(options: ReadonlyStorageOptions): ReadonlySt
     {
       path: options.path,
       ...(options.nativeBinding !== undefined && { nativeBinding: options.nativeBinding }),
+      ...(options.logger !== undefined && { logger: options.logger }),
     },
     true,
   );
@@ -356,6 +405,7 @@ function open(options: StorageOptions, ro: boolean): Storage {
   const ttl = options.lease_ttl_ms ?? 30_000;
   const retentionDays = options.retention_days ?? 30;
   const light = options.redact ?? ((t: string) => redactText(t, "light").text);
+  const logger = options.logger ?? { warn: (m: string) => console.warn(m) };
 
   const dbOpts: Database.Options = {};
   if (options.nativeBinding !== undefined) dbOpts.nativeBinding = options.nativeBinding;
@@ -696,13 +746,14 @@ function open(options: StorageOptions, ro: boolean): Storage {
     st.upsertRequirement.run(t.requirement_id, t.project_id);
     db.prepare(
       `INSERT INTO tickets (ticket_id, project_id, requirement_id, created_at, created_at_ms, ticket_text, decomposition_summary, status, outcome,
-        base_commit, permission_list, context_snippets, ci_checks)
+        base_commit, permission_list, context_snippets, ci_checks, fields)
        VALUES (@ticket_id, @project_id, @requirement_id, @created_at, @created_at_ms, @ticket_text, @decomposition_summary, @status, @outcome,
-        @base_commit, @permission_list, @context_snippets, @ci_checks)
+        @base_commit, @permission_list, @context_snippets, @ci_checks, @fields)
        ON CONFLICT(ticket_id) DO UPDATE SET project_id = excluded.project_id, requirement_id = excluded.requirement_id,
         created_at = excluded.created_at, created_at_ms = excluded.created_at_ms, ticket_text = excluded.ticket_text, decomposition_summary = excluded.decomposition_summary,
         status = excluded.status, outcome = excluded.outcome, base_commit = excluded.base_commit,
-        permission_list = excluded.permission_list, context_snippets = excluded.context_snippets, ci_checks = excluded.ci_checks`,
+        permission_list = excluded.permission_list, context_snippets = excluded.context_snippets, ci_checks = excluded.ci_checks,
+        fields = COALESCE(excluded.fields, tickets.fields)`,
     ).run({
       ticket_id: t.ticket_id,
       project_id: t.project_id,
@@ -718,8 +769,70 @@ function open(options: StorageOptions, ro: boolean): Storage {
       permission_list: JSON.stringify(t.permission_list),
       context_snippets: JSON.stringify(deepRedact(t.context_snippets)),
       ci_checks: t.ci_checks === undefined ? null : JSON.stringify(deepRedact(t.ci_checks)),
+      fields: t.fields === undefined ? null : encodeFields(t.ticket_id, t.fields),
     });
   });
+
+  /** 读 `tickets.fields`：损坏的 JSON 或不是普通对象时读成 null 并记警告，不让一行坏数据拖垮整个读取。 */
+  function decodeFields(ticket_id: string, raw: unknown): TicketFields | null {
+    if (raw == null) return null;
+    let v: unknown;
+    try {
+      v = JSON.parse(raw as string);
+    } catch {
+      logger.warn(`[storage] 需求单 ${ticket_id} 的 fields 不是合法 JSON，按 null 读出`);
+      return null;
+    }
+    if (v === null || typeof v !== "object" || Array.isArray(v)) {
+      logger.warn(`[storage] 需求单 ${ticket_id} 的 fields 不是对象，按 null 读出`);
+      return null;
+    }
+    return v as TicketFields;
+  }
+
+  function rowToTicket(row: Row): StoredTicket {
+    const t: StoredTicket = {
+      ticket_id: row.ticket_id as string,
+      project_id: row.project_id as string,
+      requirement_id: row.requirement_id as string,
+      created_at: row.created_at as string,
+      ticket_text: row.ticket_text as string,
+      base_commit: row.base_commit as string,
+      permission_list: JSON.parse(row.permission_list as string) as PermissionList,
+      context_snippets: JSON.parse(row.context_snippets as string) as RawFile[],
+      fields: decodeFields(row.ticket_id as string, row.fields),
+    };
+    if (row.decomposition_summary != null)
+      t.decomposition_summary = row.decomposition_summary as string;
+    if (row.status != null) t.status = row.status as TicketStatus;
+    if (row.outcome != null) t.outcome = row.outcome as OutcomeLabel;
+    if (row.ci_checks != null) t.ci_checks = JSON.parse(row.ci_checks as string) as CiCheck[];
+    return t;
+  }
+
+  function getTicket(ticket_id: string): StoredTicket | undefined {
+    const row = db.prepare("SELECT * FROM tickets WHERE ticket_id = ?").get(ticket_id) as
+      Row | undefined;
+    return row ? rowToTicket(row) : undefined;
+  }
+
+  function listTickets(f: TicketFilter = {}): StoredTicket[] {
+    const where: string[] = [];
+    const args: unknown[] = [];
+    for (const k of ["project_id", "requirement_id", "status"] as const) {
+      if (f[k] !== undefined) {
+        where.push(`${k} = ?`);
+        args.push(f[k]);
+      }
+    }
+    return (
+      db
+        .prepare(
+          `SELECT * FROM tickets ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at_ms, ticket_id`,
+        )
+        .all(...args) as Row[]
+    ).map(rowToTicket);
+  }
 
   const savePrRecord = write("savePrRecord", (input: PrRoundInput) => {
     const { ticket_id, reviewer, ...rest } = input;
@@ -992,6 +1105,8 @@ function open(options: StorageOptions, ro: boolean): Storage {
       },
     ),
     saveTicket,
+    getTicket,
+    listTickets,
     savePrRecord,
     prStore,
     saveMergeResult,
@@ -1002,7 +1117,9 @@ function open(options: StorageOptions, ro: boolean): Storage {
     },
     listProjects() {
       return db
-        .prepare("SELECT project_id, created_at FROM projects ORDER BY created_at, project_id")
+        .prepare(
+          "SELECT project_id, name, created_at FROM projects ORDER BY created_at, project_id",
+        )
         .all() as ProjectRow[];
     },
     listDecisions(project_id) {
@@ -1097,4 +1214,36 @@ function checkReadonlyVersion(db: Database.Database, path: string): void {
       `数据库 ${path} 的版本是 v${v}，比当前代码支持的 v${want} 新，请升级 BakaCoding 后再打开`,
     );
   }
+}
+
+/** 结构化字段只收能 JSON 往返的普通对象：顶层不是对象、含函数 / undefined / 非有限数 / 类实例时报错。 */
+function encodeFields(ticket_id: string, fields: unknown): string {
+  const bad = (why: string): never => {
+    throw new TypeError(`需求单 ${ticket_id} 的 fields ${why}`);
+  };
+  const seen = new Set<object>();
+  const check = (v: unknown, path: string): void => {
+    if (v === null || typeof v === "string" || typeof v === "boolean") return;
+    if (typeof v === "number") {
+      if (!Number.isFinite(v)) bad(`${path} 不是有限数`);
+      return;
+    }
+    if (typeof v === "object") {
+      if (seen.has(v)) bad(`${path} 有循环引用`);
+      seen.add(v);
+      if (Array.isArray(v)) {
+        v.forEach((x, i) => check(x, `${path}[${i}]`));
+      } else {
+        const proto = Object.getPrototypeOf(v) as unknown;
+        if (proto !== Object.prototype && proto !== null) bad(`${path} 不是普通对象`);
+        for (const [k, x] of Object.entries(v as Record<string, unknown>)) check(x, `${path}.${k}`);
+      }
+      seen.delete(v);
+      return;
+    }
+    bad(`${path} 不能 JSON 往返（${typeof v}）`);
+  };
+  if (fields === null || typeof fields !== "object" || Array.isArray(fields)) bad("必须是普通对象");
+  check(fields, "fields");
+  return JSON.stringify(fields);
 }

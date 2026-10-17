@@ -47,5 +47,5 @@
 - `promptTemplate(role, opts?)`：读 `prompts/<role>.md`（`supervisor`、`reviewer`、`sub_agent`、`coder`）。每次调用都读文件，去 BOM、换行统一 LF、去首尾空白，同样的文件跨平台逐字节相同；5 按内容哈希缓存公共前缀，所以改模板后下一单自动生效。
 - `reviewer` 模板带 `{{input}}`，7 的 `buildPrompt` 替换它；模板里没有时 7 把输入接在末尾。
 - `architecture_constraints`：给了非空数组时加一节「## 项目架构约束」，放在 `{{input}}` 前面（没有占位符就接在末尾），供 7 带上与 5 公共前缀同一份的项目约束。`coder` 不用传，5 自己拼。
-- 约束里字面的 `{{input}}` 会先去掉，免得 7 替换占位符时把不可信输入塞进约束这一节。
+- 约束里字面的 `{{input}}` 会先反复去掉直到不再变化（`{{in{{input}}put}}` 也去干净），免得 7 替换占位符时把不可信输入塞进约束这一节。
 - `dir` 可指向自定义模板目录；`logger` 接收警告（默认 `console`）。未知角色或读不到文件报 `PromptTemplateError`。

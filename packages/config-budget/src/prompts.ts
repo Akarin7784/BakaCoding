@@ -56,7 +56,7 @@ export async function promptTemplate(
   }
   // 约束里字面的 {{input}} 先去掉：否则 7 替换占位符时会把不可信输入塞进约束这一节
   const constraints = (opts.architecture_constraints ?? [])
-    .map((c) => c.split(PROMPT_INPUT_PLACEHOLDER).join("").trim())
+    .map((c) => stripPlaceholder(c).trim())
     .filter(Boolean);
   if (constraints.length === 0) return template;
   const section = `## 项目架构约束\n${constraints.map((c) => `- ${c}`).join("\n")}`;
@@ -64,4 +64,14 @@ export async function promptTemplate(
   if (at < 0) return `${template}\n\n${section}`;
   const before = template.slice(0, at).trimEnd();
   return `${before}${before ? "\n\n" : ""}${section}\n\n${template.slice(at)}`;
+}
+
+/** 反复去掉 `{{input}}`，直到不再变化（`{{in{{input}}put}}` 去一遍后又会拼出新的占位符）。 */
+function stripPlaceholder(text: string): string {
+  let prev: string;
+  do {
+    prev = text;
+    text = text.split(PROMPT_INPUT_PLACEHOLDER).join("");
+  } while (text !== prev);
+  return text;
 }
