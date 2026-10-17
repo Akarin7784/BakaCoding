@@ -1212,9 +1212,9 @@ describe("T-064 closeTicketPrs 只关指定 PR + bakacoding 重试", () => {
       }),
     );
     const close = vi.fn(async () => {});
-    expect(await closeTicketPrs({ sync: async () => {}, store, pr: { close } }, "T", "重试", "P1")).toBe(
-      "closed",
-    );
+    expect(
+      await closeTicketPrs({ sync: async () => {}, store, pr: { close } }, "T", "重试", "P1"),
+    ).toBe("closed");
     expect(close).toHaveBeenCalledOnce();
     // 不传 pr_id 的路径也同样重试
     close.mockClear();
@@ -1334,9 +1334,9 @@ describe("T-064 closeTicketPrs 只关指定 PR + bakacoding 重试", () => {
     expect(await closeTicketPrsNoBakacodingRetry("T", "r", "P1")).toBe("none");
     expect(close).not.toHaveBeenCalled();
     // 现行实现必须再调 close → closed
-    expect(await closeTicketPrs({ sync: async () => {}, store, pr: { close } }, "T", "r", "P1")).toBe(
-      "closed",
-    );
+    expect(
+      await closeTicketPrs({ sync: async () => {}, store, pr: { close } }, "T", "r", "P1"),
+    ).toBe("closed");
     expect(close).toHaveBeenCalledOnce();
   });
 });

@@ -2935,9 +2935,7 @@ describe("T-064 定时 sync + 独占区域大小写 + adopt 已合入", () => {
     const h = harness();
     h.deps.holdHighRisk = true;
     h.deps.prRecord = async (pr_id) =>
-      pr_id === "pr-1"
-        ? { status: "merged", merge_sha: "ab".repeat(20) }
-        : undefined;
+      pr_id === "pr-1" ? { status: "merged", merge_sha: "ab".repeat(20) } : undefined;
     const s = await started(h);
     await s.enqueue(ticket("T-1", { write_scope: ["a.ts"] }));
     await s.submit({
@@ -2952,7 +2950,9 @@ describe("T-064 定时 sync + 独占区域大小写 + adopt 已合入", () => {
     const applied = await s.sync();
     expect(applied.map((c) => c.to)).toEqual(["merged"]);
     expect(s.status("T-1")).toBe("merged");
-    expect(h.statuses.filter(([t, st]) => t === "T-1" && st === "merged").length).toBeGreaterThan(0);
+    expect(h.statuses.filter(([t, st]) => t === "T-1" && st === "merged").length).toBeGreaterThan(
+      0,
+    );
     const ic = h.published.filter((e) => e.type === "interface_changed");
     expect(ic.length).toBe(1);
     s.stop();
@@ -2961,14 +2961,17 @@ describe("T-064 定时 sync + 独占区域大小写 + adopt 已合入", () => {
   it("B2：adopt already_merged → merged，合法 sha 发 interface_changed；无 sha 不发", async () => {
     const h = harness();
     const s = await started(h);
-    const r1 = await s.adopt(ticket("T-1", { write_scope: ["a.ts"], interfaces: [{ file: "a.ts", symbol: "x" }] }), {
-      pr_id: "pr-m",
-      head_sha: SHA("b"),
-      worktree_path: "/wt/T-1-r0",
-      base_commit: SHA("a"),
-      already_merged: true,
-      merge_sha: "cd".repeat(20),
-    });
+    const r1 = await s.adopt(
+      ticket("T-1", { write_scope: ["a.ts"], interfaces: [{ file: "a.ts", symbol: "x" }] }),
+      {
+        pr_id: "pr-m",
+        head_sha: SHA("b"),
+        worktree_path: "/wt/T-1-r0",
+        base_commit: SHA("a"),
+        already_merged: true,
+        merge_sha: "cd".repeat(20),
+      },
+    );
     expect(r1).toBe("merged");
     expect(s.status("T-1")).toBe("merged");
     expect(h.published.filter((e) => e.type === "interface_changed").length).toBe(1);

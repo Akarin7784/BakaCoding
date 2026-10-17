@@ -1749,11 +1749,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   async function retryRejectClose(id: string, pr_id: string, why: string, attempt: number) {
     let state: "closed" | "none" | "merged";
     try {
-      state = await deps.closeTicketPr!(
-        id,
-        `高风险 PR 被用户拒绝：${why}`.slice(0, 500),
-        pr_id,
-      );
+      state = await deps.closeTicketPr!(id, `高风险 PR 被用户拒绝：${why}`.slice(0, 500), pr_id);
     } catch (err) {
       return rejectCloseFailed(id, pr_id, why, attempt, err);
     }
