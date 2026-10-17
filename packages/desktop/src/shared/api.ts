@@ -3,6 +3,7 @@
 import type { HighRiskDecisionErrorCode, SyncState } from "@bakacoding/scheduler";
 import type { HighRiskFile, HighRiskReason } from "@bakacoding/sub-agent";
 import type { HighRiskDecisionResult, PendingHighRisk } from "@bakacoding/supervisor";
+import type { Project } from "@bakacoding/config-budget";
 import type { BakaEvent, TicketStatus } from "@bakacoding/types";
 
 /** IPC 通道名。 */
@@ -27,6 +28,12 @@ export const IPC_CHANNELS = {
   syncState: "bakacoding:sync:state",
   /** 主进程 → 渲染进程：同步状态有变化时推送（T-067）。 */
   syncStateUpdate: "bakacoding:sync:state-update",
+  /** invoke：选目录导入项目，切换后端到该仓库（T-072）。 */
+  projectImport: "bakacoding:project:import",
+  /** invoke：选保存路径，导出最近 24 小时诊断包（T-072）。 */
+  diagnosticsExport: "bakacoding:diagnostics:export",
+  /** invoke：只读设置（仓库、环境变量是否已设、本地 / GitHub 模式）（T-072）。 */
+  settingsGet: "bakacoding:settings:get",
 } as const;
 
 /** 界面关心的事件类型；其余事件主进程不下发。 */
@@ -121,6 +128,22 @@ export type DesktopDecideHighRiskResult =
 export type DesktopSyncState =
   ({ available: true } & SyncState) | { available: false; reason: string };
 
+/** `project:import` 结果（T-072）：project 原样取自 3 的 importProject。 */
+export type DesktopImportResult =
+  | { ok: true; project: Project }
+  | { ok: false; canceled?: true; missing?: string[]; reason?: string };
+
+/** `diagnostics:export` 结果（T-072）；reason 已脱敏截断。 */
+export type DesktopExportResult =
+  { ok: true; path: string } | { ok: false; canceled?: true; reason: string };
+
+/** `settings:get` 结果（T-072）：环境变量只给名字和是否已设，绝不给值。 */
+export interface DesktopSettings {
+  repo: string | null;
+  env: { name: string; set: boolean }[];
+  mode: "local" | "github";
+}
+
 /** preload 通过 contextBridge 暴露在 window.bakacoding 上的 API。 */
 export interface BakaDesktopApi {
   readonly platform: string;
@@ -146,9 +169,16 @@ export interface BakaDesktopApi {
   getSyncState(): Promise<DesktopSyncState>;
   /** 订阅同步状态变化（T-067）。 */
   onSyncState(listener: (state: DesktopSyncState) => void): () => void;
+  /** 选目录导入项目（T-072）。 */
+  importProject(): Promise<DesktopImportResult>;
+  /** 导出诊断包（T-072）。 */
+  exportDiagnostics(): Promise<DesktopExportResult>;
+  /** 只读设置（T-072）。 */
+  getSettings(): Promise<DesktopSettings>;
 }
 
 export type {
+  Project,
   HighRiskDecisionErrorCode,
   HighRiskFile,
   HighRiskReason,

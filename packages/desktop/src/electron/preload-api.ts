@@ -4,6 +4,9 @@ import {
   type BakaDesktopApi,
   type DesktopBackendStatus,
   type DesktopDecideHighRiskResult,
+  type DesktopExportResult,
+  type DesktopImportResult,
+  type DesktopSettings,
   type DesktopHighRiskDecision,
   type DesktopPendingHighRisk,
   type DesktopSnapshot,
@@ -72,5 +75,9 @@ export function createDesktopApi(ipc: IpcRendererLike, platform: string): BakaDe
         ipc.removeListener(IPC_CHANNELS.syncStateUpdate, wrapped);
       };
     },
+    importProject: () => ipc.invoke(IPC_CHANNELS.projectImport) as Promise<DesktopImportResult>,
+    exportDiagnostics: () =>
+      ipc.invoke(IPC_CHANNELS.diagnosticsExport) as Promise<DesktopExportResult>,
+    getSettings: () => ipc.invoke(IPC_CHANNELS.settingsGet) as Promise<DesktopSettings>,
   });
 }

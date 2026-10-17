@@ -1,5 +1,7 @@
 // T-063：桌面主进程后端——拿写入锁、组装组合根、takeOver；失败则退回只读。
+import { copyFile, mkdtemp, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   acquireWriterLock,
@@ -9,7 +11,16 @@ import {
   type DefaultDepsHandle,
   type WriterLock,
 } from "@bakacoding/app";
-import { ConfigError, getConfig, type Config } from "@bakacoding/config-budget";
+import {
+  ConfigError,
+  getConfig,
+  importProject as importProjectDefault,
+  type Config,
+  type Project,
+} from "@bakacoding/config-budget";
+import { exportPackage } from "@bakacoding/diagnostics";
+import { GithubPrProvider } from "@bakacoding/pr";
+import { TERMINAL_TICKET_STATUSES } from "@bakacoding/types";
 import { HighRiskDecisionError } from "@bakacoding/scheduler";
 import {
   openStorage,
@@ -62,6 +73,10 @@ export interface BackendOptions {
   openStorage?: typeof openStorage;
   getConfig?: (path: string) => Config;
   pricingPath?: string;
+  /** 上次导入的仓库路径（T-072）：优先级低于 `--repo` / BAKACODING_REPO，高于 cwd */
+  lastRepo?: string;
+  /** 测试注入：模块 3 的 importProject */
+  importProject?: typeof importProjectDefault;
 }
 
 export interface BackendHandle {
@@ -86,6 +101,16 @@ export interface BackendHandle {
   refreshPendingHighRisk(): void;
   /** 9 的定时同步状态（T-067）；只读 / 未接线为 available:false；错误信息已脱敏截断 */
   syncState(): DesktopSyncState;
+  /** 当前仓库根目录（T-072） */
+  repoRoot(): string;
+  /** PR 实现：live 时看 app.pr 是不是 GithubPrProvider；只读时没有 provider，按 local（T-072） */
+  prMode(): "local" | "github";
+  /** 进行中（非终态）的单 + 等裁决的高风险单，按 ticket_id 去重（T-072 切换前检查） */
+  busyCount(): number;
+  /** 用本后端的总线调 3 的 importProject（发 project_created）；只读抛错（T-072） */
+  importCurrentRepo(): Promise<Project>;
+  /** 用 11 的 exportPackage 导出当前仓库项目最近 24 小时的诊断包，复制到 target（T-072） */
+  exportDiagnostics(target: string, now?: Date): Promise<string>;
   stop(): Promise<void>;
 }
 
@@ -130,6 +155,7 @@ export function resolveRepoPath(
   argv: readonly string[],
   env: Readonly<Record<string, string | undefined>>,
   cwd: string,
+  lastRepo?: string,
 ): string {
   let fromArg: string | undefined;
   for (let i = 0; i < argv.length; i++) {
@@ -137,7 +163,7 @@ export function resolveRepoPath(
     if (a.startsWith("--repo=")) fromArg = a.slice("--repo=".length);
     else if (a === "--repo" && argv[i + 1] !== undefined) fromArg = argv[i + 1];
   }
-  return path.resolve(cwd, fromArg || env[REPO_ENV] || cwd);
+  return path.resolve(cwd, fromArg || env[REPO_ENV] || lastRepo || cwd);
 }
 
 export function resolveConfigPath(
@@ -208,7 +234,8 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
   const open = opts.openStorage ?? openStorage;
   const loadConfig = opts.getConfig ?? getConfig;
 
-  const repoRoot = resolveRepoPath(argv, env, cwd);
+  const repoRoot = resolveRepoPath(argv, env, cwd, opts.lastRepo);
+  const doImport = opts.importProject ?? importProjectDefault;
   const dbPath = resolveRepoDbPath(argv, env, repoRoot);
   const configPath = resolveConfigPath(argv, env, repoRoot);
 
@@ -397,6 +424,47 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
         const name = e instanceof Error ? e.name : "unknown";
         logger.warn(`syncState 失败（${name}）`);
         return { available: false, reason: `读取同步状态失败（${name}）` };
+      }
+    },
+    repoRoot: () => repoRoot,
+    prMode: () => (app?.pr instanceof GithubPrProvider ? "github" : "local"),
+    busyCount(): number {
+      if (!storage || !app) return 0;
+      const ids = new Set<string>();
+      const terminal = TERMINAL_TICKET_STATUSES as readonly string[];
+      for (const t of storage.listTickets())
+        if (!terminal.includes(t.status ?? "pending")) ids.add(t.ticket_id);
+      for (const h of readPending()) ids.add(h.ticket_id);
+      return ids.size;
+    },
+    async importCurrentRepo(): Promise<Project> {
+      const live = app;
+      if (!live) throw new Error(reason ? `只读模式：${reason}` : "只读模式：后端未接线");
+      return doImport(repoRoot, { publish: (e) => live.bus.publish(e) });
+    },
+    async exportDiagnostics(target: string, now: Date = new Date()): Promise<string> {
+      if (!storage || !app) {
+        throw new Error(reason ? `只读模式：${reason}` : "只读模式：后端未接线");
+      }
+      // 不发事件，只算出当前仓库的 project_id（同一路径同一 id）
+      const project = await doImport(repoRoot);
+      const out_dir = await mkdtemp(path.join(tmpdir(), "bakacoding-diag-"));
+      try {
+        const zip = await exportPackage(
+          {
+            project_id: project.project_id,
+            scope: {
+              kind: "time_range",
+              from: new Date(now.getTime() - 24 * 3600_000).toISOString(),
+              to: now.toISOString(),
+            },
+          },
+          { source: storage.diagnosticsSource(), out_dir, now: () => now },
+        );
+        await copyFile(zip, target);
+        return target;
+      } finally {
+        await rm(out_dir, { recursive: true, force: true });
       }
     },
     async stop() {

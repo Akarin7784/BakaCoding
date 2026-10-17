@@ -2,10 +2,13 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, ipcMain, nativeTheme } from "electron";
-import { resolveRepoDbPath, resolveRepoPath, startBackend } from "./backend.js";
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme } from "electron";
+import { resolveRepoDbPath, startBackend } from "./backend.js";
 import { serveBackend, serveHighRisk, serveReader, serveSyncState } from "./ipc.js";
-import { openEventReader } from "./reader.js";
+import { BackendSwitcher } from "./backend-switcher.js";
+import { serveProjectSettings } from "./project-settings-ipc.js";
+import { openEventReader, type EventReader } from "./reader.js";
+import { readLastRepo, writeLastRepo } from "./repo-store.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -53,20 +56,38 @@ if (!gotLock) {
 
   void app.whenReady().then(async () => {
     const binding = electronSqliteBinding();
-    const repoRoot = resolveRepoPath(process.argv, process.env, process.cwd());
-    const dbPath = resolveRepoDbPath(process.argv, process.env, repoRoot);
+    const userData = app.getPath("userData");
+    // T-072：--repo > BAKACODING_REPO > 上次导入的路径 > cwd
+    const lastRepo = readLastRepo(userData);
+    const start = (repo?: string) =>
+      startBackend({
+        argv: process.argv,
+        env: process.env,
+        cwd: process.cwd(),
+        ...((repo ?? lastRepo) !== undefined && { lastRepo: repo ?? lastRepo }),
+        ...(binding !== undefined && { nativeBinding: binding }),
+      });
+    const backend = new BackendSwitcher(await start(), (repo) => start(repo), process.env);
 
-    const backend = await startBackend({
-      argv: process.argv,
-      env: process.env,
-      cwd: process.cwd(),
-      ...(binding !== undefined && { nativeBinding: binding }),
-    });
-
-    // 只读端始终开；live 时写连接在 backend 里，只读连接仍用于界面轮询
-    const reader = openEventReader({
-      path: dbPath,
-      ...(binding !== undefined && { nativeBinding: binding }),
+    // 只读端始终开；live 时写连接在 backend 里，只读连接仍用于界面轮询。切换仓库后重开到新库。
+    const openReaderFor = (repoRoot: string): EventReader =>
+      openEventReader({
+        path: resolveRepoDbPath(process.argv, process.env, repoRoot),
+        ...(binding !== undefined && { nativeBinding: binding }),
+      });
+    let currentReader = openReaderFor(backend.repoRoot());
+    const reader: EventReader = {
+      snapshot: () => currentReader.snapshot(),
+      poll: () => currentReader.poll(),
+      close: () => currentReader.close(),
+    };
+    backend.onSwap(() => {
+      try {
+        currentReader.close();
+      } catch {
+        /* ignore */
+      }
+      currentReader = openReaderFor(backend.repoRoot());
     });
     const sink = () => win?.webContents ?? null;
     const stopHighRisk = serveHighRisk(ipcMain, backend, sink);
@@ -75,12 +96,35 @@ if (!gotLock) {
     );
     const stopBackendIpc = serveBackend(ipcMain, backend, sink);
     const stopSyncState = serveSyncState(ipcMain, backend, sink);
+    const stopProjectSettings = serveProjectSettings(ipcMain, {
+      backend,
+      argv: process.argv,
+      env: process.env,
+      downloadsDir: app.getPath("downloads"),
+      saveLastRepo: (repo) => writeLastRepo(userData, repo),
+      async pickDirectory() {
+        const r = win
+          ? await dialog.showOpenDialog(win, { properties: ["openDirectory"], title: "导入项目" })
+          : await dialog.showOpenDialog({ properties: ["openDirectory"], title: "导入项目" });
+        return r.canceled ? null : (r.filePaths[0] ?? null);
+      },
+      async pickSavePath(defaultPath) {
+        const opts = {
+          title: "导出诊断包",
+          defaultPath,
+          filters: [{ name: "zip", extensions: ["zip"] }],
+        };
+        const r = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts);
+        return r.canceled || !r.filePath ? null : r.filePath;
+      },
+    });
 
     app.on("will-quit", () => {
       stopReader();
       stopBackendIpc();
       stopHighRisk();
       stopSyncState();
+      stopProjectSettings();
       reader.close();
       void backend.stop();
     });

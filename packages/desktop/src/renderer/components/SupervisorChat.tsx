@@ -1,12 +1,29 @@
 import { useState } from "react";
-import { Download, Send, Settings } from "lucide-react";
+import { Download, FolderOpen, Send, Settings } from "lucide-react";
 import { AgentIcon } from "./AgentIcon";
 import { Button } from "./ui/button";
 import { Textarea } from "./ui/textarea";
 import type { SupervisorMessage } from "../mock/types";
 
 /** 主管 1:1：唯一可输入的地方。壳子阶段消息只追加到本地，不发往模块 10。 */
-export function SupervisorChat({ initial }: { initial: SupervisorMessage[] }) {
+export interface SupervisorChatActions {
+  /** 导入项目（T-072）；没有就不显示按钮 */
+  onImport?: () => void;
+  /** 打开只读设置页（T-072） */
+  onOpenSettings?: () => void;
+  /** 导出诊断包（T-072） */
+  onExport?: () => void;
+  /** 导入 / 导出进行中：对应按钮禁用 */
+  busy?: "import" | "export" | null;
+}
+
+export function SupervisorChat({
+  initial,
+  onImport,
+  onOpenSettings,
+  onExport,
+  busy = null,
+}: { initial: SupervisorMessage[] } & SupervisorChatActions) {
   const [messages, setMessages] = useState(initial);
   const [draft, setDraft] = useState("");
   const send = () => {
@@ -23,13 +40,31 @@ export function SupervisorChat({ initial }: { initial: SupervisorMessage[] }) {
       <header className="flex items-center gap-2 border-b border-border px-4 py-2">
         <AgentIcon supervisor />
         <span className="flex-1 text-sm font-medium">主管</span>
-        <Button variant="ghost" size="sm" aria-label="设置">
+        {onImport && (
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label="导入项目"
+            disabled={busy !== null}
+            onClick={onImport}
+          >
+            <FolderOpen strokeWidth={1.5} />
+            {busy === "import" ? "导入中…" : "导入项目"}
+          </Button>
+        )}
+        <Button variant="ghost" size="sm" aria-label="设置" onClick={onOpenSettings}>
           <Settings strokeWidth={1.5} />
           设置
         </Button>
-        <Button variant="ghost" size="sm" aria-label="导出诊断包">
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-label="导出诊断包"
+          disabled={busy !== null}
+          onClick={onExport}
+        >
           <Download strokeWidth={1.5} />
-          导出
+          {busy === "export" ? "导出中…" : "导出"}
         </Button>
       </header>
       <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4">

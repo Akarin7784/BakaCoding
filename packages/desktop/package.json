@@ -16,6 +16,8 @@
   "dependencies": {
     "@bakacoding/app": "workspace:*",
     "@bakacoding/config-budget": "workspace:*",
+    "@bakacoding/diagnostics": "workspace:*",
+    "@bakacoding/pr": "workspace:*",
     "@bakacoding/scheduler": "workspace:*",
     "@bakacoding/storage": "workspace:*",
     "@bakacoding/sub-agent": "workspace:*",
