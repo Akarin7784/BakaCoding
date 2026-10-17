@@ -451,7 +451,9 @@ describe("sync", () => {
     gh.pulls[0]!.state = "closed";
     gh.pulls[0]!.merged = true;
     gh.pulls[0]!.merge_commit_sha = "abc1234";
-    expect(await pr.sync()).toEqual([{ pr_id: iid, from: "open", to: "merged" }]);
+    expect(await pr.sync()).toEqual([
+      { pr_id: iid, from: "open", to: "merged", merge_sha: "abc1234" },
+    ]);
     expect(await store.get(iid)).toMatchObject({
       status: "merged",
       merged_into: "main",
@@ -460,6 +462,17 @@ describe("sync", () => {
     expect(logs.some((l) => l.includes(iid) && l.includes("手动合并"))).toBe(true);
     expect(events).toEqual([]);
     expect(await pr.sync()).toEqual([]);
+  });
+
+  it("手动合并但 GitHub 没给 merge_commit_sha：SyncChange 不带 merge_sha（T-046）", async () => {
+    await integrationAhead();
+    const iid = await pr.openIntegration();
+    gh.pulls[0]!.state = "closed";
+    gh.pulls[0]!.merged = true;
+    gh.pulls[0]!.merge_commit_sha = null;
+    const changes = await pr.sync();
+    expect(changes).toEqual([{ pr_id: iid, from: "open", to: "merged" }]);
+    expect("merge_sha" in changes[0]!).toBe(false);
   });
 
   it("用户在 GitHub 手动关闭未合并：同步为 closed，发 escalated(github_manual)", async () => {

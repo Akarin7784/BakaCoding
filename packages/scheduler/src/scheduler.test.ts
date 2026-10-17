@@ -587,7 +587,7 @@ describe("模块 9 合并队列（T-035）", () => {
         {
           reason: "merged_but",
           resubmit_counts: { review: 0, conflict: 0 },
-          detail: "merged_but: bus down",
+          detail: "merged_but: interface_changed_unsent: bus down",
         },
       ],
     ]);
@@ -598,9 +598,167 @@ describe("模块 9 合并队列（T-035）", () => {
     );
     expect(s.status("T-2")).toBe("merged");
     expect(s.dependencyState("T-3")).toBe("ready");
+    // T-046：下一轮合并循环前补发 T-1，再合 T-2
     expect(
       h.published.filter((e) => e.type === "interface_changed").map((e) => e.ticket_id),
-    ).toEqual(["T-2"]);
+    ).toEqual(["T-1", "T-2"]);
+  });
+
+  it("T46a. sync 手动合并带 merge_sha：经同一总线发 interface_changed，base_commit 为合并 sha，记进合并日志", async () => {
+    const h = harness();
+    const s = await started(h);
+    await s.enqueue(ticket("T-0"));
+    await s.enqueue(
+      ticket("T-1", { depends_on: ["T-0"], interfaces: [{ file: "src/a.ts", symbol: "A" }] }),
+    );
+    await s.enqueue(
+      ticket("T-2", { depends_on: ["T-0"], interfaces: [{ file: "src/a.ts", symbol: "A" }] }),
+    );
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1" });
+    await s.idle();
+    h.diffs.set("pr-1", ["src/a.ts"]);
+    h.syncChanges.push({ pr_id: "pr-1", from: "open", to: "merged", merge_sha: SHA("c") });
+    expect((await s.sync()).map((c) => c.pr_id)).toEqual(["pr-1"]);
+    expect(s.status("T-1")).toBe("merged");
+    const ic = h.published.filter((e) => e.type === "interface_changed");
+    expect(ic).toHaveLength(1);
+    expect(ic[0]).toMatchObject({
+      ticket_id: "T-1",
+      payload: {
+        pr_id: "pr-1",
+        base_commit: SHA("c"),
+        changed_interfaces: [{ file: "src/a.ts", symbol: "A" }],
+        affected_ticket_ids: ["T-2"],
+      },
+    });
+    expect(escalations(h)).toEqual([]);
+    // 合并日志里有这个 sha：以它为基线的单不算基线未知、不重审
+    await s.enqueue(ticket("T-3"));
+    await s.submit({ ticket_id: "T-3", pr_id: "pr-3", worktree_path: "/3", base_commit: SHA("c") });
+    await s.idle();
+    expect(h.reReview).not.toHaveBeenCalled();
+    expect(s.status("T-3")).toBe("merged");
+  });
+
+  it("T46b. sync 手动合并没有 merge_sha：不发 interface_changed，不用 targetHead 兜底，调 onError，状态 merged", async () => {
+    const h = harness();
+    const s = await started(h);
+    await s.enqueue(ticket("T-0"));
+    await s.enqueue(ticket("T-1", { depends_on: ["T-0"] }));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1" });
+    await s.idle();
+    h.syncChanges.push({ pr_id: "pr-1", from: "open", to: "merged" });
+    await s.sync();
+    expect(s.status("T-1")).toBe("merged");
+    expect(h.published.filter((e) => e.type === "interface_changed")).toEqual([]);
+    expect(escalations(h)).toEqual([]);
+    expect(h.errors.some((e) => (e as Error).message.includes("merge_sha"))).toBe(true);
+  });
+
+  it("T46c. 写状态抛错：照旧报 merged_but（detail 不变），interface_changed 照发，状态 merged", async () => {
+    const h = harness();
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    const set = h.deps.tickets.setStatus;
+    h.deps.tickets.setStatus = (t, st) => {
+      if (t === "T-1" && st === "merged") throw new Error("db locked");
+      return set(t, st);
+    };
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1" });
+    await s.idle();
+    expect(escalations(h).map((e) => e.payload)).toEqual([
+      {
+        reason: "merged_but",
+        resubmit_counts: { review: 0, conflict: 0 },
+        detail: "merged_but: db locked",
+      },
+    ]);
+    expect(
+      h.published.filter((e) => e.type === "interface_changed").map((e) => e.ticket_id),
+    ).toEqual(["T-1"]);
+    expect(s.status("T-1")).toBe("merged");
+  });
+
+  it("T46d. saveMergeResult 抛错：照旧报 merged_but，interface_changed 照发", async () => {
+    const h = harness();
+    h.deps.saveMergeResult = () => {
+      throw new Error("disk full");
+    };
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1" });
+    await s.idle();
+    expect(escalations(h).map((e) => e.payload.detail)).toEqual(["merged_but: disk full"]);
+    expect(
+      h.published.filter((e) => e.type === "interface_changed").map((e) => e.ticket_id),
+    ).toEqual(["T-1"]);
+    expect(s.status("T-1")).toBe("merged");
+  });
+
+  it("T46e. 发 interface_changed 一直失败：只报一次 merged_but；sync 时补发、去重不重发、affected 按补发时重算排除终态", async () => {
+    const h = harness();
+    const pub = h.deps.bus.publish;
+    let down = true;
+    h.deps.bus.publish = (e) => {
+      if (e.type === "interface_changed" && down) throw new Error("bus down");
+      return pub(e);
+    };
+    const s = await started(h);
+    await s.enqueue(ticket("T-0"));
+    await s.enqueue(ticket("T-1", { write_scope: ["src/**"] }));
+    await s.enqueue(ticket("T-2", { write_scope: ["src/**"], depends_on: ["T-0"] }));
+    await s.enqueue(ticket("T-3", { write_scope: ["src/**"], depends_on: ["T-0"] }));
+    await s.submit({ ticket_id: "T-2", pr_id: "pr-2", worktree_path: "/2" });
+    await s.submit({ ticket_id: "T-3", pr_id: "pr-3", worktree_path: "/3" });
+    h.diffs.set("pr-1", ["src/a.ts"]);
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1" });
+    await s.idle();
+    // 再触发几次重试（sync、合并循环），总线仍坏：不再上报
+    await s.sync();
+    await s.enqueue(ticket("T-4", { write_scope: ["x/**"] }));
+    await s.submit({ ticket_id: "T-4", pr_id: "pr-4", worktree_path: "/4" });
+    await s.idle();
+    expect(escalations(h).map((e) => [e.ticket_id, e.payload.detail])).toEqual([
+      ["T-1", "merged_but: interface_changed_unsent: bus down"],
+      ["T-4", "merged_but: interface_changed_unsent: bus down"],
+    ]);
+    expect(s.status("T-1")).toBe("merged");
+    // T-3 被用户手动关掉（终态），补发时不再算受影响
+    h.syncChanges.push({ pr_id: "pr-3", from: "open", to: "closed" });
+    down = false;
+    await s.sync();
+    const ic = h.published.filter((e) => e.type === "interface_changed");
+    expect(ic.map((e) => e.ticket_id)).toEqual(["T-1", "T-4"]);
+    expect(ic[0]!.payload).toMatchObject({
+      base_commit: SHA("f"),
+      affected_ticket_ids: ["T-2"],
+    });
+    // 补发成功不另发事件，也不再重发
+    const before = h.published.length;
+    await s.sync();
+    await s.idle();
+    expect(h.published.length).toBe(before);
+    expect(escalations(h)).toHaveLength(2);
+  });
+
+  it("T46f. 冲突复投后第一次 submit 打的 high_risk 保留", async () => {
+    const h = harness();
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    h.merges.set("pr-1", [conflict(["a.ts"])]);
+    await s.submit({
+      ticket_id: "T-1",
+      pr_id: "pr-1",
+      worktree_path: "/wt/T-1-r0",
+      high_risk: true,
+    });
+    await s.idle();
+    expect(h.resubmit).toHaveBeenCalledTimes(1);
+    expect(s.status("T-1")).toBe("merged");
+    expect(s.snapshot().find((v) => v.ticket_id === "T-1")).toMatchObject({
+      pr_id: "pr-100",
+      high_risk: true,
+    });
   });
 
   it("R1b. step 里 targetHead 抛错：该单上报，后面的单照常合", async () => {
@@ -1549,7 +1707,7 @@ describe("T-039 终态保护", () => {
     await s.enqueue(ticket("T-1"));
     await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("9") });
     await vi.waitFor(() => expect(h.reReview).toHaveBeenCalledTimes(1));
-    h.syncChanges.push({ pr_id: "pr-1", from: "open", to: "merged" });
+    h.syncChanges.push({ pr_id: "pr-1", from: "open", to: "merged", merge_sha: SHA("d") });
     await s.sync();
     expect(s.status("T-1")).toBe("merged");
     gate.reject(new Error("review pool down"));
@@ -1569,7 +1727,7 @@ describe("T-039 终态保护", () => {
     h.merges.set("pr-1", [conflict()]);
     await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("a") });
     await vi.waitFor(() => expect(h.resubmit).toHaveBeenCalledTimes(1));
-    h.syncChanges.push({ pr_id: "pr-1", from: "conflict", to: "merged" });
+    h.syncChanges.push({ pr_id: "pr-1", from: "conflict", to: "merged", merge_sha: SHA("d") });
     await s.sync();
     gate.reject(new Error("coder crashed"));
     await s.idle();
