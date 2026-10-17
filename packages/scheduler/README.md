@@ -2,7 +2,7 @@
 
 模块 9 调度器与合并队列：写入范围逻辑锁、依赖排序、冲突检测、反压、interface_changed 事件。
 
-T-035 已实现合并队列和反压信号（`createScheduler`），接口和行为见 docs/modules.md「9.」一节的「合并队列与反压信号」。T-039 加了派单、写入范围锁（`lock`）与独占区域、写入范围申请回复、编码槽位、闲时 `deferred`、`stop()` 取消信号，见同一节的「派单、写入范围锁、编码槽位」。
+T-035 已实现合并队列和反压信号（`createScheduler`），接口和行为见 docs/modules.md「9.」一节的「合并队列与反压信号」。T-039 加了派单、写入范围锁（`lock`）与独占区域、写入范围申请回复、编码槽位、闲时 `deferred`、`stop()` 取消信号，见同一节的「派单、写入范围锁、编码槽位」。T-048 起写入范围锁先展开花括号（`src/{a,b}.ts` 与 `src/a.ts` 重叠），独占区域另认「末段模式能写到区域里的具体文件名」的范围（`src/**/*.json` 落在 `**/package.json`），见 `expandBraces` / `inExclusiveZone`。
 
 ```ts
 const scheduler = createScheduler({

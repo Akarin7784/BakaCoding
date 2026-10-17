@@ -11,9 +11,15 @@ import {
   type ReReviewRequest,
   type Scheduler,
   DEFAULT_EXCLUSIVE_ZONES,
+  expandBraces,
+  globToRegExp,
   globsOverlap,
+  inExclusiveZone,
+  isUnsafeScope,
+  MAX_BRACE_EXPANSIONS,
   matchesAny,
   sampleOf,
+  samplesOf,
   type ResumeOutcome,
   type SchedulerDeps,
   type SchedulerTicket,
@@ -1590,6 +1596,138 @@ describe("T-039 写入范围 glob", () => {
     expect(matchesAny(sampleOf("db/migrations/001.sql"), DEFAULT_EXCLUSIVE_ZONES)).toBe(true);
     expect(matchesAny(sampleOf("src/**"), DEFAULT_EXCLUSIVE_ZONES)).toBe(false);
     expect(matchesAny(sampleOf("src/a.ts"), DEFAULT_EXCLUSIVE_ZONES)).toBe(false);
+  });
+});
+
+describe("T-048 写入范围 glob：花括号与独占区域", () => {
+  it("expandBraces：逗号、嵌套、序列；{a}、{} 和没配对的 { 按字面量；超上限保守按 **", () => {
+    expect(expandBraces("src/{a,b}.ts")).toEqual(["src/a.ts", "src/b.ts"]);
+    expect(expandBraces("{src,lib}/{x,{y,z}}.ts")).toEqual([
+      "src/x.ts",
+      "src/y.ts",
+      "src/z.ts",
+      "lib/x.ts",
+      "lib/y.ts",
+      "lib/z.ts",
+    ]);
+    expect(expandBraces("m/{1..3}.sql")).toEqual(["m/1.sql", "m/2.sql", "m/3.sql"]);
+    expect(expandBraces("m/{08..10}.sql")).toEqual(["m/08.sql", "m/09.sql", "m/10.sql"]);
+    expect(expandBraces("{a..c}")).toEqual(["a", "b", "c"]);
+    expect(expandBraces("src/{a}.ts")).toEqual(["src/{a}.ts"]);
+    expect(expandBraces("src/{}.ts")).toEqual(["src/{}.ts"]);
+    expect(expandBraces("src/{a,b.ts")).toEqual(["src/{a,b.ts"]);
+    expect(expandBraces("src/{a}/{b,c}")).toEqual(["src/{a}/b", "src/{a}/c"]);
+    expect(expandBraces("{a,a}/x")).toEqual(["a/x"]);
+    const huge = Array.from({ length: 5 }, () => "{a,b,c,d}").join("/");
+    expect(4 ** 5).toBeGreaterThan(MAX_BRACE_EXPANSIONS);
+    expect(expandBraces(huge)).toEqual(["**"]);
+  });
+
+  it("globsOverlap 先展开花括号：src/{a,b}.ts 与 src/a.ts 重叠，与 src/c.ts 不重叠", () => {
+    const yes: Array<[string, string]> = [
+      ["src/{a,b}.ts", "src/a.ts"],
+      ["src/{a,b}.ts", "src/*.ts"],
+      ["{src,lib}/**", "lib/x/y.ts"],
+      ["src/{a,b}/**", "src/b/c.ts"],
+      ["src/{a,b}.ts", "src/{b,c}.ts"],
+    ];
+    const no: Array<[string, string]> = [
+      ["src/{a,b}.ts", "src/c.ts"],
+      ["{src,lib}/**", "test/**"],
+      ["src/{a,b}.ts", "src/{c,d}.ts"],
+    ];
+    for (const [a, b] of yes) {
+      expect(globsOverlap(a, b), `${a} vs ${b}`).toBe(true);
+      expect(globsOverlap(b, a), `${b} vs ${a}`).toBe(true);
+    }
+    for (const [a, b] of no) {
+      expect(globsOverlap(a, b), `${a} vs ${b}`).toBe(false);
+      expect(globsOverlap(b, a), `${b} vs ${a}`).toBe(false);
+    }
+    expect(globToRegExp("src/{a,b}.ts").test("src/b.ts")).toBe(true);
+    expect(globToRegExp("src/{a,b}.ts").test("src/c.ts")).toBe(false);
+    expect(matchesAny("db/v2.sql", ["db/{v1,v2}.sql"])).toBe(true);
+  });
+
+  it("独占区域：花括号逐个取代表路径；末段模式能写到区域里的具体文件名也算；目录范围和 *.ts 仍不算", () => {
+    const Z = DEFAULT_EXCLUSIVE_ZONES;
+    expect(samplesOf("{src,config}/**")).toEqual(["src/x", "config/x"]);
+    expect(sampleOf("{src,config}/**")).toBe("src/x");
+    // 花括号
+    expect(inExclusiveZone("{src,config}/**", Z)).toBe(true);
+    expect(inExclusiveZone("src/{a,package}.json", Z)).toBe(true);
+    expect(inExclusiveZone("src/{a,b}.ts", Z)).toBe(false);
+    // 原缺口：只取一条代表路径时 src/**/*.json → src/x/x.json，漏掉 **/package.json
+    expect(matchesAny(sampleOf("src/**/*.json"), Z)).toBe(false);
+    expect(inExclusiveZone("src/**/*.json", Z)).toBe(true);
+    expect(inExclusiveZone("packages/*/package.json", Z)).toBe(true);
+    expect(inExclusiveZone("services/**/go.*", Z)).toBe(true);
+    expect(inExclusiveZone("*.json", Z)).toBe(true);
+    // 不该变独占的
+    for (const g of ["src/**", "src/*", "src/*.ts", "src/a.ts", "docs/**/*.md", "src/**/*.test.ts"])
+      expect(inExclusiveZone(g, Z), g).toBe(false);
+    // 原有规则不变
+    expect(inExclusiveZone("config/**", Z)).toBe(true);
+    expect(inExclusiveZone("db/migrations/001.sql", Z)).toBe(true);
+    // 末段是字面量但目录不重叠：不算
+    expect(inExclusiveZone("src/*.json", ["lib/package.json"])).toBe(false);
+  });
+
+  it("D14. 调度：src/{a,b}.ts 与 src/a.ts 不同时派；src/**/*.json 与 pnpm-lock.yaml 走独占队列", async () => {
+    const h = harness();
+    const d = withHandle(h);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { write_scope: ["src/{a,b}.ts"] }));
+    await s.enqueue(ticket("T-2", { write_scope: ["src/a.ts"] }));
+    await s.enqueue(ticket("T-3", { write_scope: ["pnpm-lock.yaml"] }));
+    await s.enqueue(ticket("T-4", { write_scope: ["pkgs/**/*.json"] }));
+    await settle(s);
+    expect(d.handled).toEqual(["T-1", "T-3"]);
+    d.pending.get("T-1")!.resolve({ kind: "escalated", pr_id: null });
+    d.pending.get("T-3")!.resolve({ kind: "escalated", pr_id: null });
+    await settle(s);
+    expect(d.handled).toEqual(["T-1", "T-3", "T-2", "T-4"]);
+  });
+});
+
+describe("#47 安全修复：写入范围里的 .. / . / 绝对路径", () => {
+  it("不安全的写入范围与任何范围都算重叠，也算落在独占区域", () => {
+    const unsafe = [
+      "src/../**",
+      "src/*/../../a",
+      "src/{a,../x}",
+      "src/./a.ts",
+      "./src/**",
+      "src//a.ts",
+      "/etc/**",
+      "C:/x",
+      "~/x",
+      "src\\..\\x",
+      "src/{.,a}/x",
+    ];
+    for (const g of unsafe) {
+      expect(isUnsafeScope(g), g).toBe(true);
+      expect(globsOverlap(g, "lib/a.ts"), g).toBe(true);
+      expect(globsOverlap("lib/a.ts", g), g).toBe(true);
+      expect(inExclusiveZone(g, DEFAULT_EXCLUSIVE_ZONES), g).toBe(true);
+    }
+    expect(globsOverlap("src/../**", "lib/a.ts")).toBe(true);
+    for (const g of ["src/**", "src/{a,b}.ts", "lib/", ".github/**"])
+      expect(isUnsafeScope(g), g).toBe(false);
+    expect(globsOverlap("src/**", "lib/a.ts")).toBe(false);
+  });
+
+  it("D15. 调度：写入范围 src/../** 的单与 lib/a.ts 的单不同时派", async () => {
+    const h = harness();
+    const d = withHandle(h);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { write_scope: ["lib/a.ts"] }));
+    await s.enqueue(ticket("T-2", { write_scope: ["src/../**"] }));
+    await settle(s);
+    expect(d.handled).toEqual(["T-1"]);
+    d.pending.get("T-1")!.resolve({ kind: "escalated", pr_id: null });
+    await settle(s);
+    expect(d.handled).toEqual(["T-1", "T-2"]);
   });
 });
 

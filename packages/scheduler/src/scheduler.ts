@@ -7,7 +7,7 @@ import {
 } from "@bakacoding/pr";
 import type { EventOf, TicketStatus } from "@bakacoding/types";
 import { BackpressureController } from "./backpressure.js";
-import { matchesAny, sampleOf, scopesOverlap } from "./glob.js";
+import { inExclusiveZone, matchesAny, scopesOverlap } from "./glob.js";
 import type {
   BackpressureState,
   ChangedInterface,
@@ -318,11 +318,11 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   // ---------- 写入范围锁（T-039） ----------
 
   /**
-   * 写入范围是否落在独占区域：任一条 glob 的代表路径匹配某个独占区域（`sampleOf`）。不用「可能重叠」判断，
-   * 否则 `src/**` 这种目录范围会因为理论上可能含 package.json 而全都变成独占。
+   * 写入范围是否落在独占区域（`inExclusiveZone`）：代表路径匹配区域，或末段模式能写到区域里的具体文件名。
+   * 不用「可能重叠」判断，否则 `src/**` 这种目录范围会因为理论上可能含 package.json 而全都变成独占。
    */
   const isExclusive = (scope: readonly string[]): boolean =>
-    scope.some((g) => matchesAny(sampleOf(g), zones));
+    scope.some((g) => inExclusiveZone(g, zones));
 
   /** 持锁中的其他单（终态的单自动不算：合并或上报即释放）。 */
   function holders(except?: Entry): Entry[] {

@@ -16,4 +16,15 @@ export {
   DEFAULT_EXCLUSIVE_ZONES,
   WHOLE_REPO_SCOPE,
 } from "./scheduler.js";
-export { globToRegExp, matchesAny, globsOverlap, scopesOverlap, sampleOf } from "./glob.js";
+export {
+  globToRegExp,
+  matchesAny,
+  globsOverlap,
+  scopesOverlap,
+  sampleOf,
+  samplesOf,
+  expandBraces,
+  inExclusiveZone,
+  isUnsafeScope,
+  MAX_BRACE_EXPANSIONS,
+} from "./glob.js";
