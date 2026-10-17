@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`3404aab` · main 上测试：63 个测试文件、1444 个测试全部通过 · 更新日期：2026-10-18（UTC+8）
+> 上次更新时 main：`3305a79` · main 上测试：65 个测试文件、1464 个测试全部通过 · 更新日期：2026-10-18（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -39,7 +39,7 @@ flowchart BT
 
   class M0,M1,M2,M3,M4,M5,M6,M7,M8,M9,M11,T done
   class M10 done
-  class M12 done
+  class M12 doing
 ```
 
 图例：绿色 = 已完成，黄色 = 进行中，灰色 = 未开始。
@@ -125,6 +125,8 @@ flowchart BT
 | T-068 | 模块 3：`redact` 10 万字符输入的耗时上限从 500ms 放宽到 2s（和 T-062 诊断用例一致）；以 main 旧正则为基准的邮箱随机对比提高比对下限（≥320），另按含 2 个及以上 `.`（≥140）、含 `-`（≥75）分开计数各设下限 | 3 | 基础层开发 | 已合入 | #77 | `37a99b3` |
 | T-069 | 模块 6：check-runs 翻页以 total_count 为准，不再遇到本页不足 100 条就停 | 6 | 执行层开发 | 已合入 | #76 | `4e518fd` |
 | T-070 | 模块 10：高风险待裁决不计入主管待办（去掉与 9 `pending_pr_limit` 的反压双计） | 10 | 编排层开发 | 已合入 | #75 | `61716e3` |
+| T-071 | 模块 12：桌面端接入主管对话，新增 IPC `supervisor:chat` 转给 10 的 `chat()`；渲染全部 5 种回复（answer / ask_project / decision_saved / dispatched / split_failed）；只读 / 未接线 / chat() 抛错返回 ok:false，原因脱敏 + 截断后显示；等待中禁用发送，一次只发一条 | 12 | 界面与诊断开发 | 已合入 | #79 | `3305a79` |
+| T-072 | 模块 12：导入项目入口（检查 config/models.json、config/pricing.json，缺了要明确提示）；「导出」接上 11 诊断包导出（完整脱敏）；只读设置页（当前仓库、环境变量已设 / 未设、本地 / GitHub 模式） | 12 | 界面与诊断开发 | 未开始 | — | — |
 | T-073 | 模块 12 打包：Windows x64 免安装 zip（electron-builder，`package:win` / `package:linux`），版本 1.0.0-preview；`electron` 固定 43.8.0（ABI 148），better-sqlite3 用 12.12.0 官方 electron-v148 预编译包，原生模块 asarUnpack | 12 | 界面与诊断开发 | 待评审 | #80 | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。

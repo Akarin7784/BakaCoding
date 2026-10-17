@@ -1,6 +1,7 @@
 // 把只读数据与后端状态通过 IPC 推给渲染进程。
 import {
   IPC_CHANNELS,
+  type DesktopChatResult,
   type DesktopDecideHighRiskResult,
   type DesktopSyncState,
   type DesktopUpdate,
@@ -154,5 +155,34 @@ export function serveSyncState(
   return () => {
     clearInterval(timer);
     ipc.removeHandler(IPC_CHANNELS.syncState);
+  };
+}
+
+/** 把渲染进程传来的参数收成 10 的 UserMessage；text 不是字符串时给空串（由后端判空）。 */
+export function toUserMessage(arg: unknown): {
+  text: string;
+  project_id?: string;
+  message_id?: string;
+} {
+  const o = (typeof arg === "object" && arg !== null ? arg : {}) as Record<string, unknown>;
+  return {
+    text: typeof o.text === "string" ? o.text : "",
+    ...(typeof o.project_id === "string" && o.project_id && { project_id: o.project_id }),
+    ...(typeof o.message_id === "string" && o.message_id && { message_id: o.message_id }),
+  };
+}
+
+/** 主管对话 IPC（T-071）：invoke `supervisor:chat` → backend.supervisorChat → 10 的 chat()。 */
+export function serveSupervisorChat(
+  ipc: IpcMainLike,
+  backend: Pick<BackendHandle, "supervisorChat">,
+): () => void {
+  ipc.handle(IPC_CHANNELS.supervisorChat, async (...args: unknown[]) => {
+    // ipcMain.handle 的第一个参数是 event；测试注入时也按这个约定
+    const result: DesktopChatResult = await backend.supervisorChat(toUserMessage(args[1]));
+    return result;
+  });
+  return () => {
+    ipc.removeHandler(IPC_CHANNELS.supervisorChat);
   };
 }

@@ -99,7 +99,13 @@ export function App(props: AppProps) {
           {selection.kind === "unattributed" ? (
             <UnattributedPanel escalations={unattributed} warnings={unattributedWarnings} />
           ) : selection.kind === "supervisor" || !current ? (
-            <SupervisorChat initial={supervisorMessages} />
+            <SupervisorChat
+              initial={supervisorMessages}
+              api={api}
+              projectId={
+                selection.kind === "project" ? current?.project.payload.project_id : undefined
+              }
+            />
           ) : (
             <ProjectGroup
               view={current}
