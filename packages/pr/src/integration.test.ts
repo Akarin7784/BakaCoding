@@ -232,3 +232,164 @@ export function f(r: PrRecord) {
     expect(diags).toEqual([]);
   }, 30_000);
 });
+
+describe("T-076 本地模式：合入默认集成分支前补建（从基线分支建，幂等、并发安全）", () => {
+  /** 按 4 的做法（worktree add -b bakacoding/<单号>-r0 <base>）开单、提交、open。 */
+  async function freshTicket(ticket: string, base = "main", provider = pr) {
+    const branch = `bakacoding/${ticket}-r0`;
+    const wt = join(root, `wt-${ticket}`);
+    await git(repo, ["worktree", "add", "-q", "-b", branch, wt, base]);
+    const pr_id = await provider.open(ticket, wt, branch);
+    await writeFile(join(wt, `${ticket}.txt`), `${ticket}\n`);
+    const sha = await provider.commitWorktree(ticket, wt);
+    return { pr_id, wt, branch, sha };
+  }
+  async function exists(ref: string) {
+    return (
+      (await git(repo, ["show-ref", "--verify", "--quiet", ref], { allowCodes: [1] })).code === 0
+    );
+  }
+  async function isAncestor(a: string, b: string) {
+    return (await git(repo, ["merge-base", "--is-ancestor", a, b], { allowCodes: [1] })).code === 0;
+  }
+  /** 集成分支的 reflog，旧的在前（core.logAllRefUpdates 对非裸仓库默认开启）。 */
+  async function reflog() {
+    const out = (
+      await git(repo, ["reflog", "show", "--format=%H", `refs/heads/${INTEGRATION_BRANCH}`])
+    ).stdout;
+    return out.trim().split("\n").filter(Boolean).reverse();
+  }
+
+  it("新仓库没有集成分支：第一张单 open → commit → merge 走通，集成分支从 main 建出并含该提交", async () => {
+    expect(await exists(`refs/heads/${INTEGRATION_BRANCH}`)).toBe(false);
+    const mainBefore = await rev("main");
+    const t = await freshTicket("T-1");
+    // open / commit 不建分支，合入前才补建
+    expect(await exists(`refs/heads/${INTEGRATION_BRANCH}`)).toBe(false);
+
+    const res = await pr.merge(t.pr_id, INTEGRATION_BRANCH, { expected_head: t.sha });
+    expect(res).toEqual({ merged: true, sha: t.sha, fast_forward: true });
+    expect(await rev(INTEGRATION_BRANCH)).toBe(t.sha);
+    expect((await reflog())[0]).toBe(mainBefore);
+    expect(await rev("main")).toBe(mainBefore);
+    expect((await git(repo, ["symbolic-ref", "--short", "HEAD"])).stdout.trim()).toBe("main");
+    expect(await store.get(t.pr_id)).toMatchObject({
+      status: "merged",
+      merged_into: INTEGRATION_BRANCH,
+      merge_sha: t.sha,
+    });
+
+    // 第二张单合入已建好的集成分支（不再重建）
+    const t2 = await freshTicket("T-2");
+    expect(await pr.merge(t2.pr_id, INTEGRATION_BRANCH)).toMatchObject({
+      merged: true,
+      fast_forward: false,
+    });
+    for (const s of [t.sha, t2.sha]) expect(await isAncestor(s, INTEGRATION_BRANCH)).toBe(true);
+  });
+
+  it("工作树检出在带未合入提交的功能分支上：集成分支指向 main，不含该提交", async () => {
+    const mainSha = await rev("main");
+    await git(repo, ["checkout", "-q", "-b", "feat/wip"]);
+    await writeFile(join(repo, "wip.txt"), "wip\n");
+    await commitAll(repo, "wip");
+    const wip = await rev("HEAD");
+    expect(wip).not.toBe(mainSha);
+
+    const t = await freshTicket("T-1", "main");
+    const res = await pr.merge(t.pr_id, INTEGRATION_BRANCH);
+    expect(res).toEqual({ merged: true, sha: t.sha, fast_forward: true });
+    expect((await reflog())[0]).toBe(mainSha);
+    expect(await rev(`${INTEGRATION_BRANCH}~1`)).toBe(mainSha);
+    expect(await isAncestor(wip, INTEGRATION_BRANCH)).toBe(false);
+    // 功能分支和检出都不动
+    expect(await rev("feat/wip")).toBe(wip);
+    expect((await git(repo, ["symbolic-ref", "--short", "HEAD"])).stdout.trim()).toBe("feat/wip");
+  });
+
+  it("配置了别的基线分支（baseBranch）时从它建出", async () => {
+    await git(repo, ["branch", "trunk", "main"]);
+    const wt = join(root, "wt-trunk");
+    await git(repo, ["worktree", "add", "-q", wt, "trunk"]);
+    await writeFile(join(wt, "t.txt"), "t\n");
+    await commitAll(wt, "trunk moved");
+    const trunk = await rev("trunk");
+    const p2 = new LocalPrProvider({
+      store,
+      repo,
+      baseBranch: "trunk",
+      author: { name: "t", email: "t@t" },
+    });
+    const t = await freshTicket("T-1", "trunk", p2);
+    expect(await p2.merge(t.pr_id, INTEGRATION_BRANCH)).toMatchObject({ merged: true });
+    expect((await reflog())[0]).toBe(trunk);
+  });
+
+  it("集成分支已存在（落后于 main）：不动它，照常合入", async () => {
+    await git(repo, ["branch", INTEGRATION_BRANCH, "main"]);
+    const intBefore = await rev(INTEGRATION_BRANCH);
+    await writeFile(join(repo, "a.txt"), "main moved\n");
+    await commitAll(repo, "main moved");
+    const t = await freshTicket("T-1", INTEGRATION_BRANCH);
+    expect(await pr.merge(t.pr_id, INTEGRATION_BRANCH)).toMatchObject({
+      merged: true,
+      fast_forward: true,
+    });
+    expect(await rev(`${INTEGRATION_BRANCH}~1`)).toBe(intBefore);
+    expect(await isAncestor(await rev("main"), INTEGRATION_BRANCH)).toBe(false);
+  });
+
+  it("集成分支已存在且领先：补建逻辑不改它的位置", async () => {
+    const t0 = await freshTicket("T-0");
+    await pr.merge(t0.pr_id, INTEGRATION_BRANCH);
+    const before = await rev(INTEGRATION_BRANCH);
+    const t = await freshTicket("T-1");
+    expect(await pr.merge(t.pr_id, INTEGRATION_BRANCH)).toMatchObject({
+      merged: true,
+      fast_forward: false,
+    });
+    const parents = (await git(repo, ["rev-list", "--parents", "-n1", INTEGRATION_BRANCH])).stdout
+      .trim()
+      .split(" ");
+    expect(parents.slice(1)).toEqual([before, t.sha]);
+  });
+
+  it("两张单同时合并、同时触发建分支：只建一次，两张单都合入", async () => {
+    const mainSha = await rev("main");
+    const t1 = await freshTicket("T-1");
+    const t2 = await freshTicket("T-2");
+    const [r1, r2] = await Promise.all([
+      pr.merge(t1.pr_id, INTEGRATION_BRANCH),
+      pr.merge(t2.pr_id, INTEGRATION_BRANCH),
+    ]);
+    expect(r1).toMatchObject({ merged: true });
+    expect(r2).toMatchObject({ merged: true });
+    // reflog：建一次（指向 main）+ 两次合入
+    const log = await reflog();
+    expect(log).toHaveLength(3);
+    expect(log[0]).toBe(mainSha);
+    for (const s of [t1.sha, t2.sha]) expect(await isAncestor(s, INTEGRATION_BRANCH)).toBe(true);
+    for (const id of [t1.pr_id, t2.pr_id])
+      expect(await store.get(id)).toMatchObject({ status: "merged" });
+  });
+
+  it("ensureBranch 并发调用（含不同实例）：都成功，分支只建一次、指向 target", async () => {
+    const mainSha = await rev("main");
+    const other = new LocalPrProvider({ store, repo });
+    const shas = await Promise.all([
+      pr.ensureBranch(repo, INTEGRATION_BRANCH, "main"),
+      other.ensureBranch(repo, INTEGRATION_BRANCH, "main"),
+      pr.ensureBranch(repo, INTEGRATION_BRANCH, "main"),
+    ]);
+    expect(shas).toEqual([mainSha, mainSha, mainSha]);
+    expect(await rev(INTEGRATION_BRANCH)).toBe(mainSha);
+    expect(await reflog()).toEqual([mainSha]);
+  });
+
+  it("别的 target 不存在时不自动建，照常报错", async () => {
+    const t = await freshTicket("T-1");
+    await expect(pr.merge(t.pr_id, "no-such-branch")).rejects.toThrow();
+    expect(await exists("refs/heads/no-such-branch")).toBe(false);
+    expect(await store.get(t.pr_id)).toMatchObject({ status: "open" });
+  });
+});
