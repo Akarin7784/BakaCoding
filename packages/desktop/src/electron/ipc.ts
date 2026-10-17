@@ -9,9 +9,12 @@ import {
 import type { BackendHandle } from "./backend.js";
 import type { EventReader } from "./reader.js";
 
-/** 主进程 ipcMain 的最小子集，便于测试注入。 */
+/**
+ * 主进程 ipcMain 的最小子集，便于测试注入。
+ * 和真实 Electron 一样，handler 的第一个参数是 IpcMainInvokeEvent，渲染进程传的参数从第二个起（T-074）。
+ */
 export interface IpcMainLike {
-  handle(channel: string, listener: (...args: unknown[]) => unknown): void;
+  handle(channel: string, listener: (event: unknown, ...args: unknown[]) => unknown): void;
   removeHandler(channel: string): void;
 }
 
@@ -92,11 +95,12 @@ export function serveHighRisk(
   sink: () => UpdateSink | null,
 ): () => void {
   ipc.handle(IPC_CHANNELS.highRiskPending, () => backend.pendingHighRisk());
+  // 第一个参数是 IpcMainInvokeEvent，渲染进程的参数从 args[1] 起（T-074）
   ipc.handle(IPC_CHANNELS.highRiskDecide, async (...args: unknown[]) => {
-    const ticket_id = String(args[0] ?? "");
-    const pr_id = String(args[1] ?? "");
-    const decision = args[2] === "reject" ? "reject" : "release";
-    const detail = typeof args[3] === "string" ? args[3] : undefined;
+    const ticket_id = String(args[1] ?? "");
+    const pr_id = String(args[2] ?? "");
+    const decision = args[3] === "reject" ? "reject" : "release";
+    const detail = typeof args[4] === "string" ? args[4] : undefined;
     const result: DesktopDecideHighRiskResult = await backend.decideHighRisk(
       ticket_id,
       pr_id,

@@ -8,7 +8,14 @@ import {
   type DesktopSyncState,
   type DesktopUpdate,
 } from "../shared/api.js";
-import { serveReader, serveSyncState, type IpcMainLike } from "./ipc.js";
+import type { BackendHandle } from "./backend.js";
+import {
+  serveBackend,
+  serveHighRisk,
+  serveReader,
+  serveSyncState,
+  type IpcMainLike,
+} from "./ipc.js";
 import { createDesktopApi, type IpcRendererLike } from "./preload-api.js";
 import type { EventReader } from "./reader.js";
 
@@ -22,14 +29,58 @@ const snap: DesktopSnapshot = {
 
 afterEach(() => vi.useRealTimers());
 
+/** 真实 Electron 传给 handle 的第一个参数（IpcMainInvokeEvent）的替身（T-074）。 */
+const FAKE_EVENT = Object.freeze({ sender: { id: 1 }, frameId: 1, processId: 1 });
+
+/**
+ * 主进程 ipcMain 的替身：和真实 Electron 一样，invoke 时先传 event，再传渲染进程的参数（T-074）。
+ * 以前直接 `handler(...args)`，handler 把 event 当成第一个参数也测不出来。
+ */
+function fakeIpcMain() {
+  const handlers = new Map<string, (event: unknown, ...a: unknown[]) => unknown>();
+  const ipc: IpcMainLike = {
+    handle: (c, l) => {
+      if (handlers.has(c)) throw new Error(`重复注册 handler：${c}`);
+      handlers.set(c, l);
+    },
+    removeHandler: (c) => void handlers.delete(c),
+  };
+  const invoke = (channel: string, ...args: unknown[]): unknown => {
+    const h = handlers.get(channel);
+    if (!h) throw new Error(`没有注册 handler：${channel}`);
+    return h(FAKE_EVENT, ...args);
+  };
+  return { ipc, handlers, invoke };
+}
+
+/** 只实现 IPC 层用到的成员，其余调用就抛错。 */
+function fakeBackend(over: Partial<BackendHandle> = {}): BackendHandle {
+  const base: Partial<BackendHandle> = {
+    status: vi.fn(() => ({ mode: "live" }) as unknown as ReturnType<BackendHandle["status"]>),
+    markRendererReady: vi.fn(() => [{ text: "回放" }]),
+    onNotify: vi.fn(() => () => {}),
+    pendingHighRisk: vi.fn(() => []),
+    decideHighRisk: vi.fn(async () => ({
+      ok: true as const,
+      result: { decision: "release" as const, result: "released" as const },
+    })),
+    onPendingHighRisk: vi.fn(() => () => {}),
+    refreshPendingHighRisk: vi.fn(),
+    syncState: vi.fn(() => ({ available: false as const, reason: "x" })),
+    ...over,
+  };
+  return new Proxy(base as BackendHandle, {
+    get(t, k) {
+      if (k in t) return (t as unknown as Record<string | symbol, unknown>)[k];
+      throw new Error(`fakeBackend 没实现 ${String(k)}`);
+    },
+  });
+}
+
 describe("主进程 IPC", () => {
   it("invoke 快照通道返回快照；按间隔轮询，有更新才推送；停止后移除 handler", () => {
     vi.useFakeTimers();
-    const handlers = new Map<string, (...a: unknown[]) => unknown>();
-    const ipc: IpcMainLike = {
-      handle: (c, l) => void handlers.set(c, l),
-      removeHandler: (c) => void handlers.delete(c),
-    };
+    const { ipc, handlers, invoke } = fakeIpcMain();
     const update: DesktopUpdate = { db: snap.db, events: [], last_seq: 3 };
     const polls = [null, update];
     const reader: EventReader = {
@@ -39,13 +90,106 @@ describe("主进程 IPC", () => {
     };
     const send = vi.fn();
     const stop = serveReader(ipc, reader, () => ({ send, isDestroyed: () => false }), 500);
-    expect(handlers.get(IPC_CHANNELS.snapshot)?.()).toBe(snap);
+    expect(invoke(IPC_CHANNELS.snapshot)).toBe(snap);
     vi.advanceTimersByTime(500);
     expect(send).not.toHaveBeenCalled();
     vi.advanceTimersByTime(500);
     expect(send).toHaveBeenCalledWith(IPC_CHANNELS.update, update);
     stop();
     expect(handlers.has(IPC_CHANNELS.snapshot)).toBe(false);
+  });
+});
+
+describe("handler 参数：第一个是 event，渲染进程参数从第二个起（T-074）", () => {
+  it("high-risk:decide 放行：ticket_id / pr_id / decision 按位置对应，detail 不传为 undefined", async () => {
+    const { ipc, invoke } = fakeIpcMain();
+    const backend = fakeBackend();
+    serveHighRisk(ipc, backend, () => null);
+    await expect(invoke(IPC_CHANNELS.highRiskDecide, "T-1", "pr-9", "release")).resolves.toEqual({
+      ok: true,
+      result: { decision: "release", result: "released" },
+    });
+    expect(backend.decideHighRisk).toHaveBeenCalledTimes(1);
+    expect(backend.decideHighRisk).toHaveBeenCalledWith("T-1", "pr-9", "release", undefined);
+  });
+
+  it("high-risk:decide 拒绝：detail 原样传给后端", async () => {
+    const { ipc, invoke } = fakeIpcMain();
+    const backend = fakeBackend();
+    serveHighRisk(ipc, backend, () => null);
+    await invoke(IPC_CHANNELS.highRiskDecide, "T-2", "pr-3", "reject", "依赖升级不要");
+    expect(backend.decideHighRisk).toHaveBeenCalledWith("T-2", "pr-3", "reject", "依赖升级不要");
+  });
+
+  it("high-risk:decide 不把 event 当成参数：event 不会出现在传给后端的任何位置", async () => {
+    const { ipc, invoke } = fakeIpcMain();
+    const backend = fakeBackend();
+    serveHighRisk(ipc, backend, () => null);
+    await invoke(IPC_CHANNELS.highRiskDecide, "T-3", "pr-4", "reject");
+    const call = vi.mocked(backend.decideHighRisk).mock.calls[0]!;
+    expect(call).not.toContain(FAKE_EVENT);
+    expect(call.map(String)).not.toContain(String(FAKE_EVENT));
+    expect(call).toEqual(["T-3", "pr-4", "reject", undefined]);
+  });
+
+  it("high-risk:decide 未知 decision 按 release、非字符串 detail 丢掉（保持 T-062 行为）", async () => {
+    const { ipc, invoke } = fakeIpcMain();
+    const backend = fakeBackend();
+    serveHighRisk(ipc, backend, () => null);
+    await invoke(IPC_CHANNELS.highRiskDecide, "T-4", "pr-5", "whatever", 42);
+    expect(backend.decideHighRisk).toHaveBeenCalledWith("T-4", "pr-5", "release", undefined);
+  });
+
+  it("不带参数的通道在真实调用形状下照常返回（backend:status / supervisor:ready / high-risk:pending）", () => {
+    const { ipc, invoke } = fakeIpcMain();
+    const backend = fakeBackend();
+    const send = vi.fn();
+    serveBackend(ipc, backend, () => ({ send, isDestroyed: () => false }));
+    serveHighRisk(ipc, backend, () => null);
+    expect(invoke(IPC_CHANNELS.backendStatus)).toEqual({ mode: "live" });
+    expect(invoke(IPC_CHANNELS.supervisorReady)).toEqual([{ text: "回放" }]);
+    expect(send).toHaveBeenCalledWith(IPC_CHANNELS.supervisorNotify, { text: "回放" });
+    expect(invoke(IPC_CHANNELS.highRiskPending)).toEqual([]);
+  });
+
+  it("preload → 主进程整条链路：每个 invoke 通道都按真实 Electron 形状往返，参数一一对应", async () => {
+    vi.useFakeTimers();
+    const { ipc, handlers, invoke } = fakeIpcMain();
+    const backend = fakeBackend();
+    const reader: EventReader = { snapshot: () => snap, poll: () => null, close: () => {} };
+    const stops = [
+      serveReader(ipc, reader, () => null, 1000),
+      serveBackend(ipc, backend, () => null),
+      serveHighRisk(ipc, backend, () => null),
+      serveSyncState(ipc, backend, () => null, 1000),
+    ];
+    // 渲染进程一侧：ipcRenderer.invoke(channel, ...args) → 主进程 handler(event, ...args)
+    const seen = new Set<string>();
+    const bridge: IpcRendererLike = {
+      invoke: async (c, ...a) => {
+        seen.add(c);
+        return invoke(c, ...a);
+      },
+      on: () => {},
+      removeListener: () => {},
+    };
+    const api = createDesktopApi(bridge, "linux");
+    await expect(api.getSnapshot()).resolves.toBe(snap);
+    await api.getBackendStatus();
+    await api.markSupervisorReady();
+    await expect(api.getPendingHighRisk()).resolves.toEqual([]);
+    await api.decideHighRisk("T-9", "pr-1", "reject", "不要");
+    expect(backend.decideHighRisk).toHaveBeenCalledWith("T-9", "pr-1", "reject", "不要");
+    await api.getSyncState();
+    // 新增通道时这里会失败：要么在上面补一条往返，要么说明它不带参数
+    expect([...handlers.keys()].sort()).toEqual([...seen].sort());
+    for (const s of stops) s();
+    expect(handlers.size).toBe(0);
+  });
+
+  it("ipc.ts 里的 handler 不从 args[0] 取渲染进程参数（args[0] 是 event）", () => {
+    const src = readFileSync(path.join(here, "ipc.ts"), "utf8");
+    expect(src).not.toMatch(/\bargs\[0\]/);
   });
 });
 
@@ -62,11 +206,7 @@ describe("同步状态 IPC（T-067）", () => {
 
   it("invoke sync:state 返回当前状态；变化才推 sync:state-update；停止后移除 handler", () => {
     vi.useFakeTimers();
-    const handlers = new Map<string, (...a: unknown[]) => unknown>();
-    const ipc: IpcMainLike = {
-      handle: (c, l) => void handlers.set(c, l),
-      removeHandler: (c) => void handlers.delete(c),
-    };
+    const { ipc, handlers, invoke } = fakeIpcMain();
     let current: DesktopSyncState = live;
     const send = vi.fn();
     const stop = serveSyncState(
@@ -75,7 +215,7 @@ describe("同步状态 IPC（T-067）", () => {
       () => ({ send, isDestroyed: () => false }),
       100,
     );
-    expect(handlers.get(IPC_CHANNELS.syncState)?.()).toEqual(live);
+    expect(invoke(IPC_CHANNELS.syncState)).toEqual(live);
     vi.advanceTimersByTime(100);
     expect(send).not.toHaveBeenCalled();
     current = { ...live, enabled: false, disabled_reason: "auth", next_at: null };
@@ -89,14 +229,10 @@ describe("同步状态 IPC（T-067）", () => {
   });
 
   it("只读后端：sync:state 返回 available:false", () => {
-    const handlers = new Map<string, (...a: unknown[]) => unknown>();
-    const ipc: IpcMainLike = {
-      handle: (c, l) => void handlers.set(c, l),
-      removeHandler: (c) => void handlers.delete(c),
-    };
+    const { ipc, invoke } = fakeIpcMain();
     const ro: DesktopSyncState = { available: false, reason: "只读模式：写入锁被占用（pid 1）" };
     const stop = serveSyncState(ipc, { syncState: () => ro }, () => null, 100);
-    expect(handlers.get(IPC_CHANNELS.syncState)?.()).toEqual(ro);
+    expect(invoke(IPC_CHANNELS.syncState)).toEqual(ro);
     stop();
   });
 });
