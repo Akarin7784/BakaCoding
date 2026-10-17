@@ -6,6 +6,7 @@ import { app, BrowserWindow, dialog, ipcMain, nativeTheme } from "electron";
 import { resolveRepoDbPath, startBackend } from "./backend.js";
 import {
   serveBackend,
+  serveBackendReload,
   serveHighRisk,
   serveProjectSettings,
   serveReader,
@@ -148,6 +149,7 @@ if (!gotLock) {
     // 跟随系统时系统切深浅色，标题栏按钮颜色跟着变
     const onNativeTheme = () => applyTitleBar(nativeTheme.shouldUseDarkColors);
     nativeTheme.on("updated", onNativeTheme);
+    const stopBackendReload = serveBackendReload(ipcMain, backend, process.env);
 
     app.on("will-quit", () => {
       stopReader();
@@ -158,6 +160,7 @@ if (!gotLock) {
       stopSupervisorChat();
       stopWindowTheme();
       nativeTheme.off("updated", onNativeTheme);
+      stopBackendReload();
       reader.close();
       void backend.stop();
     });

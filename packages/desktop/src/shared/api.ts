@@ -43,6 +43,10 @@ export const IPC_CHANNELS = {
   settingsGet: "bakacoding:settings:get",
   /** invoke：界面主题偏好同步给主进程，设置 nativeTheme.themeSource 和标题栏按钮颜色（UI-02）。 */
   windowTheme: "bakacoding:window:theme",
+  /** invoke：同一仓库停掉再起来；有在途单则排队，空闲后自动执行（T-093）。 */
+  backendReload: "bakacoding:backend:reload",
+  /** invoke：只读横幅的「重新连接」；与 backend:reload 同一条路径（T-093）。 */
+  backendReconnect: "bakacoding:backend:reconnect",
 } as const;
 
 /** 界面主题偏好（与渲染进程 lib/theme.ts 的 THEME_PREFERENCES 一致，测试锁住）。 */
@@ -118,7 +122,19 @@ export interface DesktopBackendStatus {
     closed: boolean;
     ingest_failures: number;
   };
+  /** 重载进度（T-093）：queued = 等 waitingTickets 张在途单跑完；running = 正在停起。没有就不出现。 */
+  reload?: { state: "queued"; waitingTickets: number; waitingChat: boolean } | { state: "running" };
 }
+
+/**
+ * `backend:reload` / `backend:reconnect` 结果（T-093）。reloaded：已重新起来且是 live；
+ * queued：已排队，等 waitingTickets 张在途单（编码 / 评审 / 合并队列）跑完后自动重载；
+ * failed：没起来（现在是只读）或正在切换项目，reason 已脱敏截断。
+ */
+export type DesktopReloadResult =
+  | { state: "reloaded" }
+  | { state: "queued"; waitingTickets: number; waitingChat: boolean }
+  | { state: "failed"; reason: string };
 
 export interface SupervisorNotifyMessage {
   text: string;
@@ -204,6 +220,10 @@ export interface BakaDesktopApi {
   getSettings(): Promise<DesktopSettings>;
   /** 主题偏好同步给主进程（UI-02）；旧版 preload / 测试假 API 可以没有。 */
   setWindowTheme?(source: WindowThemeSource): Promise<DesktopWindowThemeResult>;
+  /** 重载后端（T-093）：改配置或密钥后调用；有在途单时排队。 */
+  reloadBackend(): Promise<DesktopReloadResult>;
+  /** 只读横幅「重新连接」（T-093）。 */
+  reconnectBackend(): Promise<DesktopReloadResult>;
 }
 
 export type {

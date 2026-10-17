@@ -10,6 +10,7 @@ import {
   type DesktopSettings,
   type DesktopHighRiskDecision,
   type DesktopPendingHighRisk,
+  type DesktopReloadResult,
   type DesktopSnapshot,
   type DesktopSyncState,
   type DesktopUpdate,
@@ -87,5 +88,8 @@ export function createDesktopApi(ipc: IpcRendererLike, platform: string): BakaDe
       ipc.invoke(IPC_CHANNELS.supervisorChat, message) as Promise<DesktopChatResult>,
     setWindowTheme: (source: WindowThemeSource) =>
       ipc.invoke(IPC_CHANNELS.windowTheme, source) as Promise<DesktopWindowThemeResult>,
+    reloadBackend: () => ipc.invoke(IPC_CHANNELS.backendReload) as Promise<DesktopReloadResult>,
+    reconnectBackend: () =>
+      ipc.invoke(IPC_CHANNELS.backendReconnect) as Promise<DesktopReloadResult>,
   });
 }
