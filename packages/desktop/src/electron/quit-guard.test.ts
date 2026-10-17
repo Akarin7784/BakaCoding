@@ -46,7 +46,8 @@ describe("createQuitGuard（T-105）", () => {
       afterStop: () => order.push("afterStop"),
       quit: () => {
         order.push("quit");
-        // app.quit() 会再触发一次 before-quit：这次放行
+        // app.quit() 会再触发一次 before-quit：这次放行（只模拟一次，回滚时不会无限重入）
+        if (order.filter((x) => x === "quit").length > 1) return;
         const again = ev();
         g.onBeforeQuit(again);
         order.push(`again:prevented=${again.prevented}`);
