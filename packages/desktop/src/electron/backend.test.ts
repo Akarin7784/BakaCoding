@@ -96,7 +96,8 @@ describe("startBackend（T-063）", () => {
     expect(backend.status().takeOver).toBeDefined();
     expect(backend.status().storage?.ok).toBe(true);
     const ro = openStorageReadonly({ path: db, logger: { warn: () => {} } });
-    expect(typeof ro.maxSeq()).toBe("object"); // null | number
+    const seq = ro.maxSeq();
+    expect(seq === null || typeof seq === "number").toBe(true);
     ro.close();
     await backend.stop();
   });

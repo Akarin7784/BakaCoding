@@ -35,6 +35,10 @@ import {
   type SupervisorDeps,
   type SupervisorTicket,
   type TakeOverReport,
+  type IntegrationReview,
+  type MainMergeResult,
+  MainMergeError,
+  INTEGRATION_DIFF_MAX_CODEPOINTS,
   type TicketValidationError,
   type UserMessage,
 } from "./types.js";
@@ -464,8 +468,15 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     inherit_depends_on: readonly string[];
   }
 
-  function split(req: SplitRequest): Promise<SplitResult> {
-    return splitImpl(req, undefined);
+  async function split(req: SplitRequest): Promise<SplitResult> {
+    chatSplitInflight++;
+    void emitSupervisorBacklog();
+    try {
+      return await splitImpl(req, undefined);
+    } finally {
+      chatSplitInflight = Math.max(0, chatSplitInflight - 1);
+      void emitSupervisorBacklog();
+    }
   }
 
   async function splitImpl(req: SplitRequest, re: ResplitInfo | undefined): Promise<SplitResult> {
@@ -743,8 +754,16 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   let stopped = false;
   /** 上报处理串行执行（进程内排队，提案 §7） */
   let chain: Promise<unknown> = Promise.resolve();
+  /** T-042：计入 supervisor_backlog */
+  let chatSplitInflight = 0;
+  let escalationPending = 0;
   function serial<T>(fn: () => Promise<T>): Promise<T> {
-    const p = chain.then(fn, fn);
+    escalationPending++;
+    void emitSupervisorBacklog();
+    const p = chain.then(fn, fn).finally(() => {
+      escalationPending = Math.max(0, escalationPending - 1);
+      void emitSupervisorBacklog();
+    });
     chain = p.catch(() => undefined);
     return p;
   }
@@ -1337,13 +1356,59 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         (err: unknown) => logger.warn(`处理上报（${e.ticket_id ?? "无单号"}）出错`, err),
       ),
     );
+    // T-042 Q-1：合入集成分支后，无在途单时自动审一次（同一 head 只审一次）
+    const offInterface = deps.subscribe("interface_changed", () => {
+      void maybeAutoReview().catch((err: unknown) => logger.warn("自动审查集成分支失败", err));
+    });
+    void emitSupervisorBacklog();
     return () => {
       stopped = true;
       offProject();
       offEscalated();
+      offInterface();
       for (const h of retryTimers) timers.clearTimeout(h);
       retryTimers.clear();
     };
+  }
+
+  async function maybeAutoReview(): Promise<void> {
+    if (stopped || !deps.pr) return;
+    if (deps.integration && !(await deps.integration.idle())) return;
+    let head: string;
+    try {
+      const pr_id = await deps.pr.openIntegration();
+      head = (await deps.pr.diff(pr_id)).head_sha;
+    } catch (err) {
+      logger.warn("自动审：取集成分支 head 失败", err);
+      return;
+    }
+    if (autoReviewedHeads.has(head)) return;
+    // 先占位，避免并发重复审；失败则去掉以便重试
+    autoReviewedHeads.add(head);
+    try {
+      const r = await reviewIntegration();
+      if (r.result === "ok") {
+        const mainMerge = deps.getConfig().pipeline.main_merge ?? "user";
+        if (mainMerge === "supervisor") {
+          try {
+            await mergeMain({ by: "supervisor", head_sha: r.head_sha });
+          } catch (err) {
+            logger.warn("自动审通过后合入 main 失败", err);
+          }
+        } else {
+          // user 模式：reviewIntegration 已 notify；mergeMain(by:supervisor) 再通知一次也可，这里不重复
+        }
+      } else if (r.result === "blocked") {
+        const reasons = r.reasons.map((x) => x.code).join("、");
+        await notify(
+          `集成分支自动审查未通过（${reasons}）${r.summary ? "：" + r.summary : ""}。可稍后手动再审。`,
+          {},
+        );
+      }
+    } catch (err) {
+      autoReviewedHeads.delete(head);
+      throw err;
+    }
   }
 
   async function splitForChat(
@@ -1402,6 +1467,17 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   }
 
   async function chat(msg: UserMessage): Promise<ChatReply> {
+    chatSplitInflight++;
+    void emitSupervisorBacklog();
+    try {
+      return await chatBody(msg);
+    } finally {
+      chatSplitInflight = Math.max(0, chatSplitInflight - 1);
+      void emitSupervisorBacklog();
+    }
+  }
+
+  async function chatBody(msg: UserMessage): Promise<ChatReply> {
     const list = projects();
     const explicit = msg.project_id ? list.find((p) => p.project_id === msg.project_id) : undefined;
     // 有暂存需求时：界面传的 project_id 优先；否则原文里恰好提到一个项目才认领，
@@ -1558,6 +1634,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         requirement_id: info.requirement_id,
       },
     );
+    void emitSupervisorBacklog();
   }
 
   function decideHighRisk(
@@ -1591,6 +1668,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     if (decision === "release") {
       const result = await gate.release(ticket_id, pr_id);
       pendingHR.delete(ticket_id);
+      void emitSupervisorBacklog();
       return { decision, result };
     }
     const why = detail?.trim() || "用户拒绝";
@@ -1776,6 +1854,318 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     );
   }
 
+  // ---------- 集成分支审查与合入 main（T-042） ----------
+
+  type OkReview = Extract<IntegrationReview, { result: "ok" }>;
+  let lastOkReview: OkReview | null = null;
+  /** 已自动审过的 head（同一 head 只自动审一次） */
+  const autoReviewedHeads = new Set<string>();
+  let integrationReviewing = false;
+  let lastBacklog: { pending: number; capacity: number } | null = null;
+
+  function backlogPending(): number {
+    return (
+      chatSplitInflight +
+      escalationPending +
+      pendingHighRisk().length +
+      (integrationReviewing ? 1 : 0)
+    );
+  }
+
+  async function emitSupervisorBacklog(): Promise<void> {
+    const capacity = deps.getConfig().pipeline.supervisor_backlog_limit ?? 10;
+    const pending = backlogPending();
+    if (lastBacklog && lastBacklog.pending === pending && lastBacklog.capacity === capacity) return;
+    lastBacklog = { pending, capacity };
+    try {
+      await deps.publish({
+        type: "supervisor_backlog",
+        requirement_id: null,
+        ticket_id: null,
+        trace_id: newId(),
+        span_id: newId(),
+        parent_span_id: null,
+        event_id: newId(),
+        ts: nowIso(),
+        payload: { pending, capacity },
+      });
+    } catch (err) {
+      logger.warn("发 supervisor_backlog 失败", err);
+    }
+  }
+
+  function truncateDiffText(text: string): { text: string; truncated: boolean } {
+    const cps = [...text];
+    if (cps.length <= INTEGRATION_DIFF_MAX_CODEPOINTS) return { text, truncated: false };
+    return {
+      text: cps.slice(0, INTEGRATION_DIFF_MAX_CODEPOINTS).join(""),
+      truncated: true,
+    };
+  }
+
+  async function reviewIntegration(opts?: { project_id?: string }): Promise<IntegrationReview> {
+    const pr = deps.pr;
+    if (!pr) throw new MainMergeError("unavailable", "没有注入 pr，不能审查集成分支");
+    integrationReviewing = true;
+    void emitSupervisorBacklog();
+    try {
+      // Q-1：有在途单时 blocked（自动审路径也会先看 idle；手动入口同样挡）
+      if (deps.integration) {
+        const idle = await deps.integration.idle();
+        if (!idle) {
+          const inflight = deps.storage
+            .listTickets()
+            .filter((r) => {
+              const s = r.status ?? "pending";
+              return s !== "merged" && s !== "escalated";
+            })
+            .map((r) => r.ticket_id);
+          return {
+            result: "blocked",
+            pr_id: null,
+            head_sha: null,
+            reasons: [{ code: "tickets_in_flight", ticket_ids: inflight }],
+          };
+        }
+      }
+
+      const pr_id = await pr.openIntegration();
+      const diff = await pr.diff(pr_id);
+      if (!diff.files.length) {
+        return {
+          result: "blocked",
+          pr_id,
+          head_sha: diff.head_sha,
+          reasons: [{ code: "nothing_to_merge" }],
+        };
+      }
+
+      const checks = await pr.checks(pr_id);
+      const failed = checks.filter(
+        (c) =>
+          c.status === "completed" &&
+          (c.conclusion === "failure" ||
+            c.conclusion === "timed_out" ||
+            c.conclusion === "cancelled"),
+      );
+      if (failed.length) {
+        return {
+          result: "blocked",
+          pr_id,
+          head_sha: diff.head_sha,
+          reasons: [
+            {
+              code: "ci_failed",
+              checks: failed.map((c) => ({
+                name: c.name,
+                conclusion: c.conclusion ?? "failure",
+                ...(c.url ? { url: c.url } : {}),
+              })),
+            },
+          ],
+        };
+      }
+      const pending = checks.filter((c) => c.status === "queued" || c.status === "in_progress");
+      if (pending.length) {
+        return {
+          result: "blocked",
+          pr_id,
+          head_sha: diff.head_sha,
+          reasons: [
+            {
+              code: "ci_pending",
+              checks: pending.map((c) => ({ name: c.name, status: c.status })),
+            },
+          ],
+        };
+      }
+      const ci: "green" | "none" = checks.length ? "green" : "none";
+
+      // 调主管模型
+      const cfg = deps.getConfig().roles.supervisor;
+      const template = await deps.promptTemplate("supervisor");
+      const fileList = diff.files
+        .map(
+          (f) =>
+            `${f.status} ${f.path} +${f.additions}/-${f.deletions}${f.patch ? `\n${f.patch}` : ""}`,
+        )
+        .join("\n\n");
+      const trunc = truncateDiffText(fileList);
+      const reqId = `integration-${newId().replace(/-/g, "").slice(0, 12)}`;
+      const n = nonce();
+      const body = [
+        `集成分支审查。CI：${ci === "green" ? "已绿" : "未配置"}。`,
+        trunc.truncated ? `（diff 已截断到 ${INTEGRATION_DIFF_MAX_CODEPOINTS} 码点）` : "",
+        "",
+        untrustedNotice(n),
+        wrapUntrusted(trunc.text, "integration_diff", n),
+      ]
+        .filter(Boolean)
+        .join("\n");
+      const prompt = [template.trim(), OUTPUT_SPEC.integration, body].join("\n\n");
+      let raw: string;
+      try {
+        const r = await deps.call("supervisor", cfg.provider, cfg.model, "max", prompt, {
+          role: "supervisor",
+          requirement_id: reqId,
+          ticket_id: null,
+          is_resubmit: false,
+          trace: { trace_id: reqId, span_id: newId(), parent_span_id: null },
+        });
+        raw = r.output;
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        return {
+          result: "blocked",
+          pr_id,
+          head_sha: diff.head_sha,
+          reasons: [{ code: "review_failed", detail: detail.slice(0, 500) }],
+        };
+      }
+
+      let parsed: {
+        verdict?: string;
+        summary?: string;
+        items?: { detail: string; file?: string }[];
+      };
+      try {
+        const m = raw.match(/\{[\s\S]*\}/);
+        parsed = JSON.parse(m ? m[0]! : raw) as typeof parsed;
+      } catch {
+        return {
+          result: "blocked",
+          pr_id,
+          head_sha: diff.head_sha,
+          reasons: [{ code: "review_failed", detail: "主管模型输出不是合法 JSON" }],
+        };
+      }
+      if (parsed.verdict !== "ok" && parsed.verdict !== "blocked") {
+        return {
+          result: "blocked",
+          pr_id,
+          head_sha: diff.head_sha,
+          reasons: [{ code: "review_failed", detail: "主管模型 verdict 非法" }],
+        };
+      }
+      const summary = (parsed.summary?.trim() || "") + (trunc.truncated ? "（diff 已截断）" : "");
+      if (parsed.verdict === "blocked") {
+        const items = Array.isArray(parsed.items)
+          ? parsed.items.filter((i) => i && typeof i.detail === "string")
+          : [];
+        return {
+          result: "blocked",
+          pr_id,
+          head_sha: diff.head_sha,
+          reasons: [{ code: "model_blocked", items }],
+          summary: summary || undefined,
+        };
+      }
+      const ok: OkReview = {
+        result: "ok",
+        pr_id,
+        head_sha: diff.head_sha,
+        base_sha: diff.base_sha,
+        summary: summary || "集成分支审查通过",
+        ci,
+      };
+      lastOkReview = ok;
+      await notify(
+        `集成分支审查通过（${ok.head_sha.slice(0, 7)}，CI ${ci}）：${ok.summary}`,
+        opts?.project_id ? { project_id: opts.project_id } : {},
+      );
+      return ok;
+    } finally {
+      integrationReviewing = false;
+      void emitSupervisorBacklog();
+    }
+  }
+
+  async function mergeMain(opts: {
+    by: "supervisor" | "user";
+    head_sha: string;
+    project_id?: string;
+  }): Promise<MainMergeResult> {
+    const pr = deps.pr;
+    if (!pr) throw new MainMergeError("unavailable", "没有注入 pr，不能合入 main");
+    if (!lastOkReview || lastOkReview.result !== "ok")
+      throw new MainMergeError("not_reviewed", "还没有通过的集成分支审查，不能合入 main");
+    if (lastOkReview.head_sha !== opts.head_sha)
+      throw new MainMergeError(
+        "stale_head",
+        `审查的是 ${lastOkReview.head_sha.slice(0, 7)}，请求的是 ${opts.head_sha.slice(0, 7)}，请重审`,
+      );
+
+    // 合前重取 head（缩小窗口）；随后 merge 传 expected_head（T-066）
+    let headNow: string;
+    try {
+      headNow = (await pr.diff(lastOkReview.pr_id)).head_sha;
+    } catch (err) {
+      throw new MainMergeError("error", err instanceof Error ? err.message : String(err));
+    }
+    if (headNow !== opts.head_sha)
+      throw new MainMergeError("stale_head", `集成分支 head 已变成 ${headNow.slice(0, 7)}，请重审`);
+
+    const mainMerge = deps.getConfig().pipeline.main_merge ?? "user";
+    const ctx = opts.project_id ? { project_id: opts.project_id } : {};
+
+    if (mainMerge === "user" && opts.by === "supervisor") {
+      await notify(
+        `集成分支已通过检查（${opts.head_sha.slice(0, 7)}），可以合入 main。请在界面点「合入 main」，或自行合并。`,
+        ctx,
+      );
+      return { result: "notified", reason: "main_merge_user" };
+    }
+
+    // C3：本地模式 + 用户 worktree 在 main → supervisor 不得自动合
+    if (pr.kind === "local" && opts.by === "supervisor") {
+      const wt = deps.integration?.userMainWorktree
+        ? await deps.integration.userMainWorktree()
+        : null;
+      if (wt) {
+        await notify(
+          `集成分支已通过检查（${opts.head_sha.slice(0, 7)}），但你的工作区正检出 main（${wt}）。自动合入会改你的工作区，请在界面点「合入 main」或自行合并。`,
+          ctx,
+        );
+        return { result: "notified", reason: "user_worktree_on_main" };
+      }
+    }
+
+    // T-066：merge 第三参 expected_head，防合入窗口内 head 被顶掉
+    let mergeResult: Awaited<ReturnType<NonNullable<typeof deps.pr>["merge"]>>;
+    try {
+      const merge = pr.merge as (
+        id: string,
+        target: string,
+        o?: { expected_head?: string },
+      ) => ReturnType<NonNullable<typeof deps.pr>["merge"]>;
+      mergeResult = await merge(lastOkReview.pr_id, "main", { expected_head: opts.head_sha });
+    } catch (err) {
+      const name =
+        err && typeof err === "object" && "name" in err
+          ? String((err as { name: string }).name)
+          : "";
+      const msg = err instanceof Error ? err.message : String(err);
+      if (name === "GithubRateLimitError" || /rate.?limit/i.test(msg))
+        throw new MainMergeError("rate_limit", msg);
+      throw new MainMergeError("error", msg);
+    }
+
+    if (!mergeResult.merged) {
+      if ("conflict" in mergeResult && mergeResult.conflict)
+        throw new MainMergeError("conflict", "合入 main 冲突");
+      if ("reason" in mergeResult && mergeResult.reason === "merge_blocked")
+        throw new MainMergeError("merge_blocked", mergeResult.detail);
+      if ("reason" in mergeResult && mergeResult.reason === "target_dirty")
+        throw new MainMergeError("target_dirty", `main 工作区不干净：${mergeResult.worktree_path}`);
+      throw new MainMergeError("error", "合入 main 失败");
+    }
+
+    const prId = lastOkReview.pr_id;
+    lastOkReview = null;
+    await notify(`已合入 main（${mergeResult.sha.slice(0, 7)}）。`, ctx);
+    return { result: "merged", pr_id: prId, sha: mergeResult.sha };
+  }
+
   return {
     chat,
     split,
@@ -1787,5 +2177,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     highRiskHeld,
     pendingHighRisk,
     backpressurePaused,
+    reviewIntegration,
+    mergeMain,
   };
 }
