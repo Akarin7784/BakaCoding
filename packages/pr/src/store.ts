@@ -15,6 +15,10 @@ interface PrRecordBase {
   merge_sha?: string;
   /** GitHub 实现开出的真 PR；本地实现不写 */
   remote?: { number: number; url: string };
+  /** close() 写入：由 BakaCoding 自己关闭（sync 据此不当成用户手动关闭、不上报） */
+  closed_by?: "bakacoding";
+  /** close() 的原因，自由文本（storage 落库时会轻脱敏） */
+  close_reason?: string;
   /** 以 Z 结尾的 UTC 时间 */
   created_ts: string;
   updated_ts: string;
@@ -46,10 +50,22 @@ export class InvalidPrRecordError extends Error {
   }
 }
 
-/** 校验 store 返回的记录带合法 kind；不默认当成任何一种记录。 */
+/** 记录的可选字段取值不合法。 */
+export class InvalidPrRecordFieldError extends Error {
+  constructor(pr_id: string, field: string) {
+    super(`PR 记录字段不合法：${pr_id}.${field}`);
+    this.name = "InvalidPrRecordFieldError";
+  }
+}
+
+/** 校验 store 返回的记录带合法 kind 和可选字段；不默认当成任何一种记录。 */
 export function assertPrRecord(r: PrRecord): PrRecord {
-  const kind = (r as { kind?: unknown }).kind;
-  if (kind !== "ticket" && kind !== "integration") throw new InvalidPrRecordError(r.pr_id);
+  const x = r as { kind?: unknown; closed_by?: unknown; close_reason?: unknown };
+  if (x.kind !== "ticket" && x.kind !== "integration") throw new InvalidPrRecordError(r.pr_id);
+  if (x.closed_by !== undefined && x.closed_by !== "bakacoding")
+    throw new InvalidPrRecordFieldError(r.pr_id, "closed_by");
+  if (x.close_reason !== undefined && typeof x.close_reason !== "string")
+    throw new InvalidPrRecordFieldError(r.pr_id, "close_reason");
   return r;
 }
 

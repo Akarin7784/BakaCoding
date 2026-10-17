@@ -126,6 +126,13 @@ class FakeGithub {
     }
     m = /^\/pulls\/(\d+)$/.exec(path);
     if (m && method === "GET") return json(view(this.pulls[Number(m[1]) - 1]!));
+    if (m && method === "PATCH") {
+      const p = this.pulls[Number(m[1]) - 1]!;
+      const b = body as { state?: string };
+      if (p.merged) return json({ message: "Validation Failed" }, 422);
+      if (b.state === "closed") p.state = "closed";
+      return json(view(p));
+    }
     if (method === "GET" && /^\/commits\/[0-9a-f]+\/check-runs$/.test(path))
       return json({ total_count: this.checkRuns.length, check_runs: this.checkRuns });
     return json({ message: "Not Found" }, 404);
@@ -623,5 +630,140 @@ describe("merge 补开中途失败的 PR", () => {
     const id = (await store.list()).find((r) => r.kind === "ticket")!.pr_id;
     expect(await pr.merge(id, INTEGRATION_BRANCH)).toMatchObject({ merged: true });
     expect(gh.pulls.filter((p) => p.head === branch)).toHaveLength(1);
+  });
+});
+
+describe("close（GitHub）", () => {
+  it("有 remote：PATCH state=closed 关远程 PR，本地写 closed_by，不上报；sync 不当成用户关闭", async () => {
+    const iid = await pr.openIntegration();
+    const { wt, branch } = await ticketBranch("T-30");
+    const id = await pr.open("T-30", wt, branch);
+    await pr.close(id, "需求取消");
+    const patch = gh.calls.find((c) => c.method === "PATCH")!;
+    expect(patch.path).toBe("/pulls/2");
+    expect(patch.body).toEqual({ state: "closed" });
+    expect(gh.pulls[1]!.state).toBe("closed");
+    expect(await store.get(id)).toMatchObject({
+      status: "closed",
+      closed_by: "bakacoding",
+      close_reason: "需求取消",
+    });
+    // 用户同时在 GitHub 上手动关了集成 PR：只有这一条上报
+    gh.pulls[0]!.state = "closed";
+    expect(await pr.sync()).toEqual([{ pr_id: iid, from: "open", to: "closed" }]);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.ticket_id).toBeNull();
+    expect(events[0]!.payload.detail).toContain("用户在 GitHub 手动关闭");
+  });
+
+  it("sync 请求期间 close() 已把记录关掉：不上报", async () => {
+    const { wt, branch } = await ticketBranch2("T-31");
+    const id = await pr.open("T-31", wt, branch);
+    const real = gh.fetch;
+    const p = provider({
+      fetch: async (input, init) => {
+        const res = await real(input, init);
+        if ((init?.method ?? "GET") === "GET" && /\/pulls\/\d+$/.test(String(input))) {
+          // 模拟：sync 拿到「已关闭」之前，BakaCoding 刚刚 close 了它
+          const rec = (await store.get(id))!;
+          await store.put({ ...rec, status: "closed", closed_by: "bakacoding", close_reason: "x" });
+          gh.pulls.find((q) => q.head === branch)!.state = "closed";
+          return real(input, init);
+        }
+        return res;
+      },
+    });
+    expect(await p.sync()).toEqual([]);
+    expect(events).toEqual([]);
+  });
+
+  it("重复 close 幂等；远程关闭失败后重试会再 PATCH；用户关的不再 PATCH", async () => {
+    const { wt, branch } = await ticketBranch2("T-32");
+    const id = await pr.open("T-32", wt, branch);
+    let fail = true;
+    gh.override = (method) =>
+      method === "PATCH" && fail ? new Response("{}", { status: 500 }) : undefined;
+    await expect(pr.close(id, "r")).rejects.toThrow(/500/);
+    expect(await store.get(id)).toMatchObject({ status: "closed", closed_by: "bakacoding" });
+    fail = false;
+    await pr.close(id, "r");
+    expect(gh.pulls.find((q) => q.head === branch)!.state).toBe("closed");
+    expect(events).toEqual([]);
+
+    // 用户在 GitHub 手动关的记录：close 幂等、不发请求
+    const other = await ticketBranch2("T-33");
+    const id2 = await pr.open("T-33", other.wt, other.branch);
+    gh.pulls.find((q) => q.head === other.branch)!.state = "closed";
+    await pr.sync();
+    const n = gh.calls.length;
+    await pr.close(id2, "r");
+    expect(gh.calls.length).toBe(n);
+    expect((await store.get(id2))?.closed_by).toBeUndefined();
+  });
+
+  it("没有 remote 的记录只改本地；已 merged 抛错；限流照旧抛 GithubRateLimitError", async () => {
+    const iid = await pr.openIntegration();
+    const { wt, branch } = await ticketBranch("T-34");
+    const id = await pr.open("T-34", wt, branch);
+    await pr.merge(id, INTEGRATION_BRANCH);
+    await expect(pr.close(id, "x")).rejects.toThrow(/已合并/);
+
+    const rec = (await store.get(iid))!;
+    const { remote: _r, ...noRemote } = rec;
+    void _r;
+    await store.put(noRemote as PrRecord);
+    const n = gh.calls.length;
+    await pr.close(iid, "重建");
+    expect(gh.calls.length).toBe(n);
+    expect((await store.get(iid))?.status).toBe("closed");
+
+    const c = await ticketBranch2("T-35");
+    const id3 = await pr.open("T-35", c.wt, c.branch);
+    gh.override = () => new Response("{}", { status: 403, headers: { "retry-after": "3" } });
+    const err = (await pr.close(id3, "r").catch((e: unknown) => e)) as GithubRateLimitError;
+    expect(err).toBeInstanceOf(GithubRateLimitError);
+    expect(err.retry_after_ms).toBe(3000);
+    expect(events).toEqual([]);
+  });
+
+  it("commitWorktree 交给内部本地实现", async () => {
+    const { wt, branch } = await ticketBranch2("T-36");
+    await pr.open("T-36", wt, branch);
+    await writeFile(join(wt, "more.txt"), "m\n");
+    const sha = await pr.commitWorktree("T-36", wt);
+    expect(sha).toBe(await rev(wt, "HEAD"));
+  });
+});
+
+describe("GitHub merge 返回 409", () => {
+  const resp409 = (method: string, path: string) =>
+    method === "PUT" && path.endsWith("/merge")
+      ? new Response(JSON.stringify({ message: "Head branch was modified." }), { status: 409 })
+      : undefined;
+  it("本地 merge-tree 有冲突文件：按冲突返回，不上报", async () => {
+    await pr.openIntegration();
+    const a = await ticketBranch("T-40", "a.txt", "A\n");
+    const b = await ticketBranch("T-41", "a.txt", "B\n");
+    await pr.merge(await pr.open("T-40", a.wt, a.branch), INTEGRATION_BRANCH);
+    const idB = await pr.open("T-41", b.wt, b.branch);
+    gh.override = resp409;
+    expect(await pr.merge(idB, INTEGRATION_BRANCH)).toEqual({
+      merged: false,
+      conflict: true,
+      conflicted_files: ["a.txt"],
+    });
+    expect(events).toEqual([]);
+  });
+  it("本地无冲突文件：返回 merge_blocked，记录状态不变，不上报", async () => {
+    await pr.openIntegration();
+    const { wt, branch } = await ticketBranch("T-42");
+    const id = await pr.open("T-42", wt, branch);
+    gh.override = resp409;
+    const r = await pr.merge(id, INTEGRATION_BRANCH);
+    expect(r).toMatchObject({ merged: false, conflict: false, reason: "merge_blocked" });
+    expect(JSON.stringify(r)).toContain("HTTP 409");
+    expect(JSON.stringify(r)).toContain("Head branch was modified.");
+    expect((await store.get(id))?.status).toBe("open");
+    expect(events).toEqual([]);
   });
 });
