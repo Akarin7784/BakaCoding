@@ -14,7 +14,7 @@ export default defineConfig({
         vite: {
           build: {
             outDir: "dist-electron",
-            // 原生模块不打包，运行时从 node_modules 加载，.node 用 nativeBinding 指定。
+            // @bakacoding/storage 打包进来；原生模块不打包，运行时从本包 node_modules 加载，.node 用 nativeBinding 指定。
             rolldownOptions: { external: ["better-sqlite3"] },
           },
         },

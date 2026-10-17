@@ -2,7 +2,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { openStorage, type Storage } from "@bakacoding/storage";
+import {
+  openStorage,
+  openStorageReadonly,
+  StorageLeaseError,
+  type Storage,
+} from "@bakacoding/storage";
 import type { BakaEvent } from "@bakacoding/types";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DB_PATH_ENV, resolveDbPath } from "./config.js";
@@ -187,6 +192,7 @@ describe("主进程只读读取（临时 SQLite，用模块 2 的 API 写入）"
         permission_list: [],
         context_snippets: [],
       });
+    s.ingest(projectCreated());
     t("T-late", "2026-10-17T01:00:00.500Z");
     t("T-early", "2026-10-17T01:00:00Z");
     reader = openEventReader({ path: path.join(dir, "store.db") });
@@ -195,6 +201,7 @@ describe("主进程只读读取（临时 SQLite，用模块 2 的 API 写入）"
 
   it("库里没有状态或状态不认识时按 pending", () => {
     const s = writer();
+    s.ingest(projectCreated());
     saveTicket(s, undefined);
     reader = openEventReader({ path: path.join(dir, "store.db") });
     expect(reader.snapshot().tickets[0]!.status).toBe("pending");
@@ -236,6 +243,100 @@ describe("主进程只读读取（临时 SQLite，用模块 2 的 API 写入）"
     const ro = new Database(p, { readonly: true });
     expect(() => ro.prepare("DELETE FROM events").run()).toThrow(/readonly/i);
     ro.close();
+  });
+});
+
+describe("走模块 2 的只读 API（openStorageReadonly）", () => {
+  it("写入者 openStorage 持有租约时边写边读：按 maxSeq 增量，界面不关心的事件不下发也不重复读", () => {
+    const s = writer();
+    s.ingest(projectCreated());
+    reader = openEventReader({ path: path.join(dir, "store.db") });
+    expect(reader.snapshot().last_seq).toBe(1);
+
+    s.ingest(backlog());
+    expect(reader.poll()).toBeNull();
+    expect(s.health().lease_lost).toBe(false);
+
+    s.ingest(groupMessage("新消息"));
+    s.ingest(callCompleted());
+    const u = reader.poll();
+    expect(u?.events.map((e) => e.event_id)).toEqual(["evt-3", "evt-4"]);
+    expect(u?.last_seq).toBe(4);
+    const call = u?.events.find((e) => e.type === "call_completed");
+    expect(call?.type === "call_completed" && call.payload.prompt).toBe("");
+    expect(reader.poll()).toBeNull();
+    // 写入者的租约一直在，第二个写入者仍然被挡住
+    expect(() => openStorage({ path: path.join(dir, "store.db") })).toThrow(StorageLeaseError);
+  });
+
+  it("把底层原生模块的路径传给存储", () => {
+    const calls: unknown[] = [];
+    const s = writer();
+    s.ingest(projectCreated());
+    reader = openEventReader({
+      path: path.join(dir, "store.db"),
+      nativeBinding: "/fake/native/better_sqlite3.node",
+      open: (o) => {
+        calls.push(o);
+        return openStorageReadonly({ path: o.path });
+      },
+    });
+    expect(reader.snapshot().db.state).toBe("ok");
+    expect(calls).toEqual([
+      { path: path.join(dir, "store.db"), nativeBinding: "/fake/native/better_sqlite3.node" },
+    ]);
+  });
+
+  it("库版本比代码旧：界面显示可读的版本说明；写入者升级后轮询自动接上", () => {
+    const p = path.join(dir, "store.db");
+    const s = writer();
+    s.ingest(projectCreated());
+    s.close();
+    storage = null;
+    const raw = new Database(p);
+    const want = raw.pragma("user_version", { simple: true }) as number;
+    raw.pragma("user_version = 1");
+    raw.close();
+
+    reader = openEventReader({ path: p });
+    const snap = reader.snapshot();
+    expect(snap.db.state).toBe("error");
+    expect(snap.db.state === "error" && snap.db.message).toMatch(
+      new RegExp(`版本是 v1，当前代码需要 v${want}.*写入方`),
+    );
+    expect(snap.events).toEqual([]);
+    expect(reader.poll()).toBeNull();
+
+    const fix = new Database(p);
+    fix.pragma(`user_version = ${want}`);
+    fix.close();
+    const u = reader.poll();
+    expect(u?.db.state).toBe("ok");
+    expect(u?.events.map((e) => e.type)).toEqual(["project_created"]);
+  });
+
+  it("原生模块 ABI 不匹配：提示先跑 rebuild:electron", () => {
+    const s = writer();
+    s.ingest(projectCreated());
+    reader = openEventReader({
+      path: path.join(dir, "store.db"),
+      open: () => {
+        throw new Error(
+          "The module was compiled against a different Node.js version using NODE_MODULE_VERSION 115. This version of Node.js requires NODE_MODULE_VERSION 145.",
+        );
+      },
+    });
+    const db = reader.snapshot().db;
+    expect(db.state === "error" && db.message).toMatch(/rebuild:electron/);
+  });
+
+  it("需求单只列出事件里出现过的项目（存储没有列出全部项目的读方法）", () => {
+    const s = writer();
+    saveTicket(s, "coding");
+    reader = openEventReader({ path: path.join(dir, "store.db") });
+    expect(reader.snapshot().tickets).toEqual([]);
+    s.ingest(projectCreated());
+    expect(reader.poll()?.tickets?.map((t) => t.ticket_id)).toEqual(["T-1"]);
   });
 });
 
