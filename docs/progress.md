@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`06cef58` · main 上测试：15 个测试文件、187 个测试全部通过 · 更新日期：2026-10-17（UTC+8）
+> 上次更新时 main：`c5efa90` · main 上测试：18 个测试文件、203 个测试全部通过 · 更新日期：2026-10-17（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -37,8 +37,8 @@ flowchart BT
   classDef doing fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef done fill:#dcfce7,stroke:#16a34a,color:#14532d
 
-  class M0,M2,M6,M11,T done
-  class M3,M4,M12 doing
+  class M0,M2,M6,M11,M12,T done
+  class M3,M4 doing
   class M1,M5,M7,M8,M9,M10 todo
 ```
 
@@ -76,7 +76,7 @@ flowchart BT
 | T-020 | requirement_id 允许为 null（仅项目级事件） | 共享类型包 | 基础层开发 | 已合入 | #15 | `038b91e` |
 | T-021 | 诊断包 .env 规则收紧，schema 升到 v1.1；界面假数据 `req-none` 换成 null | 11、12 | 界面与诊断开发 | 已合入 | #16 | `e35e38e` |
 | T-022 | 存储层跟进：毫秒时间列、`events.seq` 唯一、落库失败可见、IMMEDIATE 事务、prStore 脱敏与 kind 校验、需求归属不被群消息覆盖、limit 校验 | 2 | 基础层开发 | 已合入 | #20 | `1a11948` |
-| T-023 | 桌面界面读取真实事件：主进程只读打开存储，IPC 推快照与增量，preload 只读 API | 12 | 界面与诊断开发 | 待评审 | — | — |
+| T-023 | 桌面界面读取真实事件：主进程只读打开存储，IPC 推快照与增量，preload 只读 API | 12 | 界面与诊断开发 | 已合入 | #22 | `c5efa90` |
 
 8、9、10（编排层开发）的第二批需求单还没拆。
 
