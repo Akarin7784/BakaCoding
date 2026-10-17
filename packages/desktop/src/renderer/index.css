@@ -113,12 +113,24 @@
   --animate-fade-in: fade-in 180ms ease-out;
   --animate-fade-out: fade-out 150ms ease-out;
   --animate-spin-slow: spin 1.6s linear infinite;
+  /* 面板开合 200ms ease-out（UI-02 右面板抽屉） */
+  --animate-slide-in-right: slide-in-right 200ms var(--ease-out);
 
   @keyframes fade-in {
     from {
       opacity: 0;
     }
     to {
+      opacity: 1;
+    }
+  }
+  @keyframes slide-in-right {
+    from {
+      transform: translateX(16px);
+      opacity: 0;
+    }
+    to {
+      transform: translateX(0);
       opacity: 1;
     }
   }
@@ -153,6 +165,15 @@
   samp {
     font-family: var(--font-mono);
   }
+}
+
+/* UI-02：无边框窗口的自绘拖拽区；里面的按钮、输入框要设 app-no-drag 才点得到 */
+@utility app-drag {
+  -webkit-app-region: drag;
+  user-select: none;
+}
+@utility app-no-drag {
+  -webkit-app-region: no-drag;
 }
 
 /* 尊重系统「减少动态效果」：动画与过渡一律近乎瞬时，旋转图标停住。 */

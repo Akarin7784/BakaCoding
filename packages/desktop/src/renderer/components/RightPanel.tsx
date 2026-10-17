@@ -29,7 +29,7 @@ function PrWarning({ codes }: { codes: string[] }) {
   );
 }
 
-/** 右侧边栏：跟随当前群（1:1 时显示最近操作过的项目）。 */
+/** 右面板「概览」标签的内容：跟随当前项目（1:1 时显示最近操作过的项目）。外壳见 RightPanelShell（UI-02）。 */
 export function RightPanel({
   view,
   onOpenTopic,
@@ -39,10 +39,7 @@ export function RightPanel({
 }) {
   const { pool, git, prs } = view;
   return (
-    <aside
-      aria-label="侧边栏"
-      className="flex w-72 shrink-0 flex-col border-l border-border bg-sidebar text-sm animate-fade-in"
-    >
+    <div data-testid="project-overview" className="flex flex-col text-sm">
       <div data-testid="pool-status" className="flex gap-3 px-4 py-2 text-xs">
         {pool ? (
           <>
@@ -107,6 +104,6 @@ export function RightPanel({
           ))}
         </ul>
       </div>
-    </aside>
+    </div>
   );
 }

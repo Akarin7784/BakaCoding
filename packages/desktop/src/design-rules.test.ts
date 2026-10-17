@@ -176,3 +176,38 @@ describe("文案（§5.6）", () => {
     expect(hits).toEqual([]);
   });
 });
+
+describe("布局骨架（UI-02）", () => {
+  const SHELLS = [
+    "components/Sidebar.tsx",
+    "components/TitleBar.tsx",
+    "components/RightPanelShell.tsx",
+    "components/SettingsDialog.tsx",
+    "components/CommandPalette.tsx",
+    "components/EmptyState.tsx",
+  ];
+  const read = (f: string) => readFileSync(join(RENDERER, f), "utf8");
+
+  it("骨架不新增主按钮（每屏最多一个主按钮，§5.3）", () => {
+    const offenders: string[] = [];
+    for (const f of [...SHELLS, "App.tsx"]) {
+      const text = read(f);
+      if (/bg-primary|variant="primary"/.test(text)) offenders.push(`${f}: primary`);
+      // Button 默认就是主按钮，所以骨架里的 Button 必须显式写 secondary
+      for (const m of text.matchAll(/<Button\b[^>]*>/gs))
+        if (!m[0].includes('variant="secondary"')) offenders.push(`${f}: ${m[0].slice(0, 40)}`);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("骨架里的强调蓝只用于选中 / 按下状态（§5.1）", () => {
+    const offenders: string[] = [];
+    for (const f of SHELLS)
+      for (const m of read(f).matchAll(/[^\s"'`]*(?:text|bg|border)-accent[^\s"'`]*/g))
+        if (!/^(?:aria-pressed:|aria-selected:|data-\[state=active\]:|\[&_svg\]:)/.test(m[0]))
+          offenders.push(`${f}: ${m[0]}`);
+    expect(offenders).toEqual([]);
+    // 左栏选中项带 aria-current，强调色跟着它走
+    expect(read("components/Sidebar.tsx")).toMatch(/aria-current/);
+  });
+});
