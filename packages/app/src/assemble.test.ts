@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getConfig } from "@bakacoding/config-budget";
 import type { CoderPool } from "@bakacoding/coder-pool";
-import type { PrProvider, TicketPrRecord } from "@bakacoding/pr";
+import { GithubRateLimitError, type PrProvider, type TicketPrRecord } from "@bakacoding/pr";
 import { openStorage, type Storage, type TicketFields } from "@bakacoding/storage";
 import type { BakaEvent, TicketStatus } from "@bakacoding/types";
 import { requestWriteScope } from "@bakacoding/workspace";
@@ -636,6 +636,29 @@ describe("T-041b closeTicketPrs（N1）", () => {
     ).rejects.toThrow(/sync 挂了/);
     expect(close).not.toHaveBeenCalled();
   });
+
+  it("#65 评审：sync 抛 GithubRateLimitError 原样抛出（同一个实例），一次 close 都不调", async () => {
+    const { storage } = setup();
+    const store = storage.prStore<TicketPrRecord>();
+    await store.put(prRec({ pr_id: "local-1", ticket_id: "T" }));
+    const err = new GithubRateLimitError(429, "sync", 60000);
+    const close = vi.fn();
+    await expect(
+      closeTicketPrs(
+        {
+          sync: async () => {
+            throw err;
+          },
+          store,
+          pr: { close },
+        },
+        "T",
+        "r",
+      ),
+    ).rejects.toBe(err);
+    expect(close).not.toHaveBeenCalled();
+    expect((await store.get("local-1"))!.status).toBe("open");
+  });
 });
 
 describe("T-041b lastEscalationFrom（N5）", () => {
@@ -738,6 +761,66 @@ describe("T-041b 组合根：上报处理与重启", () => {
       escalation_handled: { action: "resplit", error: expect.any(String) },
     });
     expect(notified.some((t) => /重拆失败/.test(t))).toBe(true);
+  });
+
+  it("#65 评审：关旧 PR 时 6 的 sync 抛 GithubRateLimitError：错误原样上抛、一次 close 都不调、发 pr_close_failed、不出新单", async () => {
+    const { storage, worktreeRoot } = setup();
+    saveTicket(storage, "req-1-1", "coding", fields({ requirement_text: "原需求" }));
+    const wt = join(worktreeRoot, "req-1-1-r0");
+    mkdirSync(wt, { recursive: true });
+    await storage
+      .prStore<TicketPrRecord>()
+      .put(prRec({ pr_id: "local-1", ticket_id: "req-1-1", worktree_path: wt }));
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const a = fakePr();
+    const err = new GithubRateLimitError(429, "sync", 60000);
+    const sync = vi.fn(async (): Promise<never> => {
+      throw err;
+    });
+    a.pr.sync = sync;
+    const close1 = vi.spyOn(a.pr, "close");
+    const runTicket = vi.fn(async () => {
+      await gate;
+      return { status: "done" as const, summary: "", changed_files: [] };
+    });
+    const { app } = await start({ storage, worktreeRoot, pr: a.pr, runTicket });
+    await vi.waitFor(() => expect(runTicket).toHaveBeenCalled(), { timeout: 5000 });
+    saveTicket(storage, "req-1-1", "escalated", undefined);
+    await app.bus.publish({
+      type: "escalated",
+      trace_id: "tr-r",
+      span_id: "sp-x",
+      parent_span_id: "sp-t",
+      requirement_id: "req-1",
+      ticket_id: "req-1-1",
+      payload: {
+        reason: "review_limit",
+        detail: "评审不过",
+        resubmit_counts: { review: 3, conflict: 0 },
+      },
+    });
+    await vi.waitFor(
+      () =>
+        expect(
+          storage
+            .queryEvents({ types: ["ticket_warning"] })
+            .map((e) => (e.payload as { code: string }).code),
+        ).toEqual(["pr_close_failed"]),
+      { timeout: 5000 },
+    );
+    expect(sync).toHaveBeenCalled();
+    // 10 拿到的就是 6 抛的这个限流错误（经 9 的 sync 和 closeTicketPrs 原样上抛，没被吞、没被换掉）
+    const w = storage.queryEvents({ types: ["ticket_warning"] })[0]!;
+    expect((w.payload as { detail: string }).detail).toContain(err.message);
+    expect(close1).not.toHaveBeenCalled();
+    const f1 = storage.getTicket("req-1-1")!.fields as Record<string, unknown>;
+    expect(f1).toMatchObject({ escalation_handled: { action: "resplit" } });
+    expect(f1.pr_close_done).toBeUndefined();
+    expect(storage.listTickets().map((r) => r.ticket_id)).toEqual(["req-1-1"]);
+    expect((await storage.prStore<TicketPrRecord>().get("local-1"))!.status).toBe("open");
+    app.stop();
+    release();
   });
 
   it("重启前经 extendScope 批准扩出的范围随 adopt / enqueue 并进 9 的锁：与它重叠的单接不回", async () => {
