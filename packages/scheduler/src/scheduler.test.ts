@@ -3259,6 +3259,21 @@ describe("T-096 stop() 等在途工作收尾", () => {
     }
   });
 
+  it("S8. 合入后清理（T-094 cleanupMerged）挂着不返回：stop() 不等它", async () => {
+    const h = harness();
+    let called = 0;
+    h.deps.worktrees.cleanupMerged = () => {
+      called++;
+      return new Promise(() => {}); // 永不返回
+    };
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/wt/T-1-r0" });
+    await vi.waitFor(() => expect(called).toBe(1));
+    expect(s.status("T-1")).toBe("merged");
+    await expect(s.stop()).resolves.toBeUndefined();
+  });
+
   it("S7. 没有在途工作 / 没 start 过：stop() 直接 resolve", async () => {
     const h = harness();
     await expect(createScheduler(h.deps).stop()).resolves.toBeUndefined();

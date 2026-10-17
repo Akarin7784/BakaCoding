@@ -1611,6 +1611,23 @@ describe("T-085 组合根：8 / 9 写状态都发 ticket_status_changed", () => 
 });
 
 describe("T-096 App.stop() 等 9 收尾", () => {
+  it("重启补清理（T-094 sweepMergedLeftovers）挂着不返回：stop() 不等它", async () => {
+    const { storage, worktreeRoot } = setup();
+    mkdirSync(join(worktreeRoot, "T-A-r0"), { recursive: true });
+    saveTicket(storage, "T-A", "merged", fields());
+    let called = 0;
+    const { app } = await start({
+      storage,
+      worktreeRoot,
+      pr: fakePr().pr,
+      cleanupMerged: () => {
+        called++;
+        return new Promise(() => {}); // 永不返回
+      },
+    });
+    await vi.waitFor(() => expect(called).toBe(1));
+    await expect(app.stop()).resolves.toBeUndefined();
+  });
   it("编码在途（runTicket 不理 signal）：stop() 等它返回才 resolve；库里单子状态 stop 前后一样，resolve 后不再写库", async () => {
     const { storage, worktreeRoot } = setup();
     saveTicket(storage, "req-1-1", "coding", fields());
