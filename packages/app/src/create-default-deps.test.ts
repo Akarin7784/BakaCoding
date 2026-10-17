@@ -221,6 +221,13 @@ describe("targetHead 读集成分支（T-079）", () => {
     expect(await integrationTargetHead(root)).toBe(git(root, "rev-parse", "HEAD"));
   });
 
+  it("基线分支由参数给出：集成分支未建时读该分支，不写死 main", async () => {
+    const { root, main } = repoOnFeature();
+    git(root, "branch", "trunk", main);
+    git(root, "branch", "-D", "main");
+    expect(await integrationTargetHead(root, "trunk")).toBe(main);
+  });
+
   it("集成分支已建且领先 main：读集成分支；组合根的 deps.targetHead 用的就是它", async () => {
     const { root, db, main, feature } = repoOnFeature();
     // 模拟单 1 已合入：集成分支 = main + 一个提交（不检出）
