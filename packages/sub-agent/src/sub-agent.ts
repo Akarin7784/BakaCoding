@@ -79,6 +79,40 @@ export function isHighRiskDiffFile(file: Pick<DiffFile, "path" | "status">): boo
   return file.status === "renamed" || isDependencyFile(file.path);
 }
 
+/**
+ * 高风险的理由（T-041c，`pendingHighRisk` / T-062 界面用）：
+ * - `dependency_kind`：主管把单标成依赖类（`kind: "dependency"`）；
+ * - `dependency_file`：diff 改了依赖清单 / 锁文件（含删除的；改名的一律算，见 `isHighRiskDiffFile`）；
+ * - `diff_unavailable`：取不到 diff（重启补判或扣住时取 diff 出错），按高风险处理；
+ * - `unverified`：9 标了高风险，但现在的 diff 看不出依赖改动（例如 8 交出前重取 diff 失败）。
+ */
+export type HighRiskReason =
+  "dependency_kind" | "dependency_file" | "diff_unavailable" | "unverified";
+
+/** `highRiskEvidence` 最多列出的文件数，其余计入 `files_more`。 */
+export const HIGH_RISK_FILES_MAX = 20;
+
+/**
+ * 整理一张高风险单的理由和命中的文件（T-041c）：纯函数，不取 diff。`files` 传 null 表示取不到 diff。
+ * 命中的文件按 diff 的顺序最多列 `HIGH_RISK_FILES_MAX` 个，其余只计数。
+ */
+export function highRiskEvidence(input: {
+  kind?: string | undefined;
+  files: readonly Pick<DiffFile, "path" | "status">[] | null;
+}): { reasons: HighRiskReason[]; files: string[]; files_more: number } {
+  const reasons: HighRiskReason[] = [];
+  if (input.kind === "dependency") reasons.push("dependency_kind");
+  const hit = input.files ? input.files.filter(isHighRiskDiffFile).map((f) => f.path) : [];
+  if (hit.length) reasons.push("dependency_file");
+  if (input.files === null) reasons.push("diff_unavailable");
+  else if (!reasons.length) reasons.push("unverified");
+  return {
+    reasons,
+    files: hit.slice(0, HIGH_RISK_FILES_MAX),
+    files_more: Math.max(0, hit.length - HIGH_RISK_FILES_MAX),
+  };
+}
+
 /** 清单里最后一条匹配 path 的条目是不是显式 deny（未匹配不算显式）。 */
 function explicitlyDenied(list: PermissionList, path: string): boolean {
   for (let i = list.length - 1; i >= 0; i--) {

@@ -12,6 +12,8 @@ import {
   effortFor,
   isDependencyFile,
   isHighRiskDiffFile,
+  highRiskEvidence,
+  HIGH_RISK_FILES_MAX,
   reasonsToFeedback,
   type SubAgentConfig,
   type SubAgentDeps,
@@ -2141,6 +2143,30 @@ describe("T-041c 高风险判定：删除、改名（isHighRiskDiffFile）", () 
     expect(out).toMatchObject({ kind: "merge_queued", high_risk: true });
     expect(t.reviewInputs[0]!.high_risk).toBe(true);
     expect(t.submit.mock.calls[0]![0]).toMatchObject({ high_risk: true });
+  });
+
+  it("highRiskEvidence：理由分依赖类单 / 依赖文件（含改名兜底）/ 取不到 diff / 看不出；文件最多 20 个，其余计数", () => {
+    expect(highRiskEvidence({ kind: "dependency", files: [f("src/a.ts", "modified")] })).toEqual({
+      reasons: ["dependency_kind"],
+      files: [],
+      files_more: 0,
+    });
+    expect(
+      highRiskEvidence({
+        files: [f("src/a.ts", "modified"), f("a/package.json", "added"), f("x/y.ts", "renamed")],
+      }),
+    ).toEqual({ reasons: ["dependency_file"], files: ["a/package.json", "x/y.ts"], files_more: 0 });
+    expect(highRiskEvidence({ kind: "dependency", files: null })).toEqual({
+      reasons: ["dependency_kind", "diff_unavailable"],
+      files: [],
+      files_more: 0,
+    });
+    expect(highRiskEvidence({ files: [] }).reasons).toEqual(["unverified"]);
+    const many = Array.from({ length: 23 }, (_, i) => f(`p${i}/package.json`, "modified"));
+    const ev = highRiskEvidence({ files: many });
+    expect(ev.files).toHaveLength(HIGH_RISK_FILES_MAX);
+    expect(ev.files[0]).toBe("p0/package.json");
+    expect(ev.files_more).toBe(3);
   });
 
   describe("评审前的 diff 绑定 head（T-041c）：交出前 head 变了按新 diff 重判，重取失败按高风险", () => {
