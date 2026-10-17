@@ -308,7 +308,7 @@ graph BT
     - `pendingHighRisk() → PendingHighRisk[]`，每项 `{ ticket_id, project_id, pr_id, pr_url?, reasons, files, files_more, held_at }`：等用户裁决的高风险单（T-042 主管待办、T-062 界面用）。**同步、只读内存**，不调 GitHub / 6 / 9；理由和文件是扣住时（重启后是 N4 补判时）那份 diff 算的。放行、拒绝、本单上报或 2 里已到终态时去掉。只在进程内。
     - 上报处理收到 `high_risk_rejected`：不重拆、交用户，通知按 `high_risk_close.state` 写「已关闭」/「没有要关的 PR」/「关 PR 还没成功，会自动重试」。
     - `backpressurePaused({ reasons, pending_prs: { total, limit, high_risk_held } })`（组合根接 9 的 `onBackpressurePaused`，Q-7）：通知用户已暂停派新单和原因，写明待合并 PR 数；原因含 `pending_pr_limit` 或 `high_risk_held > 0` 时写明「其中 N 张是等你裁决的高风险 PR」。
-    - **v1（T-062 之前）在哪里操作**：12 的主进程还没调 `assemble`，桌面端只读，1:1 也没接，所以界面上**没有**放行 / 拒绝的入口；只能由调用方（以后是 12 的主进程，现在是测试或开发脚本）调 `App.supervisor.decideHighRisk(...)`：T-063 接上 `assemble` 之后、T-062 之前，也只能在代码里调 `decideHighRisk`。没人裁决的高风险 PR 一直扣着，不会合入（安全的默认）。T-062（界面与诊断）加放行 / 拒绝的 IPC 和按钮，调 `decideHighRisk`；「待裁决」状态取 9 的 `snapshot().held_high_risk` 或 10 的 `pendingHighRisk()`。GitHub 上手动合并 / 关闭被扣的 PR 由 9 的定时 `sync()`（T-064）一轮内生效。
+    - **界面入口（T-062）**：12 经 IPC 调 `decideHighRisk` / `pendingHighRisk()`，顶部「高风险 PR 待裁决」面板放行 / 拒绝；`stale_pr` 提示「PR 已更新，请重新查看」。GitHub 上手动合并 / 关闭被扣的 PR 由 9 的定时 `sync()`（T-064）一轮内生效。
 - **依赖**：1、2、3（提示词模板）、4（只用 `isUnsafeGlob`）、6（CI 结果）、8、9。
 - **对应章节**：PD §3、§4、§8、§9、§10、§16。
 - **配置字段**：`roles.supervisor`、`pipeline.resplit_limit`、`pipeline.main_merge`、`pipeline.supervisor_backlog_limit`。
@@ -330,7 +330,9 @@ graph BT
 ### 12. 桌面界面
 - **职责**：Electron + React 三栏对话界面；导入项目时调用 3 的导入接口，展示 2 建好的群：主管 1:1 对话（唯一可发消息处，含设置入口和导出入口）；项目群（展示 2 中的群消息，按需求分话题、只读、Flash 调用默认折叠）；右侧边栏（编码池状态一行、Git 区、PR 列表、导出入口）；极简视觉规则。选型：electron-vite-react 壳子模板、shadcn/ui 组件、lucide 图标。
 - **对外接口（草案）**：只消费各模块接口和事件；用户输入只发往模块 10；订阅 `escalated`（`reason: resplit_limit`），提示「需要人工介入」。
-- **依赖**：3（项目导入）及各模块的接口；接口定下来后可以先做壳子。
+- **主进程后端（T-063）**：`startBackend`——仓库路径 `--repo` > `BAKACODING_REPO` > cwd；库默认 `<repo>/.bakacoding/bakacoding.db`；配置 `--config` > `BAKACODING_CONFIG` > `<repo>/config/models.json`。启动：`requestSingleInstanceLock` → `acquireWriterLock` → `openStorage`（唯一写连接）→ `getConfig` → `createDefaultDeps` → `assemble`（含一次 `takeOver`）。失败（缺 `DEEPSEEK_API_KEY`、坏配置、锁被占、`StorageLeaseError`）退回只读，`backend:status` 的 `reason` 只写变量名 / 错误名、不含密钥值；只读端仍用 `openStorageReadonly`。关机：`app.stop()` → `dispose()` → 关库 → 释放锁。`supervisor:notify` 在渲染就绪前缓冲最多 200 条（满则丢最旧并 warn），就绪后回放一次再清空。
+- **高风险 PR 裁决 UI（T-062）**：IPC `high-risk:pending` / `high-risk:decide` / `high-risk:pending-update` 接 10 的 `pendingHighRisk()` / `decideHighRisk`（按 `pr_id` 绑定；`stale_pr` 提示「PR 已更新，请重新查看」）。清单刷新：`onHighRiskHeld`（经通知）、`escalated` / `ticket_warning`、裁决后、事件轮询（覆盖 sync 引起的 PR 状态变化）；不新增事件。命中文件用 8 的 `HighRiskFile`（`old_path` 时显示 `旧 → 新`）。警告列表：按 `ticket_id+code` 去重、约 50 条可见、detail 截断；`requirement_truncated` / `pr_close_failed` / `high_risk_reject_not_applied` / `takeover_skipped` 配中文。`syncState()` 接线见 T-067。
+- **依赖**：3（项目导入）、`@bakacoding/app`（组合根）及各模块的接口。
 - **对应章节**：PD §15、§16。
 - **配置字段**：设计中没有专用字段；设置入口编辑模块 3 的配置。
 

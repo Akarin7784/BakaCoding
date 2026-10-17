@@ -1,5 +1,8 @@
 // 主进程 ↔ preload ↔ 渲染进程的数据契约。只放类型和通道名，不引入 Node 或存储模块，
 // 渲染进程可以安全地 import type。
+import type { HighRiskDecisionErrorCode } from "@bakacoding/scheduler";
+import type { HighRiskFile, HighRiskReason } from "@bakacoding/sub-agent";
+import type { HighRiskDecisionResult, PendingHighRisk } from "@bakacoding/supervisor";
 import type { BakaEvent, TicketStatus } from "@bakacoding/types";
 
 /** IPC 通道名。 */
@@ -14,6 +17,12 @@ export const IPC_CHANNELS = {
   supervisorReady: "bakacoding:supervisor:ready",
   /** 主进程 → 渲染进程：主管 1:1 通知。 */
   supervisorNotify: "bakacoding:supervisor:notify",
+  /** invoke：等裁决的高风险 PR 清单（同步内存快照，T-062）。 */
+  highRiskPending: "bakacoding:high-risk:pending",
+  /** invoke：放行 / 拒绝高风险 PR（T-062）。 */
+  highRiskDecide: "bakacoding:high-risk:decide",
+  /** 主进程 → 渲染进程：高风险待裁决清单刷新（T-062）。 */
+  highRiskPendingUpdate: "bakacoding:high-risk:pending-update",
 } as const;
 
 /** 界面关心的事件类型；其余事件主进程不下发。 */
@@ -90,6 +99,16 @@ export interface SupervisorNotifyMessage {
   requirement_id?: string;
 }
 
+/** 等用户裁决的高风险单（与 10 的 PendingHighRisk 同形；files 用 8 的 HighRiskFile）。 */
+export type DesktopPendingHighRisk = PendingHighRisk;
+
+export type DesktopHighRiskDecision = "release" | "reject";
+
+/** decideHighRisk 的 IPC 结果：成功带 10 的结果；失败带 9/10 的错误码（不抛过 IPC）。 */
+export type DesktopDecideHighRiskResult =
+  | { ok: true; result: HighRiskDecisionResult }
+  | { ok: false; code: HighRiskDecisionErrorCode; message: string };
+
 /** preload 通过 contextBridge 暴露在 window.bakacoding 上的 API。 */
 export interface BakaDesktopApi {
   readonly platform: string;
@@ -100,7 +119,20 @@ export interface BakaDesktopApi {
   /** 告诉主进程渲染已就绪；返回回放的通知列表。 */
   markSupervisorReady(): Promise<SupervisorNotifyMessage[]>;
   onSupervisorNotify(listener: (msg: SupervisorNotifyMessage) => void): () => void;
+  /** 取一次待裁决高风险清单（T-062）；只读模式为空数组。 */
+  getPendingHighRisk(): Promise<DesktopPendingHighRisk[]>;
+  /** 放行 / 拒绝（T-062）；stale_pr 等失败以 ok:false 返回。 */
+  decideHighRisk(
+    ticket_id: string,
+    pr_id: string,
+    decision: DesktopHighRiskDecision,
+    detail?: string,
+  ): Promise<DesktopDecideHighRiskResult>;
+  /** 订阅待裁决清单刷新（T-062）。 */
+  onPendingHighRisk(listener: (list: DesktopPendingHighRisk[]) => void): () => void;
 }
+
+export type { HighRiskDecisionErrorCode, HighRiskFile, HighRiskReason, HighRiskDecisionResult };
 
 declare global {
   interface Window {

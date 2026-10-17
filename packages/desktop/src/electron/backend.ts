@@ -10,13 +10,15 @@ import {
   type WriterLock,
 } from "@bakacoding/app";
 import { ConfigError, getConfig, type Config } from "@bakacoding/config-budget";
+import { HighRiskDecisionError } from "@bakacoding/scheduler";
 import {
   openStorage,
   StorageLeaseError,
   type Storage,
   type StorageHealth,
 } from "@bakacoding/storage";
-import type { TakeOverReport } from "@bakacoding/supervisor";
+import type { PendingHighRisk, TakeOverReport } from "@bakacoding/supervisor";
+import type { DesktopDecideHighRiskResult } from "../shared/api.js";
 import { DB_PATH_ENV, DEFAULT_DB_RELATIVE, resolveDbPath } from "./config.js";
 
 /** 仓库路径：`--repo` > BAKACODING_REPO > cwd */
@@ -68,6 +70,19 @@ export interface BackendHandle {
   pendingNotifications(): readonly NotifyMessage[];
   /** live 模式下，渲染就绪后新通知走这里 */
   onNotify(listener: (m: NotifyMessage) => void): () => void;
+  /** 等裁决的高风险清单（同步；只读为空）（T-062） */
+  pendingHighRisk(): PendingHighRisk[];
+  /** 放行 / 拒绝；只读或未接线返回 unavailable（T-062） */
+  decideHighRisk(
+    ticket_id: string,
+    pr_id: string,
+    decision: "release" | "reject",
+    detail?: string,
+  ): Promise<DesktopDecideHighRiskResult>;
+  /** 清单变化时通知（onHighRiskHeld / escalated / 裁决后等）（T-062） */
+  onPendingHighRisk(listener: (list: PendingHighRisk[]) => void): () => void;
+  /** 主动再取一次清单并推给订阅方（PR 状态变化时由 IPC 层调用） */
+  refreshPendingHighRisk(): void;
   stop(): Promise<void>;
 }
 
@@ -197,7 +212,28 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
   const notify = new NotifyBuffer(NOTIFY_BUFFER_MAX, () =>
     logger.warn(`supervisor 通知缓冲已满（${NOTIFY_BUFFER_MAX}），丢弃最旧的一条`),
   );
-  const notifyUser = (message: NotifyMessage): void => notify.push(message);
+  const pendingListeners: Array<(list: PendingHighRisk[]) => void> = [];
+  const emitPending = (list: PendingHighRisk[]): void => {
+    for (const l of pendingListeners) l(list);
+  };
+  const readPending = (): PendingHighRisk[] => {
+    if (!app) return [];
+    try {
+      return app.supervisor.pendingHighRisk();
+    } catch (e) {
+      logger.warn("pendingHighRisk 失败", e);
+      return [];
+    }
+  };
+  const refreshPendingHighRisk = (): void => {
+    emitPending(readPending());
+  };
+
+  // 主管通知（含 highRiskHeld）之后刷新待裁决清单
+  const notifyUser = (message: NotifyMessage): void => {
+    notify.push(message);
+    refreshPendingHighRisk();
+  };
 
   let mode: BackendMode = "readonly";
   let reason: string | undefined;
@@ -206,8 +242,16 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
   let depsHandle: DefaultDepsHandle | undefined;
   let app: App | undefined;
   let takeOver: BackendStatus["takeOver"];
+  const busUnsubs: Array<() => void> = [];
 
   const cleanupPartial = (): void => {
+    while (busUnsubs.length) {
+      try {
+        busUnsubs.pop()?.();
+      } catch {
+        /* ignore */
+      }
+    }
     try {
       app?.stop();
     } catch {
@@ -267,6 +311,17 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
 
       app = await assemble(depsHandle.deps);
       takeOver = takeOverCounts(app.takeOver);
+      // 上报 / 单级警告（含高风险拒绝未生效）后刷新清单；不新增事件类型
+      busUnsubs.push(
+        app.bus.subscribe("escalated", () => {
+          refreshPendingHighRisk();
+        }),
+      );
+      busUnsubs.push(
+        app.bus.subscribe("ticket_warning", () => {
+          refreshPendingHighRisk();
+        }),
+      );
       mode = "live";
       reason = undefined;
     } catch (e) {
@@ -291,12 +346,46 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
       return st;
     },
     markRendererReady(): NotifyMessage[] {
-      return notify.markReady();
+      const replay = notify.markReady();
+      // 渲染就绪时推一次当前清单
+      refreshPendingHighRisk();
+      return replay;
     },
     pendingNotifications: () => notify.pending(),
     onNotify(listener) {
       return notify.onNotify(listener);
     },
+    pendingHighRisk: () => readPending(),
+    async decideHighRisk(ticket_id, pr_id, decision, detail) {
+      if (!app) {
+        return {
+          ok: false,
+          code: "unavailable",
+          message: "后端只读或未接线，不能裁决高风险 PR",
+        };
+      }
+      try {
+        const result = await app.supervisor.decideHighRisk(ticket_id, pr_id, decision, detail);
+        refreshPendingHighRisk();
+        return { ok: true, result };
+      } catch (e) {
+        refreshPendingHighRisk();
+        if (e instanceof HighRiskDecisionError) {
+          const message = e.code === "stale_pr" ? "PR 已更新，请重新查看" : e.message;
+          return { ok: false, code: e.code, message };
+        }
+        const message = e instanceof Error ? e.message : String(e);
+        return { ok: false, code: "unavailable", message };
+      }
+    },
+    onPendingHighRisk(listener) {
+      pendingListeners.push(listener);
+      return () => {
+        const i = pendingListeners.indexOf(listener);
+        if (i >= 0) pendingListeners.splice(i, 1);
+      };
+    },
+    refreshPendingHighRisk,
     async stop() {
       cleanupPartial();
     },

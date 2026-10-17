@@ -117,10 +117,11 @@ flowchart BT
 | T-059 | 模块 3：带凭据 URL 的判断抽成模块 3 导出的 `isCredentialUrl`，2 的 prStore 拒写和 `redact` 的 `url_credentials` 规则共用，两边和 11 跑同一份 `CREDENTIAL_CASES`；`ghp_` / `github_pat_` / `glpat-` 任何位置都遮；`redact` 去掉平方级回溯（邮箱、内网主机名、env 变量名、私钥、IPv6 加上限或改线性扫描），超长主机名照样遮；接口新增 `isCredentialUrl`、`credentialUrlRanges`、`CREDENTIAL_CASES` | 3 | 基础层开发 | 已合入 | #63 | `61f5af3` |
 | T-060 | 模块 11 端到端回归：改用模块 3 的 `CREDENTIAL_CASES`，应拒的用例把带凭据文本放进上报详情和群消息，断言导出的诊断包里任何文件都找不到密文、事件确实在包里；应放行的用例详情里不出现 `[REDACTED:url_credentials]`；清单非空；40 位十六进制用户名判为 `url_credentials`；5 种 10 万字符详情的导出各在 500ms 内 | 11 | 界面与诊断开发 | 已合入 | #64 | `4c739e8` |
 | T-063 | 模块 12 / 组合根：`createDefaultDeps` 按仓库组装默认 AppDeps；`acquireWriterLock`（writer.lock）；桌面主进程 `startBackend` 接线 assemble/takeOver，失败退回只读；`backend:status` / `supervisor:notify` 缓冲；假数据 `main_merge` 改为 `supervisor` | 12、组合根 | 界面与诊断开发 | 已合入 | #69 | `5459682` |
-| T-062 | 模块 12：高风险 PR 放行和拒绝的界面与 IPC（接 pendingHighRisk / decideHighRisk，stale_pr 时提示「PR 已更新，请重新查看」）；警告列表最多显示约 50 条，其余显示 +N；detail 截断，按单号加警告码去重；requirement_truncated / pr_close_failed 配中文文案；诊断导出补按需求、按时间段两种范围的拒绝用例和 include_full_repo，耗时上限放宽到 2s | 12 | 界面与诊断开发 | 未开始 | — | — |
+| T-062 | 模块 12：高风险 PR 放行和拒绝的界面与 IPC（接 pendingHighRisk / decideHighRisk，stale_pr 时提示「PR 已更新，请重新查看」）；警告列表最多显示约 50 条，其余显示 +N；detail 截断，按单号加警告码去重；requirement_truncated / pr_close_failed / high_risk_reject_not_applied / takeover_skipped 配中文文案；诊断导出补按需求、按时间段两种范围的拒绝用例和 include_full_repo，耗时上限放宽到 2s | 12 | 界面与诊断开发 | 待评审 | #73 | — |
 | T-064 | 模块 9：定时 sync() 加限流退避 + 对账；拒绝只关指定 PR；adopt 发现已合入按手动合入；独占区用 isDependencyFile | 9、10、组合根 | 编排层开发 | 已合入 | #70 | `080f6b8` |
 | T-065 | 模块 6 / types：DiffFile 加可选 old_path，6 用 git diff -M 时填上旧路径；模块 8 `isHighRiskDiffFile` 新旧路径都检查，041c 的改名兜底（renamed 一律当高风险）收窄成只看依赖文件（没有 old_path 的改名仍算）；依赖文件名不区分大小写（仍按整个文件名匹配）；模块 10 高风险证据的命中文件改成 `{ path, old_path? }` | 6、8、10 | 执行层开发 | 已合入 | #67 | `e5c17b5` |
 | T-066 | 模块 6：sync 中途出错也带出已收集变化；close PATCH 失败时 GET 远程状态（已合入不记 closed）；merge 加可选 expected_head；checks 翻页并读 commit status；模块 7 发 review_backlog/supervisor_backlog 时 requirement_id、ticket_id 写 null，trace 新开 | 6、7 | 执行层开发 | 已合入 | #68 | `a51e022` |
+| T-067 | 模块 12：接 syncState()（状态展示 + 鉴权停 / 限流提示） | 12 | 界面与诊断开发 | 未开始 | — | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
@@ -147,7 +148,7 @@ flowchart BT
 - 模块 10（T-041b）：关旧 PR 的重试（30 秒、2 分钟、10 分钟）只在进程内，进程退出即停；重启时从关旧 PR 这一步接着做，但重试计数从头算。
 - 模块 10（T-041b）：`notifyUser` 失败只记警告，那条通知就丢了（上报处理的标记照常写，重启不会重发）。
 - 模块 10（T-041b）：没有需求原文（`requirement_text`）的旧单上报后不能自动重拆，只交用户。
-- 模块 10 / 12（T-041c）：T-062 之前没有放行 / 拒绝高风险 PR 的界面入口，只能调 `App.supervisor.decideHighRisk`；没人裁决的高风险 PR 一直扣着（安全的默认）。
+- 已解决（T-062）：12 有高风险 PR 放行 / 拒绝界面与 IPC（`pendingHighRisk` / `decideHighRisk`）；没人裁决的高风险 PR 仍一直扣着（安全的默认）。
 - 模块 9 / 10（T-041c，Q-4）：放行只在进程内，不跨重启；重启后重新扣住、通知用户再放行一次。
 - 模块 9（T-041c，Q-7）：被扣着的高风险单一直占着写入范围锁（依赖清单属于独占区域，会挡住别的依赖类单），也算进 `pending_prs`，扣多了会触发反压暂停（暂停通知里写明其中几张在等裁决）。
 - 已解决（T-064）：9 有定时 `sync()`（默认 60s）+ 对账；GitHub 上手动合并 / 关闭被扣的 PR 一轮内生效。

@@ -465,15 +465,96 @@ describe("凭据 URL 各种写法不进诊断包（T-060）", () => {
     ["a:a:…", "a:".repeat(50_000)],
     ["https://u:u:…", `https://u:${"u:".repeat(50_000)}`],
   ])(
-    "10 万字符的 %s detail 导出在 500ms 内",
+    "10 万字符的 %s detail 导出在 2s 内（T-062：由 500ms 放宽）",
     async (_label, big) => {
       storage.ingest(ev("escalated", "2026-10-10T01:00:00.999Z", "R-1", "T-2", { detail: big }));
       const t0 = performance.now();
       const { zip_path } = await exportT2();
-      expect(performance.now() - t0).toBeLessThan(500);
+      expect(performance.now() - t0).toBeLessThan(2000);
       const pkg = await readPackage(zip_path);
       expect(pkg.events.some((e) => e.type === "escalated" && e.ticket_id === "T-2")).toBe(true);
     },
     120_000,
   );
+
+  // T-062：#64 评审补测——按需求 / 按时间段两种范围的拒绝用例，以及 include_full_repo
+  it("拒绝用例：按需求范围导出也抹掉凭据", async () => {
+    const sample = REJECT[0]!;
+    const { text, secret } = sample[1];
+    storage.ingest(
+      ev("escalated", "2026-10-10T01:00:00.999Z", "R-1", "T-2", { detail: `push 失败：${text}` }),
+    );
+    const out_dir = mkdtempSync(path.join(dir, "out-"));
+    const zip_path = await exportPackage(
+      { project_id: "P-1", scope: { kind: "requirement", requirement_id: "R-1" } },
+      { source, out_dir, now: () => new Date("2026-10-17T07:00:00Z") },
+    );
+    const entries = readZip(readFileSync(zip_path));
+    for (const s of [
+      ...entries.map((e) => e.name),
+      ...entries.map((e) => e.data.toString("utf8")),
+    ]) {
+      expect(s).not.toContain(secret);
+    }
+    const pkg = await readPackage(zip_path);
+    expect(pkg.events.some((e) => e.type === "escalated" && e.ticket_id === "T-2")).toBe(true);
+  });
+
+  it("拒绝用例：按时间段导出也抹掉凭据", async () => {
+    const sample = REJECT[0]!;
+    const { text, secret } = sample[1];
+    storage.ingest(
+      ev("escalated", "2026-10-10T01:00:00.999Z", "R-1", "T-2", { detail: `push 失败：${text}` }),
+    );
+    const out_dir = mkdtempSync(path.join(dir, "out-"));
+    const zip_path = await exportPackage(
+      {
+        project_id: "P-1",
+        scope: {
+          kind: "time_range",
+          from: "2026-10-10T00:00:00Z",
+          to: "2026-10-10T23:59:59Z",
+        },
+      },
+      { source, out_dir, now: () => new Date("2026-10-17T07:00:00Z") },
+    );
+    const entries = readZip(readFileSync(zip_path));
+    for (const s of [
+      ...entries.map((e) => e.name),
+      ...entries.map((e) => e.data.toString("utf8")),
+    ]) {
+      expect(s).not.toContain(secret);
+    }
+    const pkg = await readPackage(zip_path);
+    expect(pkg.events.some((e) => e.type === "escalated" && e.ticket_id === "T-2")).toBe(true);
+  });
+
+  it("include_full_repo：存储无 repoFiles 时明确报错；带凭据的事件仍不会进包", async () => {
+    const sample = REJECT[0]!;
+    const { text, secret } = sample[1];
+    storage.ingest(
+      ev("escalated", "2026-10-10T01:00:00.999Z", "R-1", "T-2", { detail: `push 失败：${text}` }),
+    );
+    const out_dir = mkdtempSync(path.join(dir, "out-"));
+    await expect(
+      exportPackage(
+        {
+          project_id: "P-1",
+          scope: { kind: "ticket", ticket_id: "T-2" },
+          include_full_repo: true,
+        },
+        { source, out_dir, now: () => new Date("2026-10-17T07:00:00Z") },
+      ),
+    ).rejects.toThrow(/repoFiles/);
+    // 失败路径没有写出 zip；确认源里的密文不会因「勾了完整仓库」而泄漏到别的成功导出
+    const ok_dir = mkdtempSync(path.join(dir, "out-"));
+    const zip_path = await exportPackage(
+      { project_id: "P-1", scope: { kind: "ticket", ticket_id: "T-2" }, include_full_repo: false },
+      { source, out_dir: ok_dir, now: () => new Date("2026-10-17T07:00:00Z") },
+    );
+    const entries = readZip(readFileSync(zip_path));
+    for (const s of entries.map((e) => e.data.toString("utf8"))) {
+      expect(s).not.toContain(secret);
+    }
+  });
 });

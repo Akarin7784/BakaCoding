@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, ipcMain, nativeTheme } from "electron";
 import { resolveRepoDbPath, resolveRepoPath, startBackend } from "./backend.js";
-import { serveBackend, serveReader } from "./ipc.js";
+import { serveBackend, serveHighRisk, serveReader } from "./ipc.js";
 import { openEventReader } from "./reader.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -69,12 +69,16 @@ if (!gotLock) {
       ...(binding !== undefined && { nativeBinding: binding }),
     });
     const sink = () => win?.webContents ?? null;
-    const stopReader = serveReader(ipcMain, reader, sink);
+    const stopHighRisk = serveHighRisk(ipcMain, backend, sink);
+    const stopReader = serveReader(ipcMain, reader, sink, undefined, () =>
+      backend.refreshPendingHighRisk(),
+    );
     const stopBackendIpc = serveBackend(ipcMain, backend, sink);
 
     app.on("will-quit", () => {
       stopReader();
       stopBackendIpc();
+      stopHighRisk();
       reader.close();
       void backend.stop();
     });
