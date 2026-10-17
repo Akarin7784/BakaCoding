@@ -2109,6 +2109,31 @@ describe("T-041c 高风险判定：删除、改名（isHighRiskDiffFile）", () 
     expect(isHighRiskDiffFile(f("src/a.ts", "deleted"))).toBe(false);
   });
 
+  it("依赖文件一律按文件名匹配：任意子目录里的 package.json / 锁文件都算（新增、改名、删除各一）；docs/package.json.md 不算", () => {
+    for (const p of [
+      "apps/web/package.json",
+      "apps/web/pnpm-lock.yaml",
+      "a/b/c/package-lock.json",
+      "svc/yarn.lock",
+      "ruby/Gemfile",
+      "ruby/Gemfile.lock",
+      "py/requirements-dev.txt",
+      "tools/pnpm-workspace.yaml",
+    ])
+      expect(isDependencyFile(p), p).toBe(true);
+    expect(isHighRiskDiffFile(f("apps/web/pnpm-lock.yaml", "added"))).toBe(true);
+    expect(isHighRiskDiffFile(f("apps/web/package.json", "renamed"))).toBe(true);
+    expect(isHighRiskDiffFile(f("apps/web/package-lock.json", "deleted"))).toBe(true);
+    for (const p of [
+      "docs/package.json.md",
+      "package.json.bak",
+      "src/package.jsonc",
+      "docs/yarn.lock.txt",
+    ])
+      expect(isDependencyFile(p), p).toBe(false);
+    expect(isHighRiskDiffFile(f("docs/package.json.md", "modified"))).toBe(false);
+  });
+
   it("diff 里删除了 package.json：评审输入、submit 都带 high_risk: true", async () => {
     const t = setup({ runs: [done("去掉依赖")], reviews: [PASS()] });
     t.pr.diff.mockImplementation(async () => ({ ...DIFF, files: [f("package.json", "deleted")] }));

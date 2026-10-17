@@ -53,14 +53,20 @@ const MAX_NOTE_SUMMARY = 2000;
  */
 const SCOPE_REQUEST_WILDCARD = /[*?[\]{}()!+@]/;
 
-/** 是否落在依赖清单 / 锁文件上（`DEPENDENCY_MANIFEST_GLOBS`，匹配规则同模块 4）。T-041c 起导出，组合根重启补判用。 */
+/** 依赖清单 / 锁文件的文件名模式：`DEPENDENCY_MANIFEST_GLOBS` 里不带目录的那些（`package.json`、`*.lock` 等）。 */
+const DEPENDENCY_BASENAME_RULES = DEPENDENCY_MANIFEST_GLOBS.filter((g) => !g.includes("/")).map(
+  (glob) => ({ glob, level: "rw" as const }),
+);
+
+/**
+ * 是否是依赖清单 / 锁文件（T-041c 起导出，组合根重启补判用）：一律按文件名（basename）匹配
+ * `DEPENDENCY_MANIFEST_GLOBS` 的文件名模式，所以任意子目录里的 `package.json`、`pnpm-lock.yaml` 等都算；
+ * `docs/package.json.md` 这类只是名字像的不算。匹配规则同模块 4。
+ */
 export function isDependencyFile(path: string): boolean {
-  return (
-    permissionFor(
-      DEPENDENCY_MANIFEST_GLOBS.map((glob) => ({ glob, level: "rw" as const })),
-      path,
-    ) === "rw"
-  );
+  const name = path.split("/").filter(Boolean).at(-1);
+  if (!name) return false;
+  return permissionFor(DEPENDENCY_BASENAME_RULES, name) === "rw";
 }
 
 /**
