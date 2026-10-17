@@ -151,6 +151,9 @@ export const ConfigSchema = z
         pause_at: PosInt.default(4),
         recover_step: PosInt.default(1),
         recover_interval_min: PosInt.default(5),
+        pending_pr_limit: PosInt.default(16).describe(
+          "排队中（merge_queued）+ 评审中的 PR 数超过它就暂停派新单（T-035，初始值待实测）",
+        ),
       })
       .strict()
       .default({}),

@@ -80,7 +80,8 @@
     "halve_at": 2,
     "pause_at": 4,
     "recover_step": 1,
-    "recover_interval_min": 5
+    "recover_interval_min": 5,
+    "pending_pr_limit": 16
   },
   "diagnostics": {
     "retention_days": 30
