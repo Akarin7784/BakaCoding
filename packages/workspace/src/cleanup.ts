@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -97,9 +97,15 @@ function isManagedPath(repo: string, p: string): boolean {
   const root = join(repo, WORKTREES_SUBDIR);
   const rel = relative(root, resolve(p));
   if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return false;
-  // worktrees 根目录本身不在：路径按字面判断已在根下（目录都不在，fs.rm 也删不到别处）
-  if (!existsSync(root)) return true;
-  // 按真实路径再查一次（防 worktrees 目录里的符号链接把删除带到别处）；其他出错一律当不受管（宁可漏删）
+  // worktrees 根目录本身不在（lstat 报 ENOENT）：路径按字面判断已在根下（目录都不在，fs.rm 也删不到别处）。
+  // lstat 的其它错误（EACCES、ENOTDIR 等）一律当不受管（宁可漏删）。
+  try {
+    lstatSync(root);
+  } catch (err) {
+    return (err as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
+  }
+  // 按真实路径再查一次（防 worktrees 目录里的符号链接把删除带到别处）；其他出错一律当不受管（宁可漏删）。
+  // 根目录是悬空符号链接时 lstat 成功、这里 realpath 报 ENOENT，同样当不受管。
   try {
     const realRoot = realpathSync(root);
     const realP = existsSync(p) ? realpathSync(p) : resolve(realRoot, rel);
@@ -233,7 +239,11 @@ export async function cleanupMergedWorktrees(
           w.branch?.startsWith("bakacoding/") === true &&
           nameRe.test(w.branch.slice("bakacoding/".length));
         if (!byName && !byBranch) continue;
-        if (!isManagedPath(repo, w.path)) continue;
+        if (!isManagedPath(repo, w.path)) {
+          // 不受管：不删目录，也不删它的分支（之后的 prune 若因目录不在而去掉登记，分支仍保留）
+          if (w.branch) blocked.add(w.branch);
+          continue;
+        }
         try {
           const err = await removeWorktree(ctx, w.path);
           if (err) {
