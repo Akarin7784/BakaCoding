@@ -87,6 +87,8 @@ export class LocalPrProvider implements PrProvider {
   private seq = 0;
   /** 串行化 openIntegration，避免并发调用建出两条记录 */
   private integrationLock: Promise<unknown> = Promise.resolve();
+  /** 串行化 merge（T-076） */
+  private mergeLock: Promise<unknown> = Promise.resolve();
 
   constructor(opts: LocalPrProviderOptions) {
     this.store = opts.store;
@@ -307,7 +309,15 @@ export class LocalPrProvider implements PrProvider {
    * - checkout 且有未提交改动：不合并，返回 target_dirty；
    * - 未被 checkout：update-ref（带旧值校验）。
    */
-  async merge(
+  merge(pr_id: string, target: string, opts?: { expected_head?: string }): Promise<MergeResult> {
+    // 同一实例内串行（T-076）：两张单同时合入同一 target 时，后一张基于前一张的结果，
+    // 不因 update-ref 旧值校验失败而报错，也不互相覆盖
+    const run = this.mergeLock.then(() => this.mergeLocked(pr_id, target, opts));
+    this.mergeLock = run.catch(() => undefined);
+    return run;
+  }
+
+  private async mergeLocked(
     pr_id: string,
     target: string,
     opts?: { expected_head?: string },
@@ -319,6 +329,9 @@ export class LocalPrProvider implements PrProvider {
     const head = await this.revParse(cwd, rec.branch);
     if (opts?.expected_head !== undefined && opts.expected_head !== head)
       throw new ExpectedHeadMismatchError(pr_id, opts.expected_head, head);
+    // 新仓库第一张单：集成分支还没建（T-076）。与 openIntegration / GitHub 模式同一约定：从基线分支
+    // （baseBranch，默认 main）建出，不取工作树当前 HEAD；只补默认集成分支，其他 target 不存在照常报错
+    if (target === INTEGRATION_BRANCH) await this.ensureBranch(cwd, target, this.baseBranch);
     const tgt = await this.revParse(cwd, target);
     const ref = `refs/heads/${target}`;
 
@@ -404,14 +417,18 @@ export class LocalPrProvider implements PrProvider {
 
   /**
    * 分支不存在时从 target 建出（update-ref，不 checkout；空旧值保证只在不存在时创建）。
-   * 返回 target 当前提交。
+   * 幂等、并发安全：已存在不动；创建失败时重读，已被别人建出就算成功。返回 target 当前提交。
    */
   async ensureBranch(cwd: string, branch: string, target: string): Promise<string> {
     const tgt = await this.revParse(cwd, target);
     const ref = `refs/heads/${branch}`;
-    const exists =
-      (await git(cwd, ["show-ref", "--verify", "--quiet", ref], { allowCodes: [1] })).code === 0;
-    if (!exists) await git(cwd, ["update-ref", ref, tgt, ""]);
+    if (await refExists(cwd, ref)) return tgt;
+    try {
+      await git(cwd, ["update-ref", ref, tgt, ""]);
+    } catch (err) {
+      // 并发：另一方（或另一个进程）先建好了，算成功，不覆盖（T-076）
+      if (!(await refExists(cwd, ref))) throw err;
+    }
     return tgt;
   }
 
@@ -434,6 +451,10 @@ export class LocalPrProvider implements PrProvider {
   private async revParse(cwd: string, rev: string): Promise<string> {
     return (await git(cwd, ["rev-parse", "--verify", `${rev}^{commit}`])).stdout.trim();
   }
+}
+
+async function refExists(cwd: string, ref: string): Promise<boolean> {
+  return (await git(cwd, ["show-ref", "--verify", "--quiet", ref], { allowCodes: [1] })).code === 0;
 }
 
 function cwdOf(rec: PrRecord): string {

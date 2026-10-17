@@ -130,6 +130,7 @@ flowchart BT
 | T-073 | 模块 12 打包：Windows x64 免安装 zip（electron-builder，`package:win` / `package:linux`），版本 1.0.0-preview；`electron` 固定 43.8.0（ABI 148），better-sqlite3 用 12.12.0 官方 electron-v148 预编译包，原生模块 asarUnpack | 12 | 界面与诊断开发 | 已合入 | #80 | `46d7a2d` |
 | T-074 | 模块 12：修 IPC handler 参数下标（Electron 第一个参数是 event），high-risk:decide 拿错参数；测试 fake ipc 先传 event，锁住所有带参数的通道 | 12 | 界面与诊断开发 | 已合入 | #81 | `d996617` |
 | T-075 | 桌面 exe 图标（`packages/desktop/build/icon.ico`，16–256 多尺寸，极简机器人） | 12 | 界面与诊断开发 | 已合入 | #83 | `f072c29` |
+| T-076 | 模块 6：本地模式合入默认集成分支前，分支不存在就从基线分支（baseBranch，默认 main；与 openIntegration / GitHub 模式同一约定，不取工作树 HEAD）建出 `bakacoding/integration`，修新仓库第一张单 `merge_error` 进人工介入；`ensureBranch` 幂等、并发安全（update-ref 空旧值，失败重读），本地 `merge` 同实例串行；新增 4/6/9 真实 git 的派单到合入测试；顺带补已知缺口 2 的测试 | 6 | 执行层开发 | 待评审 | #86 | — |
 | T-077 | 模块 12 界面小修：报错前缀只出现一次、不露出 `Error：`（主进程 `errorDetail`、界面 `failureText`，兼容 Electron remote method 包装）；只读时导出先拒绝、不弹保存框；设置页标题和项目群 / 未归属的「只读」标签只在后端只读时显示 | 12 | 界面与诊断开发 | 已合入 | #84 | `b4a3745` |
 | T-078 | 模块 4：`.git/info/exclude` 改为排除整个 `/.bakacoding/`（数据库等运行文件不再出现在 git status）；旧版只写了 `/.bakacoding/worktrees/` 的仓库补一行、旧行保留；已有等价规则不重复写 | 4 | 基础层开发 | 待评审 | — | — |
 
@@ -194,7 +195,7 @@ flowchart BT
 - 模块 10（T-042）：`INTEGRATION_DIFF_MAX_CODEPOINTS` = 200000，待实测。
 - 已解决（T-066）：7 / 10 发 `review_backlog` / `supervisor_backlog` 时 `requirement_id` / `ticket_id` 为 null，trace 新开。
 - 模块 12（T-067）：测试没锁住脱敏顺序（先把环境变量里的密钥值替换成 `[REDACTED:变量名]`，再跑 `redact(text, "light")`），也没锁住 `serveSyncState` 的 `clearInterval`。定时器要等应用退出才停，关窗口时不停；没有窗口时会跳过，没有危害。不开单。
-- 模块 6（T-069）：响应里没有 `total_count` 时没有测试，代码会在当页停止翻页。不开单。
+- 已补测试（T-076）：模块 6 check-runs 响应里没有 `total_count` 时，按已收到的条数算，当页之后不再翻页（行为不变，只补测试）。
 - 模块 12（T-073）：桌面端暂用 Electron 43.8.0（better-sqlite3 尚无 Electron 44/ABI 149 预编译），上游出了再升。
 - 模块 12（T-073）：开发用 better-sqlite3 12.11.1，打包用 12.12.0 electron-v148 预编译（lib/ 逐字节相同，仅 SQLite 版本不同）。
 
