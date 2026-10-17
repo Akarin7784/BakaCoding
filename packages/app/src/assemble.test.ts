@@ -1119,3 +1119,174 @@ describe("T-041c 组合根：高风险闸门", () => {
     ).toBe(true);
   });
 });
+
+describe("T-064 closeTicketPrs 只关指定 PR + bakacoding 重试", () => {
+  it("N5：传 pr_id 时只关那一个；同单其他 open PR 不动", async () => {
+    const { storage } = setup();
+    const store = storage.prStore<TicketPrRecord>();
+    await store.put(prRec({ pr_id: "P1", ticket_id: "T" }));
+    await store.put(prRec({ pr_id: "P2", ticket_id: "T" }));
+    const closed: string[] = [];
+    const pr = {
+      close: async (id: string) => {
+        closed.push(id);
+        const r = (await store.get(id))!;
+        await store.put({ ...r, status: "closed", closed_by: "bakacoding" as const });
+      },
+    };
+    expect(await closeTicketPrs({ sync: async () => {}, store, pr }, "T", "拒绝", "P1")).toBe(
+      "closed",
+    );
+    expect(closed).toEqual(["P1"]);
+    expect((await store.get("P2"))!.status).toBe("open");
+  });
+
+  it("N5：关 P1 时同单已有 P2；不关 P2（蓝色大肥鱼要求的场景）", async () => {
+    const { storage } = setup();
+    const store = storage.prStore<TicketPrRecord>();
+    await store.put(prRec({ pr_id: "P1", ticket_id: "T" }));
+    await store.put(prRec({ pr_id: "P2", ticket_id: "T" }));
+    const closed: string[] = [];
+    expect(
+      await closeTicketPrs(
+        {
+          sync: async () => {},
+          store,
+          pr: {
+            close: async (id) => {
+              closed.push(id);
+            },
+          },
+        },
+        "T",
+        "拒绝",
+        "P1",
+      ),
+    ).toBe("closed");
+    expect(closed).toEqual(["P1"]);
+  });
+
+  it("N5 反向：不传 pr_id 时仍关本单所有 open（旧行为）", async () => {
+    const { storage } = setup();
+    const store = storage.prStore<TicketPrRecord>();
+    await store.put(prRec({ pr_id: "P1", ticket_id: "T" }));
+    await store.put(prRec({ pr_id: "P2", ticket_id: "T" }));
+    const closed: string[] = [];
+    await closeTicketPrs(
+      { sync: async () => {}, store, pr: { close: async (id) => void closed.push(id) } },
+      "T",
+      "重拆",
+    );
+    expect(closed.sort()).toEqual(["P1", "P2"]);
+  });
+
+  it("B3/Q-6：本地已 closed_by bakacoding 时重试会再调 close", async () => {
+    const { storage } = setup();
+    const store = storage.prStore<TicketPrRecord>();
+    await store.put(
+      prRec({
+        pr_id: "P1",
+        ticket_id: "T",
+        status: "closed",
+        closed_by: "bakacoding",
+        close_reason: "上次失败",
+      }),
+    );
+    const close = vi.fn(async () => {});
+    expect(await closeTicketPrs({ sync: async () => {}, store, pr: { close } }, "T", "重试", "P1")).toBe(
+      "closed",
+    );
+    expect(close).toHaveBeenCalledOnce();
+    // 不传 pr_id 的路径也同样重试
+    close.mockClear();
+    expect(await closeTicketPrs({ sync: async () => {}, store, pr: { close } }, "T", "重试")).toBe(
+      "closed",
+    );
+    expect(close).toHaveBeenCalledOnce();
+  });
+});
+
+describe("T-064 B2：adopt 发现已合入的 PR", () => {
+  it("E2E：merge_queued 单的 PR 已是 merged → takeOver 记进 merged，下游不再 waiting；有 merge_sha 发 interface_changed", async () => {
+    const { storage, worktreeRoot } = setup();
+    // 上游：状态还是 merge_queued，但 PR 记录已 merged（停机期间用户合入 + sync 写了库）
+    saveTicket(
+      storage,
+      "req-1-1",
+      "merge_queued",
+      fields({
+        write_scope: ["lib/a/**"],
+        interfaces: [{ file: "lib/a/x.ts", symbol: "foo" }],
+      }),
+    );
+    const wt = join(worktreeRoot, "req-1-1-r0");
+    mkdirSync(wt, { recursive: true });
+    const mergeSha = "ab".repeat(20);
+    await storage.prStore<TicketPrRecord>().put(
+      prRec({
+        pr_id: "pr-up",
+        ticket_id: "req-1-1",
+        status: "merged",
+        worktree_path: wt,
+        merge_sha: mergeSha,
+      }),
+    );
+    saveTicket(
+      storage,
+      "req-1-2",
+      "pending",
+      fields({ write_scope: ["lib/b/**"], depends_on: ["req-1-1"] }),
+    );
+
+    const { pr } = fakePr();
+    const { app } = await start({ storage, worktreeRoot, pr });
+    // takeOver 在 assemble 里已跑完
+    expect(app.takeOver.merged).toContain("req-1-1");
+    expect(app.takeOver.adopted).not.toContain("req-1-1");
+    expect(app.takeOver.failed.map((f) => f.ticket_id)).not.toContain("req-1-1");
+    expect(app.scheduler.status("req-1-1")).toBe("merged");
+    expect(statusOf(storage, "req-1-1")).toBe("merged");
+    // 下游应已 enqueue，且依赖已 ready（9 里上游是 merged）
+    expect(app.takeOver.enqueued).toContain("req-1-2");
+    expect(app.scheduler.dependencyState("req-1-2")).toBe("ready");
+    // interface_changed：合法 merge_sha 才发（announceMerge 在 adopt 同步路径已发）
+    const fromStore = storage.queryEvents().filter((e) => e.type === "interface_changed");
+    expect(fromStore.length).toBeGreaterThanOrEqual(1);
+    expect(
+      fromStore.some(
+        (e) => e.payload && (e.payload as { base_commit?: string }).base_commit === mergeSha,
+      ),
+    ).toBe(true);
+  });
+
+  it("E2E 反向补充：无合法 merge_sha 时不发 interface_changed，仍记 merged", async () => {
+    const { storage, worktreeRoot } = setup();
+    saveTicket(storage, "req-1-1", "merge_queued", fields({ write_scope: ["lib/a/**"] }));
+    const wt = join(worktreeRoot, "req-1-1-r0");
+    mkdirSync(wt, { recursive: true });
+    await storage.prStore<TicketPrRecord>().put(
+      prRec({
+        pr_id: "pr-up",
+        ticket_id: "req-1-1",
+        status: "merged",
+        worktree_path: wt,
+        // 无 merge_sha
+      }),
+    );
+    const { pr } = fakePr();
+    const { app } = await start({ storage, worktreeRoot, pr });
+    expect(app.takeOver.merged).toContain("req-1-1");
+    expect(app.scheduler.status("req-1-1")).toBe("merged");
+    const fromStore = storage.queryEvents().filter((e) => e.type === "interface_changed");
+    expect(fromStore).toEqual([]);
+  });
+
+  it("反向：没有 merged 记录时 adopt 仍失败", async () => {
+    const { storage, worktreeRoot } = setup();
+    saveTicket(storage, "req-1-3", "merge_queued", fields());
+    const { pr } = fakePr();
+    const { app } = await start({ storage, worktreeRoot, pr });
+    expect(app.takeOver.failed.some((f) => f.ticket_id === "req-1-3")).toBe(true);
+    expect(app.takeOver.merged).not.toContain("req-1-3");
+  });
+});

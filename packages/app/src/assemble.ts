@@ -90,7 +90,13 @@ export interface AppDeps {
   scheduler?: Partial<
     Pick<
       SchedulerDeps,
-      "target" | "clock" | "target_dirty_retry_ms" | "exclusive_zones" | "dispatch_poll_ms"
+      | "target"
+      | "clock"
+      | "target_dirty_retry_ms"
+      | "exclusive_zones"
+      | "dispatch_poll_ms"
+      | "sync_poll_ms"
+      | "timers"
     >
   >;
   /** 越界写申请等批复的时长（4 默认 5 分钟） */
@@ -156,6 +162,27 @@ export async function currentTicketPr(
   return open.at(-1);
 }
 
+/**
+ * 本单已合入的 PR（T-064 B2）：kind 为 ticket、单号一致、status merged 里最新的一条。
+ */
+export async function findMergedTicketPr(
+  store: Pick<PrStore, "list">,
+  ticket_id: string,
+): Promise<TicketPrRecord | undefined> {
+  const merged = (await store.list()).filter(
+    (r: PrRecord): r is TicketPrRecord =>
+      r.kind === "ticket" && r.ticket_id === ticket_id && r.status === "merged",
+  );
+  merged.sort((a, b) =>
+    a.updated_ts === b.updated_ts
+      ? a.pr_id.localeCompare(b.pr_id)
+      : a.updated_ts < b.updated_ts
+        ? -1
+        : 1,
+  );
+  return merged.at(-1);
+}
+
 /** N5：重启补跑时取上报原因——本单最后一条需要处理的 escalated（跳过只通知的和 10 自己发的）。 */
 export function lastEscalationFrom(
   storage: Pick<Storage, "queryEvents">,
@@ -180,18 +207,67 @@ export function lastEscalationFrom(
  * 不先 sync 的话，远端已合入、本地还是 open 的 PR 会被 6 在本地标成 closed（6 的 close 只看本地记录）。
  */
 export async function closeTicketPrs(
-  o: { sync: () => Promise<unknown>; store: Pick<PrStore, "list">; pr: Pick<PrProvider, "close"> },
+  o: {
+    sync: () => Promise<unknown>;
+    store: Pick<PrStore, "list" | "get">;
+    pr: Pick<PrProvider, "close">;
+    warn?: (message: string, detail?: unknown) => void;
+  },
   ticket_id: string,
   reason: string,
+  /** T-064 N5：只关这一个 PR（高风险拒绝）；不传则关本单所有 open/conflict（041b 重拆） */
+  pr_id?: string,
 ): Promise<"closed" | "none" | "merged"> {
   await o.sync();
+  const warn = o.warn ?? (() => {});
+
+  if (pr_id !== undefined) {
+    let rec: PrRecord | undefined;
+    try {
+      rec = await o.store.get(pr_id);
+    } catch (err) {
+      warn(`closeTicketPrs：读 PR ${pr_id} 失败`, err);
+      return "none";
+    }
+    if (!rec || rec.kind !== "ticket" || rec.ticket_id !== ticket_id) {
+      warn(
+        `closeTicketPrs：PR ${pr_id} 不是单 ${ticket_id} 的 ticket 记录（${
+          rec ? `kind=${rec.kind}` : "不存在"
+        }）`,
+      );
+      return "none";
+    }
+    if (rec.status === "merged") return "merged";
+    if (rec.status === "open" || rec.status === "conflict") {
+      try {
+        await o.pr.close(rec.pr_id, reason);
+      } catch (err) {
+        if (err instanceof PrAlreadyMergedError) return "merged";
+        throw err;
+      }
+      return "closed";
+    }
+    if (rec.closed_by === "bakacoding") {
+      // B3 / Q-6：本地已标关闭（可能远程 PATCH 失败）→ 再调一次 close
+      try {
+        await o.pr.close(rec.pr_id, reason);
+      } catch (err) {
+        if (err instanceof PrAlreadyMergedError) return "merged";
+        throw err;
+      }
+      return "closed";
+    }
+    return "none";
+  }
+
   const mine = (await o.store.list()).filter(
     (r: PrRecord): r is TicketPrRecord => r.kind === "ticket" && r.ticket_id === ticket_id,
   );
   if (mine.some((r) => r.status === "merged")) return "merged";
   const open = mine.filter((r) => r.status === "open" || r.status === "conflict");
-  if (open.length === 0) return "none";
-  for (const r of open) {
+  const retryClose = mine.filter((r) => r.status === "closed" && r.closed_by === "bakacoding");
+  if (open.length === 0 && retryClose.length === 0) return "none";
+  for (const r of [...open, ...retryClose]) {
     try {
       await o.pr.close(r.pr_id, reason);
     } catch (err) {
@@ -254,8 +330,13 @@ export async function assemble(deps: AppDeps): Promise<App> {
     storage,
     enqueue: (t) => scheduler.enqueue(withGrantedScopes(t)),
     adopt: (t) => adopt(withGrantedScopes(t)),
-    closeTicketPr: (ticket_id, reason) =>
-      closeTicketPrs({ sync: () => scheduler.sync(), store, pr }, ticket_id, reason),
+    closeTicketPr: (ticket_id, reason, pr_id) =>
+      closeTicketPrs(
+        { sync: () => scheduler.sync(), store, pr, warn: (m, d) => logger.warn(m, d) },
+        ticket_id,
+        reason,
+        pr_id,
+      ),
     lastEscalation: lastEscalationFrom(storage),
     replaceDependency: (old_id, ids) => scheduler.replaceDependency(old_id, ids),
     highRisk: {
@@ -345,17 +426,32 @@ export async function assemble(deps: AppDeps): Promise<App> {
    * 重启接管里已在合并队列的单：按 2 的 PR 记录接回 9（adopt 要 PR id 和 head）。查不到未结束的 PR、
    * worktree 不在了都抛错（10 记进 TakeOverReport.failed），不派单、不开新 PR。
    */
-  async function adopt(t: SchedulerTicket & { kind?: "dependency" }): Promise<void> {
+  async function adopt(
+    t: SchedulerTicket & { kind?: "dependency" },
+  ): Promise<"adopted" | "already" | "merged"> {
     const rec = await currentTicketPr(store, t.ticket_id);
-    if (!rec)
-      throw new Error(`需求单 ${t.ticket_id} 在 2 里没有未结束的 PR 记录，不能直接接回合并队列`);
+    if (!rec) {
+      const merged = await findMergedTicketPr(store, t.ticket_id);
+      if (!merged)
+        throw new Error(`需求单 ${t.ticket_id} 在 2 里没有未结束的 PR 记录，不能直接接回合并队列`);
+      const { kind, ...ticket } = t;
+      return scheduler.adopt(ticket, {
+        pr_id: merged.pr_id,
+        head_sha: merged.head_sha,
+        worktree_path: merged.worktree_path,
+        base_commit: merged.base_sha,
+        already_merged: true,
+        ...(merged.merge_sha ? { merge_sha: merged.merge_sha } : {}),
+        ...(kind === "dependency" ? { high_risk: true } : {}),
+      });
+    }
     if (!existsSync(rec.worktree_path))
       throw new Error(
         `需求单 ${t.ticket_id} 的 PR ${rec.pr_id} 的 worktree 不在了：${rec.worktree_path}`,
       );
     const { kind, ...ticket } = t;
     const m = /-r(\d+)$/.exec(rec.worktree_path);
-    await scheduler.adopt(ticket, {
+    return scheduler.adopt(ticket, {
       pr_id: rec.pr_id,
       head_sha: rec.head_sha,
       worktree_path: rec.worktree_path,
@@ -407,6 +503,15 @@ export async function assemble(deps: AppDeps): Promise<App> {
     config,
     targetHead: () => deps.targetHead(),
     budgetState: () => deps.budget.budgetState(),
+    prRecord: async (pr_id) => {
+      const r = await store.get(pr_id);
+      if (!r) return undefined;
+      return {
+        status: r.status,
+        ...(r.closed_by !== undefined ? { closed_by: r.closed_by } : {}),
+        ...(r.merge_sha !== undefined ? { merge_sha: r.merge_sha } : {}),
+      };
+    },
     tickets,
     saveMergeResult: (ticket_id, result) => storage.saveMergeResult(ticket_id, result),
     worktrees: deps.worktrees,
@@ -443,6 +548,8 @@ export async function assemble(deps: AppDeps): Promise<App> {
     logger.warn(
       `重启接管：${takeOver.failed.length} 张单没接回：${takeOver.failed.map((f) => `${f.ticket_id}（${f.error}）`).join("；")}`,
     );
+  // T-064 N2：takeOver 之后才开定时 sync，避免接回前把手动合入的变化丢掉（B2）
+  scheduler.startSyncLoop();
 
   return {
     bus,
