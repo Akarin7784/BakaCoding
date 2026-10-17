@@ -145,6 +145,31 @@ export interface App {
 }
 
 /**
+ * T-042 C3：用户仓库里检出 main 的 worktree 路径，没有检出（或 git 出错）时 null。
+ * 仓库根优先取 `AppDeps.repoRoot`（T-094 加的，`createDefaultDeps` 传 4 的 `WorktreeManager.repoRoot`）；
+ * 没给时才按 `worktreeRoot = <repo>/.bakacoding/worktrees` 往上推两级（T-096）。从 assemble.ts 导出供测试。
+ */
+export async function userMainWorktreeFor(
+  deps: Pick<AppDeps, "repoRoot" | "worktreeRoot">,
+): Promise<string | null> {
+  const repo = deps.repoRoot ?? dirname(dirname(deps.worktreeRoot));
+  try {
+    const { stdout } = await promisify(execFile)("git", ["worktree", "list", "--porcelain"], {
+      cwd: repo,
+      encoding: "utf8",
+    });
+    let path: string | undefined;
+    for (const line of stdout.split("\n")) {
+      if (line.startsWith("worktree ")) path = line.slice(9);
+      else if (line === "branch refs/heads/main") return path ?? null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+/**
  * 9 / 8 写 TicketStatus：读回整行、只换 status（不带 fields，2 保留原值）。
  * T-085：写库成功、且状态真的变了（`row.status !== status`）之后发一条 `ticket_status_changed`；
  * 同状态重复写、写库抛错、找不到单都不发。8 和 9 都经这里写状态，所以事件只在这一处发。
@@ -393,22 +418,7 @@ export async function assemble(deps: AppDeps): Promise<App> {
   /** T-042 C3：用户仓库是否正检出 main（本地模式合 main 会动工作区） */
   async function userMainWorktree(): Promise<string | null> {
     if (pr.kind !== "local") return null;
-    // worktreeRoot = <repo>/.bakacoding/worktrees
-    const repo = dirname(dirname(deps.worktreeRoot));
-    try {
-      const { stdout } = await promisify(execFile)("git", ["worktree", "list", "--porcelain"], {
-        cwd: repo,
-        encoding: "utf8",
-      });
-      let path: string | undefined;
-      for (const line of stdout.split("\n")) {
-        if (line.startsWith("worktree ")) path = line.slice(9);
-        else if (line === "branch refs/heads/main") return path ?? null;
-      }
-    } catch {
-      return null;
-    }
-    return null;
+    return userMainWorktreeFor(deps);
   }
 
   /**
