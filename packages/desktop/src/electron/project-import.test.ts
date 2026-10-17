@@ -33,6 +33,7 @@ import type { App } from "@bakacoding/app";
 import { symlinkSync } from "node:fs";
 import path from "node:path";
 import { serveProjectSettings } from "./ipc.js";
+import { failureText } from "../shared/error-text.js";
 import { envPresence, type ProjectSettingsDeps } from "./project-settings-ipc.js";
 import { readLastRepo, writeLastRepo } from "./repo-store.js";
 
@@ -531,7 +532,7 @@ describe("project:import / diagnostics:export / settings:get IPC（T-072）", ()
     c.backend.exportDiagnostics.mockRejectedValueOnce(evilError("boom"));
     serveProjectSettings(ipc, c.d);
     const r = await invoke<{ ok: false; reason: string }>(IPC_CHANNELS.diagnosticsExport);
-    expect(r.reason).toContain("导出失败");
+    expect(r.reason).toContain("boom");
     expect(r.reason).not.toMatch(/[<>\n]/);
     expect(r.reason).not.toContain("<img");
   });
@@ -548,6 +549,38 @@ describe("project:import / diagnostics:export / settings:get IPC（T-072）", ()
       reason: "保存位置是符号链接，请换个位置",
     });
     expect(c.backend.exportDiagnostics).not.toHaveBeenCalled();
+  });
+
+  it("T-077：只读时导出先拒绝、不弹保存框；界面最终文案只有一个前缀", async () => {
+    const { ipc, invoke } = fakeIpc();
+    const pick = vi.fn(async () => "/x.zip");
+    const c = deps({ pickSavePath: pick });
+    (c.backend as { status: () => unknown }).status = () => ({
+      mode: "readonly",
+      reason: "配置校验失败（ConfigError）",
+    });
+    serveProjectSettings(ipc, c.d);
+    const r = await invoke<{ ok: false; reason: string }>(IPC_CHANNELS.diagnosticsExport);
+    expect(r).toEqual({ ok: false, reason: "只读模式：配置校验失败（ConfigError）" });
+    expect(pick).not.toHaveBeenCalled();
+    expect(failureText("导出失败", r.reason)).toBe(
+      "导出失败：只读模式：配置校验失败（ConfigError）",
+    );
+  });
+
+  it("T-077：导出抛泛化 Error（只读）时原因不带 Error：、不带前缀", async () => {
+    const outZip = join(tmp("bc-out-"), "x.zip");
+    const { ipc, invoke } = fakeIpc();
+    const c = deps({ pickSavePath: async () => outZip });
+    c.backend.exportDiagnostics.mockRejectedValueOnce(
+      new Error("只读模式：配置校验失败（ConfigError）"),
+    );
+    serveProjectSettings(ipc, c.d);
+    const r = await invoke<{ ok: false; reason: string }>(IPC_CHANNELS.diagnosticsExport);
+    expect(failureText("导出失败", r.reason)).toBe(
+      "导出失败：只读模式：配置校验失败（ConfigError）",
+    );
+    expect(r.reason).toBe("只读模式：配置校验失败（ConfigError）");
   });
 
   it("导出：默认存到下载目录；取消；仓库里拒绝；出错脱敏", async () => {
@@ -589,7 +622,7 @@ describe("project:import / diagnostics:export / settings:get IPC（T-072）", ()
     serveProjectSettings(i4, c4.d);
     const r4 = await v4<{ ok: false; reason: string }>(IPC_CHANNELS.diagnosticsExport);
     expect(r4.ok).toBe(false);
-    expect(r4.reason).toContain("导出失败");
+    expect(r4.reason).toContain("EACCES");
     expect(r4.reason).not.toContain(FAKE_DS);
   });
 
@@ -643,7 +676,7 @@ describe("评审跟进（T-072 #82）", () => {
     };
     const sw = new BackendSwitcher(await startOn(a), start, env);
     const r = await sw.switchTo(b);
-    expect(r).toEqual({ ok: false, reason: "新仓库没能启动（Error：boom），已回到原仓库" });
+    expect(r).toEqual({ ok: false, reason: "新仓库没能启动（boom），已回到原仓库" });
     expect(sw.status().mode).toBe("live");
     expect(sw.repoRoot()).toBe(a);
     await sw.stop();
@@ -662,8 +695,8 @@ describe("评审跟进（T-072 #82）", () => {
     expect(calls).toBe(2);
     expect(r.ok).toBe(false);
     if (r.ok) return;
-    expect(r.reason).toContain("新仓库没能启动（Error：fail-new）");
-    expect(r.reason).toContain("原仓库也没能重新启动（Error：fail-old）");
+    expect(r.reason).toContain("新仓库没能启动（fail-new）");
+    expect(r.reason).toContain("原仓库也没能重新启动（fail-old）");
     expect(r.reason).toContain("只读模式");
     expect(r.reason).not.toContain("已回到原仓库");
     expect(sw.status().mode).toBe("readonly");

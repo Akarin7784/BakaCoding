@@ -30,4 +30,13 @@ describe("SettingsPanel（T-072）", () => {
     expect(screen.getByTestId("env-DEEPSEEK_API_KEY").textContent).toContain("已设");
     expect(screen.getByTestId("env-BAKACODING_REPO").textContent).toContain("未设");
   });
+
+  it.each([
+    ["readonly", "设置（只读）"],
+    ["local", "设置"],
+    ["github", "设置"],
+  ] as const)("T-077：mode=%s 标题为「%s」", (mode, title) => {
+    render(<SettingsPanel settings={{ ...base, mode }} onBack={() => {}} />);
+    expect(screen.getByTestId("settings-title").textContent).toBe(title);
+  });
 });

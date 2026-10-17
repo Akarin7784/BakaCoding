@@ -96,7 +96,7 @@ describe("describeSyncState（T-067）", () => {
     );
     expect(v.label).toBe("同步失败");
     expect(v.hint).toBe("同步失败（连续 3 次），将在 4 分钟后重试");
-    expect(v.errorDetail).toBe("Error：ECONNRESET");
+    expect(v.errorDetail).toBe("ECONNRESET");
   });
 
   it("没开定时同步：同步未运行", () => {

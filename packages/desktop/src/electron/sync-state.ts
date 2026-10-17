@@ -69,3 +69,13 @@ export function unavailableSyncState(reason: string | undefined): DesktopSyncSta
     reason: reason ? `只读模式：${reason}` : "只读模式：后端未接线",
   };
 }
+
+/**
+ * 主进程把 catch 到的错误变成一句话（T-077）：泛化的 `Error` 不写名字，只给信息；
+ * 具体错误名（ConfigError 等）经 sanitizeErrorName 过滤后写成「名字：信息」。信息仍需调用方脱敏。
+ */
+export function errorDetail(e: unknown): string {
+  if (!(e instanceof Error)) return String(e);
+  const name = sanitizeErrorName(e.name);
+  return name === "Error" ? e.message : `${name}：${e.message}`;
+}
