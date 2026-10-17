@@ -38,6 +38,6 @@ const outcome = await subAgent.handle(ticket);
 - 当日预算用完不上报、不计复投，返回 `requeue_budget` 和续跑凭据，第二天用 `resume(ticket, token)` 续跑。
 - 7 的复投成员持久化：`createRoundAssignmentStore({ rounds: storageRoundSource(storage) })`（T-045 起按单号走 2 的 `listPrRounds`，不再需要 `projectOf`）。
 - 每单权限清单（T-048）：第一次编码前按单上的建议和 `write_scope` 生成（超出写入范围的写权限降为只读、不安全的写权限丢掉、不安全的只读改成 deny，并记日志），写进 2 的需求单记录；之后每次调编码池和评审前都从记录读。批准的写入范围由 8 审批通过、发完 `write_scope_granted` 后自动写回（`recordGrantedScope` 只在包内用，不从 index 导出；同包测试从 `src/internal.ts` 导入）。同一单不能同时有两个 `runTicket`（4 的登记表按 `ticket_id` 释放），8 在进程内守住。
-- 越界写审批（T-038）：8 是 `write_scope_requested` 的唯一答复方。不安全的路径直接拒（不交 9）；被清单显式 deny 的拒；落在 `write_scope` ∪ 已批准范围里的直接批；范围外的交 `scheduler.extendScope`，成功才批。所有批准都先发 `write_scope_granted` 事件再写回需求单记录（需求单记录不加列）。
+- 越界写审批（T-038）：8 是 `write_scope_requested` 的唯一答复方。带通配字符（`* ? [ ] { } ( ) ! + @`）的申请整条拒（T-053，申请应是具体路径；文件名自带这些字符的需拆单时放进 `write_scope`）；不安全的路径直接拒（不交 9）；被清单显式 deny 的拒；落在 `write_scope` ∪ 已批准范围里的直接批；范围外的交 `scheduler.extendScope`，成功才批。所有批准都先发 `write_scope_granted` 事件再写回需求单记录（需求单记录不加列）。
 - 接口变更（T-038）：`attach(bus)` / `onInterfaceChanged(e)` 收 9 的 `interface_changed`，给受影响的单记一条说明，下一次编码时接在 feedback 后面（5 包成不可信区块）；评审期间收到且本单还没交给 9 时，交出前再评审一次，不计复投。预算暂停时说明进 `ResumeToken.interface_notes`（v1 不写 2）。
 - 高风险（T-038）：需求单 `kind: "dependency"` 或 diff 改了依赖清单 / 锁文件（`DEPENDENCY_MANIFEST_GLOBS`）时，给 7、9 和结果都带 `high_risk: true`，只打标不扣留。
