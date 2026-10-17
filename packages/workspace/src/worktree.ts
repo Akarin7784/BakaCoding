@@ -3,6 +3,12 @@ import { existsSync } from "node:fs";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
+import {
+  cleanupMergedWorktrees,
+  withGitWriteLock,
+  type CleanupMergedOptions,
+  type CleanupMergedResult,
+} from "./cleanup.js";
 
 const run = promisify(execFile);
 
@@ -138,7 +144,9 @@ export class WorktreeManager {
     if (existsSync(path)) throw new Error(`worktree 已存在：${path}`);
     await mkdir(join(this.repoRoot, WORKTREES_DIR), { recursive: true });
     // 新 worktree 只含已提交内容，不带入未跟踪文件（如密钥）。
-    await git(this.repoRoot, "worktree", "add", "-b", branch, path, sha);
+    await withGitWriteLock(this.repoRoot, () =>
+      git(this.repoRoot, "worktree", "add", "-b", branch, path, sha),
+    );
     return { path, branch };
   }
 
@@ -159,19 +167,41 @@ export class WorktreeManager {
     return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
   }
 
-  /** 按 ticket_id（清掉该单所有轮次）或 worktree 路径清理：删 worktree 和对应分支。 */
+  /**
+   * 按 ticket_id（清掉该单所有轮次）或 worktree 路径清理：删 worktree 和对应分支。
+   * T-094 起持 withGitWriteLock、逐项处理：一项失败不影响其余，最后 prune；有失败时处理完再抛一个汇总错误。
+   */
   async cleanup(ticketIdOrPath: string): Promise<string[]> {
-    const all = await this.list();
     const byPath = ticketIdOrPath.includes("/") || ticketIdOrPath.includes("\\");
     if (!byPath) assertTicket(ticketIdOrPath);
-    const targets = byPath
-      ? all.filter((w) => resolve(w.path) === resolve(ticketIdOrPath))
-      : all.filter((w) => /^bakacoding\/(.+)-r\d+$/.exec(w.branch)?.[1] === ticketIdOrPath);
-    for (const w of targets) {
-      await git(this.repoRoot, "worktree", "remove", "--force", w.path);
-      await git(this.repoRoot, "branch", "-D", w.branch);
-    }
-    await git(this.repoRoot, "worktree", "prune");
-    return targets.map((w) => w.path);
+    return withGitWriteLock(this.repoRoot, async () => {
+      const all = await this.list();
+      const targets = byPath
+        ? all.filter((w) => resolve(w.path) === resolve(ticketIdOrPath))
+        : all.filter((w) => /^bakacoding\/(.+)-r\d+$/.exec(w.branch)?.[1] === ticketIdOrPath);
+      const done: string[] = [];
+      const failed: string[] = [];
+      for (const w of targets) {
+        try {
+          await git(this.repoRoot, "worktree", "remove", "--force", w.path);
+          await git(this.repoRoot, "branch", "-D", w.branch);
+          done.push(w.path);
+        } catch (err) {
+          failed.push(`${w.path}：${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      try {
+        await git(this.repoRoot, "worktree", "prune");
+      } catch (err) {
+        failed.push(`worktree prune：${err instanceof Error ? err.message : String(err)}`);
+      }
+      if (failed.length) throw new Error(`清理 worktree 部分失败：${failed.join("；")}`);
+      return done;
+    });
+  }
+
+  /** 单子合入后清理（T-094），见 cleanup.ts 的 cleanupMergedWorktrees；从不抛错。 */
+  cleanupMerged(ticket_id: string, opts: CleanupMergedOptions): Promise<CleanupMergedResult> {
+    return cleanupMergedWorktrees(this.repoRoot, ticket_id, opts);
   }
 }
