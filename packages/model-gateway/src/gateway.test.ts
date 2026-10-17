@@ -77,6 +77,7 @@ function setup(
     config?: GatewayConfig;
     budget?: { ok: false; scope: "daily" | "ticket" };
     rateLimit?: ConstructorParameters<typeof RateLimiter>[0];
+    publishThrows?: boolean;
   } = {},
 ) {
   const events: CallCompletedInput[] = [];
@@ -116,6 +117,7 @@ function setup(
     publish: (e) => {
       events.push(e);
       releasedAtPublish.push(holds.reduce((a, h) => a + h.released, 0));
+      if (opts.publishThrows) throw new Error("subscriber failed");
     },
     getSecret: () => KEY,
     fetch: fetchFn as unknown as typeof fetch,
@@ -516,6 +518,123 @@ describe("429 与限流", () => {
     ac.abort();
     await expect(p).rejects.toBeTruthy();
     expect(lim.state({ provider: "p" }).buckets[0]!.waiting).toBe(0);
+  });
+});
+
+describe("预占在 finally 里退还：成功、失败、取消、抛异常都恰好释放一次", () => {
+  const abortErr = () => Object.assign(new Error("aborted"), { name: "AbortError" });
+  const cases: {
+    name: string;
+    opts: () => { s: ReturnType<typeof setup>; signal?: AbortSignal };
+    ok: boolean;
+  }[] = [
+    { name: "成功", ok: true, opts: () => ({ s: setup() }) },
+    {
+      name: "400 不重试",
+      ok: false,
+      opts: () => ({ s: setup({ responses: [json(400, { error: { message: "bad" } })] }) }),
+    },
+    {
+      name: "5xx 重试用完",
+      ok: false,
+      opts: () => ({
+        s: setup({ responses: Array.from({ length: 4 }, () => json(504, { error: {} })) }),
+      }),
+    },
+    {
+      name: "连接错误重试用完",
+      ok: false,
+      opts: () => ({
+        s: setup({ responses: Array.from({ length: 4 }, () => new TypeError("fetch failed")) }),
+      }),
+    },
+    {
+      name: "解析失败（BAD_RESPONSE）",
+      ok: false,
+      opts: () => ({
+        s: setup({ responses: [new Response("not json", { status: 200 })] }),
+      }),
+    },
+    {
+      name: "预占之后、发请求之前取消",
+      ok: false,
+      opts: () => {
+        const ac = new AbortController();
+        const s = setup();
+        s.reserve.mockImplementationOnce(async (r) => {
+          const h = { ...r, released: 0 };
+          s.holds.push(h);
+          ac.abort();
+          return { ok: true as const, release: async () => void (h.released += 1) };
+        });
+        return { s, signal: ac.signal };
+      },
+    },
+    {
+      name: "请求中途取消",
+      ok: false,
+      opts: () => {
+        const ac = new AbortController();
+        const s = setup({
+          responses: [
+            (init) =>
+              new Promise<Response>((_, reject) => {
+                init.signal!.addEventListener("abort", () => reject(abortErr()));
+                ac.abort();
+              }),
+          ],
+        });
+        return { s, signal: ac.signal };
+      },
+    },
+    {
+      name: "退避期间取消",
+      ok: false,
+      opts: () => {
+        const ac = new AbortController();
+        const s = setup({
+          responses: [
+            async () => {
+              ac.abort();
+              return json(503, { error: {} });
+            },
+          ],
+        });
+        return { s, signal: ac.signal };
+      },
+    },
+    {
+      name: "成功后订阅方抛异常（只记警告，调用照常返回）",
+      ok: true,
+      opts: () => ({ s: setup({ publishThrows: true }) }),
+    },
+    {
+      name: "失败后发布事件抛异常",
+      ok: false,
+      opts: () => ({
+        s: setup({ publishThrows: true, responses: [json(400, { error: { message: "bad" } })] }),
+      }),
+    },
+  ];
+  for (const c of cases) {
+    it(c.name, async () => {
+      const { s, signal } = c.opts();
+      const p = s.gw.chat({ ...baseReq, ctx: ctx(), ...(signal ? { signal } : {}) });
+      if (c.ok) await expect(p).resolves.toBeTruthy();
+      else await expect(p).rejects.toBeTruthy();
+      if (c.name.includes("取消")) expect(s.fetchFn.mock.calls.length).toBeLessThanOrEqual(1);
+      expect(s.holds).toHaveLength(1);
+      expect(s.holds[0]!.released).toBe(1);
+    });
+  }
+
+  it("预算不足：没有预占可退，也不发请求", async () => {
+    const s = setup({ budget: { ok: false, scope: "ticket" } });
+    await expect(s.gw.chat({ ...baseReq, ctx: ctx() })).rejects.toMatchObject({
+      code: "BUDGET_EXCEEDED",
+    });
+    expect(s.fetchFn).not.toHaveBeenCalled();
+    expect(s.holds).toHaveLength(0);
   });
 });
 

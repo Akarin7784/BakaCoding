@@ -236,15 +236,6 @@ export function createModelGateway(opts: CreateModelGatewayOptions): ModelGatewa
       },
       new Date(clock.now()),
     ).cost_micro_usd;
-    const hold = await opts.budget.reserve({
-      ticket_id: ctx.ticket_id,
-      amount_micro_usd: estimate,
-    });
-    if (!hold.ok)
-      throw hold.scope === "daily"
-        ? new BudgetExceededError("daily", "当日预算已用完")
-        : new BudgetExceededError("ticket", `需求单 ${ctx.ticket_id} 的预算已用完`);
-
     const scrub = (s: string) => (key ? s.split(key).join("***") : s);
     // prompt 记全部模型输入；本轮回复的思考内容也只记在这里（桌面会遮蔽 prompt），不进 output
     const promptOf = (reasoning: readonly { text: string; signature?: string }[]) => {
@@ -268,6 +259,16 @@ export function createModelGateway(opts: CreateModelGatewayOptions): ModelGatewa
     let tokens: Tokens = ZERO;
     let reasoning: Parsed["reasoning"] = [];
 
+    const hold = await opts.budget.reserve({
+      ticket_id: ctx.ticket_id,
+      amount_micro_usd: estimate,
+    });
+    if (!hold.ok)
+      throw hold.scope === "daily"
+        ? new BudgetExceededError("daily", "当日预算已用完")
+        : new BudgetExceededError("ticket", `需求单 ${ctx.ticket_id} 的预算已用完`);
+
+    // 预占成功后立刻进 try：之后任何失败、取消、异常都在 finally 里退还
     try {
       for (;;) {
         req.signal?.throwIfAborted();
