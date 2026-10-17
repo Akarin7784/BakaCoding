@@ -781,7 +781,6 @@ describe("模块 9 合并队列（T-035）", () => {
     // 这时 sync 才发现 A
     h.syncChanges.push({ pr_id: "pr-a", from: "open", to: "merged", merge_sha: SHA("c") });
     await s.sync();
-    await s.idle();
     expect(s.status("T-A")).toBe("merged");
     h.reReview.mockClear();
     await s.submit({ ticket_id: "T-C", pr_id: "pr-c", worktree_path: "/c", base_commit: SHA("c") });
@@ -874,6 +873,54 @@ describe("模块 9 合并队列（T-035）", () => {
     // 已补发成功，再 sync 不重发
     await s.sync();
     expect(h.published.filter((e) => e.type === "interface_changed")).toHaveLength(1);
+  });
+
+  it("T61a. sync() 返回后隔 0～5 个微任务再 submit（不等 idle）：触发不丢，单子照常合并", async () => {
+    for (let gap = 0; gap <= 5; gap++) {
+      const h = harness();
+      const s = await started(h);
+      await s.enqueue(ticket("T-0"));
+      await s.enqueue(ticket("T-1", { depends_on: ["T-0"] }));
+      await s.enqueue(ticket("T-2"));
+      await s.enqueue(ticket("T-3"));
+      await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1" });
+      await s.idle();
+      await s.submit({ ticket_id: "T-3", pr_id: "pr-3", worktree_path: "/3" });
+      await s.idle();
+      h.syncChanges.push({ pr_id: "pr-1", from: "open", to: "merged", merge_sha: SHA("c") });
+      await s.sync();
+      for (let k = 0; k < gap; k++) await Promise.resolve();
+      // 带 base_commit：submit 不 await diff，落在 sync 触发的那轮循环收尾前后的不同位置
+      await s.submit({
+        ticket_id: "T-2",
+        pr_id: "pr-2",
+        worktree_path: "/2",
+        base_commit: SHA("a"),
+      });
+      await s.idle();
+      expect(s.status("T-2"), `gap=${gap}`).toBe("merged");
+      expect(h.calls, `gap=${gap}`).toContain("merge:pr-2:bakacoding/integration");
+    }
+  });
+
+  it("T61b. 重审中（busy）的单排回队里时来触发：补跑的一轮跳过它、不从队里拿掉，重审结束后照常合并", async () => {
+    const h = harness();
+    const s = await started(h);
+    const I = { file: "src/a.ts", symbol: "a" };
+    await s.enqueue(ticket("A", { interfaces: [I] }));
+    await s.enqueue(ticket("B", { interfaces: [I] }));
+    await s.enqueue(ticket("C"));
+    h.diffs.set("pr-a", ["src/a.ts"]);
+    await s.submit({ ticket_id: "A", pr_id: "pr-a", worktree_path: "/a" });
+    await s.idle();
+    // B 基线在 A 之前且涉及 A 改的接口 → 重审（后台、busy）；C 同时提交，合并循环在跑
+    await s.submit({ ticket_id: "B", pr_id: "pr-b", worktree_path: "/b" });
+    await s.submit({ ticket_id: "C", pr_id: "pr-c", worktree_path: "/c" });
+    await s.idle();
+    expect(h.reReview).toHaveBeenCalledTimes(1);
+    expect(s.status("B")).toBe("merged");
+    expect(s.status("C")).toBe("merged");
+    expect(h.calls).toContain("merge:pr-b:bakacoding/integration");
   });
 
   it("R1b. step 里 targetHead 抛错：该单上报，后面的单照常合", async () => {
