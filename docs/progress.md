@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`83464f8` · main 上测试：28 个测试文件、374 个测试全部通过 · 更新日期：2026-10-17（UTC+8）
+> 上次更新时 main：`569e368` · main 上测试：29 个测试文件、416 个测试全部通过 · 更新日期：2026-10-17（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -37,8 +37,8 @@ flowchart BT
   classDef doing fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef done fill:#dcfce7,stroke:#16a34a,color:#14532d
 
-  class M0,M2,M5,M6,M7,M11,M12,T done
-  class M1,M3,M4,M8,M9 doing
+  class M0,M2,M6,M11,M12,T done
+  class M1,M3,M4,M5,M7,M8,M9 doing
   class M10 todo
 ```
 
@@ -86,7 +86,7 @@ flowchart BT
 | T-032 | 模块 5/7 收尾：编码池 feedback 闭合标签转义；公共前缀按内容哈希失效；结束回复解析不了先要求重回一轮，仍不行返回 `gave_up` | 5 | 执行层开发 | 已合入 | #31 | `34df5fc` |
 | T-033 | 桌面界面跟进：项目列表改用存储 `listProjects()`（不再从事件收集项目 id）；需求单标题去掉行尾 `\r`（#29 评审意见） | 12 | 界面与诊断开发 | 已合入 | #33 | `59a38d5` |
 | T-034 | 模块 5/7 跟进：编码池改用模块 4 的 `FILE_TOOL_DEFINITIONS` / `createTools`（参数 `file_path` / `include`），`changed_files` 读 `file_path`，前缀快照重生成；评审池复投成员记录可持久化（`createRoundAssignmentStore` 读 2 的 PR 轮次 `reviewer`）；不可信标签转义的归一化改为 NFKD 后去掉组合符号（拦 `<` + U+0338 / `≮`） | 5、7 | 执行层开发 | 已合入 | #36 | `9db2a1f` |
-| T-035 | 模块 9 合并队列：`createScheduler`（启动时向 6 注入 `eventContext`）、按依赖顺序出队与依赖上报后挂起、冲突复投（新建 `r<n+1>` worktree，新 PR 开出后关旧 PR、清旧 worktree，最多 2 次后上报 `conflict_limit`）、`merge_blocked` 与连续限流超 3 次上报 `github_manual`、基线前进按接口 / 依赖重审不计复投、`sync()` 结果落到 TicketStatus、合并后发 `interface_changed`、反压信号 `backpressureState()`（含每日预算暂停）；模块 3 配置加 `backpressure.pending_pr_limit`（默认 16）；5、7、8、4 先注入 | 9、3 | 编排层开发 | 待评审 | — | — |
+| T-035 | 模块 9 合并队列：`createScheduler`（启动时向 6 注入 `eventContext`）、按依赖顺序出队与依赖上报后挂起、冲突复投（新建 `r<n+1>` worktree，新 PR 开出后关旧 PR、清旧 worktree，最多 2 次后上报 `conflict_limit`）、`merge_blocked` 与连续限流超 3 次上报 `github_manual`、基线前进按接口 / 依赖重审不计复投、`sync()` 结果落到 TicketStatus、合并后发 `interface_changed`、反压信号 `backpressureState()`（含每日预算暂停）；模块 3 配置加 `backpressure.pending_pr_limit`（默认 16）；5、7、8、4 先注入 | 9、3 | 编排层开发 | 已合入 | #37 | `569e368` |
 | T-036 | 共享类型：`escalated` 上报原因加 `coder_failed`、`budget_exceeded`；桌面界面 `ESCALATION_REASON` 补两条显示文字 | 共享类型包、12 | 编排层开发 | 已合入 | #34 | `29c1d4f` |
 | T-037 | 模块 8 副 Agent 主流程 `handle(ticket)`：三级权限、编码池结果处理（`coder_failed` / `budget_exceeded` 上报）、开 PR 与评审、复投、轮次写 `reviewer`、群消息 | 8 | 编排层开发 | 开发中 | — | — |
 | T-038 | 模块 8 补充：中途权限申请审批、订阅 `interface_changed`、依赖类单标高风险 | 8 | 编排层开发 | 未开始 | — | — |
