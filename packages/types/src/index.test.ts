@@ -12,6 +12,7 @@ import {
   DEPENDENCY_MANIFEST_GLOBS,
   ESCALATION_REASONS,
   PROJECT_LEVEL_EVENT_TYPES,
+  TICKET_WARNING_CODES,
   type EventMap,
   type EventOf,
 } from "./index.js";
@@ -55,6 +56,7 @@ describe("EventSchema", () => {
         "project_created",
         "review_backlog",
         "supervisor_backlog",
+        "ticket_warning",
         "write_scope_denied",
         "write_scope_granted",
         "write_scope_requested",
@@ -220,6 +222,24 @@ describe("EventSchema", () => {
       payload: { reason: "github_manual", detail: "PR 需人工合并" },
     };
     expect(EventSchema.parse(ev)).toEqual(ev);
+  });
+  it("ticket_warning：ticket_id 必填，code 只认 TICKET_WARNING_CODES（T-040）", () => {
+    expect(TICKET_WARNING_CODES).toEqual(["write_scope_defaulted"]);
+    const tw = {
+      ...common,
+      ticket_id: "req-1-1",
+      type: "ticket_warning",
+      payload: { project_id: "p", code: "write_scope_defaulted", detail: "按 ** 处理" },
+    };
+    expect(EventSchema.parse(tw)).toEqual(tw);
+    expect(EventSchema.safeParse({ ...tw, ticket_id: null }).success).toBe(false);
+    expect(
+      EventSchema.safeParse({ ...tw, payload: { ...tw.payload, code: "other" } }).success,
+    ).toBe(false);
+    expect(
+      EventSchema.safeParse({ ...tw, payload: { project_id: "p", code: "write_scope_defaulted" } })
+        .success,
+    ).toBe(false);
   });
   it("group_message 支持 escalation，supervisor_backlog 非负", () => {
     const gm = {

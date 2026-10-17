@@ -14,6 +14,8 @@ T-001：各模块共享的类型与 zod schema。只含 schema 与常量，不�
 
 `interface_changed` 的公共字段 `ticket_id` 必须非 null（合并成功的单）。
 
+`ticket_warning`（T-040）：所有单级警告都用它，公共字段 `ticket_id` 必须非 null，载荷 `{ project_id, code, detail }`；`code` 取 `TICKET_WARNING_CODES`（目前只有 `write_scope_defaulted`：手动 / 测试单按整仓 `**` 处理），只加不改。
+
 ## 角色命名
 
 - 配置 `roles.review_board` 指**整个评审组**（`members[]` 为评审池成员，不含主管）。

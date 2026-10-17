@@ -278,6 +278,12 @@ importers:
       '@bakacoding/types':
         specifier: workspace:*
         version: link:../types
+      '@bakacoding/workspace':
+        specifier: workspace:*
+        version: link:../workspace
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
 
   packages/types:
     dependencies:
