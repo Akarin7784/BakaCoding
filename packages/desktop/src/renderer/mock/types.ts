@@ -55,12 +55,27 @@ export interface EscalationView {
   detail?: string;
 }
 
+/**
+ * ticket_warning 事件在界面上的提示（T-050）：单级警告，不需要人工介入，但用户应该知道。
+ * code 用 string：模块 10 以后加新代码时，桌面不用同步改类型。
+ */
+export interface TicketWarningView {
+  event_id: string;
+  ts: string;
+  requirement_id: string;
+  ticket_id: string;
+  code: string;
+  detail: string;
+}
+
 export interface ProjectView {
   project: ProjectCreatedEvent;
   requirements: Requirement[];
   messages: GroupMessageEvent[];
   prs: PrItem[];
   escalations: EscalationView[];
+  /** 本项目各需求单的 ticket_warning，按 seq 顺序（T-050）。 */
+  warnings: TicketWarningView[];
   /** 存储里还没有 Git 区数据（模块 6/9 未接入）时为 null。 */
   git: GitStatus | null;
   /** 存储里还没有编码池状态（模块 5/9 未接入）时为 null。 */

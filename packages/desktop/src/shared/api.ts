@@ -16,6 +16,7 @@ export const UI_EVENT_TYPES = [
   "group_message",
   "call_completed",
   "escalated",
+  "ticket_warning",
 ] as const satisfies readonly BakaEvent["type"][];
 export type UiEventType = (typeof UI_EVENT_TYPES)[number];
 export type UiEvent = Extract<BakaEvent, { type: UiEventType }>;

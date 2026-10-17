@@ -1,8 +1,9 @@
-import { Download, GitBranch, GitMerge } from "lucide-react";
+import { Download, GitBranch, GitMerge, TriangleAlert } from "lucide-react";
 import { Button } from "./ui/button";
 import { Separator } from "./ui/separator";
 import { StatusBadge } from "./ui/badge";
 import { cn } from "../lib/utils";
+import { ticketWarningLabel } from "./Escalations";
 import type { ProjectView } from "../mock/types";
 
 function Flag({ on, label }: { on: boolean; label: string }) {
@@ -12,6 +13,17 @@ function Flag({ on, label }: { on: boolean; label: string }) {
     >
       {label}
       {on ? "中" : "：无"}
+    </span>
+  );
+}
+
+/** PR 行上的提示图标：这张单有 ticket_warning 时显示，悬停看文案（T-050）。 */
+function PrWarning({ codes }: { codes: string[] }) {
+  if (codes.length === 0) return null;
+  const text = [...new Set(codes)].map(ticketWarningLabel).join("；");
+  return (
+    <span role="img" aria-label={`提示：${text}`} title={text} className="text-muted-foreground">
+      <TriangleAlert size={14} strokeWidth={1.5} aria-hidden />
     </span>
   );
 }
@@ -80,6 +92,9 @@ export function RightPanel({
               >
                 {pr.pr_id} {pr.title}
               </button>
+              <PrWarning
+                codes={view.warnings.filter((w) => w.ticket_id === pr.ticket_id).map((w) => w.code)}
+              />
               <StatusBadge status={pr.status} />
               <span className="text-xs text-muted-foreground" title="复投次数">
                 ×{pr.resubmit_count}
