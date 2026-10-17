@@ -42,6 +42,7 @@ export {
 // T-087：设置页保存模型配置（desktop 不直接依赖 3）
 export {
   findSecretLikeValues,
+  formatConfigIssue,
   validate as validateConfig,
   writeConfig,
   WRITABLE_CONFIG_FILE,

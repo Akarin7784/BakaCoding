@@ -1,4 +1,12 @@
-import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -75,12 +83,78 @@ describe("writeConfig", () => {
     expect(() => readFileSync(target)).toThrow();
   });
 
-  it("拒绝 URL 凭据和 Bearer", async () => {
+  it("拒绝 URL 凭据", async () => {
     const cfg = example();
     cfg.providers.deepseek.base_url = "https://user:hunter2pass@api.example.com/v1";
     const r = await writeConfig(target, cfg, { env: {} });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(JSON.stringify(r)).not.toContain("hunter2pass");
+  });
+
+  it("拒绝 Bearer token", async () => {
+    const token = "abcDEF0123456789ghijKLMNOP";
+    const cfg = example();
+    cfg.providers.deepseek.models["deepseek-flash"].expected_display_name = `Bearer ${token}`;
+    const r = await writeConfig(target, cfg, { env: {} });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.errors[0]).toContain("bearer");
+      expect(JSON.stringify(r)).not.toContain(token);
+    }
+  });
+
+  it("校验错误不带出配置原值（只用 path 和 code）", async () => {
+    const cfg = example();
+    cfg.roles.coder.effort = "mySecretishValue";
+    cfg.roles.supervisor.effort = "anotherOddValue";
+    cfg.budget.daily_micro_usd = "notANumberValue";
+    const r = await writeConfig(target, { ...cfg, oddUnknownKey: "x" }, { env: {} });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      const all = JSON.stringify(r);
+      for (const v of ["mySecretishValue", "anotherOddValue", "notANumberValue", "received"]) {
+        expect(all).not.toContain(v);
+      }
+      expect(r.errors.some((e) => e.startsWith("roles.coder.effort: 应为"))).toBe(true);
+      expect(r.errors).toContain('roles.supervisor.effort: 应为 "max"');
+      expect(r.errors).toContain("budget.daily_micro_usd: 类型不对，应为 number");
+      expect(r.errors).toContain('(root): 有未知字段 "oddUnknownKey"');
+    }
+  });
+
+  it("rename 遇到 EPERM 会重试，成功后不留临时文件", async () => {
+    let calls = 0;
+    const waits: number[] = [];
+    const r = await writeConfig(target, example(), {
+      env: {},
+      sleep: async (ms) => void waits.push(ms),
+      rename: async (from, to) => {
+        calls++;
+        if (calls < 3) throw Object.assign(new Error("busy"), { code: "EPERM" });
+        renameSync(from, to);
+      },
+    });
+    expect(r).toEqual({ ok: true });
+    expect(calls).toBe(3);
+    expect(waits).toEqual([50, 100]);
+    expect(leftovers()).toEqual([]);
+  });
+
+  it("rename 一直失败：返回错误码，删掉临时文件，原文件不变", async () => {
+    writeFileSync(target, "ORIGINAL");
+    let calls = 0;
+    const r = await writeConfig(target, example(), {
+      env: {},
+      sleep: async () => {},
+      rename: async () => {
+        calls++;
+        throw Object.assign(new Error("busy"), { code: "EBUSY" });
+      },
+    });
+    expect(r).toEqual({ ok: false, errors: ["(file): 写入配置失败（EBUSY）"] });
+    expect(calls).toBe(6);
+    expect(leftovers()).toEqual([]);
+    expect(readFileSync(target, "utf8")).toBe("ORIGINAL");
   });
 
   it("拒绝等于当前环境变量密钥的值（即使不像 sk- 格式）", async () => {

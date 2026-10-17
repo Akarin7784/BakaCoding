@@ -1,7 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, open, rename, unlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { SECRET_NAMES, validate } from "./config.js";
+import type { ZodIssue } from "zod";
+import { ConfigSchema, SECRET_NAMES } from "./config.js";
 import { redact } from "./redact.js";
 
 export type WriteConfigResult = { ok: true } | { ok: false; errors: string[] };
@@ -9,6 +10,54 @@ export type WriteConfigResult = { ok: true } | { ok: false; errors: string[] };
 export interface WriteConfigOptions {
   /** 用来比对“值等于当前密钥”的环境变量；默认 process.env。 */
   env?: NodeJS.ProcessEnv;
+  /** 测试注入：替换 rename（默认 fs/promises 的 rename）。 */
+  rename?: (from: string, to: string) => Promise<void>;
+  /** 测试注入：重试等待（默认 setTimeout）。 */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+const list = (xs: readonly unknown[]) => xs.map((x) => JSON.stringify(x)).join(" / ");
+
+/**
+ * 把校验问题转成不含配置原值的中文（T-087）：只用 `issue.path`、`issue.code` 和 schema 自己的
+ * 期望值（类型名、枚举选项、上下限）；zod 默认 message 里的 `received '...'` 一律不用。
+ * `custom` 是 schema 里写死的固定文案（不含值），照用。
+ */
+export function formatConfigIssue(i: ZodIssue): string {
+  const path = i.path.join(".") || "(root)";
+  let what: string;
+  switch (i.code) {
+    case "invalid_type":
+      what = i.received === "undefined" ? "缺少必填字段" : `类型不对，应为 ${i.expected}`;
+      break;
+    case "invalid_literal":
+      what = `应为 ${JSON.stringify(i.expected)}`;
+      break;
+    case "invalid_enum_value":
+      what = `应为 ${list(i.options)} 之一`;
+      break;
+    case "invalid_union_discriminator":
+      what = `应为 ${list(i.options)} 之一`;
+      break;
+    case "unrecognized_keys":
+      what = `有未知字段 ${list(i.keys)}`;
+      break;
+    case "too_small":
+      what = `太小或太短，下限 ${String(i.minimum)}${i.inclusive ? "（含）" : ""}`;
+      break;
+    case "too_big":
+      what = `太大或太长，上限 ${String(i.maximum)}${i.inclusive ? "（含）" : ""}`;
+      break;
+    case "not_multiple_of":
+      what = `应为 ${String(i.multipleOf)} 的倍数`;
+      break;
+    case "custom":
+      what = i.message;
+      break;
+    default:
+      what = `不合法（${i.code}）`;
+  }
+  return `${path}: ${what}`;
 }
 
 /** 只允许写 models.json；pricing.json 等其它文件不可写。 */
@@ -66,7 +115,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /**
  * 校验后原子写入模型配置：同目录临时文件 → fsync → rename。2 空格缩进、末尾换行。
  * 写入的是调用方给的原始对象（不展开默认值）。失败时原文件不变，临时文件会删掉。
- * 错误信息不含文件路径和配置值。
+ * 错误信息不含文件路径和配置值（校验错误见 formatConfigIssue，最后再脱敏一次）。
  */
 export async function writeConfig(
   path: string,
@@ -76,7 +125,8 @@ export async function writeConfig(
   if (basename(path) !== WRITABLE_CONFIG_FILE) {
     return { ok: false, errors: [`(file): 只能写 ${WRITABLE_CONFIG_FILE}`] };
   }
-  const errors = validate(config);
+  const parsed = ConfigSchema.safeParse(config);
+  const errors = parsed.success ? [] : parsed.error.issues.map(formatConfigIssue);
   const secretErrors = findSecretLikeValues(config, opts.env);
   if (errors.length > 0 || secretErrors.length > 0) {
     const secrets = envSecrets(opts.env ?? process.env);
@@ -93,6 +143,7 @@ export async function writeConfig(
   );
   try {
     await mkdir(dir, { recursive: true });
+    // 新文件按 0600 建，rename 后原 models.json 的权限会被它覆盖（不保留原权限）。
     const fh = await open(tmp, "wx", 0o600);
     try {
       await fh.writeFile(text, "utf8");
@@ -103,13 +154,13 @@ export async function writeConfig(
     // Windows 上目标文件正被别的进程读时 rename 会短暂 EPERM/EBUSY，重试几次。
     for (let i = 0; ; i++) {
       try {
-        await rename(tmp, path);
+        await (opts.rename ?? rename)(tmp, path);
         break;
       } catch (e) {
         const code = (e as NodeJS.ErrnoException).code;
         if (i >= RENAME_RETRIES || (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES"))
           throw e;
-        await sleep(RENAME_RETRY_MS * (i + 1));
+        await (opts.sleep ?? sleep)(RENAME_RETRY_MS * (i + 1));
       }
     }
     return { ok: true };
