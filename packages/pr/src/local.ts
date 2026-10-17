@@ -7,7 +7,9 @@ import { git, GitError } from "./git.js";
 import {
   INTEGRATION_BRANCH,
   ExpectedHeadMismatchError,
+  abortReason,
   type CheckResult,
+  type PrCallOptions,
   type SyncChange,
   type MergeResult,
   type PrProvider,
@@ -119,7 +121,13 @@ export class LocalPrProvider implements PrProvider {
     };
   }
 
-  async commitPatch(ticket_id: string, worktree_path: string, patch: string): Promise<string> {
+  async commitPatch(
+    ticket_id: string,
+    worktree_path: string,
+    patch: string,
+    opts?: PrCallOptions,
+  ): Promise<string> {
+    if (opts?.signal?.aborted) throw abortReason(opts.signal);
     const dir = await mkdtemp(join(tmpdir(), "bc-patch-"));
     const file = join(dir, "change.patch");
     try {
@@ -147,7 +155,12 @@ export class LocalPrProvider implements PrProvider {
     return (await git(worktree_path, ["rev-parse", "HEAD"])).stdout.trim();
   }
 
-  async commitWorktree(ticket_id: string, worktree_path: string): Promise<string> {
+  async commitWorktree(
+    ticket_id: string,
+    worktree_path: string,
+    opts?: PrCallOptions,
+  ): Promise<string> {
+    if (opts?.signal?.aborted) throw abortReason(opts.signal);
     const wt = resolve(worktree_path);
     const rec = (await this.store.list())
       .map(assertPrRecord)
@@ -188,7 +201,8 @@ export class LocalPrProvider implements PrProvider {
     return (await git(worktree_path, ["rev-parse", "HEAD"])).stdout.trim();
   }
 
-  async close(pr_id: string, reason: string): Promise<void> {
+  async close(pr_id: string, reason: string, opts?: PrCallOptions): Promise<void> {
+    if (opts?.signal?.aborted) throw abortReason(opts.signal);
     const rec = await this.mustGet(pr_id);
     if (rec.status === "merged") throw new PrAlreadyMergedError(pr_id);
     if (rec.status === "closed") return;
@@ -201,7 +215,13 @@ export class LocalPrProvider implements PrProvider {
     });
   }
 
-  async open(ticket_id: string, worktree_path: string, branch: string): Promise<string> {
+  async open(
+    ticket_id: string,
+    worktree_path: string,
+    branch: string,
+    opts?: PrCallOptions,
+  ): Promise<string> {
+    if (opts?.signal?.aborted) throw abortReason(opts.signal);
     const head = await this.revParse(worktree_path, branch);
     const base = (await git(worktree_path, ["merge-base", this.baseBranch, head])).stdout.trim();
     const existing = (await this.store.list()).length;
@@ -223,7 +243,12 @@ export class LocalPrProvider implements PrProvider {
     return pr_id;
   }
 
-  openIntegration(branch: string = INTEGRATION_BRANCH, target: string = "main"): Promise<string> {
+  openIntegration(
+    branch: string = INTEGRATION_BRANCH,
+    target: string = "main",
+    opts?: PrCallOptions,
+  ): Promise<string> {
+    if (opts?.signal?.aborted) return Promise.reject(abortReason(opts.signal));
     const run = this.integrationLock.then(() => this.openIntegrationLocked(branch, target));
     this.integrationLock = run.catch(() => undefined);
     return run;
@@ -265,7 +290,8 @@ export class LocalPrProvider implements PrProvider {
     return pr_id;
   }
 
-  async diff(pr_id: string): Promise<Diff> {
+  async diff(pr_id: string, opts?: PrCallOptions): Promise<Diff> {
+    if (opts?.signal?.aborted) throw abortReason(opts.signal);
     const rec = await this.mustGet(pr_id);
     const live = rec.status === "open" || rec.status === "conflict";
     // T-094：已结束的单张 PR，worktree 可能已被合入后清理删掉，改在主仓库里算（提交对象仍在）
@@ -335,7 +361,12 @@ export class LocalPrProvider implements PrProvider {
    * - checkout 且有未提交改动：不合并，返回 target_dirty；
    * - 未被 checkout：update-ref（带旧值校验）。
    */
-  merge(pr_id: string, target: string, opts?: { expected_head?: string }): Promise<MergeResult> {
+  merge(
+    pr_id: string,
+    target: string,
+    opts?: { expected_head?: string; signal?: AbortSignal },
+  ): Promise<MergeResult> {
+    if (opts?.signal?.aborted) return Promise.reject(abortReason(opts.signal));
     // 同一实例内串行（T-076）：两张单同时合入同一 target 时，后一张基于前一张的结果，
     // 不因 update-ref 旧值校验失败而报错，也不互相覆盖
     const run = this.mergeLock.then(() => this.mergeLocked(pr_id, target, opts));
@@ -463,12 +494,14 @@ export class LocalPrProvider implements PrProvider {
     return { merged: true, sha, fast_forward: ff };
   }
 
-  async checks(pr_id: string): Promise<CheckResult[]> {
+  async checks(pr_id: string, opts?: PrCallOptions): Promise<CheckResult[]> {
+    if (opts?.signal?.aborted) throw abortReason(opts.signal);
     await this.mustGet(pr_id);
     return [];
   }
 
-  async sync(): Promise<SyncChange[]> {
+  async sync(opts?: PrCallOptions): Promise<SyncChange[]> {
+    if (opts?.signal?.aborted) throw abortReason(opts.signal);
     return [];
   }
 
@@ -530,7 +563,11 @@ function cwdOf(rec: PrRecord): string {
  * 的最后一行）。C 的第一父就是 head（head 本身在第一父链上，即当时是快进）或 tgt == head 时返回 head；
  * 否则 C 是合并提交（第一父是合入前的 target，第二父那一侧含 head），返回 C，`C^1..C` 正是本单带进来的改动。
  */
-async function mergeCommitContaining(cwd: string, tgt: string, head: string): Promise<string> {
+export async function mergeCommitContaining(
+  cwd: string,
+  tgt: string,
+  head: string,
+): Promise<string> {
   if (tgt === head) return head;
   const out = (await git(cwd, ["rev-list", "--first-parent", "--ancestry-path", `${head}..${tgt}`]))
     .stdout;
