@@ -42,7 +42,7 @@ describe("桌面界面壳子", () => {
     render(<App />);
     openProject();
     fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
-    expect(screen.getByRole("complementary", { name: "右面板" })).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: "右面板" })).toBeTruthy();
     expect(screen.getByTestId("pool-status").textContent).toContain("并发 1/4");
     expect(screen.getByRole("button", { name: /合入 main/ })).toBeTruthy();
     const badge = screen.getByText("重写");

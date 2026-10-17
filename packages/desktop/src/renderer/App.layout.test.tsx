@@ -38,6 +38,12 @@ beforeEach(() => {
 });
 afterEach(() => cleanup());
 
+/** UI-08：未归属入口并进了左栏底部的状态卡 */
+async function openUnattributed() {
+  fireEvent.click(await screen.findByTestId("status-dot"));
+  return await screen.findByRole("button", { name: /未归属上报/ });
+}
+
 const sidebar = () => screen.getByRole("navigation", { name: "对话列表" });
 const press = (key: string, mods: KeyboardEventInit = { ctrlKey: true }) =>
   act(() => {
@@ -132,26 +138,28 @@ describe("右面板：开关、停靠与抽屉", () => {
     await waitFor(() => expect(screen.getByText("还没有动态")).toBeTruthy());
   });
 
-  it("< 1200 改为覆盖式抽屉：点遮罩或按 Esc 关闭", () => {
+  it("< 1200 改为覆盖式抽屉：点遮罩或按 Esc 关闭", async () => {
     setWidth(1100);
     render(<App api={null} />);
     fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
-    expect(screen.getByRole("complementary", { name: "右面板" }).dataset.mode).toBe("drawer");
-    fireEvent.click(screen.getByTestId("drawer-backdrop"));
-    expect(screen.queryByRole("complementary", { name: "右面板" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "右面板" }).dataset.mode).toBe("drawer");
+    // Radix 在下一拍才挂「点外面」的监听
+    await act(() => new Promise((r) => setTimeout(r, 0)));
+    fireEvent.pointerDown(screen.getByTestId("drawer-backdrop"));
+    expect(screen.queryByRole("dialog", { name: "右面板" })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
     act(() => {
-      fireEvent.keyDown(window, { key: "Escape" });
+      fireEvent.keyDown(screen.getByRole("dialog", { name: "右面板" }), { key: "Escape" });
     });
-    expect(screen.queryByRole("complementary", { name: "右面板" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "右面板" })).toBeNull();
   });
 
   it("打开时窗口变窄，停靠自动转为抽屉；变宽又停靠", () => {
     render(<App api={null} />);
     fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
     setWidth(1199);
-    expect(screen.getByRole("complementary", { name: "右面板" }).dataset.mode).toBe("drawer");
+    expect(screen.getByRole("dialog", { name: "右面板" }).dataset.mode).toBe("drawer");
     setWidth(1200);
     expect(screen.getByRole("complementary", { name: "右面板" }).dataset.mode).toBe("docked");
   });
@@ -246,9 +254,9 @@ describe("现有界面都挂进新骨架", () => {
     expect(await screen.findByRole("dialog", { name: "设置" })).toBeTruthy();
   });
 
-  it("未归属有内容时在左栏出现，点进去是原来的未归属列表", () => {
+  it("未归属有内容时从状态卡进去，是原来的未归属列表（UI-08）", async () => {
     render(<App api={null} unattributed={[escalation]} />);
-    fireEvent.click(within(sidebar()).getByRole("button", { name: /未归属/ }));
+    fireEvent.click(await openUnattributed());
     expect(screen.getByRole("region", { name: "未归属" })).toBeTruthy();
     expect(screen.getByTestId("title-bar").textContent).toContain("未归属");
   });
@@ -261,7 +269,7 @@ describe("现有界面都挂进新骨架", () => {
       getBackendStatus: async () => ({ mode: "readonly", reason: "另一个实例在跑" }),
     } as unknown as BakaDesktopApi;
     render(<App api={api} unattributed={[escalation]} />);
-    fireEvent.click(await within(sidebar()).findByRole("button", { name: /未归属/ }));
+    fireEvent.click(await openUnattributed());
     expect(await screen.findByTestId("readonly-tag")).toBeTruthy();
     // Windows 上标题栏右侧给系统窗口按钮留位
     expect(screen.getByTestId("title-bar").style.paddingRight).toBe("146px");

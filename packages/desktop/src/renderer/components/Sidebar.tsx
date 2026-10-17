@@ -1,7 +1,8 @@
 // UI-02 左栏（docs/ui-design.md §2）：260px，可收起到 56px（只剩图标）；窗口窄于 1024 自动收起。
-// 顶部是拖拽区 + 收起按钮；[新需求]、主管、项目列表、未归属；底部设置。
-// 项目展开显示需求列表留给 UI-05；底部状态点留给 UI-08。
-import { FolderGit2, Inbox, PanelLeft, Plus, Settings } from "lucide-react";
+// 顶部是拖拽区 + 收起按钮；[新需求]、主管、项目列表；底部设置 + 全局状态点（UI-08，§4.8）。
+// 原「未归属」入口并进状态卡（UI-08）。项目展开显示需求列表留给 UI-05。
+import type { ReactNode } from "react";
+import { FolderGit2, PanelLeft, Plus, Settings } from "lucide-react";
 import { cn } from "../lib/utils";
 import { LAYOUT } from "../lib/layout";
 import { SHORTCUT_LABEL } from "../lib/shortcuts";
@@ -14,8 +15,6 @@ export type Selection =
 
 export interface SidebarProps {
   projects: ProjectView[];
-  /** 未归属上报的条数；为 0 时不显示这一项。 */
-  unattributedCount?: number;
   selection: Selection;
   onSelect: (s: Selection) => void;
   collapsed?: boolean;
@@ -24,11 +23,12 @@ export interface SidebarProps {
   onOpenSettings?: () => void;
   /** macOS 红绿灯占的左侧宽度 */
   insetLeft?: number;
+  /** 底部齿轮旁的全局状态点（UI-08） */
+  status?: ReactNode;
 }
 
 export function ConversationList({
   projects,
-  unattributedCount = 0,
   selection,
   onSelect,
   collapsed = false,
@@ -36,6 +36,7 @@ export function ConversationList({
   onNewRequirement,
   onOpenSettings,
   insetLeft = 0,
+  status,
 }: SidebarProps) {
   const item = cn(
     "app-no-drag flex h-8 w-full items-center gap-2 rounded-md text-left text-sm transition-colors hover:bg-hover",
@@ -121,38 +122,27 @@ export function ConversationList({
             </button>
           );
         })}
-        {unattributedCount > 0 && (
-          <button
-            type="button"
-            className={cn(item, selection.kind === "unattributed" && active)}
-            aria-current={selection.kind === "unattributed" ? "page" : undefined}
-            title={collapsed ? `未归属 ${unattributedCount}` : undefined}
-            onClick={() => onSelect({ kind: "unattributed" })}
-          >
-            <Inbox size={16} strokeWidth={1.5} aria-hidden />
-            {collapsed ? (
-              <span className="sr-only">未归属 {unattributedCount}</span>
-            ) : (
-              <>
-                <span className="flex-1">未归属</span>
-                <span className="text-xs text-muted-foreground">{unattributedCount}</span>
-              </>
-            )}
-          </button>
-        )}
       </div>
-      {onOpenSettings && (
-        <div className="shrink-0 border-t border-border p-2">
-          <button
-            type="button"
-            className={item}
-            aria-label="设置"
-            title={`设置（${SHORTCUT_LABEL.settings}）`}
-            onClick={onOpenSettings}
-          >
-            <Settings size={16} strokeWidth={1.5} aria-hidden />
-            {label("设置")}
-          </button>
+      {(onOpenSettings || status) && (
+        <div
+          className={cn(
+            "flex shrink-0 gap-1 border-t border-border p-2",
+            collapsed ? "flex-col items-center" : "items-center",
+          )}
+        >
+          {onOpenSettings && (
+            <button
+              type="button"
+              className={cn(item, !collapsed && "flex-1")}
+              aria-label="设置"
+              title={`设置（${SHORTCUT_LABEL.settings}）`}
+              onClick={onOpenSettings}
+            >
+              <Settings size={16} strokeWidth={1.5} aria-hidden />
+              {label("设置")}
+            </button>
+          )}
+          {status}
         </div>
       )}
     </nav>

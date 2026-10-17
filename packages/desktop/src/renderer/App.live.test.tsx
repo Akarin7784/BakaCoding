@@ -89,6 +89,12 @@ const snapshot: DesktopSnapshot = {
   last_seq: 4,
 };
 
+/** UI-08：未归属入口并进了左栏底部的状态卡 */
+async function openUnattributed() {
+  fireEvent.click(await screen.findByTestId("status-dot"));
+  return await screen.findByRole("button", { name: /未归属上报/ });
+}
+
 function fakeApi(snap: DesktopSnapshot) {
   const listeners = new Set<(u: DesktopUpdate) => void>();
   const api: BakaDesktopApi = {
@@ -166,8 +172,10 @@ describe("渲染进程从 preload API 读真实数据", () => {
       last_seq: -1,
     });
     render(<App api={api} />);
-    expect((await screen.findByRole("status")).textContent).toContain(
-      "还没有找到数据库：/p/.bakacoding/bakacoding.db",
+    // UI-08：数据库状态在状态卡里
+    await openUnattributed();
+    expect(screen.getByTestId("status-db").textContent).toContain(
+      "还没有建库：/p/.bakacoding/bakacoding.db",
     );
     cleanup();
     render(<App api={null} />);
@@ -188,7 +196,8 @@ describe("渲染进程从 preload API 读真实数据", () => {
       last_seq: 5,
     });
     render(<App api={api} />);
-    const btn = await screen.findByRole("button", { name: /未归属/ });
+    await screen.findByRole("button", { name: /real-proj/ });
+    const btn = await openUnattributed();
     expect(btn.textContent).toContain("1");
     fireEvent.click(btn);
     const alert = screen.getByRole("alert", { name: "需要人工介入" });
@@ -200,10 +209,13 @@ describe("渲染进程从 preload API 读真实数据", () => {
     expect(screen.getByRole("alert", { name: "需要人工介入" }).textContent).toContain("T-2");
   });
 
-  it("没有未归属的上报时侧栏不显示这一项", async () => {
+  it("没有未归属的上报时左栏不再有这一项，状态卡里是 0 且点不了（UI-08）", async () => {
     render(<App api={fakeApi(snapshot).api} />);
     await screen.findByRole("button", { name: /real-proj/ });
     expect(screen.queryByRole("button", { name: /未归属/ })).toBeNull();
+    const btn = await openUnattributed();
+    expect(btn.textContent).toContain("0");
+    expect((btn as HTMLButtonElement).disabled).toBe(true);
   });
 
   const warning = (
@@ -268,7 +280,7 @@ describe("渲染进程从 preload API 读真实数据", () => {
         "T-1 · 单子的结构化字段缺失或损坏，不能续跑：fields 为 null",
       ),
     );
-    const btn = screen.getByRole("button", { name: /未归属/ });
+    const btn = await openUnattributed();
     expect(btn.textContent).toContain("1");
     fireEvent.click(btn);
     expect(screen.getByRole("status", { name: "需求单提示" }).textContent).toContain("T-8");

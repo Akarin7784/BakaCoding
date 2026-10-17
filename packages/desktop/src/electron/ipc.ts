@@ -344,7 +344,14 @@ export interface WindowThemeDeps {
   setThemeSource(source: WindowThemeSource): boolean;
   /** 按深浅更新标题栏按钮叠层颜色（没有叠层的平台为空操作） */
   applyTitleBar(dark: boolean): void;
+  /** 记住偏好，下次启动建窗口前读（UI-08）；写失败只影响下次启动，不算失败 */
+  saveTheme?(source: WindowThemeSource): void;
+  /** 失败原因脱敏用（UI-08） */
+  env?: Readonly<Record<string, string | undefined>>;
 }
+
+/** window:theme 失败原因上限（码点）。 */
+export const WINDOW_THEME_REASON_MAX = 500;
 
 /**
  * 主题同步 IPC（UI-02）：渲染进程把「跟随系统 / 浅 / 深」发过来，主进程设 nativeTheme.themeSource，
@@ -358,9 +365,18 @@ export function serveWindowTheme(ipc: IpcMainLike, deps: WindowThemeDeps): () =>
     try {
       const dark = deps.setThemeSource(source);
       deps.applyTitleBar(dark);
+      try {
+        deps.saveTheme?.(source);
+      } catch {
+        /* 存不下只影响下次启动时标题栏先按系统深浅显示 */
+      }
       return { ok: true, dark } satisfies DesktopWindowThemeResult;
     } catch (e) {
-      return { ok: false, reason: errorDetail(e) } satisfies DesktopWindowThemeResult;
+      // UI-08：失败原因与其他通道同一套脱敏（密钥值、令牌、截断）
+      return {
+        ok: false,
+        reason: sanitizeSyncErrorMessage(errorDetail(e), deps.env ?? {}, WINDOW_THEME_REASON_MAX),
+      } satisfies DesktopWindowThemeResult;
     }
   });
   return () => {

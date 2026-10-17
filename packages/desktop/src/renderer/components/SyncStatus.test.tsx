@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import type { BakaDesktopApi, DesktopSnapshot, DesktopSyncState } from "../../shared/api.js";
 import { App } from "../App";
@@ -122,6 +122,8 @@ describe("App 接 syncState（T-067）", () => {
       },
     } as unknown as BakaDesktopApi;
     render(<App api={api} />);
+    // UI-08：同步状态在左栏底部的状态卡里
+    fireEvent.click(await screen.findByTestId("status-dot"));
     expect((await screen.findByTestId("sync-status-label")).textContent).toBe("同步运行中");
     act(() =>
       listeners.forEach((l) =>
