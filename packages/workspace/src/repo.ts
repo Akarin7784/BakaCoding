@@ -229,20 +229,33 @@ export async function checkRepo(dir: string, options?: RepoOptions): Promise<Rep
   };
 }
 
+/** Git 身份（T-108）：name / email 至少给一项，只写传进来的那几项。 */
 export interface GitIdentity {
-  name: string;
-  email: string;
+  name?: string;
+  email?: string;
 }
 
 function assertIdentity(id: GitIdentity): void {
   const bad = (s: unknown, max: number) =>
     typeof s !== "string" || s.trim() === "" || s.length > max || /[\r\n\0<>]/.test(s);
-  if (bad(id.name, 200) || bad(id.email, 320) || !/^[^\s@]+@[^\s@]+$/.test(id.email.trim()))
+  if (typeof id !== "object" || id === null) throw new RepoFixError("invalid_identity");
+  const { name, email } = id;
+  if (name === undefined && email === undefined) throw new RepoFixError("invalid_identity");
+  if (name !== undefined && bad(name, 200)) throw new RepoFixError("invalid_identity");
+  if (email !== undefined && (bad(email, 320) || !/^[^\s@]+@[^\s@]+$/.test(email.trim())))
     throw new RepoFixError("invalid_identity");
 }
 
+/** 只写本仓库 `.git/config`，只写给了的那几项。调用前必须已经 assertIdentity。 */
+async function writeIdentity(root: string, id: GitIdentity, o: GitOpts): Promise<void> {
+  if (id.name !== undefined)
+    await gitOk(root, "config", ["config", "--local", "user.name", id.name.trim()], o);
+  if (id.email !== undefined)
+    await gitOk(root, "config", ["config", "--local", "user.email", id.email.trim()], o);
+}
+
 /**
- * 初始化 Git（T-086）：dir 不存在就新建，执行 `git init`，HEAD 指向 main；给了 identity 只写本仓库 `.git/config`；
+ * 初始化 Git（T-086）：dir 不存在就新建，执行 `git init`，HEAD 指向 main；给了 identity 只写本仓库 `.git/config`，只写给了的那几项（T-108）；
  * 然后把 `/.bakacoding/` 写进 `.git/info/exclude`。dir 已经是仓库根时抛 repo_exists，什么都不改。
  */
 export async function initRepo(
@@ -251,7 +264,7 @@ export async function initRepo(
   options?: RepoOptions,
 ): Promise<void> {
   const o = opts(options);
-  if (init.identity) assertIdentity(init.identity);
+  if (init.identity !== undefined) assertIdentity(init.identity);
   const abs = resolve(dir);
   // T-094：仓库写操作持进程内 git 写锁，与建 / 删 worktree、合入后清理串行
   return withGitWriteLock(abs, () => initRepoLocked(abs, init, o));
@@ -267,10 +280,7 @@ async function initRepoLocked(
   // 不依赖 git 2.28 的 `-b`：先 init，再把未出生的 HEAD 指到 main。
   await gitOk(abs, "init", ["init", "-q"], o);
   await gitOk(abs, "symbolic-ref", ["symbolic-ref", "HEAD", `refs/heads/${MAIN_BRANCH}`], o);
-  if (init.identity) {
-    await gitOk(abs, "config", ["config", "--local", "user.name", init.identity.name.trim()], o);
-    await gitOk(abs, "config", ["config", "--local", "user.email", init.identity.email.trim()], o);
-  }
+  if (init.identity) await writeIdentity(abs, init.identity, o);
   await ensureBakacodingIgnored(abs);
 }
 
@@ -328,7 +338,8 @@ export async function listInitialCommitFiles(
  * 首次提交（T-086），提交到 main：只在仓库还没有任何提交时执行。
  * `{ files }` 只提交列出的文件，每个都必须在 listInitialCommitFiles 的 include 里，否则整体拒绝（invalid_files）、什么都不改；
  * `{ empty: true }` 做空提交。用临时索引建树，不跑 hooks；提交后 HEAD 指向 main，暂存区重置为这次提交，工作区文件不动。
- * 给了 identity 先写进本仓库 `.git/config`；没给、仓库也没配 user.name / user.email 时抛 no_identity（界面在确认框里补填），不用默认名字提交。
+ * identity 可以只给 name 或只给 email（T-108），只写给了的那几项、只写本仓库 `.git/config`；给的加上仓库已配的还凑不齐 user.name 和 user.email 时
+ * 抛 no_identity（界面在确认框里只让用户补缺的那项），不用默认名字提交。文件、身份都先校验，任何一项不通过都整体拒绝、`.git/config` 不改。
  */
 export async function initialCommit(
   dir: string,
@@ -336,7 +347,7 @@ export async function initialCommit(
   options?: RepoOptions,
 ): Promise<{ commit: string }> {
   const o = opts(options);
-  if (what.identity) assertIdentity(what.identity);
+  if (what.identity !== undefined) assertIdentity(what.identity);
   const root = await requireRoot(dir, o);
   return withGitWriteLock(root, () => initialCommitLocked(root, what, o));
 }
@@ -347,12 +358,7 @@ async function initialCommitLocked(
   o: GitOpts,
 ): Promise<{ commit: string }> {
   if (await hasCommit(root, o)) throw new RepoFixError("has_commits");
-  if (what.identity) {
-    await gitOk(root, "config", ["config", "--local", "user.name", what.identity.name.trim()], o);
-    await gitOk(root, "config", ["config", "--local", "user.email", what.identity.email.trim()], o);
-  }
-  if (!(await configured(root, "user.name", o)) || !(await configured(root, "user.email", o)))
-    throw new RepoFixError("no_identity");
+  // T-108：先校验文件和身份，全部通过才写 `.git/config`，拒绝时什么都不改。
   let files: string[] = [];
   if (!("empty" in what && what.empty === true)) {
     const req = (what as { files: readonly string[] }).files;
@@ -362,6 +368,11 @@ async function initialCommitLocked(
     files = [...new Set(req)];
     if (files.some((f) => !allowed.has(f))) throw new RepoFixError("invalid_files");
   }
+  const id = what.identity;
+  const hasName = id?.name !== undefined || (await configured(root, "user.name", o));
+  const hasEmail = id?.email !== undefined || (await configured(root, "user.email", o));
+  if (!hasName || !hasEmail) throw new RepoFixError("no_identity");
+  if (id) await writeIdentity(root, id, o);
   const tmp = await mkdtemp(join(tmpdir(), "bc-index-"));
   try {
     const env = { GIT_INDEX_FILE: join(tmp, "index") };
