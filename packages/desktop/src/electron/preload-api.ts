@@ -105,5 +105,12 @@ export function createDesktopApi(ipc: IpcRendererLike, platform: string): BakaDe
       ipc.invoke(IPC_CHANNELS.repoInitialCommit, req) as Promise<DesktopRepoFixResult>,
     createMainBranch: () =>
       ipc.invoke(IPC_CHANNELS.repoCreateMain) as Promise<DesktopRepoFixResult>,
+    onQuitting(listener: () => void) {
+      const wrapped = () => listener();
+      ipc.on(IPC_CHANNELS.appQuitting, wrapped);
+      return () => {
+        ipc.removeListener(IPC_CHANNELS.appQuitting, wrapped);
+      };
+    },
   });
 }

@@ -68,3 +68,9 @@ export const ESCALATION_REASON_LABEL: Record<EscalationView["reason"], string> =
   merged_but: "合并后续步骤失败",
   high_risk_rejected: "用户拒绝了高风险 PR",
 };
+
+/** 退出收尾中（T-106）：固定文案，不带路径和原因。 */
+export const QUIT_COPY = {
+  title: "正在退出…",
+  detail: "正在等后台任务收尾，完成后窗口会自动关闭",
+} as const;

@@ -162,6 +162,7 @@ flowchart BT
 | T-089 | 模块 1：`testConnection({ provider, model? })`（界面 `provider:test`，IPC 在 UI-03b）：只发一个极小请求（`max_tokens: 1`、关思考、不重试），经 `reserve` 预占并计入台账，记在主管名下（`role: "supervisor"`、`requirement_id: "provider_test"`、`ticket_id: null`，不加新角色）；预算不够返回 `budget_exhausted`、不发请求，不报成连接失败；其余失败按 `no_secret` / `auth_failed` / `quota_exhausted` / `rate_limited` / `network` / `config_error` / `http_error` 返回，不抛错；modules.md §1 同步 | 1 | 基础层开发 | 待评审 | #132 | — |
 | T-108 | 模块 4：`initRepo` / `initialCommit` 的 `identity` 改成 `{ name?, email? }`，至少给一项，只写给了的那几项、只写本仓库 `.git/config`，报错仍是固定文案；并入 N2：`initialCommit` 先校验文件和身份再写 `.git/config`，拒绝时不改配置，补回滚测试；modules.md §4 同步 | 4 | 基础层开发 | 待评审 | #133 | — |
 | UI-03b | 模块 12 模型配置：密钥项、向导、「测试连接」；`secret:*` 和 `provider:test` IPC（UI-07 复用）；依赖 T-088（#126）、T-089 | 12 | 界面与诊断开发 | 等 T-089、T-108 | — | — |
+| T-106 | 模块 12 退出时显示「正在退出」（T-105 跟进）：主进程开始退出收尾时经新 IPC `app:quitting`（主进程 → 渲染进程，不带内容）通知一次，窗口已销毁就跳过、不影响退出；preload `onQuitting`；渲染进程在内容区标题栏下显示中性横幅 + 转圈，固定文案「正在退出…」，不是遮罩；Windows / Linux 点关闭时窗口先不关，等收尾结束统一关，重复点关闭不重复发起（`createWindowCloseHandler`）；`backend-switcher.ts` 来源不明的占位后端重连按 cwd 解析补注释和测试（#130 评审小项）；modules.md §12 同步 | 12 | 界面与诊断开发 | 待评审 | #137 | — |
 | T-109 | 界面：`App.status.test` 重新连接失败用例偶发超时（flaky），定位并修稳；preview.1 之后处理（UI-03a #130 评审跟进） | 12 | 界面与诊断开发 | 待开发（preview.1 之后） | — | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
