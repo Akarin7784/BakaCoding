@@ -13,7 +13,7 @@ const TONE_CLASS: Record<ChatTone, string> = {
   normal: "text-muted-foreground",
   ask: "text-foreground",
   ok: "text-foreground",
-  error: "font-medium text-accent",
+  error: "font-medium text-danger",
 };
 
 export interface SupervisorChatProps {
@@ -95,7 +95,7 @@ export function SupervisorChat({
           <span className="flex-1 text-sm font-medium">主管</span>
           {onImport && (
             <Button
-              variant="ghost"
+              variant="secondary"
               size="sm"
               aria-label="导入项目"
               disabled={busy !== null}
@@ -105,12 +105,12 @@ export function SupervisorChat({
               {busy === "import" ? "导入中…" : "导入项目"}
             </Button>
           )}
-          <Button variant="ghost" size="sm" aria-label="设置" onClick={onOpenSettings}>
+          <Button variant="secondary" size="sm" aria-label="设置" onClick={onOpenSettings}>
             <Settings strokeWidth={1.5} />
             设置
           </Button>
           <Button
-            variant="ghost"
+            variant="secondary"
             size="sm"
             aria-label="导出诊断包"
             disabled={busy !== null}
@@ -129,7 +129,7 @@ export function SupervisorChat({
                 key={m.id}
                 role="alert"
                 data-testid="chat-error"
-                className="flex gap-2 text-sm text-accent"
+                className="flex gap-2 text-sm text-danger"
               >
                 <AlertCircle className="mt-0.5 size-4 shrink-0" strokeWidth={1.5} />
                 <p className="whitespace-pre-wrap">{m.failed}</p>
@@ -148,7 +148,7 @@ export function SupervisorChat({
                 <AgentIcon supervisor />
                 <div className="min-w-0 space-y-1">
                   <span className={cn("text-xs", TONE_CLASS[v.tone])}>{v.label}</span>
-                  <p className={cn("whitespace-pre-wrap", v.tone === "error" && "text-accent")}>
+                  <p className={cn("whitespace-pre-wrap", v.tone === "error" && "text-danger")}>
                     {v.text}
                   </p>
                   {v.ticketIds.length > 0 && (

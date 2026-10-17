@@ -2,6 +2,7 @@
 import { ArrowLeft } from "lucide-react";
 import type { DesktopSettings } from "../../shared/api";
 import { Button } from "./ui/button";
+import { ThemeSwitcher } from "./ThemeSwitcher";
 
 export const SETTINGS_MODE_LABEL: Record<DesktopSettings["mode"], string> = {
   github: "GitHub 模式",
@@ -31,7 +32,7 @@ export function SettingsPanel({
   return (
     <section aria-label="设置" className="flex min-w-0 flex-1 flex-col">
       <header className="flex items-center gap-2 border-b border-border px-4 py-2">
-        <Button variant="ghost" size="sm" aria-label="返回" onClick={onBack}>
+        <Button variant="secondary" size="sm" aria-label="返回" onClick={onBack}>
           <ArrowLeft strokeWidth={1.5} />
           返回
         </Button>
@@ -41,10 +42,14 @@ export function SettingsPanel({
       </header>
       <div className="space-y-5 overflow-y-auto px-4 py-4 text-sm">
         {error && (
-          <p role="alert" className="text-accent">
+          <p role="alert" className="text-danger">
             {error}
           </p>
         )}
+        <div>
+          <h3 className="mb-1 text-xs text-muted-foreground">主题</h3>
+          <ThemeSwitcher />
+        </div>
         {!settings && !error && <p className="text-muted-foreground">读取中…</p>}
         {settings && (
           <>

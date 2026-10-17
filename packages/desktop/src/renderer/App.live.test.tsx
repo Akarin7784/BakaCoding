@@ -115,9 +115,9 @@ describe("渲染进程从 preload API 读真实数据", () => {
     expect(screen.getByTestId("flash-calls").textContent).toContain("真实输出");
 
     fireEvent.click(screen.getByRole("button", { name: "打开侧边栏" }));
-    expect(screen.getByText("编码中").getAttribute("data-accent")).toBe("true");
+    expect(screen.getByText("编码中").getAttribute("data-tone")).toBe("accent");
     const esc = screen.getAllByText("需要人工介入").find((el) => el.dataset.status === "escalated");
-    expect(esc?.getAttribute("data-accent")).toBe("false");
+    expect(esc?.getAttribute("data-tone")).toBe("danger");
     expect(screen.getByText("×3")).toBeTruthy();
     expect(screen.getByTestId("pool-status").textContent).toContain("未接入");
   });
@@ -126,7 +126,7 @@ describe("渲染进程从 preload API 读真实数据", () => {
     render(<App api={fakeApi(snapshot).api} />);
     fireEvent.click(await screen.findByRole("button", { name: /real-proj/ }));
     const alert = screen.getByRole("alert", { name: "需要人工介入" });
-    expect(alert.textContent).toContain("需要人工介入 · T-2 · 评审复投超限");
+    expect(alert.textContent).toContain("需要人工介入 · T-2 · 评审重写超限");
   });
 
   it("增量更新：新群消息和单状态变化即时显示", async () => {
@@ -155,7 +155,7 @@ describe("渲染进程从 preload API 读真实数据", () => {
     );
     await waitFor(() => expect(screen.getByText("T-1 增量回报")).toBeTruthy());
     fireEvent.click(screen.getByRole("button", { name: "打开侧边栏" }));
-    expect(screen.getByText("已合并").getAttribute("data-accent")).toBe("true");
+    expect(screen.getByText("已合入").getAttribute("data-tone")).toBe("foreground");
   });
 
   it("库还不存在时提示路径；api 为 null 时退回假数据", async () => {

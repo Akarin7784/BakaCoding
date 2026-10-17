@@ -1,17 +1,119 @@
 @import "tailwindcss";
+@import "./fonts.css";
 
-/* 中性色 + 单一强调色（只标状态）；跟随系统深浅色。 */
+/*
+ * UI-01 设计 token（docs/ui-design.md §5）。
+ * - 颜色：§5.1 OKLCH，中性色带一点暖调（色相 90），强调色只有一种蓝，danger 红单独一个 token。
+ * - 主题：<html data-theme="light|dark">，由 lib/theme.ts 按「跟随系统 / 浅 / 深」解析后写上；
+ *   dark: 变体跟随 data-theme，不直接跟随系统媒体查询。
+ */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+:root {
+  color-scheme: light;
+  --background: oklch(0.99 0.002 90);
+  --sidebar: oklch(0.97 0.003 90);
+  --foreground: oklch(0.22 0.005 90);
+  --muted-foreground: oklch(0.55 0.005 90);
+  --border: oklch(0.91 0.004 90);
+  --hover: oklch(0.95 0.003 90);
+  --accent: oklch(0.6 0.15 250);
+  --danger: oklch(0.58 0.19 27);
+  /* 以下由上表推出（文档未单列）：弹层底、按钮、文字反色、浅红横幅底 */
+  --popover: oklch(0.995 0.002 90);
+  --primary: oklch(0.22 0.005 90);
+  --primary-foreground: oklch(0.98 0.002 90);
+  --secondary: oklch(0.945 0.003 90);
+  --secondary-hover: oklch(0.92 0.004 90);
+  --on-accent: oklch(0.99 0.002 90);
+  --on-danger: oklch(0.99 0.002 90);
+  --danger-soft: oklch(0.96 0.025 27);
+  --ring: oklch(0.6 0.15 250 / 0.55);
+  --overlay: oklch(0 0 0 / 0.25);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --background: oklch(0.18 0.003 90);
+  --sidebar: oklch(0.15 0.003 90);
+  --foreground: oklch(0.93 0.004 90);
+  --muted-foreground: oklch(0.65 0.005 90);
+  --border: oklch(0.29 0.004 90);
+  --hover: oklch(0.23 0.003 90);
+  --accent: oklch(0.72 0.13 250);
+  --danger: oklch(0.68 0.17 27);
+  --popover: oklch(0.21 0.003 90);
+  --primary: oklch(0.93 0.004 90);
+  --primary-foreground: oklch(0.18 0.003 90);
+  --secondary: oklch(0.25 0.003 90);
+  --secondary-hover: oklch(0.29 0.004 90);
+  --on-accent: oklch(0.15 0.003 90);
+  --on-danger: oklch(0.15 0.003 90);
+  --danger-soft: oklch(0.25 0.04 27);
+  --ring: oklch(0.72 0.13 250 / 0.6);
+  --overlay: oklch(0 0 0 / 0.5);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-sidebar: var(--sidebar);
+  --color-foreground: var(--foreground);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-hover: var(--hover);
+  /* 旧类名 bg-muted 等同 hover（列表悬停 / 选中底） */
+  --color-muted: var(--hover);
+  --color-accent: var(--accent);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-popover: var(--popover);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-hover: var(--secondary-hover);
+  --color-on-accent: var(--on-accent);
+  --color-on-danger: var(--on-danger);
+  --color-ring: var(--ring);
+  --color-overlay: var(--overlay);
+}
+
 @theme {
-  --color-background: oklch(1 0 0);
-  --color-foreground: oklch(0.2 0 0);
-  --color-muted: oklch(0.96 0 0);
-  --color-muted-foreground: oklch(0.55 0 0);
-  --color-border: oklch(0.91 0 0);
-  --color-ring: oklch(0.7 0 0);
-  --color-primary: oklch(0.2 0 0);
-  --color-primary-foreground: oklch(0.98 0 0);
-  --color-accent: oklch(0.6 0.15 250);
-  --animate-fade-in: fade-in 200ms ease-out;
+  /* §5.3 字体：西文优先 Inter（随包，OFL），中文落到 Segoe UI Variable / 微软雅黑 UI */
+  --font-sans:
+    "Inter Variable", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", "PingFang SC",
+    system-ui, sans-serif;
+  --font-mono: "Cascadia Code", "JetBrains Mono", Consolas, ui-monospace, monospace;
+
+  /* §5.3 字号：12 辅助 / 14 正文 / 15 对话（行高 1.65）/ 16 页头 / 20–24 标题 */
+  --text-xs: 12px;
+  --text-xs--line-height: 1.5;
+  --text-sm: 14px;
+  --text-sm--line-height: 1.5;
+  --text-chat: 15px;
+  --text-chat--line-height: 1.65;
+  --text-base: 16px;
+  --text-base--line-height: 1.5;
+  --text-xl: 20px;
+  --text-xl--line-height: 1.4;
+  --text-2xl: 24px;
+  --text-2xl--line-height: 1.35;
+
+  /* §5.4 圆角：控件 / 列表项 8，按钮 10，卡片 12，弹层 / 输入框外框 16 */
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+
+  /* §5.4 阴影：只给弹层、菜单、toast 一层 */
+  --shadow-popover: 0 8px 24px oklch(0 0 0 / 0.08);
+
+  /* §5.4 动效：状态淡入淡出 150–200ms，面板开合 200ms ease-out，不弹跳 */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --default-transition-duration: 150ms;
+  --animate-fade-in: fade-in 180ms ease-out;
+  --animate-fade-out: fade-out 150ms ease-out;
+  --animate-spin-slow: spin 1.6s linear infinite;
+
   @keyframes fade-in {
     from {
       opacity: 0;
@@ -20,18 +122,47 @@
       opacity: 1;
     }
   }
+  @keyframes fade-out {
+    from {
+      opacity: 1;
+    }
+    to {
+      opacity: 0;
+    }
+  }
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --color-background: oklch(0.17 0 0);
-    --color-foreground: oklch(0.93 0 0);
-    --color-muted: oklch(0.24 0 0);
-    --color-muted-foreground: oklch(0.65 0 0);
-    --color-border: oklch(0.3 0 0);
-    --color-ring: oklch(0.5 0 0);
-    --color-primary: oklch(0.93 0 0);
-    --color-primary-foreground: oklch(0.17 0 0);
-    --color-accent: oklch(0.72 0.13 250);
+@layer base {
+  html,
+  body {
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+    line-height: 1.5;
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    -webkit-font-smoothing: antialiased;
+  }
+  *,
+  ::before,
+  ::after {
+    border-color: var(--color-border);
+  }
+  code,
+  kbd,
+  pre,
+  samp {
+    font-family: var(--font-mono);
+  }
+}
+
+/* 尊重系统「减少动态效果」：动画与过渡一律近乎瞬时，旋转图标停住。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
