@@ -132,6 +132,8 @@ function setup(
           escalatedHandler = undefined;
         };
       }
+      // T-042：另订 interface_changed（自动审）；本套测试不驱动它
+      if (type === "interface_changed") return () => {};
       expect(type).toBe("project_created");
       handler = h as typeof handler;
       return () => {
@@ -345,8 +347,9 @@ describe("split", () => {
     expect(t.enqueued.map((e) => e.ticket_id)).toEqual([a!.ticket_id, b!.ticket_id]);
     expect(t.enqueued[1]).toMatchObject({ depends_on: [a!.ticket_id] });
     // 群消息
-    expect(t.published).toHaveLength(2);
-    for (const [i, e] of t.published.entries()) {
+    const dispatched = t.published.filter((e) => e.type !== "supervisor_backlog");
+    expect(dispatched).toHaveLength(2);
+    for (const [i, e] of dispatched.entries()) {
       expect(e.type).toBe("group_message");
       if (e.type !== "group_message") continue;
       expect(e.ticket_id).toBe(r.tickets[i]!.ticket_id);
@@ -393,7 +396,7 @@ describe("split", () => {
     expect(t.rows.size).toBe(0);
     expect(t.requirements).toEqual([]);
     expect(t.enqueued).toEqual([]);
-    expect(t.published).toEqual([]);
+    expect(t.published.filter((e) => e.type !== "supervisor_backlog")).toEqual([]);
   });
 
   it("严格 schema：多余字段、错类型、空单列表都算 output_invalid", async () => {

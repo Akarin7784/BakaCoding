@@ -469,8 +469,15 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     inherit_depends_on: readonly string[];
   }
 
-  function split(req: SplitRequest): Promise<SplitResult> {
-    return splitImpl(req, undefined);
+  async function split(req: SplitRequest): Promise<SplitResult> {
+    chatSplitInflight++;
+    void emitSupervisorBacklog();
+    try {
+      return await splitImpl(req, undefined);
+    } finally {
+      chatSplitInflight = Math.max(0, chatSplitInflight - 1);
+      void emitSupervisorBacklog();
+    }
   }
 
   async function splitImpl(req: SplitRequest, re: ResplitInfo | undefined): Promise<SplitResult> {
@@ -748,8 +755,16 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   let stopped = false;
   /** 上报处理串行执行（进程内排队，提案 §7） */
   let chain: Promise<unknown> = Promise.resolve();
+  /** T-042：计入 supervisor_backlog */
+  let chatSplitInflight = 0;
+  let escalationPending = 0;
   function serial<T>(fn: () => Promise<T>): Promise<T> {
-    const p = chain.then(fn, fn);
+    escalationPending++;
+    void emitSupervisorBacklog();
+    const p = chain.then(fn, fn).finally(() => {
+      escalationPending = Math.max(0, escalationPending - 1);
+      void emitSupervisorBacklog();
+    });
     chain = p.catch(() => undefined);
     return p;
   }
@@ -1342,13 +1357,61 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         (err: unknown) => logger.warn(`处理上报（${e.ticket_id ?? "无单号"}）出错`, err),
       ),
     );
+    // T-042 Q-1：合入集成分支后，无在途单时自动审一次（同一 head 只审一次）
+    const offInterface = deps.subscribe("interface_changed", (e) => {
+      void maybeAutoReview(e).catch((err: unknown) =>
+        logger.warn("自动审查集成分支失败", err),
+      );
+    });
+    void emitSupervisorBacklog();
     return () => {
       stopped = true;
       offProject();
       offEscalated();
+      offInterface();
       for (const h of retryTimers) timers.clearTimeout(h);
       retryTimers.clear();
     };
+  }
+
+  async function maybeAutoReview(_e: EventOf<"interface_changed">): Promise<void> {
+    if (stopped || !deps.pr) return;
+    if (deps.integration && !(await deps.integration.idle())) return;
+    let head: string;
+    try {
+      const pr_id = await deps.pr.openIntegration();
+      head = (await deps.pr.diff(pr_id)).head_sha;
+    } catch (err) {
+      logger.warn("自动审：取集成分支 head 失败", err);
+      return;
+    }
+    if (autoReviewedHeads.has(head)) return;
+    // 先占位，避免并发重复审；失败则去掉以便重试
+    autoReviewedHeads.add(head);
+    try {
+      const r = await reviewIntegration();
+      if (r.result === "ok") {
+        const mainMerge = deps.getConfig().pipeline.main_merge ?? "user";
+        if (mainMerge === "supervisor") {
+          try {
+            await mergeMain({ by: "supervisor", head_sha: r.head_sha });
+          } catch (err) {
+            logger.warn("自动审通过后合入 main 失败", err);
+          }
+        } else {
+          // user 模式：reviewIntegration 已 notify；mergeMain(by:supervisor) 再通知一次也可，这里不重复
+        }
+      } else if (r.result === "blocked") {
+        const reasons = r.reasons.map((x) => x.code).join("、");
+        await notify(
+          `集成分支自动审查未通过（${reasons}）${r.summary ? "：" + r.summary : ""}。可稍后手动再审。`,
+          {},
+        );
+      }
+    } catch (err) {
+      autoReviewedHeads.delete(head);
+      throw err;
+    }
   }
 
   async function splitForChat(
@@ -1407,6 +1470,17 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   }
 
   async function chat(msg: UserMessage): Promise<ChatReply> {
+    chatSplitInflight++;
+    void emitSupervisorBacklog();
+    try {
+      return await chatBody(msg);
+    } finally {
+      chatSplitInflight = Math.max(0, chatSplitInflight - 1);
+      void emitSupervisorBacklog();
+    }
+  }
+
+  async function chatBody(msg: UserMessage): Promise<ChatReply> {
     const list = projects();
     const explicit = msg.project_id ? list.find((p) => p.project_id === msg.project_id) : undefined;
     // 有暂存需求时：界面传的 project_id 优先；否则原文里恰好提到一个项目才认领，
@@ -1563,6 +1637,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         requirement_id: info.requirement_id,
       },
     );
+    void emitSupervisorBacklog();
   }
 
   function decideHighRisk(
@@ -1596,6 +1671,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     if (decision === "release") {
       const result = await gate.release(ticket_id, pr_id);
       pendingHR.delete(ticket_id);
+      void emitSupervisorBacklog();
       return { decision, result };
     }
     const why = detail?.trim() || "用户拒绝";
@@ -1794,9 +1870,6 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   const autoReviewedHeads = new Set<string>();
   let integrationReviewing = false;
   let lastBacklog: { pending: number; capacity: number } | null = null;
-  /** serial 链上还没完成的上报处理数（近似：每次入队 +1，完成 -1） */
-  let escalationPending = 0;
-  let chatSplitInflight = 0;
 
   function backlogPending(): number {
     return (

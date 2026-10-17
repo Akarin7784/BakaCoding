@@ -127,7 +127,7 @@ type PublishOf<
 export type EscalationAction = "resplit" | "notify_user" | "resplit_limit" | "ignored";
 
 /** 10 订阅的事件（T-041b，提案 S2）。 */
-type SubscribedType = "project_created" | "escalated";
+type SubscribedType = "project_created" | "escalated" | "interface_changed";
 
 export interface SupervisorDeps {
   /** 1 的 call */
@@ -174,7 +174,7 @@ export interface SupervisorDeps {
       | PublishOf<"escalated">
       | PublishOf<"supervisor_backlog">,
   ) => unknown;
-  /** 0：订阅 project_created，T-041b 起另订阅 escalated（提案 S2） */
+  /** 0：订阅 project_created；T-041b 起另订阅 escalated；T-042 另订阅 interface_changed（自动审集成分支） */
   subscribe: <K extends SubscribedType>(
     type: K,
     handler: (event: EventOf<K>) => void | Promise<void>,

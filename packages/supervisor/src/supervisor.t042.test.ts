@@ -265,3 +265,112 @@ describe("T-042 reviewIntegration / mergeMain", () => {
     if (r.result === "blocked") expect(r.reasons[0]?.code).toBe("review_failed");
   });
 });
+
+describe("T-042 supervisor_backlog 与自动审", () => {
+  it("发 supervisor_backlog 时 requirement_id / ticket_id 为 null，trace 新开", async () => {
+    const published: unknown[] = [];
+    const s = createSupervisor(
+      baseDeps({
+        publish: async (e) => {
+          published.push(e);
+        },
+        pr: {
+          kind: "local",
+          openIntegration: async () => "int-1",
+          diff: async () => ({
+            base_sha: "a".repeat(40),
+            head_sha: "b".repeat(40),
+            files: [{ path: "a.ts", status: "modified", additions: 1, deletions: 0 }],
+          }),
+          checks: async () => [],
+          merge: async () => ({ merged: true, sha: "c".repeat(40), fast_forward: true }),
+        },
+        integration: { idle: async () => true },
+      }),
+    );
+    s.start();
+    const backs = published.filter(
+      (e): e is { type: string; requirement_id: unknown; ticket_id: unknown; trace_id: string } =>
+        !!e && typeof e === "object" && (e as { type?: string }).type === "supervisor_backlog",
+    );
+    expect(backs.length).toBeGreaterThanOrEqual(1);
+    expect(backs[0]!.requirement_id).toBeNull();
+    expect(backs[0]!.ticket_id).toBeNull();
+    expect(backs[0]!.trace_id).toBeTruthy();
+  });
+
+  it("自动审：同一 head 只审一次；有在途单不审", async () => {
+    let reviewCalls = 0;
+    const head = "b".repeat(40);
+    const call = vi.fn(async () => {
+      reviewCalls++;
+      return { output: '{"verdict":"ok","summary":"ok","items":[]}' } as never;
+    });
+    let idle = true;
+    const handlers: Record<string, (e: unknown) => void> = {};
+    const s = createSupervisor(
+      baseDeps({
+        call,
+        getConfig: () =>
+          ({
+            roles: { supervisor: { provider: "p", model: "m", effort: "max" } },
+            pipeline: {
+              resplit_limit: 2,
+              supervisor_backlog_limit: 10,
+              main_merge: "user",
+            },
+          }) as never,
+        subscribe: (type, handler) => {
+          handlers[type] = handler as (e: unknown) => void;
+          return () => {};
+        },
+        pr: {
+          kind: "local",
+          openIntegration: async () => "int-1",
+          diff: async () => ({
+            base_sha: "a".repeat(40),
+            head_sha: head,
+            files: [{ path: "a.ts", status: "modified", additions: 1, deletions: 0 }],
+          }),
+          checks: async () => [],
+          merge: async () => ({ merged: true, sha: "c".repeat(40), fast_forward: true }),
+        },
+        integration: { idle: async () => idle },
+      }),
+    );
+    s.start();
+    const fakeEv = {
+      type: "interface_changed",
+      requirement_id: "r",
+      ticket_id: "t",
+      trace_id: "tr",
+      span_id: "sp",
+      parent_span_id: null,
+      event_id: "e1",
+      ts: "2026-10-17T00:00:00Z",
+      seq: 1,
+      payload: {
+        pr_id: "p",
+        base_commit: head,
+        changed_interfaces: [],
+        summary: "x",
+        affected_ticket_ids: [],
+      },
+    };
+    handlers["interface_changed"]!(fakeEv);
+    await vi.waitFor(() => expect(reviewCalls).toBe(1));
+    handlers["interface_changed"]!(fakeEv);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(reviewCalls).toBe(1);
+
+    idle = false;
+    reviewCalls = 0;
+    handlers["interface_changed"]!({
+      ...fakeEv,
+      payload: { ...fakeEv.payload, base_commit: "c".repeat(40) },
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    // idle=false 时 maybeAutoReview 在取 head 前就 return
+    expect(reviewCalls).toBe(0);
+  });
+});
