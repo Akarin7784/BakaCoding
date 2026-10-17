@@ -1,6 +1,9 @@
 import { readFileSync } from "node:fs";
+import { basename } from "node:path";
 import { z } from "zod";
 import type { TokensSchema } from "@bakacoding/types";
+import { ConfigError } from "./config.js";
+import { errnoCode, jsonErrorText, schemaIssues } from "./safe-error.js";
 
 type Tokens = z.infer<typeof TokensSchema>;
 
@@ -53,8 +56,27 @@ export const PricingSchema = z
   .strict();
 export type Pricing = z.infer<typeof PricingSchema>;
 
+/**
+ * 读取并校验价格表。T-099：失败抛 ConfigError，错误不含文件内容、配置原值和完整路径
+ * （读不到只报文件名和错误码，JSON 坏只报行列号，校验错误同 validate）。
+ */
 export function loadPricing(path: string): Pricing {
-  return PricingSchema.parse(JSON.parse(readFileSync(path, "utf8")));
+  const file = basename(path);
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (e) {
+    throw new ConfigError([`无法读取价格表 ${file}（${errnoCode(e)}）`]);
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch (e) {
+    throw new ConfigError([jsonErrorText(text, e, `价格表 ${file} `)]);
+  }
+  const r = PricingSchema.safeParse(raw);
+  if (!r.success) throw new ConfigError(schemaIssues(r.error.issues).map((m) => `${file} ${m}`));
+  return r.data;
 }
 
 const BEIJING_OFFSET_MS = 8 * 3600_000;

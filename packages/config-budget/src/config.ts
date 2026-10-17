@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { EffortSchema } from "@bakacoding/types";
-import { z, type ZodIssue } from "zod";
-import { redact } from "./redact.js";
+import { z } from "zod";
+import { errnoCode, jsonErrorText, schemaIssues } from "./safe-error.js";
 
 const Int = z.number().int();
 const NonNegInt = Int.nonnegative();
@@ -182,49 +182,7 @@ export class ConfigError extends Error {
   }
 }
 
-const list = (xs: readonly unknown[]) => xs.map((x) => JSON.stringify(x)).join(" / ");
-
-/**
- * 把校验问题转成不含配置原值的中文（T-087；T-098 起 `validate` / `getConfig` 也用它）：只用 `issue.path`、`issue.code` 和 schema 自己的
- * 期望值（类型名、枚举选项、上下限）；zod 默认 message 里的 `received '...'` 一律不用。
- * `custom` 是 schema 里写死的固定文案（不含值），照用。
- */
-export function formatConfigIssue(i: ZodIssue): string {
-  const path = i.path.join(".") || "(root)";
-  let what: string;
-  switch (i.code) {
-    case "invalid_type":
-      what = i.received === "undefined" ? "缺少必填字段" : `类型不对，应为 ${i.expected}`;
-      break;
-    case "invalid_literal":
-      what = `应为 ${JSON.stringify(i.expected)}`;
-      break;
-    case "invalid_enum_value":
-      what = `应为 ${list(i.options)} 之一`;
-      break;
-    case "invalid_union_discriminator":
-      what = `应为 ${list(i.options)} 之一`;
-      break;
-    case "unrecognized_keys":
-      what = `有未知字段 ${list(i.keys)}`;
-      break;
-    case "too_small":
-      what = `太小或太短，下限 ${String(i.minimum)}${i.inclusive ? "（含）" : ""}`;
-      break;
-    case "too_big":
-      what = `太大或太长，上限 ${String(i.maximum)}${i.inclusive ? "（含）" : ""}`;
-      break;
-    case "not_multiple_of":
-      what = `应为 ${String(i.multipleOf)} 的倍数`;
-      break;
-    case "custom":
-      what = i.message;
-      break;
-    default:
-      what = `不合法（${i.code}）`;
-  }
-  return `${path}: ${what}`;
-}
+export { formatConfigIssue } from "./safe-error.js";
 
 /**
  * 校验原始配置对象，返回错误列表（空表示通过）。T-098：错误由 formatConfigIssue 拼，不含配置原值；
@@ -233,19 +191,7 @@ export function formatConfigIssue(i: ZodIssue): string {
 export function validate(raw: unknown): string[] {
   const r = ConfigSchema.safeParse(raw);
   if (r.success) return [];
-  return r.error.issues.map((i) => redact(formatConfigIssue(i), "light").text);
-}
-
-/**
- * JSON 解析失败的说明（T-098）：不拼 `err.message`（Node 的报错会把原文带出来），
- * 只从里面取出字符位置换成行列号；取不到就只说不是合法 JSON。
- */
-function jsonErrorText(text: string, e: unknown): string {
-  const m = /\bposition (\d+)\b/.exec(e instanceof Error ? e.message : "");
-  if (!m) return "配置文件不是合法 JSON";
-  const pos = Math.min(Number(m[1]), text.length);
-  const before = text.slice(0, pos).split("\n");
-  return `配置文件不是合法 JSON（第 ${before.length} 行第 ${before[before.length - 1]!.length + 1} 列）`;
+  return schemaIssues(r.error.issues);
 }
 
 /**
@@ -257,14 +203,13 @@ export function getConfig(path: string): Config {
   try {
     text = readFileSync(path, "utf8");
   } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code ?? "unknown";
-    throw new ConfigError([`无法读取配置文件 ${basename(path)}（${code}）`]);
+    throw new ConfigError([`无法读取配置文件 ${basename(path)}（${errnoCode(e)}）`]);
   }
   let raw: unknown;
   try {
     raw = JSON.parse(text);
   } catch (e) {
-    throw new ConfigError([jsonErrorText(text, e)]);
+    throw new ConfigError([jsonErrorText(text, e, "配置文件")]);
   }
   const r = ConfigSchema.safeParse(raw);
   if (!r.success) throw new ConfigError(validate(raw));

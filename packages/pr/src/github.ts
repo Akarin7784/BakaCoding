@@ -612,7 +612,10 @@ export class GithubPrProvider implements PrProvider {
   /** 远程上本单分支的 sha；远程没有这个分支返回 undefined。 */
   private async remoteHead(branch: string): Promise<string | undefined> {
     const out = (
-      await git(this.repo, ["ls-remote", this.remote, `refs/heads/${branch}`], { env: GIT_ENV })
+      await git(this.repo, ["ls-remote", this.remote, `refs/heads/${branch}`], {
+        env: GIT_ENV,
+        remote: true,
+      })
     ).stdout;
     return out.trim().split(/\s+/)[0] || undefined;
   }
@@ -645,8 +648,12 @@ export class GithubPrProvider implements PrProvider {
   /** 远程没有集成分支时先推上去；本地也没有则按 openIntegration 的规则从 main 建出。 */
   private async ensureRemoteIntegration(): Promise<void> {
     const ref = `refs/heads/${INTEGRATION_BRANCH}`;
-    const out = (await git(this.repo, ["ls-remote", "--heads", this.remote, ref], { env: GIT_ENV }))
-      .stdout;
+    const out = (
+      await git(this.repo, ["ls-remote", "--heads", this.remote, ref], {
+        env: GIT_ENV,
+        remote: true,
+      })
+    ).stdout;
     if (out.trim()) return;
     await this.local.ensureBranch(this.repo, INTEGRATION_BRANCH, "main");
     await this.push(this.repo, INTEGRATION_BRANCH);
@@ -679,11 +686,12 @@ export class GithubPrProvider implements PrProvider {
   private async push(cwd: string, branch: string): Promise<void> {
     await git(cwd, ["push", "-q", this.remote, `refs/heads/${branch}:refs/heads/${branch}`], {
       env: GIT_ENV,
+      remote: true,
     });
   }
 
   private async fetchRemote(): Promise<void> {
-    await git(this.repo, ["fetch", "-q", this.remote], { env: GIT_ENV });
+    await git(this.repo, ["fetch", "-q", this.remote], { env: GIT_ENV, remote: true });
   }
 
   /** 把本地分支快进到远端；被 checkout 时只在干净的 worktree 里 ff-only，否则记日志不动。 */
