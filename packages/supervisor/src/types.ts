@@ -2,7 +2,7 @@ import type { Config } from "@bakacoding/config-budget";
 import type { ModelGateway } from "@bakacoding/model-gateway";
 import type { SchedulerTicket } from "@bakacoding/scheduler";
 import type { Storage } from "@bakacoding/storage";
-import type { HighRiskReason, SubAgentTicket } from "@bakacoding/sub-agent";
+import type { HighRiskFile, HighRiskReason, SubAgentTicket } from "@bakacoding/sub-agent";
 import type { DiffFile, ESCALATION_REASONS, EventOf } from "@bakacoding/types";
 
 export type MaybePromise<T> = T | Promise<T>;
@@ -278,7 +278,7 @@ export interface HighRiskHeldInput {
    * 扣住时这个 PR 的 diff 文件（组合根取；重启接回时用 N4 补判取的那份）。null：取不到 diff；不填按 null。
    * 10 用它算 `pendingHighRisk()` 的理由和文件，存在内存里。
    */
-  diff_files?: readonly { path: string; status: DiffFile["status"] }[] | null;
+  diff_files?: readonly { path: string; status: DiffFile["status"]; old_path?: string }[] | null;
 }
 
 /** 一张等用户裁决的高风险单（T-041c，`pendingHighRisk()`，T-062 界面用）。 */
@@ -287,10 +287,13 @@ export interface PendingHighRisk {
   project_id: string;
   pr_id: string;
   pr_url?: string;
-  /** 理由（8 的 `HighRiskReason`）：dependency_kind / dependency_file（含改名兜底）/ diff_unavailable / unverified */
+  /** 理由（8 的 `HighRiskReason`）：dependency_kind / dependency_file（含改名的）/ diff_unavailable / unverified */
   reasons: HighRiskReason[];
-  /** 命中的文件（依赖清单 / 锁文件，或改名的），最多 20 个 */
-  files: string[];
+  /**
+   * 命中的文件（依赖清单 / 锁文件，或改名的），最多 20 个。T-065 起每项是 `{ path, old_path? }`：
+   * `path` 为 diff 里的路径（改名为新路径），改名的带旧路径 `old_path`。
+   */
+  files: HighRiskFile[];
   /** 没列出的命中文件数 */
   files_more: number;
   /** 本进程扣住（收到 highRiskHeld）的时间，ISO 8601 */

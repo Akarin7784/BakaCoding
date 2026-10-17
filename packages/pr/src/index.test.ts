@@ -4,7 +4,13 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PrStatusSchema } from "@bakacoding/types";
 import { chmod } from "node:fs/promises";
-import { createPrProvider, InMemoryPrStore, LocalPrProvider, PrNotFoundError } from "./index.js";
+import {
+  createPrProvider,
+  ExpectedHeadMismatchError,
+  InMemoryPrStore,
+  LocalPrProvider,
+  PrNotFoundError,
+} from "./index.js";
 import { git } from "./git.js";
 
 const ENV = {
@@ -86,9 +92,46 @@ describe("open / diff", () => {
     expect(by["a.txt"]).toMatchObject({ status: "modified", additions: 2, deletions: 1 });
     expect(by["new.txt"]).toMatchObject({ status: "added", additions: 2, deletions: 0 });
     expect(by["gone.txt"]).toMatchObject({ status: "deleted", additions: 0, deletions: 2 });
-    expect(by["renamed.txt"]).toMatchObject({ status: "renamed", additions: 0, deletions: 0 });
+    expect(by["renamed.txt"]).toMatchObject({
+      status: "renamed",
+      additions: 0,
+      deletions: 0,
+      old_path: "old.txt",
+    });
     expect(by["renamed.txt"]!.patch).toContain("rename from old.txt");
     expect(by["a.txt"]!.patch).toContain("+TWO");
+    expect(by["a.txt"]).not.toHaveProperty("old_path");
+    expect(by["new.txt"]).not.toHaveProperty("old_path");
+    expect(by["gone.txt"]).not.toHaveProperty("old_path");
+  });
+  it("package.json 改名成 x.json 时带 old_path", async () => {
+    // package.json 必须先在 base（main）上，相对 base 的 rename 才会被 -M 检出
+    await writeFile(join(repo, "package.json"), '{\n  "name": "demo"\n}\n');
+    await commitAll(repo, "add package.json");
+    const wt = await worktree("feat/pkg-rename");
+    await git(wt, ["mv", "package.json", "x.json"]);
+    await commitAll(wt, "rename package.json");
+    const id = await pr.open("T-pkg", wt, "feat/pkg-rename");
+    const d = await pr.diff(id);
+    const by = Object.fromEntries(d.files.map((f) => [f.path, f]));
+    expect(by["x.json"]).toMatchObject({
+      path: "x.json",
+      status: "renamed",
+      old_path: "package.json",
+    });
+    expect(by["package.json"]).toBeUndefined();
+  });
+  it("删掉 package.json 时 path 就是原路径，不带 old_path", async () => {
+    await writeFile(join(repo, "package.json"), '{\n  "name": "demo"\n}\n');
+    await commitAll(repo, "add package.json");
+    const wt = await worktree("feat/pkg-delete");
+    await git(wt, ["rm", "package.json"]);
+    await commitAll(wt, "delete package.json");
+    const id = await pr.open("T-pkg-del", wt, "feat/pkg-delete");
+    const d = await pr.diff(id);
+    const by = Object.fromEntries(d.files.map((f) => [f.path, f]));
+    expect(by["package.json"]).toMatchObject({ path: "package.json", status: "deleted" });
+    expect(by["package.json"]).not.toHaveProperty("old_path");
   });
   it("未知 pr_id 抛 PrNotFoundError；checks 为空；sync 无操作", async () => {
     await expect(pr.diff("nope")).rejects.toBeInstanceOf(PrNotFoundError);
@@ -229,5 +272,31 @@ describe("createPrProvider（本地分支）", () => {
   it("有 token 但没有 origin：本地实现", async () => {
     const p = await createPrProvider({ store, repo, getSecret: () => "x" });
     expect(p.kind).toBe("local");
+  });
+});
+
+describe("T-066 merge expected_head（本地）", () => {
+  it("expected_head 一致：合并成功", async () => {
+    const wt = await worktree("feat/eh-ok");
+    await writeFile(join(wt, "eh.txt"), "ok\n");
+    await commitAll(wt, "eh");
+    const head = (await git(wt, ["rev-parse", "HEAD"])).stdout.trim();
+    const id = await pr.open("T-eh1", wt, "feat/eh-ok");
+    const r = await pr.merge(id, "main", { expected_head: head });
+    expect(r).toMatchObject({ merged: true, sha: head });
+  });
+  it("expected_head 不一致：抛 ExpectedHeadMismatchError，不动 main", async () => {
+    const wt = await worktree("feat/eh-bad");
+    await writeFile(join(wt, "eh2.txt"), "bad\n");
+    await commitAll(wt, "eh2");
+    const mainBefore = (await git(repo, ["rev-parse", "main"])).stdout.trim();
+    const id = await pr.open("T-eh2", wt, "feat/eh-bad");
+    const err = (await pr
+      .merge(id, "main", { expected_head: "f".repeat(40) })
+      .catch((e: unknown) => e)) as ExpectedHeadMismatchError;
+    expect(err).toBeInstanceOf(ExpectedHeadMismatchError);
+    expect(err.code).toBe("expected_head_mismatch");
+    expect((await git(repo, ["rev-parse", "main"])).stdout.trim()).toBe(mainBefore);
+    expect((await store.get(id))?.status).toBe("open");
   });
 });

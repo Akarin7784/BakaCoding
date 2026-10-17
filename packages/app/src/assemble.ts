@@ -280,7 +280,7 @@ export async function closeTicketPrs(
 
 /**
  * 重启接管时补判高风险（T-041c，N4）：8 按 diff 判出的高风险重启后就丢了（只有 kind: dependency 存在 2 里），
- * 接回前按 6 的 diff 重新判，规则同 8（`isHighRiskDiffFile`：依赖清单 / 锁文件，含删除的；改名一律算）。
+ * 接回前按 6 的 diff 重新判，规则同 8（`isHighRiskDiffFile`：依赖清单 / 锁文件，含删除的；改名的看新旧路径，T-065）。
  * diff 出错按高风险处理：宁可错扣，不可漏扣。同时返回取到的 diff 文件（取不到为 null），
  * 组合根留着给 10 的 `pendingHighRisk()` 算理由和文件，不再取第二次。
  */

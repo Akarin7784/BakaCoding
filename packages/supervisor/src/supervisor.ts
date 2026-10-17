@@ -1516,7 +1516,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       }
       const { requirement_id: _r, ...view } = v;
       void _r;
-      out.push({ ...view, reasons: [...v.reasons], files: [...v.files] });
+      out.push({ ...view, reasons: [...v.reasons], files: v.files.map((f) => ({ ...f })) });
     }
     return out;
   }
@@ -1549,7 +1549,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
           ? `单 ${id} 放行后因合并冲突重做，换了新 PR ${pr}，新的改动你还没看过，已重新扣在合并队列里。`
           : `单 ${id} 的 PR ${pr} 属于高风险 PR（${HR_REASON_TEXT_JOIN(ev.reasons)}），已扣在合并队列里。`;
     const files = ev.files.length
-      ? `涉及文件：${ev.files.join("、")}${ev.files_more ? ` 等，另有 ${ev.files_more} 个` : ""}。`
+      ? `涉及文件：${ev.files.map((f) => (f.old_path !== undefined ? `${f.path}（原 ${f.old_path}）` : f.path)).join("、")}${ev.files_more ? ` 等，另有 ${ev.files_more} 个` : ""}。`
       : "";
     await notify(
       `${lead}${files}等你放行或拒绝；不处理就一直扣着，不会合入。（v1 界面里还没有放行 / 拒绝的按钮，入口在后续版本提供。）`,
