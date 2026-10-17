@@ -15,7 +15,7 @@ import {
   EXCLUDED_REASON,
   firstFailing,
   IDENTITY_LABEL,
-  identityCommand,
+  identityArg,
   identityFormFields,
   identityValid,
   ITEM_COPY,
@@ -166,10 +166,9 @@ export function RepoPrepPage({
   const first = check ? firstFailing(check) : null;
   const highlight: RepoItemId | null = route ? ROUTE_ITEM[route] : null;
   const missingAll = check ? missingIdentity(check.identity) : [];
-  // 表单里显示的字段（两项都缺时）；只缺一项时不出表单、不能提交，提示用命令行补
+  // 表单里只显示缺的字段（UI-03b：只缺一项时只填那一项）
   const missing = identityFormFields(missingAll);
-  const partialIdentity = missingAll.length === 1 ? missingAll[0]! : null;
-  const canCommit = partialIdentity === null && identityValid(missing, identity);
+  const canCommit = identityValid(missing, identity);
   const currentBranch = check?.items.find((i) => i.id === "main")?.current ?? check?.current_branch;
 
   return (
@@ -301,7 +300,6 @@ export function RepoPrepPage({
           <CommitBody
             files={files}
             missing={missing}
-            partial={partialIdentity}
             identity={identity}
             onIdentity={setIdentity}
           />
@@ -370,25 +368,16 @@ export function RepoPrepPage({
   );
 }
 
-/** 只把显示出来（缺的）字段传给主进程；没有缺的就不传 identity。 */
-function idArg(
-  missing: readonly IdentityField[],
-  v: { name: string; email: string },
-): { identity?: { name: string; email: string } } {
-  if (missing.length === 0) return {};
-  return { identity: { name: v.name.trim(), email: v.email.trim() } };
-}
+const idArg = identityArg;
 
 function CommitBody({
   files,
   missing,
-  partial,
   identity,
   onIdentity,
 }: {
   files: DesktopRepoFilesResult | null;
   missing: IdentityField[];
-  partial: IdentityField | null;
   identity: { name: string; email: string };
   onIdentity: (v: { name: string; email: string }) => void;
 }) {
@@ -441,24 +430,11 @@ function CommitBody({
           )}
         </>
       )}
-      {partial && (
-        <section
-          aria-label="Git 身份"
-          data-testid="identity-partial"
-          className="flex flex-col gap-1"
-        >
-          <h3 className="font-medium">还没设置{IDENTITY_LABEL[partial]}</h3>
-          <p className="text-muted-foreground">
-            请在这个文件夹里运行下面的命令补上，再点「重新检查」：
-          </p>
-          <code className="rounded-md bg-hover px-2 py-1 font-mono text-xs">
-            {identityCommand(partial)}
-          </code>
-        </section>
-      )}
       {missing.length > 0 && (
         <section aria-label="Git 身份" data-testid="identity-form" className="flex flex-col gap-2">
-          <h3 className="font-medium">还没设置 Git 身份</h3>
+          <h3 className="font-medium">
+            {missing.length === 2 ? "还没设置 Git 身份" : `还没设置${IDENTITY_LABEL[missing[0]!]}`}
+          </h3>
           {missing.map((f) => (
             <label key={f} className="flex flex-col gap-1">
               <span className="text-xs text-muted-foreground">{IDENTITY_LABEL[f]}</span>

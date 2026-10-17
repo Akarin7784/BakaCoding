@@ -16,6 +16,12 @@ import {
   type DesktopRepoFixResult,
   type DesktopInitialCommitRequest,
   type DesktopGitIdentity,
+  type DesktopProviderTarget,
+  type DesktopProviderTestResult,
+  type DesktopSecretClearResult,
+  type DesktopSecretName,
+  type DesktopSecretSetResult,
+  type DesktopSecretStatusResult,
   type DesktopSnapshot,
   type DesktopSyncState,
   type DesktopUpdate,
@@ -105,5 +111,13 @@ export function createDesktopApi(ipc: IpcRendererLike, platform: string): BakaDe
       ipc.invoke(IPC_CHANNELS.repoInitialCommit, req) as Promise<DesktopRepoFixResult>,
     createMainBranch: () =>
       ipc.invoke(IPC_CHANNELS.repoCreateMain) as Promise<DesktopRepoFixResult>,
+    secretStatus: (name: DesktopSecretName) =>
+      ipc.invoke(IPC_CHANNELS.secretStatus, { name }) as Promise<DesktopSecretStatusResult>,
+    setSecret: (name: DesktopSecretName, value: string) =>
+      ipc.invoke(IPC_CHANNELS.secretSet, { name, value }) as Promise<DesktopSecretSetResult>,
+    clearSecret: (name: DesktopSecretName) =>
+      ipc.invoke(IPC_CHANNELS.secretClear, { name }) as Promise<DesktopSecretClearResult>,
+    testProvider: (target: DesktopProviderTarget) =>
+      ipc.invoke(IPC_CHANNELS.providerTest, target) as Promise<DesktopProviderTestResult>,
   });
 }

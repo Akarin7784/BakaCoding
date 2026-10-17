@@ -123,18 +123,24 @@ export const IDENTITY_LABEL: Record<IdentityField, string> = {
 };
 
 /**
- * 4 的 initialCommit 只接受成对的 identity（name + email 一起写进本仓库 .git/config）。只缺一项时没法只写那一项
- * （要么改 4 的接口，要么桌面自己调 git，都要另行批准），所以只缺一项时不出表单，提示用命令行补上那一项。
+ * 身份表单显示的字段（UI-03b，接 T-108）：缺哪项就只显示哪项，4 只写给了的那几项、只写本仓库 .git/config。
  */
 export function identityFormFields(missing: readonly IdentityField[]): IdentityField[] {
-  return missing.length === 2 ? [...missing] : [];
+  return [...missing];
 }
 
-/** 只缺一项时给用户的命令（只写本仓库）。 */
-export function identityCommand(field: IdentityField): string {
-  return field === "name"
-    ? 'git config user.name "你的名字"'
-    : "git config user.email you@example.com";
+/** 只把缺的字段交给主进程；不缺就不传 identity。 */
+export function identityArg(
+  missing: readonly IdentityField[],
+  v: { name: string; email: string },
+): { identity?: { name?: string; email?: string } } {
+  if (missing.length === 0) return {};
+  return {
+    identity: {
+      ...(missing.includes("name") && { name: v.name.trim() }),
+      ...(missing.includes("email") && { email: v.email.trim() }),
+    },
+  };
 }
 
 /** 表单值是否填好（只看显示出来的字段）；邮箱只做最粗的格式检查，细的由主进程 / 4 校验。 */

@@ -437,6 +437,9 @@ export class BackendSwitcher implements BackendHandle {
   exportDiagnostics(target: string, now?: Date) {
     return this.current.exportDiagnostics(target, now);
   }
+  testConnection(target: Parameters<BackendHandle["testConnection"]>[0]) {
+    return this.current.testConnection(target);
+  }
   /** 退出：先清排队，再等进行中的重载 / 切换结束（它们见 stopped 不装新后端），最后拆当前后端 */
   async stop() {
     this.stopped = true;
@@ -478,6 +481,7 @@ export function readonlyBackend(
     chatInFlight: () => false,
     importCurrentRepo: unavailable,
     exportDiagnostics: unavailable,
+    testConnection: async () => ({ ok: false, reason: "unavailable" }),
     stop: async () => {},
   };
 }

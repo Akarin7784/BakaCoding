@@ -34,6 +34,10 @@ import { errorDetail, sanitizeSyncErrorMessage } from "./sync-state.js";
 import type { EventReader } from "./reader.js";
 import { isWindowThemeSource } from "./window-chrome.js";
 import { repoFixHandlers, type RepoFixDeps } from "./repo-fix-ipc.js";
+import {
+  secretProviderHandlers,
+  type SecretProviderDeps,
+} from "./secret-provider-ipc.js";
 
 /**
  * 主进程 ipcMain 的最小子集，便于测试注入。
@@ -399,5 +403,20 @@ export function serveRepoFix(ipc: IpcMainLike, deps: RepoFixDeps): () => void {
     ipc.removeHandler(IPC_CHANNELS.repoListInitialFiles);
     ipc.removeHandler(IPC_CHANNELS.repoInitialCommit);
     ipc.removeHandler(IPC_CHANNELS.repoCreateMain);
+  };
+}
+
+/** UI-03b：secret:status / secret:set / secret:clear / provider:test（处理函数和参数校验在 secret-provider-ipc.ts） */
+export function serveSecretProvider(ipc: IpcMainLike, deps: SecretProviderDeps): () => void {
+  const h = secretProviderHandlers(deps);
+  ipc.handle(IPC_CHANNELS.secretStatus, (...args: unknown[]) => h.status(args[1]));
+  ipc.handle(IPC_CHANNELS.secretSet, (...args: unknown[]) => h.set(args[1]));
+  ipc.handle(IPC_CHANNELS.secretClear, (...args: unknown[]) => h.clear(args[1]));
+  ipc.handle(IPC_CHANNELS.providerTest, (...args: unknown[]) => h.test(args[1]));
+  return () => {
+    ipc.removeHandler(IPC_CHANNELS.secretStatus);
+    ipc.removeHandler(IPC_CHANNELS.secretSet);
+    ipc.removeHandler(IPC_CHANNELS.secretClear);
+    ipc.removeHandler(IPC_CHANNELS.providerTest);
   };
 }
