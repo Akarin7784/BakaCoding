@@ -271,6 +271,8 @@ export interface Storage {
     ts?: string;
   }): Decision;
   listDecisions(project_id: string): Decision[];
+  /** 某张需求单的全部 PR 轮次（T-011），按轮次升序；旧记录缺 reviewer 读成 null；单不存在返回空数组。 */
+  listPrRounds(ticket_id: string): RoundRecord[];
   /** 所有已创建的项目（T-010），按创建时间先后排序（同一时刻按 project_id）。 */
   listProjects(): ProjectRow[];
   groupMessages(project_id: string, requirement_id?: string): GroupMessageRow[];
@@ -305,6 +307,7 @@ export type ReadonlyStorage = Pick<
   | "maxSeq"
   | "queryEvents"
   | "query"
+  | "listPrRounds"
   | "listDecisions"
   | "listProjects"
   | "groupMessages"
@@ -315,6 +318,13 @@ export type ReadonlyStorage = Pick<
   prStore<T extends PrRecordLike>(): Pick<PrRecordStore<T>, "get" | "list">;
   readonly ledger: Pick<LedgerStore, "totalsByDay" | "totalsByTicket">;
 };
+
+const ROUNDS_SQL = "SELECT record FROM pr_rounds WHERE ticket_id = ? ORDER BY round";
+function parseRound(x: { record: string }): RoundRecord {
+  const r = JSON.parse(x.record) as RoundRecord;
+  // T-010 之前的旧记录没有 reviewer，统一读成 null。
+  return { ...r, reviewer: r.reviewer ?? null };
+}
 
 const SUMMARY_CHARS = 200;
 const DAY_MS = 86_400_000;
@@ -822,9 +832,7 @@ function open(options: StorageOptions, ro: boolean): Storage {
          WHERE ${where.join(" AND ")} ORDER BY t.created_at_ms, t.ticket_id`,
       )
       .all(...args) as Row[];
-    const roundsStmt = db.prepare(
-      "SELECT record FROM pr_rounds WHERE ticket_id = ? ORDER BY round",
-    );
+    const roundsStmt = db.prepare(ROUNDS_SQL);
     return rows.map((row) => {
       const rec: TicketRecord = {
         project_id: row.project_id as string,
@@ -834,11 +842,7 @@ function open(options: StorageOptions, ro: boolean): Storage {
         ticket_text: row.ticket_text as string,
         base_commit: row.base_commit as string,
         permission_list: JSON.parse(row.permission_list as string) as PermissionList,
-        rounds: (roundsStmt.all(row.ticket_id) as { record: string }[]).map((x) => {
-          const r = JSON.parse(x.record) as RoundRecord;
-          // T-010 之前的旧记录没有 reviewer，统一读成 null。
-          return { ...r, reviewer: r.reviewer ?? null };
-        }),
+        rounds: (roundsStmt.all(row.ticket_id) as { record: string }[]).map(parseRound),
         context_snippets: JSON.parse(row.context_snippets as string) as RawFile[],
         marked_for_eval_set: row.in_eval === 1,
       };
@@ -993,6 +997,9 @@ function open(options: StorageOptions, ro: boolean): Storage {
     saveMergeResult,
     query,
     saveDecision,
+    listPrRounds(ticket_id) {
+      return (db.prepare(ROUNDS_SQL).all(ticket_id) as { record: string }[]).map(parseRound);
+    },
     listProjects() {
       return db
         .prepare("SELECT project_id, created_at FROM projects ORDER BY created_at, project_id")
