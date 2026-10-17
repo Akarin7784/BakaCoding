@@ -1,3 +1,4 @@
+import { isDependencyFile } from "@bakacoding/sub-agent";
 import { isUnsafeGlob } from "@bakacoding/workspace";
 
 /** 花括号展开后最多保留的模式数；超过就保守地按 `**`（匹配一切）处理。 */
@@ -203,21 +204,29 @@ const isBareWildcard = (seg: string): boolean => /^\*+$/.test(seg);
  *    `src/x/package.json`：区域末段是字面量文件名（`package.json`、`go.mod` 等）、范围的末段模式匹配这个文件名、
  *    整条 glob 又和区域重叠时，也算落在区域里。末段是 `*` / `**` 的目录范围（`src/**`、`src/*`）不按这条算，
  *    否则所有目录范围都会变独占；区域末段本身带通配（`*.d.ts`、`*.lock`）的仍只按代表路径判断。
+ * 3. T-064：代表路径经 8 的 `isDependencyFile` 判定为依赖文件时也算独占（T-065 合入后文件名不区分大小写）；
+ *    末段通配对「依赖文件名」区域的匹配同样不区分大小写。`globsOverlap` 本身不变。
  */
 export function inExclusiveZone(glob: string, zones: readonly string[]): boolean {
   if (isUnsafeScope(glob)) return true;
   if (samplesOf(glob).some((p) => matchesAny(p, zones))) return true;
+  // T-064 N6：写入范围的代表路径是依赖清单 / 锁文件（按 8 的 isDependencyFile；T-065 后不区分大小写）→ 独占
+  if (samplesOf(glob).some((p) => isDependencyFile(p))) return true;
   const zoneTails = zones.flatMap((z) =>
     expandBraces(z).map((zz) => ({ zone: zz, tail: normalizeGlob(zz).at(-1) ?? "" })),
   );
   return expandBraces(glob).some((g) => {
     const tail = normalizeGlob(g).at(-1) ?? "";
     if (!hasWildcard(tail) || isBareWildcard(tail)) return false;
-    const tailRe = globToRegExp(tail);
-    return zoneTails.some(
-      ({ zone, tail: zt }) =>
-        zt !== "" && !hasWildcard(zt) && tailRe.test(zt) && globsOverlap(g, zone),
-    );
+    return zoneTails.some(({ zone, tail: zt }) => {
+      if (zt === "" || hasWildcard(zt)) return false;
+      // 依赖文件名区域：末段不区分大小写（T-064 N6）；其余区域仍区分
+      const depZone = isDependencyFile(zt);
+      const ok = depZone
+        ? globToRegExp(tail.toLowerCase()).test(zt.toLowerCase())
+        : globToRegExp(tail).test(zt);
+      return ok && globsOverlap(g, zone);
+    });
   });
 }
 

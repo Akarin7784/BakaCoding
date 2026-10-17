@@ -1292,7 +1292,20 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         report.awaiting_adopt.push(row.ticket_id);
         continue;
       }
-      await hand(row, adopt, report.adopted, "adopt");
+      // T-064 B2：adopt 可能返回 "merged"（停机期间用户已在 GitHub 合入）
+      const st = prepared.get(row.ticket_id)!;
+      const id = row.ticket_id;
+      enqueuedIds.add(id);
+      try {
+        const result = await adopt(st);
+        if (result === "merged") report.merged.push(id);
+        else report.adopted.push(id);
+      } catch (err) {
+        enqueuedIds.delete(id);
+        const error = err instanceof Error ? err.message : String(err);
+        logger.warn(`重启接管：单 ${id} adopt 失败`, err);
+        report.failed.push({ ticket_id: id, error: error.slice(0, 500) });
+      }
     }
     for (const row of toEnqueue) {
       await hand(
@@ -1486,7 +1499,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
 
   // ---------- 高风险 PR 裁决（T-041c） ----------
 
-  /** 等用户裁决的高风险单：单号 → 扣住时记下的信息（只在内存里） */
+  /** 等用户裁决的高风险单：单号 → 扣住时记下的信息（Map 在内存；pendingHighRisk() 还会读 2 去掉已到终态的） */
   const pendingHR = new Map<string, PendingHighRisk & { requirement_id: string }>();
   /** 已通知过的「单号 + PR」（同一 PR 在本进程只通知一次） */
   const heldNotifiedHR = new Set<string>();
@@ -1590,7 +1603,11 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       state = "none";
     } else {
       try {
-        state = await deps.closeTicketPr(ticket_id, `高风险 PR 被用户拒绝：${why}`.slice(0, 500));
+        state = await deps.closeTicketPr(
+          ticket_id,
+          `高风险 PR 被用户拒绝：${why}`.slice(0, 500),
+          pr_id,
+        );
       } catch (err) {
         state = "unconfirmed";
         closeErr = err;
@@ -1732,7 +1749,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   async function retryRejectClose(id: string, pr_id: string, why: string, attempt: number) {
     let state: "closed" | "none" | "merged";
     try {
-      state = await deps.closeTicketPr!(id, `高风险 PR 被用户拒绝：${why}`.slice(0, 500));
+      state = await deps.closeTicketPr!(id, `高风险 PR 被用户拒绝：${why}`.slice(0, 500), pr_id);
     } catch (err) {
       return rejectCloseFailed(id, pr_id, why, attempt, err);
     }

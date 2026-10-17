@@ -23,6 +23,7 @@ import type {
   SchedulerPr,
   SchedulerTicket,
   SubAgentOutcome,
+  SyncState,
 } from "./types.js";
 
 /** 连续限流超过这个次数（第 4 次）发上报（modules.md §9，已定） */
@@ -34,6 +35,10 @@ export const TARGET_DIRTY_MAX_RETRIES = 10;
 export const UNATTRIBUTED_PREFIX = "unattributed:";
 /** 派单轮询默认间隔（毫秒） */
 export const DEFAULT_DISPATCH_POLL_MS = 60_000;
+/** 定时 sync 默认间隔（毫秒，T-064） */
+export const DEFAULT_SYNC_POLL_MS = 60_000;
+/** 非限流错误的退避上限（毫秒，T-064） */
+export const SYNC_BACKOFF_MAX_MS = 600_000;
 /** 没写写入范围的单按整个仓库加锁 */
 export const WHOLE_REPO_SCOPE: readonly string[] = ["**"];
 
@@ -185,6 +190,26 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   const pollMs = deps.dispatch_poll_ms ?? DEFAULT_DISPATCH_POLL_MS;
   const resumeBackoffMs = pollMs > 0 ? pollMs : DEFAULT_DISPATCH_POLL_MS;
   let pollTimer: ReturnType<typeof setInterval> | undefined;
+  // ---- 定时 sync（T-064）----
+  const syncPollMs = deps.sync_poll_ms ?? DEFAULT_SYNC_POLL_MS;
+  const syncTimers = deps.timers ?? {
+    setTimeout: (fn: () => void, ms: number) => {
+      const t = setTimeout(fn, ms);
+      (t as { unref?: () => void }).unref?.();
+      return t;
+    },
+    clearTimeout: (h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>),
+  };
+  let syncLoopStarted = false;
+  let syncAuthDisabled = false;
+  let syncTimer: unknown;
+  let syncRunning = false;
+  let syncConsecutiveFailures = 0;
+  let syncConsecutiveRateLimits = 0;
+  let syncLastOkAt: string | null = null;
+  let syncLastError: SyncState["last_error"] = null;
+  let syncRateLimitedUntil = 0; // clock.now() ms
+  let syncNextAt: number | null = null;
   let dispatchRunning: Promise<string[]> | undefined;
   let dispatchQueued: Promise<string[]> | undefined;
   /** stop() 时中止：传给 8 的 handle / resume，8 再原样传给 5 / 7（T-039） */
@@ -982,6 +1007,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     } catch (err) {
       const wait = rateLimitWait(err);
       if (wait !== undefined) {
+        noteRateLimit(wait);
         e.rate_limit_streak++;
         if (e.rate_limit_streak > RATE_LIMIT_ESCALATE_AFTER) {
           record(e, pr_id, { ...flags(e), merged: false, reason: "rate_limit" });
@@ -1309,6 +1335,207 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     };
   };
 
+  /**
+   * 用户在 GitHub 上手动合并（或对账发现已 merged）：同步为 merged。
+   * 合并日志一律记空串；合法 merge_sha 才发 interface_changed（T-046 / T-064）。
+   */
+  async function applyManualMerge(e: Entry, pr_id: string, merge_sha?: string): Promise<void> {
+    removeFromQueue(e.ticket.ticket_id);
+    e.status = "merged";
+    try {
+      await setStatus(e, "merged");
+    } catch (err) {
+      await reportMergedBut(e, err);
+    }
+    const files = await changedFiles(pr_id);
+    if (merge_sha && SHA_RE.test(merge_sha)) {
+      await announceMerge(e, pr_id, merge_sha, files, "");
+    } else {
+      mergeLog.push({
+        ticket_id: e.ticket.ticket_id,
+        sha: "",
+        files,
+        changed_interfaces: [],
+      });
+      onError(
+        new Error(
+          `${pr_id} 手动合并但没有合法的 merge_sha（${merge_sha ?? "缺省"}），不发 interface_changed`,
+        ),
+        e.ticket.ticket_id,
+      );
+    }
+  }
+
+  /** 用户手动关闭：6 已发 escalated(github_manual)，9 只改状态。 */
+  async function applyManualClose(e: Entry): Promise<void> {
+    removeFromQueue(e.ticket.ticket_id);
+    e.status = "escalated";
+    await setStatus(e, "escalated");
+    await cleanupOwnWorktree(e);
+  }
+
+  /**
+   * T-064 N3：对 merge_queued、没在跑后台、不是 current 的单，读 2 的 PR 记录补上 6 没返回的变化。
+   * 已在 applied 里处理过的 pr_id 跳过。
+   */
+  async function reconcileFromPrStore(applied: SyncChange[]): Promise<void> {
+    if (!deps.prRecord) return;
+    const seen = new Set(applied.map((c) => c.pr_id));
+    for (const e of [...entries.values()]) {
+      if (e.status !== "merge_queued" || !e.pr_id || e.busy || current === e) continue;
+      if (seen.has(e.pr_id) || superseded.has(e.pr_id)) continue;
+      let rec: Awaited<ReturnType<NonNullable<SchedulerDeps["prRecord"]>>>;
+      try {
+        rec = await deps.prRecord(e.pr_id);
+      } catch (err) {
+        onError(err, e.ticket.ticket_id);
+        continue;
+      }
+      if (!rec) continue;
+      try {
+        if (rec.status === "merged") {
+          await applyManualMerge(e, e.pr_id, rec.merge_sha);
+          applied.push({
+            pr_id: e.pr_id,
+            from: "open",
+            to: "merged",
+            ...(rec.merge_sha ? { merge_sha: rec.merge_sha } : {}),
+          });
+        } else if (rec.status === "closed" && rec.closed_by !== "bakacoding") {
+          await applyManualClose(e);
+          applied.push({ pr_id: e.pr_id, from: "open", to: "closed" });
+        }
+      } catch (err) {
+        onError(err, e.ticket.ticket_id);
+      }
+    }
+  }
+
+  function clearSyncTimer(): void {
+    if (syncTimer !== undefined) {
+      syncTimers.clearTimeout(syncTimer);
+      syncTimer = undefined;
+    }
+    syncNextAt = null;
+  }
+
+  function scheduleSync(delayMs: number): void {
+    if (stopped || !syncLoopStarted || syncPollMs <= 0 || syncAuthDisabled) return;
+    clearSyncTimer();
+    const wait = Math.max(0, delayMs);
+    syncNextAt = clock.now() + wait;
+    syncTimer = syncTimers.setTimeout(() => {
+      syncTimer = undefined;
+      syncNextAt = null;
+      void runTimedSync();
+    }, wait);
+  }
+
+  function noteRateLimit(waitMs: number): void {
+    const until = clock.now() + Math.max(0, waitMs);
+    if (until > syncRateLimitedUntil) syncRateLimitedUntil = until;
+  }
+
+  async function runTimedSync(): Promise<void> {
+    if (stopped || !syncLoopStarted || syncPollMs <= 0 || syncAuthDisabled) return;
+    // 账号级限流窗口内跳过，不发请求（Q-2：只挡定时同步）
+    const now = clock.now();
+    if (syncRateLimitedUntil > now) {
+      scheduleSync(syncRateLimitedUntil - now);
+      return;
+    }
+    // 显式 sync 正在跑：跳过本轮，稍后按默认间隔再试
+    if (syncRunning) {
+      scheduleSync(syncPollMs);
+      return;
+    }
+    syncRunning = true;
+    try {
+      if (!syncImpl) return;
+      await syncImpl();
+      syncConsecutiveFailures = 0;
+      syncConsecutiveRateLimits = 0;
+      syncLastOkAt = new Date(clock.now()).toISOString();
+      syncLastError = null;
+      // 显式 sync 成功：鉴权失败停掉后可恢复（本轮是定时的，同样清）
+      scheduleSync(syncPollMs);
+    } catch (err) {
+      syncConsecutiveFailures++;
+      const at = new Date(clock.now()).toISOString();
+      syncLastError = {
+        at,
+        name: errorName(err),
+        message: errorMessage(err).slice(0, 500),
+      };
+      onError(err, "(sync)");
+      const wait = rateLimitWait(err);
+      if (wait !== undefined) {
+        syncConsecutiveRateLimits++;
+        noteRateLimit(wait);
+        const exp = Math.min(
+          syncPollMs * 2 ** Math.max(0, syncConsecutiveRateLimits - 1),
+          SYNC_BACKOFF_MAX_MS,
+        );
+        // 从不早于 GitHub 给的 retry_after_ms
+        scheduleSync(Math.max(wait, exp));
+      } else if (errorName(err) === "GithubAuthError") {
+        syncAuthDisabled = true;
+        clearSyncTimer();
+      } else {
+        const delay = Math.min(
+          syncPollMs * 2 ** Math.max(0, syncConsecutiveFailures - 1),
+          SYNC_BACKOFF_MAX_MS,
+        );
+        scheduleSync(delay);
+      }
+    } finally {
+      syncRunning = false;
+    }
+  }
+
+  // 定时循环调 api.sync（doSync）；显式 sync 也走同一实现
+  async function doSync() {
+    const changes = await requirePr().sync();
+    const applied: SyncChange[] = [];
+    for (const c of changes) {
+      const id = prToTicket.get(c.pr_id);
+      const e = id ? entries.get(id) : undefined;
+      // 只处理本单当前的 PR；已被取代的旧 PR、集成记录、终态的单跳过
+      if (!e || superseded.has(c.pr_id) || e.pr_id !== c.pr_id || TERMINAL.has(e.status)) continue;
+      try {
+        if (c.to === "merged") {
+          await applyManualMerge(e, c.pr_id, c.merge_sha);
+          applied.push(c);
+        } else if (c.to === "closed") {
+          await applyManualClose(e);
+          applied.push(c);
+        }
+      } catch (err) {
+        // 一条出错不影响其余
+        onError(err, e.ticket.ticket_id);
+      }
+    }
+    // T-064 N3：6 的 sync 可能中途抛错吞掉已写进库的变化；按 2 的 PR 记录再对一次账
+    await reconcileFromPrStore(applied);
+    // 先应用本次变化再补发：affected 按最新状态重算（T-046）
+    await resendPending();
+    if (applied.length) {
+      kick();
+      kickDispatch();
+    }
+    // 显式 sync 成功：鉴权失败停掉的定时同步可以恢复（Q-3）
+    if (syncAuthDisabled) {
+      syncAuthDisabled = false;
+      if (syncLoopStarted && !stopped && syncPollMs > 0) scheduleSync(syncPollMs);
+    }
+    syncLastOkAt = new Date(clock.now()).toISOString();
+    syncLastError = null;
+    syncConsecutiveFailures = 0;
+    syncConsecutiveRateLimits = 0;
+    return applied;
+  }
+  const syncImpl = doSync;
+
   return {
     async start() {
       startHead = await deps.targetHead();
@@ -1421,6 +1648,50 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         throw new Error(`adopt ${ticket.ticket_id}：PR ${pr_id} 没有 head，不能直接恢复进合并队列`);
       if (typeof worktree_path !== "string" || worktree_path.length === 0)
         throw new Error(`adopt ${ticket.ticket_id}：没有 worktree 路径`);
+      // T-064 B2：停机期间用户已在 GitHub 合入——直接记 merged，不进队列
+      if (input.already_merged === true) {
+        const existing = entries.get(ticket.ticket_id);
+        if (existing) {
+          if (
+            TERMINAL.has(existing.status) &&
+            existing.status === "merged" &&
+            existing.pr_id === pr_id
+          )
+            return "already";
+          if (TERMINAL.has(existing.status))
+            throw new Error(
+              `adopt ${ticket.ticket_id}：已是终态 ${existing.status}，不能再记手动合入`,
+            );
+          // 已在队里：按手动合入处理
+          await applyManualMerge(existing, pr_id, input.merge_sha);
+          kick();
+          kickDispatch();
+          return "merged";
+        }
+        const e = newEntry(ticket);
+        e.dispatched = true;
+        e.pr_id = pr_id;
+        e.worktree_path = worktree_path;
+        e.round = input.round ?? 0;
+        e.counts = {
+          review: input.review_resubmits ?? 0,
+          conflict: input.conflict_resubmits ?? e.round,
+        };
+        e.high_risk = input.high_risk === true;
+        e.adopted = true;
+        e.base_commit = input.base_commit || undefined;
+        entries.set(ticket.ticket_id, e);
+        prToTicket.set(pr_id, ticket.ticket_id);
+        try {
+          await applyManualMerge(e, pr_id, input.merge_sha);
+        } catch (err) {
+          if (entries.get(ticket.ticket_id) === e) entries.delete(ticket.ticket_id);
+          if (prToTicket.get(pr_id) === ticket.ticket_id) prToTicket.delete(pr_id);
+          throw err;
+        }
+        kickDispatch();
+        return "merged";
+      }
       const existing = entries.get(ticket.ticket_id);
       if (existing) {
         // 幂等：同一 PR 已经接回过（还在队里、正在合并或后台重审 / 复投中）就什么都不做
@@ -1478,66 +1749,23 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     },
     eventContext,
     mergeResult: (pr_id) => results.get(pr_id),
-    async sync() {
-      const changes = await requirePr().sync();
-      const applied: SyncChange[] = [];
-      for (const c of changes) {
-        const id = prToTicket.get(c.pr_id);
-        const e = id ? entries.get(id) : undefined;
-        // 只处理本单当前的 PR；已被取代的旧 PR、集成记录、终态的单跳过
-        if (!e || superseded.has(c.pr_id) || e.pr_id !== c.pr_id || TERMINAL.has(e.status))
-          continue;
-        try {
-          if (c.to === "merged") {
-            // 用户在 GitHub 上手动合并：同步为 merged，用 6 给的合并 sha 补发 interface_changed（T-046）；
-            // 没有合法 sha 不发、不拿 targetHead() 兜底（可能已含后续提交），只调 onError。
-            // 合并日志一律记空串：手动合并在合并序列里的位置未知，按发现顺序记 sha 会让基于它的单
-            // 误判基线已含之后 9 合入的改动；sha 只用于事件的 base_commit 和补发去重键
-            removeFromQueue(e.ticket.ticket_id);
-            e.status = "merged";
-            try {
-              await setStatus(e, "merged");
-            } catch (err) {
-              await reportMergedBut(e, err);
-            }
-            const files = await changedFiles(c.pr_id);
-            if (c.merge_sha && SHA_RE.test(c.merge_sha)) {
-              await announceMerge(e, c.pr_id, c.merge_sha, files, "");
-            } else {
-              mergeLog.push({
-                ticket_id: e.ticket.ticket_id,
-                sha: "",
-                files,
-                changed_interfaces: [],
-              });
-              onError(
-                new Error(
-                  `${c.pr_id} 手动合并但没有合法的 merge_sha（${c.merge_sha ?? "缺省"}），不发 interface_changed`,
-                ),
-                e.ticket.ticket_id,
-              );
-            }
-            applied.push(c);
-          } else if (c.to === "closed") {
-            // 用户手动关闭：6 已发 escalated(github_manual)，9 只改状态
-            removeFromQueue(e.ticket.ticket_id);
-            e.status = "escalated";
-            await setStatus(e, "escalated");
-            await cleanupOwnWorktree(e);
-            applied.push(c);
-          }
-        } catch (err) {
-          // 一条出错不影响其余
-          onError(err, e.ticket.ticket_id);
-        }
-      }
-      // 先应用本次变化再补发：affected 按最新状态重算（T-046）
-      await resendPending();
-      if (applied.length) {
-        kick();
-        kickDispatch();
-      }
-      return applied;
+    sync: doSync,
+    startSyncLoop() {
+      if (syncLoopStarted || stopped || syncPollMs <= 0 || syncAuthDisabled) return;
+      syncLoopStarted = true;
+      scheduleSync(syncPollMs);
+    },
+    syncState(): SyncState {
+      return {
+        enabled: syncLoopStarted && !stopped && syncPollMs > 0 && !syncAuthDisabled,
+        ...(syncAuthDisabled ? { disabled_reason: "auth" as const } : {}),
+        last_ok_at: syncLastOkAt,
+        last_error: syncLastError ? { ...syncLastError } : null,
+        consecutive_failures: syncConsecutiveFailures,
+        rate_limited_until:
+          syncRateLimitedUntil > clock.now() ? new Date(syncRateLimitedUntil).toISOString() : null,
+        next_at: syncNextAt !== null ? new Date(syncNextAt).toISOString() : null,
+      };
     },
     resumeBudgetPaused: () => resumePaused(),
     budgetPaused: () => pausedForBudget().map((e) => e.ticket.ticket_id),

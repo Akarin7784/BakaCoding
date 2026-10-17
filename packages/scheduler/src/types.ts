@@ -243,6 +243,46 @@ export interface SchedulerDeps {
    * 等用户裁决的 PR 数。在派单时检测（派单轮询、入队、合并等都会触发）。抛错只调 onError。
    */
   onBackpressurePaused?: (state: BackpressureState) => void;
+  /**
+   * 定时 sync() 的间隔（毫秒，T-064）：默认 `DEFAULT_SYNC_POLL_MS`（60 秒）；0 关闭。
+   * 本地实现的 6 sync 恒返回 []，开着也没有网络代价。不进配置文件（与 dispatch_poll_ms 同）。
+   */
+  sync_poll_ms?: number;
+  /**
+   * 定时同步用的定时器（T-064；默认全局 setTimeout / clearTimeout，并 unref）。
+   * 形状同 SupervisorDeps.timers；不用 `clock.sleep`（测试替身立刻返回会空转）。
+   */
+  timers?: {
+    setTimeout: (fn: () => void, ms: number) => unknown;
+    clearTimeout: (handle: unknown) => void;
+  };
+  /**
+   * 可选（T-064 N3）：读 2 的 PR 记录。`sync()` 应用完 6 的变化后，对 merge_queued 且没在跑后台任务的单
+   * 再对一次账：记录已 merged / 用户关闭 → 按手动合入 / 关闭处理。组合根接 `prStore().get`。
+   */
+  prRecord?(pr_id: string): MaybePromise<
+    | {
+        status: "open" | "conflict" | "merged" | "closed";
+        closed_by?: string;
+        merge_sha?: string;
+      }
+    | undefined
+  >;
+}
+
+/** 定时 sync 的状态（T-064 N4）：同步、只读内存。 */
+export interface SyncState {
+  /** sync_poll_ms > 0、已 startSyncLoop、没被鉴权失败停掉 */
+  enabled: boolean;
+  disabled_reason?: "auth";
+  /** 最近一次成功的时刻（ISO UTC）；还没有为 null */
+  last_ok_at: string | null;
+  last_error: { at: string; name: string; message: string } | null;
+  consecutive_failures: number;
+  /** 账号级限流窗口结束时刻（ISO UTC）；没有为 null */
+  rate_limited_until: string | null;
+  /** 下一轮定时同步的时刻（ISO UTC）；没在跑为 null */
+  next_at: string | null;
 }
 
 /** 高风险闸门扣住一张单时的通知（T-041c）。 */
@@ -356,7 +396,7 @@ export interface Scheduler {
     ticket: SchedulerTicket,
     input: {
       pr_id: string;
-      /** PR 当前 head 提交（6 的记录里的 head_sha）；没有就不接 */
+      /** PR 当前 head 提交（6 的记录里的 head_sha）；没有就不接。`already_merged` 时可为记录里的值 */
       head_sha: string;
       worktree_path: string;
       round?: number;
@@ -365,8 +405,16 @@ export interface Scheduler {
       /** 默认等于 round */
       conflict_resubmits?: number;
       high_risk?: boolean;
+      /**
+       * T-064 B2：重启接管时发现 PR 已在 2 里是 merged（用户停机期间在 GitHub 上手动合入）——
+       * 直接记成 merged（不进合并队列、不派单），有合法 merge_sha 才发 interface_changed；
+       * 合并日志记空串。返回 `"merged"`。
+       */
+      already_merged?: boolean;
+      /** `already_merged` 时可选；合法（40 位小写十六进制）才用作 interface_changed 的 base_commit */
+      merge_sha?: string;
     },
-  ): Promise<"adopted" | "already">;
+  ): Promise<"adopted" | "already" | "merged">;
   /**
    * 8 转来的范围外写入申请（T-038，8 是 write_scope_requested 的唯一答复方，9 不再订阅它）：对本单重新加锁，
    * 成功把范围并进本单 write_scope 并返回 ok；失败不改锁、发 `escalated(scope_lock_failed)`，返回原因。
@@ -386,8 +434,15 @@ export interface Scheduler {
   eventContext: EventContextFn;
   /** 最近一次合并尝试的结果；没有尝试过返回 undefined */
   mergeResult(pr_id: string): MergeResultRecord | undefined;
-  /** 拉 6 的 sync() 并把变化应用到 TicketStatus，返回应用了的变化 */
+  /** 拉 6 的 sync() 并把变化应用到 TicketStatus，返回应用了的变化；之后按 prRecord 对账（T-064 N3） */
   sync(): Promise<SyncChange[]>;
+  /**
+   * 启动定时 sync（T-064 N1 / N2）：幂等；`sync_poll_ms` 为 0、已 stop、或鉴权失败停掉时什么都不做。
+   * `start()` 不自动开——组合根在 `takeOver()` 之后才调，避免接回前就把手动合入的变化丢掉（B2）。
+   */
+  startSyncLoop(): void;
+  /** 定时同步状态（T-064 N4） */
+  syncState(): SyncState;
   /**
    * 预算重置后续跑：当日预算未用完时，把因预算放回 pending 的单交回 8 的 resume（带原续跑凭据），
    * 返回这次续跑的单号；预算仍用完返回 []。T-039 在派单闸门打开时调用。

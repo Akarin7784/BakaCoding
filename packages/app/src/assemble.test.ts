@@ -1138,3 +1138,290 @@ describe("T-041c 组合根：高风险闸门", () => {
     ).toBe(true);
   });
 });
+
+describe("T-064 closeTicketPrs 只关指定 PR + bakacoding 重试", () => {
+  it("N5：传 pr_id 时只关那一个；同单其他 open PR 不动", async () => {
+    const { storage } = setup();
+    const store = storage.prStore<TicketPrRecord>();
+    await store.put(prRec({ pr_id: "P1", ticket_id: "T" }));
+    await store.put(prRec({ pr_id: "P2", ticket_id: "T" }));
+    const closed: string[] = [];
+    const pr = {
+      close: async (id: string) => {
+        closed.push(id);
+        const r = (await store.get(id))!;
+        await store.put({ ...r, status: "closed", closed_by: "bakacoding" as const });
+      },
+    };
+    expect(await closeTicketPrs({ sync: async () => {}, store, pr }, "T", "拒绝", "P1")).toBe(
+      "closed",
+    );
+    expect(closed).toEqual(["P1"]);
+    expect((await store.get("P2"))!.status).toBe("open");
+  });
+
+  it("N5：关 P1 时同单已有 P2；不关 P2（蓝色大肥鱼要求的场景）", async () => {
+    const { storage } = setup();
+    const store = storage.prStore<TicketPrRecord>();
+    await store.put(prRec({ pr_id: "P1", ticket_id: "T" }));
+    await store.put(prRec({ pr_id: "P2", ticket_id: "T" }));
+    const closed: string[] = [];
+    expect(
+      await closeTicketPrs(
+        {
+          sync: async () => {},
+          store,
+          pr: {
+            close: async (id) => {
+              closed.push(id);
+            },
+          },
+        },
+        "T",
+        "拒绝",
+        "P1",
+      ),
+    ).toBe("closed");
+    expect(closed).toEqual(["P1"]);
+  });
+
+  it("N5 反向：不传 pr_id 时仍关本单所有 open（旧行为）", async () => {
+    const { storage } = setup();
+    const store = storage.prStore<TicketPrRecord>();
+    await store.put(prRec({ pr_id: "P1", ticket_id: "T" }));
+    await store.put(prRec({ pr_id: "P2", ticket_id: "T" }));
+    const closed: string[] = [];
+    await closeTicketPrs(
+      { sync: async () => {}, store, pr: { close: async (id) => void closed.push(id) } },
+      "T",
+      "重拆",
+    );
+    expect(closed.sort()).toEqual(["P1", "P2"]);
+  });
+
+  it("B3/Q-6：本地已 closed_by bakacoding 时重试会再调 close", async () => {
+    const { storage } = setup();
+    const store = storage.prStore<TicketPrRecord>();
+    await store.put(
+      prRec({
+        pr_id: "P1",
+        ticket_id: "T",
+        status: "closed",
+        closed_by: "bakacoding",
+        close_reason: "上次失败",
+      }),
+    );
+    const close = vi.fn(async () => {});
+    expect(
+      await closeTicketPrs({ sync: async () => {}, store, pr: { close } }, "T", "重试", "P1"),
+    ).toBe("closed");
+    expect(close).toHaveBeenCalledOnce();
+    // 不传 pr_id 的路径也同样重试
+    close.mockClear();
+    expect(await closeTicketPrs({ sync: async () => {}, store, pr: { close } }, "T", "重试")).toBe(
+      "closed",
+    );
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("E2E B3/N5：模拟 6 的 close——先标本地 closed 再 PATCH 失败；重试 closeTicketPrs 再调 close 返回 closed", async () => {
+    // 6（github.ts）：先 store.put(closed_by:bakacoding)，再 PATCH；失败时本地已是 closed、远程仍 open。
+    const { storage } = setup();
+    const store = storage.prStore<TicketPrRecord>();
+    await store.put(
+      prRec({
+        pr_id: "P-gh",
+        ticket_id: "T",
+        status: "open",
+        // 有 remote 才走 PATCH；这里用形状标记「像 GitHub 记录」
+      }),
+    );
+    let patchOk = false;
+    let patchAttempts = 0;
+    const close = vi.fn(async (pr_id: string, reason: string) => {
+      const rec = (await store.get(pr_id))!;
+      if (rec.status === "merged") throw new Error("已合并");
+      if (rec.status === "closed" && rec.closed_by !== "bakacoding") return;
+      if (rec.status !== "closed") {
+        await store.put({
+          ...rec,
+          status: "closed",
+          closed_by: "bakacoding",
+          close_reason: reason,
+          updated_ts: "2026-10-17T12:00:00Z",
+        });
+      }
+      // 模拟 PATCH
+      patchAttempts++;
+      if (!patchOk) throw new Error("PATCH /pulls/1 → 500");
+      // 成功：远程已关，本地已是 closed
+    });
+
+    // 第一次：open → 标 closed → PATCH 失败，closeTicketPrs 把错抛出
+    await expect(
+      closeTicketPrs({ sync: async () => {}, store, pr: { close } }, "T", "拒绝", "P-gh"),
+    ).rejects.toThrow(/500/);
+    expect(patchAttempts).toBe(1);
+    expect(await store.get("P-gh")).toMatchObject({
+      status: "closed",
+      closed_by: "bakacoding",
+    });
+    // 若没有 bakacoding 重试，下面会返回 none（反向检查）
+    patchOk = true;
+    expect(
+      await closeTicketPrs({ sync: async () => {}, store, pr: { close } }, "T", "拒绝重试", "P-gh"),
+    ).toBe("closed");
+    expect(patchAttempts).toBe(2);
+    expect(close).toHaveBeenCalledTimes(2);
+
+    // 不传 pr_id 的路径：同一状态下也会重试
+    await store.put(
+      prRec({
+        pr_id: "P-gh2",
+        ticket_id: "U",
+        status: "closed",
+        closed_by: "bakacoding",
+        close_reason: "上次",
+      }),
+    );
+    patchAttempts = 0;
+    patchOk = true;
+    expect(
+      await closeTicketPrs({ sync: async () => {}, store, pr: { close } }, "U", "重拆重试"),
+    ).toBe("closed");
+    expect(patchAttempts).toBe(1);
+  });
+
+  it("E2E B3 反向：无 bakacoding 重试时同状态只能得到 none（对照现行 closeTicketPrs）", async () => {
+    // 若 N5 规则 5 被删，本地已 closed_by bakacoding 时会走 none，远程永远关不上。
+    // 这里用「不含 bakacoding 分支」的对照实现证明：新 E2E 依赖的正是那条重试。
+    const { storage } = setup();
+    const store = storage.prStore<TicketPrRecord>();
+    await store.put(
+      prRec({
+        pr_id: "P1",
+        ticket_id: "T",
+        status: "closed",
+        closed_by: "bakacoding",
+        close_reason: "上次 PATCH 失败",
+      }),
+    );
+    const close = vi.fn(async () => {});
+    async function closeTicketPrsNoBakacodingRetry(
+      ticket_id: string,
+      reason: string,
+      only?: string,
+    ): Promise<"closed" | "none" | "merged"> {
+      if (only !== undefined) {
+        const rec = await store.get(only);
+        if (!rec || rec.kind !== "ticket" || rec.ticket_id !== ticket_id) return "none";
+        if (rec.status === "merged") return "merged";
+        if (rec.status === "open" || rec.status === "conflict") {
+          await close(rec.pr_id, reason);
+          return "closed";
+        }
+        return "none"; // ← 缺 bakacoding 重试
+      }
+      const mine = (await store.list()).filter(
+        (r): r is TicketPrRecord => r.kind === "ticket" && r.ticket_id === ticket_id,
+      );
+      if (mine.some((r) => r.status === "merged")) return "merged";
+      const open = mine.filter((r) => r.status === "open" || r.status === "conflict");
+      if (open.length === 0) return "none";
+      for (const r of open) await close(r.pr_id, reason);
+      return "closed";
+    }
+    expect(await closeTicketPrsNoBakacodingRetry("T", "r", "P1")).toBe("none");
+    expect(close).not.toHaveBeenCalled();
+    // 现行实现必须再调 close → closed
+    expect(
+      await closeTicketPrs({ sync: async () => {}, store, pr: { close } }, "T", "r", "P1"),
+    ).toBe("closed");
+    expect(close).toHaveBeenCalledOnce();
+  });
+});
+
+describe("T-064 B2：adopt 发现已合入的 PR", () => {
+  it("E2E：merge_queued 单的 PR 已是 merged → takeOver 记进 merged，下游不再 waiting；有 merge_sha 发 interface_changed", async () => {
+    const { storage, worktreeRoot } = setup();
+    // 上游：状态还是 merge_queued，但 PR 记录已 merged（停机期间用户合入 + sync 写了库）
+    saveTicket(
+      storage,
+      "req-1-1",
+      "merge_queued",
+      fields({
+        write_scope: ["lib/a/**"],
+        interfaces: [{ file: "lib/a/x.ts", symbol: "foo" }],
+      }),
+    );
+    const wt = join(worktreeRoot, "req-1-1-r0");
+    mkdirSync(wt, { recursive: true });
+    const mergeSha = "ab".repeat(20);
+    await storage.prStore<TicketPrRecord>().put(
+      prRec({
+        pr_id: "pr-up",
+        ticket_id: "req-1-1",
+        status: "merged",
+        worktree_path: wt,
+        merge_sha: mergeSha,
+      }),
+    );
+    saveTicket(
+      storage,
+      "req-1-2",
+      "pending",
+      fields({ write_scope: ["lib/b/**"], depends_on: ["req-1-1"] }),
+    );
+
+    const { pr } = fakePr();
+    const { app } = await start({ storage, worktreeRoot, pr });
+    // takeOver 在 assemble 里已跑完
+    expect(app.takeOver.merged).toContain("req-1-1");
+    expect(app.takeOver.adopted).not.toContain("req-1-1");
+    expect(app.takeOver.failed.map((f) => f.ticket_id)).not.toContain("req-1-1");
+    expect(app.scheduler.status("req-1-1")).toBe("merged");
+    expect(statusOf(storage, "req-1-1")).toBe("merged");
+    // 下游应已 enqueue，且依赖已 ready（9 里上游是 merged）
+    expect(app.takeOver.enqueued).toContain("req-1-2");
+    expect(app.scheduler.dependencyState("req-1-2")).toBe("ready");
+    // interface_changed：合法 merge_sha 才发（announceMerge 在 adopt 同步路径已发）
+    const fromStore = storage.queryEvents().filter((e) => e.type === "interface_changed");
+    expect(fromStore.length).toBeGreaterThanOrEqual(1);
+    expect(
+      fromStore.some(
+        (e) => e.payload && (e.payload as { base_commit?: string }).base_commit === mergeSha,
+      ),
+    ).toBe(true);
+  });
+
+  it("E2E 反向补充：无合法 merge_sha 时不发 interface_changed，仍记 merged", async () => {
+    const { storage, worktreeRoot } = setup();
+    saveTicket(storage, "req-1-1", "merge_queued", fields({ write_scope: ["lib/a/**"] }));
+    const wt = join(worktreeRoot, "req-1-1-r0");
+    mkdirSync(wt, { recursive: true });
+    await storage.prStore<TicketPrRecord>().put(
+      prRec({
+        pr_id: "pr-up",
+        ticket_id: "req-1-1",
+        status: "merged",
+        worktree_path: wt,
+        // 无 merge_sha
+      }),
+    );
+    const { pr } = fakePr();
+    const { app } = await start({ storage, worktreeRoot, pr });
+    expect(app.takeOver.merged).toContain("req-1-1");
+    expect(app.scheduler.status("req-1-1")).toBe("merged");
+    const fromStore = storage.queryEvents().filter((e) => e.type === "interface_changed");
+    expect(fromStore).toEqual([]);
+  });
+
+  it("反向：没有 merged 记录时 adopt 仍失败", async () => {
+    const { storage, worktreeRoot } = setup();
+    saveTicket(storage, "req-1-3", "merge_queued", fields());
+    const { pr } = fakePr();
+    const { app } = await start({ storage, worktreeRoot, pr });
+    expect(app.takeOver.failed.some((f) => f.ticket_id === "req-1-3")).toBe(true);
+    expect(app.takeOver.merged).not.toContain("req-1-3");
+  });
+});
