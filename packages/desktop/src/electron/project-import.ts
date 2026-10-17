@@ -3,7 +3,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { loadPricing, validate } from "@bakacoding/config-budget";
-import { CONFIG_ENV, DB_PATH_ENV, REPO_ENV } from "./backend.js";
+import { CONFIG_ENV, DB_PATH_ENV, REPO_ENV, resolveConfigPath } from "./backend.js";
 import { sanitizeSyncErrorMessage } from "./sync-state.js";
 
 export const MODELS_FILE = "config/models.json";
@@ -47,40 +47,59 @@ export const REPO_LOCKED_REASON =
 export type DirCheck =
   { ok: true; note?: string } | { ok: false; missing?: string[]; reason?: string };
 
-/** 设了 BAKACODING_CONFIG 时给用户的说明（导入结果 / 提示里都带上） */
-export function envConfigNote(configPath: string): string {
-  return `当前使用 BAKACODING_CONFIG 指定的配置：${configPath}`;
+export type ConfigSource = "--config" | "BAKACODING_CONFIG";
+
+/** 配置是不是用户另外指定的：`--config`（非空）优先于 BAKACODING_CONFIG（非空）；都没有为 null。 */
+export function configSource(
+  argv: readonly string[],
+  env: Readonly<Record<string, string | undefined>>,
+): ConfigSource | null {
+  let fromArg: string | undefined;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!;
+    if (a.startsWith("--config=")) fromArg = a.slice("--config=".length);
+    else if (a === "--config" && argv[i + 1] !== undefined) fromArg = argv[i + 1];
+  }
+  if (fromArg) return "--config";
+  if (env[CONFIG_ENV]) return "BAKACODING_CONFIG";
+  return null;
+}
+
+/** 用了另外指定的配置时给用户的说明（导入结果 / 提示里都带上） */
+export function envConfigNote(
+  configPath: string,
+  source: ConfigSource = "BAKACODING_CONFIG",
+): string {
+  return `当前使用 ${source} 指定的配置：${configPath}`;
 }
 
 /**
  * (a) git 仓库检查 + 配置文件是否存在；(b) 用 3 的 validate / loadPricing 校验内容。
- * 设了 BAKACODING_CONFIG 时不看仓库里的 config/models.json，改为校验它指向的文件（相对路径相对所选目录，
- * 与 backend.resolveConfigPath 一致），结果里写明在用它。错误信息先换密钥值、再 redact(light)、截断。
+ * 配置路径用后端同一个 resolveConfigPath（`--config` > BAKACODING_CONFIG > `<dir>/config/models.json`，
+ * 相对路径相对所选目录）；用了另外指定的配置时结果里写明来源。错误信息先换密钥值、再 redact(light)、截断。
  */
 export function checkProjectDir(
   dir: string,
   env: Readonly<Record<string, string | undefined>> = {},
+  argv: readonly string[] = [],
 ): DirCheck {
-  const fromEnv = env[CONFIG_ENV];
-  const models = fromEnv
-    ? path.isAbsolute(fromEnv)
-      ? fromEnv
-      : path.resolve(dir, fromEnv)
-    : path.join(dir, MODELS_FILE);
-  const modelsLabel = fromEnv ? `BAKACODING_CONFIG（${models}）` : MODELS_FILE;
-  const note = fromEnv ? envConfigNote(models) : undefined;
+  const source = configSource(argv, env);
+  const models = resolveConfigPath(argv, env, dir);
+  const modelsLabel = source ? `${source}（${models}）` : MODELS_FILE;
+  const note = source ? envConfigNote(models, source) : undefined;
   const clean = (text: string) => sanitizeSyncErrorMessage(text, env, IMPORT_REASON_MAX);
 
   const missing: string[] = [];
   if (!existsSync(path.join(dir, GIT_DIR))) missing.push(GIT_DIR);
   const pricing = path.join(dir, PRICING_FILE);
-  if (!fromEnv && !existsSync(models)) missing.push(MODELS_FILE);
+  if (!source && !existsSync(models)) missing.push(MODELS_FILE);
   if (!existsSync(pricing)) missing.push(PRICING_FILE);
-  const envMissing = fromEnv !== undefined && !existsSync(models);
+  const envMissing = !!source && !existsSync(models);
   if (missing.length || envMissing) {
     const names = missing.map((m) => (m === GIT_DIR ? "不是 git 仓库（没有 .git）" : `缺少 ${m}`));
-    if (envMissing) names.push(`BAKACODING_CONFIG 指定的配置文件不存在：${models}`);
-    if (note) names.push(note);
+    // 路径只写一次
+    if (envMissing) names.push(`当前使用 ${source} 指定的配置，但文件不存在：${models}`);
+    else if (note) names.push(note);
     return {
       ok: false,
       ...(missing.length && { missing }),

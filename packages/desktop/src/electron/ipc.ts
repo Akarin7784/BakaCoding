@@ -21,7 +21,7 @@ import {
   inside,
   type ProjectSettingsDeps,
 } from "./project-settings-ipc.js";
-import { sanitizeSyncErrorMessage } from "./sync-state.js";
+import { sanitizeErrorName, sanitizeSyncErrorMessage } from "./sync-state.js";
 import type { EventReader } from "./reader.js";
 
 /**
@@ -213,7 +213,7 @@ export function serveProjectSettings(ipc: IpcMainLike, deps: ProjectSettingsDeps
       return { ok: false, reason: REPO_LOCKED_REASON } satisfies DesktopImportResult;
     const dir = await deps.pickDirectory();
     if (!dir) return { ok: false, canceled: true } satisfies DesktopImportResult;
-    const check = checkProjectDir(dir, deps.env);
+    const check = checkProjectDir(dir, deps.env, deps.argv);
     if (!check.ok) {
       return {
         ok: false,
@@ -248,7 +248,7 @@ export function serveProjectSettings(ipc: IpcMainLike, deps: ProjectSettingsDeps
         path: await deps.backend.exportDiagnostics(target, at),
       } satisfies DesktopExportResult;
     } catch (e) {
-      const msg = e instanceof Error ? `${e.name}：${e.message}` : String(e);
+      const msg = e instanceof Error ? `${sanitizeErrorName(e.name)}：${e.message}` : String(e);
       return {
         ok: false,
         reason: sanitizeSyncErrorMessage(`导出失败：${msg}`, deps.env, EXPORT_REASON_MAX),

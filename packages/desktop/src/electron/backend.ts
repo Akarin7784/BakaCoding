@@ -80,6 +80,8 @@ export interface BackendOptions {
   pricingPath?: string;
   /** 上次导入的仓库路径（T-072）：优先级低于 `--repo` / BAKACODING_REPO，高于 cwd */
   lastRepo?: string;
+  /** 测试钩子：组装好之后拿到 App（断言拆除时 10 退订、9 停定时 sync） */
+  onAssembled?: (app: App) => void;
   /** 测试注入：模块 3 的 importProject */
   importProject?: typeof importProjectDefault;
 }
@@ -362,6 +364,7 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
       });
 
       app = await assemble(depsHandle.deps);
+      opts.onAssembled?.(app);
       takeOver = takeOverCounts(app.takeOver);
       // 上报 / 单级警告（含高风险拒绝未生效）后刷新清单；不新增事件类型
       busUnsubs.push(
@@ -496,6 +499,9 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
     },
     async stop() {
       cleanupPartial();
+      // 拆完就不再是 live（切换失败时不能还报 live）
+      mode = "readonly";
+      reason = reason ?? "后端已停止";
     },
   };
 }

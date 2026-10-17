@@ -27,6 +27,11 @@ import {
 import { BackendSwitcher } from "./backend-switcher.js";
 import type { IpcMainLike } from "./ipc.js";
 import { checkProjectDir, repoLockedBy, REPO_LOCKED_REASON } from "./project-import.js";
+import { inside } from "./project-settings-ipc.js";
+import { NotifyBuffer } from "./backend.js";
+import type { App } from "@bakacoding/app";
+import { symlinkSync } from "node:fs";
+import path from "node:path";
 import { serveProjectSettings } from "./ipc.js";
 import { envPresence, type ProjectSettingsDeps } from "./project-settings-ipc.js";
 import { readLastRepo, writeLastRepo } from "./repo-store.js";
@@ -181,7 +186,9 @@ describe("BAKACODING_CONFIG（T-072）", () => {
     const c = checkProjectDir(r, { ...env, BAKACODING_CONFIG: cfg });
     expect(c.ok).toBe(false);
     if (c.ok) return;
-    expect(c.reason).toContain(`BAKACODING_CONFIG 指定的配置文件不存在：${cfg}`);
+    expect(c.reason).toContain(`当前使用 BAKACODING_CONFIG 指定的配置，但文件不存在：${cfg}`);
+    // 路径只出现一次
+    expect(c.reason!.split(cfg).length - 1).toBe(1);
   });
 
   it("导入成功时 IPC 结果带上 note", async () => {
@@ -563,5 +570,231 @@ describe("project:import / diagnostics:export / settings:get IPC（T-072）", ()
     expect(be.prMode()).toBe("local");
     expect(be.busyCount()).toBe(0);
     await be.stop();
+  });
+});
+
+describe("评审跟进（T-072 #82）", () => {
+  // ---- 1. 组装失败：先用原仓库重组；也失败就只读 ----
+  it("新仓库组装抛错 → 用原仓库重组成功：如实说已回到原仓库，仍 live", async () => {
+    const a = repo();
+    const b = repo();
+    const start = async (r: string) => {
+      if (r === b) throw new Error("boom");
+      return startOn(r);
+    };
+    const sw = new BackendSwitcher(await startOn(a), start, env);
+    const r = await sw.switchTo(b);
+    expect(r).toEqual({ ok: false, reason: "新仓库没能启动（Error：boom），已回到原仓库" });
+    expect(sw.status().mode).toBe("live");
+    expect(sw.repoRoot()).toBe(a);
+    await sw.stop();
+  });
+
+  it("新仓库和原仓库都组装失败 → 只读，消息如实（不说已回到原仓库）", async () => {
+    const a = repo();
+    const b = repo();
+    let calls = 0;
+    const start = async (r: string) => {
+      calls++;
+      throw new Error(`fail-${r === b ? "new" : "old"}`);
+    };
+    const sw = new BackendSwitcher(await startOn(a), start, env);
+    const r = await sw.switchTo(b);
+    expect(calls).toBe(2);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toContain("新仓库没能启动（Error：fail-new）");
+    expect(r.reason).toContain("原仓库也没能重新启动（Error：fail-old）");
+    expect(r.reason).toContain("只读模式");
+    expect(r.reason).not.toContain("已回到原仓库");
+    expect(sw.status().mode).toBe("readonly");
+    await sw.stop();
+  });
+
+  it("拆下来的后端 status 不再是 live", async () => {
+    const be = await startOn(repo());
+    expect(be.status().mode).toBe("live");
+    await be.stop();
+    expect(be.status().mode).toBe("readonly");
+  });
+
+  // ---- 2. 切换 / 导入失败后保留渲染就绪 ----
+  function fakeBackend(
+    repoRoot: string,
+    opts: { mode?: "live" | "readonly"; importFails?: boolean } = {},
+  ) {
+    const buf = new NotifyBuffer(200);
+    const handle = {
+      status: () => ({ mode: opts.mode ?? "live" }),
+      markRendererReady: () => buf.markReady(),
+      onNotify: (l: (m: NotifyMessage) => void) => buf.onNotify(l),
+      onPendingHighRisk: () => () => {},
+      busyCount: () => 0,
+      repoRoot: () => repoRoot,
+      importCurrentRepo: async () => {
+        if (opts.importFails) throw new Error("bad");
+        return { project_id: "p", name: "p", path: repoRoot } as Project;
+      },
+      stop: async () => {},
+    } as unknown as BackendHandle;
+    return { handle, emit: (text: string) => buf.push({ text }) };
+  }
+
+  it("导入失败（新后端 live 但 importProject 抛错）：渲染就绪保留，之后的通知直接送达", async () => {
+    const old = fakeBackend("/a");
+    const next = fakeBackend("/b", { importFails: true });
+    const sw = new BackendSwitcher(old.handle, async () => next.handle);
+    const got: string[] = [];
+    sw.onNotify((m) => got.push(m.text));
+    sw.markRendererReady();
+    next.emit("切换中缓冲的");
+    const r = await sw.switchTo("/b");
+    expect(r.ok).toBe(false);
+    next.emit("之后的");
+    expect(got).toEqual(["切换中缓冲的", "之后的"]);
+  });
+
+  it("切换失败回到原仓库：渲染就绪保留，之后的通知直接送达", async () => {
+    const old = fakeBackend("/a");
+    const back = fakeBackend("/a");
+    const sw = new BackendSwitcher(old.handle, async (r) =>
+      r === "/b" ? fakeBackend("/b", { mode: "readonly" }).handle : back.handle,
+    );
+    const got: string[] = [];
+    sw.onNotify((m) => got.push(m.text));
+    sw.markRendererReady();
+    const r = await sw.switchTo("/b");
+    expect(r.ok === false && r.reason).toContain("已回到原仓库");
+    back.emit("回来之后");
+    expect(got).toEqual(["回来之后"]);
+  });
+
+  it("切换成功：就绪清掉，新后端先缓冲，等渲染进程重载后 ready 再回放", async () => {
+    const old = fakeBackend("/a");
+    const next = fakeBackend("/b");
+    const sw = new BackendSwitcher(old.handle, async () => next.handle);
+    const got: string[] = [];
+    sw.onNotify((m) => got.push(m.text));
+    sw.markRendererReady();
+    expect((await sw.switchTo("/b")).ok).toBe(true);
+    next.emit("已导入");
+    expect(got).toEqual([]);
+    expect(sw.markRendererReady().map((m) => m.text)).toEqual(["已导入"]);
+  });
+
+  // ---- 3. inside()：realpath + relative ----
+  it("inside：..foo 目录、指进仓库的符号链接算在里面；../x、别处的绝对路径、同前缀的兄弟目录不算", () => {
+    const base = tmp("bc-in-");
+    const r = join(base, "repo");
+    mkdirSync(join(r, "..foo"), { recursive: true });
+    mkdirSync(join(base, "repo-other"), { recursive: true });
+    const link = join(base, "link");
+    symlinkSync(r, link, "dir");
+    expect(inside(join(r, "..foo", "x.zip"), r)).toBe(true);
+    expect(inside(join(r, "new-dir", "x.zip"), r)).toBe(true);
+    expect(inside(join(link, "x.zip"), r)).toBe(true);
+    expect(inside(join(r, "..", "x.zip"), r)).toBe(false);
+    expect(inside(join(base, "repo-other", "x.zip"), r)).toBe(false);
+    expect(inside(join(tmp("bc-else-"), "x.zip"), r)).toBe(false);
+    expect(inside(r, r)).toBe(true);
+  });
+
+  it("inside：Windows 不区分大小写（可注入平台）", () => {
+    const id = (p: string) => p;
+    const win = { pathImpl: path.win32, realpath: id, platform: "win32" as const };
+    expect(inside("C:\\Repo\\out\\x.zip", "c:\\repo", win)).toBe(true);
+    expect(inside("C:\\Repo2\\x.zip", "c:\\repo", win)).toBe(false);
+    // 大小写处理来自 platform 判断本身（不依赖 path.win32 的比较）
+    const posix = { pathImpl: path.posix, realpath: id };
+    expect(inside("/Repo/out/x.zip", "/repo", { ...posix, platform: "win32" })).toBe(true);
+    expect(inside("/Repo/out/x.zip", "/repo", { ...posix, platform: "linux" })).toBe(false);
+  });
+
+  // ---- 4. 拆除：10 退订、9 停定时 sync ----
+  async function liveWithApp(r: string) {
+    let app!: App;
+    const be = await startBackend({
+      argv: [],
+      env,
+      cwd: r,
+      lastRepo: r,
+      logger: quiet,
+      onAssembled: (x) => (app = x),
+    });
+    const schedStop = vi.spyOn(app.scheduler, "stop");
+    const got: NotifyMessage[] = [];
+    be.onNotify((m) => got.push(m));
+    be.markRendererReady();
+    const publishProject = () =>
+      app.bus.publish({
+        type: "project_created",
+        trace_id: "t",
+        span_id: "s",
+        parent_span_id: null,
+        requirement_id: null,
+        ticket_id: null,
+        payload: { project_id: "p-x", name: "x", language: "unknown", has_github_remote: false },
+      } as never);
+    return { be, app, schedStop, got, publishProject };
+  }
+
+  it("stop()（cleanupPartial）：9 的 stop（含定时 sync）被调，10 不再收 project_created", async () => {
+    const t = await liveWithApp(repo());
+    await t.publishProject();
+    await tick();
+    expect(t.got.filter((m) => m.text.includes("已导入"))).toHaveLength(1);
+    await t.be.stop();
+    expect(t.schedStop).toHaveBeenCalled();
+    await t.publishProject();
+    await tick();
+    expect(t.got.filter((m) => m.text.includes("已导入"))).toHaveLength(1);
+  });
+
+  it("切换时旧后端被拆：9 stop 被调，旧总线上的 project_created 不再通知", async () => {
+    const a = repo();
+    const t = await liveWithApp(a);
+    const sw = new BackendSwitcher(t.be, startOn, env);
+    expect((await sw.switchTo(repo())).ok).toBe(true);
+    expect(t.schedStop).toHaveBeenCalled();
+    await t.publishProject();
+    await tick();
+    expect(t.got).toHaveLength(0);
+    await sw.stop();
+  });
+
+  // ---- 5. --config 优先于 BAKACODING_CONFIG；相对路径；空值 ----
+  it("--config 优先于 BAKACODING_CONFIG，说明里写 --config", () => {
+    const r = repo({ models: false });
+    const good = join(tmp("bc-cfg-"), "good.json");
+    copyFileSync(examplePath, good);
+    const bad = join(tmp("bc-cfg-"), "bad.json");
+    writeFileSync(bad, "{}");
+    expect(checkProjectDir(r, { ...env, BAKACODING_CONFIG: bad }, ["--config", good])).toEqual({
+      ok: true,
+      note: `当前使用 --config 指定的配置：${good}`,
+    });
+    expect(checkProjectDir(r, { ...env, BAKACODING_CONFIG: good }, [`--config=${bad}`]).ok).toBe(
+      false,
+    );
+  });
+
+  it("相对路径的 BAKACODING_CONFIG：相对所选目录解析", () => {
+    const r = repo({ models: false });
+    mkdirSync(join(r, "cfg"));
+    copyFileSync(examplePath, join(r, "cfg", "m.json"));
+    expect(checkProjectDir(r, { ...env, BAKACODING_CONFIG: "cfg/m.json" })).toEqual({
+      ok: true,
+      note: `当前使用 BAKACODING_CONFIG 指定的配置：${join(r, "cfg", "m.json")}`,
+    });
+  });
+
+  it("BAKACODING_CONFIG 为空串：当没设，查仓库里的 config/models.json", () => {
+    const r = repo({ models: false });
+    const c = checkProjectDir(r, { ...env, BAKACODING_CONFIG: "" });
+    expect(c).toEqual({
+      ok: false,
+      missing: ["config/models.json"],
+      reason: "缺少 config/models.json",
+    });
   });
 });
