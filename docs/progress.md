@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`34df5fc` · main 上测试：24 个测试文件、303 个测试全部通过 · 更新日期：2026-10-17（UTC+8）
+> 上次更新时 main：`ece21a5` · main 上测试：26 个测试文件、328 个测试全部通过 · 更新日期：2026-10-17（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -63,7 +63,7 @@ flowchart BT
 | T-007 | 脱敏函数 redact（light / full） | 3 | 基础层开发 | 已合入 | #6 | `4f20ce0` |
 | T-008 | 项目导入与提示词模板 importProject / promptTemplate | 3 | 基础层开发 | 未开始 | — | — |
 | T-009 | 工作区 createWorktree / cleanup | 4 | 基础层开发 | 已合入 | #7 | `cdb1ed7` |
-| T-010 | 受限文件工具 read / write / edit / glob / grep | 4 | 基础层开发 | 待评审 | #32 | — |
+| T-010 | 受限文件工具 read / write / edit / glob / grep | 4 | 基础层开发 | 已合入 | #32 | `ece21a5` |
 | T-011 | 三级权限与写入范围申请 applyPermissions（含权限清单写入接口） | 4 | 基础层开发 | 未开始 | — | — |
 | T-012 | PR 抽象接口与本地实现（含 diff 与 commitPatch） | 6 | 执行层开发 | 已合入 | #10 | `b8983a7` |
 | T-013 | 桌面界面壳子（三栏 + 假数据） | 12 | 界面与诊断开发 | 已合入 | #9 | `c8f169d` |
