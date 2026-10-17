@@ -1,4 +1,5 @@
-import type { EscalationView } from "../mock/types";
+import { TriangleAlert } from "lucide-react";
+import type { EscalationView, TicketWarningView } from "../mock/types";
 
 export const ESCALATION_REASON: Record<EscalationView["reason"], string> = {
   review_limit: "评审复投超限",
@@ -23,9 +24,53 @@ export function escalationTarget(e: EscalationView): string {
   return e.ticket_id ?? e.requirement_id;
 }
 
-/** 合入后的步骤出错时，合并队列在 detail 里写 `merged_but: …`（T-035）。 */
+/**
+ * 已合入集成分支、之后的收尾出错：T-038 起 reason 是 `merged_but`；
+ * 更早的版本（T-035）只在 detail 里写 `merged_but: …`，旧库里的事件照样认（T-050）。
+ */
 export function isMergedBut(e: EscalationView): boolean {
-  return e.detail?.trimStart().startsWith("merged_but") ?? false;
+  return e.reason === "merged_but" || (e.detail?.trimStart().startsWith("merged_but") ?? false);
+}
+
+/**
+ * ticket_warning 的中文文案（T-050）。故意不按 TICKET_WARNING_CODES 穷举：
+ * 模块 10 加了新代码而这里还没配文案时，显示代码本身，桌面的类型检查也不会挂。
+ */
+export const TICKET_WARNING_LABEL: Readonly<Record<string, string>> = {
+  write_scope_defaulted: "没给写入范围，按整个仓库可写处理",
+  fields_invalid: "单子的结构化字段缺失或损坏，不能续跑",
+};
+
+export function ticketWarningLabel(code: string): string {
+  return Object.hasOwn(TICKET_WARNING_LABEL, code) ? TICKET_WARNING_LABEL[code]! : code;
+}
+
+export function TicketWarningItem({ w }: { w: TicketWarningView }) {
+  return (
+    <li data-testid="ticket-warning" className="flex items-start gap-1">
+      <TriangleAlert size={14} strokeWidth={1.5} className="mt-0.5 shrink-0" aria-hidden />
+      <span>
+        {w.ticket_id} · {ticketWarningLabel(w.code)}
+        {w.detail ? `：${w.detail}` : ""}
+      </span>
+    </li>
+  );
+}
+
+/** 需求单提示列表：比「需要人工介入」弱一级，用灰字，不抢眼。 */
+export function TicketWarningList({ warnings }: { warnings: TicketWarningView[] }) {
+  if (warnings.length === 0) return null;
+  return (
+    <ul
+      role="status"
+      aria-label="需求单提示"
+      className="space-y-1 border-b border-border px-4 py-2 text-xs text-muted-foreground"
+    >
+      {warnings.map((w) => (
+        <TicketWarningItem key={w.event_id} w={w} />
+      ))}
+    </ul>
+  );
 }
 
 export function EscalationItem({ e }: { e: EscalationView }) {
@@ -39,7 +84,14 @@ export function EscalationItem({ e }: { e: EscalationView }) {
 }
 
 /** 未归属：找不到所属项目的上报，单独列出，不丢。 */
-export function UnattributedPanel({ escalations }: { escalations: EscalationView[] }) {
+export function UnattributedPanel({
+  escalations,
+  warnings = [],
+}: {
+  escalations: EscalationView[];
+  /** 找不到所属项目的 ticket_warning（T-050）。 */
+  warnings?: TicketWarningView[];
+}) {
   return (
     <section aria-label="未归属" className="flex min-w-0 flex-1 flex-col">
       <header className="flex items-center gap-2 border-b border-border px-4 py-2">
@@ -49,8 +101,11 @@ export function UnattributedPanel({ escalations }: { escalations: EscalationView
       <p className="px-4 pt-2 text-xs text-muted-foreground">
         这些上报找不到所属项目（比如集成 PR、重启后不认识的 PR），在这里集中显示。
       </p>
+      <TicketWarningList warnings={warnings} />
       {escalations.length === 0 ? (
-        <p className="py-8 text-center text-sm text-muted-foreground">没有未归属的上报</p>
+        warnings.length === 0 && (
+          <p className="py-8 text-center text-sm text-muted-foreground">没有未归属的上报</p>
+        )
       ) : (
         <ul
           role="alert"

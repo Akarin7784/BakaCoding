@@ -1,7 +1,7 @@
 import type { BakaEvent } from "@bakacoding/types";
 import { describe, expect, it } from "vitest";
 import type { UiEvent } from "../../shared/api";
-import { escalationTarget, isMergedBut } from "../components/Escalations";
+import { escalationTarget, isMergedBut, ticketWarningLabel } from "../components/Escalations";
 import { buildViews, type LiveState } from "./views";
 
 const base = (n: number, requirement_id: string | null, ticket_id: string | null = null) => ({
@@ -72,5 +72,57 @@ describe("buildViews：找不到项目的上报进「未归属」（T-049）", (
     expect(escalationTarget({ ...v.unattributed[1]!, ticket_id: null })).toBe("R-unknown");
     expect(isMergedBut(v.unattributed[0]!)).toBe(true);
     expect(isMergedBut(v.unattributed[1]!)).toBe(false);
+  });
+});
+
+describe("ticket_warning 和 merged_but（T-050）", () => {
+  const warn = (n: number, project_id: string, ticket_id: string, code: string, detail = "") =>
+    ({
+      ...base(n, "R-1", ticket_id),
+      type: "ticket_warning",
+      payload: { project_id, code, detail },
+    }) as unknown as UiEvent;
+
+  it("警告按 payload.project_id 归到项目，按 seq 顺序；项目对不上的进未归属，不丢", () => {
+    const v = buildViews({
+      ...state,
+      events: [
+        ...events,
+        warn(5, "P-1", "T-1", "write_scope_defaulted", "按 ** 处理"),
+        warn(6, "P-x", "T-7", "fields_invalid"),
+        warn(7, "P-1", "T-1", "fields_invalid"),
+      ],
+      last_seq: 7,
+    });
+    expect(v.projects[0]!.warnings.map((w) => [w.event_id, w.ticket_id, w.code])).toEqual([
+      ["evt-5", "T-1", "write_scope_defaulted"],
+      ["evt-7", "T-1", "fields_invalid"],
+    ]);
+    expect(v.projects[0]!.warnings[0]!.detail).toBe("按 ** 处理");
+    expect(v.unattributedWarnings.map((w) => w.event_id)).toEqual(["evt-6"]);
+    // 警告不混进上报
+    expect(v.projects[0]!.escalations.map((e) => e.event_id)).toEqual(["evt-2"]);
+  });
+
+  it("没有警告时两边都为空", () => {
+    const v = buildViews(state);
+    expect(v.projects[0]!.warnings).toEqual([]);
+    expect(v.unattributedWarnings).toEqual([]);
+  });
+
+  it("文案：两个已知代码有中文；不认识的代码原样显示，原型链上的名字不当成文案", () => {
+    expect(ticketWarningLabel("write_scope_defaulted")).toContain("整个仓库");
+    expect(ticketWarningLabel("fields_invalid")).toContain("不能续跑");
+    expect(ticketWarningLabel("some_future_code")).toBe("some_future_code");
+    expect(ticketWarningLabel("toString")).toBe("toString");
+  });
+
+  it("isMergedBut：reason 是 merged_but 就算（T-038 起），旧的 detail 前缀照样认", () => {
+    const e = { event_id: "e", ts: "t", requirement_id: "R-1", ticket_id: "T-1" };
+    expect(isMergedBut({ ...e, reason: "merged_but" })).toBe(true);
+    expect(isMergedBut({ ...e, reason: "merged_but", detail: "merged_but: x" })).toBe(true);
+    expect(isMergedBut({ ...e, reason: "github_manual", detail: "  merged_but: x" })).toBe(true);
+    expect(isMergedBut({ ...e, reason: "internal_error", detail: "merge_error: x" })).toBe(false);
+    expect(isMergedBut({ ...e, reason: "review_limit" })).toBe(false);
   });
 });
