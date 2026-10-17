@@ -67,6 +67,13 @@ export const MarkersSchema = z.object({
       error: z.string().optional(),
     })
     .optional(),
+  /**
+   * 已合入、但 interface_changed / 合入后清理还没做完（T-112）：9 写 merged 之前由组合根写入，发完、排上清理后清掉。
+   * takeOver 对带它的 merged 单调 `deps.recoverMergeFollowup` 补做。
+   */
+  merge_followup: z
+    .object({ at: z.string(), pr_id: z.string().min(1), merge_sha: z.string().min(1) })
+    .optional(),
 });
 export type Markers = z.infer<typeof MarkersSchema>;
 
@@ -80,6 +87,8 @@ export function readMarkers(fields: TicketFields | null): Markers {
   if (c.success && c.data) out.pr_close_done = c.data;
   const hr = MarkersSchema.shape.high_risk_close.safeParse(raw.high_risk_close);
   if (hr.success && hr.data) out.high_risk_close = hr.data;
+  const mf = MarkersSchema.shape.merge_followup.safeParse(raw.merge_followup);
+  if (mf.success && mf.data) out.merge_followup = mf.data;
   return out;
 }
 

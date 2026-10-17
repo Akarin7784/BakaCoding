@@ -799,6 +799,23 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     patchFields(ticket_id, { escalation_handled: h });
   }
 
+  /**
+   * 补做合入后的事用的 SchedulerTicket（T-112）：能读出就带上接口声明和写入范围（算 changed_interfaces、
+   * 受影响单）；结构化字段坏了只带单号和 trace，照样补发。
+   */
+  function followupTicket(row: StoredTicket): SchedulerTicket {
+    const f = decodeFields(row.fields);
+    const trace = traceOf(row);
+    return {
+      ticket_id: row.ticket_id,
+      requirement_id: row.requirement_id,
+      trace_id: trace.trace_id,
+      span_id: trace.span_id ?? newId(),
+      parent_span_id: trace.parent_span_id,
+      ...(f.ok ? { write_scope: f.fields.write_scope, interfaces: f.fields.interfaces } : {}),
+    };
+  }
+
   function traceOf(row: StoredTicket): Trace {
     const f = decodeFields(row.fields);
     return f.ok
@@ -1111,6 +1128,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       escalations: [],
       held: [],
       merged: [],
+      followups: [],
       failed: [],
     };
     const holdOnce = async (row: StoredTicket, blocked_by: string[], text: string) => {
@@ -1335,6 +1353,28 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         report.enqueued,
         "enqueue",
       );
+    }
+
+    // ---- 5. 合入后补做（T-112）：在 adopt / enqueue 之后，9 才算得全受影响的在途单 ----
+    const recover = deps.recoverMergeFollowup;
+    if (recover) {
+      for (const row of rows) {
+        if ((row.status ?? "pending") !== "merged") continue;
+        const mf = readMarkers(row.fields).merge_followup;
+        if (!mf) continue;
+        const id = row.ticket_id;
+        try {
+          const result = await recover(followupTicket(row), {
+            pr_id: mf.pr_id,
+            merge_sha: mf.merge_sha,
+          });
+          report.followups.push({ ticket_id: id, result });
+        } catch (err) {
+          const error = err instanceof Error ? err.message : String(err);
+          logger.warn(`重启接管：单 ${id} 补做合入后的事失败`, err);
+          report.followups.push({ ticket_id: id, result: "failed", error: error.slice(0, 500) });
+        }
+      }
     }
     return report;
   }

@@ -163,6 +163,15 @@ export interface SupervisorDeps {
     ticket: SchedulerTicket & { kind?: "dependency" },
   ) => MaybePromise<"adopted" | "already" | "merged" | void>;
   /**
+   * 可选（T-112）：重启补做合入后的事。takeOver 在 adopt / enqueue 之后，对带 `fields.merge_followup` 标记的
+   * merged 单调用；组合根转调 9 的 `recoverMergeFollowup`（发一次 interface_changed、排清理、清标记）。
+   * 不注入时不补做，标记留着。
+   */
+  recoverMergeFollowup?: (
+    ticket: SchedulerTicket,
+    info: { pr_id: string; merge_sha: string },
+  ) => Promise<"emitted" | "failed">;
+  /**
    * 0：发 group_message、ticket_warning，以及 T-041b 起的 escalated（只发 `resplit_limit`，提案 S3）。
    * 10 自己填 event_id、ts。
    */
@@ -277,6 +286,12 @@ export interface TakeOverReport {
   held: { ticket_id: string; blocked_by: string[] }[];
   /** merged：跳过 */
   merged: string[];
+  /**
+   * 带 `merge_followup` 标记的 merged 单的补做结果（T-112）：`emitted` 已补发 interface_changed、标记已清；
+   * `failed` 没补成（取 diff 失败、没发出去或抛错，`error` 写原因），标记留到下次 takeOver。没注入
+   * `recoverMergeFollowup` 时为空。
+   */
+  followups: { ticket_id: string; result: "emitted" | "failed"; error?: string }[];
   /** 接回时出错（9 的 enqueue / adopt 抛错，如查不到 PR 记录）；不影响其余单，下次 takeOver 再试 */
   failed: { ticket_id: string; error: string }[];
 }

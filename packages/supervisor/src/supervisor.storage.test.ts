@@ -349,3 +349,93 @@ function supervisorWithEnqueue(storage: Storage, enqueue: SupervisorDeps["enqueu
     }),
   };
 }
+
+describe("T-112 takeOver 补做合入后的事（merge_followup）", () => {
+  const SHA_F = "f".repeat(40);
+  /** 模拟组合根写 / 清 fields.merge_followup（同 assemble 的 storageMergeFollowup） */
+  const patch = (s: Storage, id: string, mf: Record<string, unknown> | undefined) => {
+    const row = s.getTicket(id)!;
+    const { fields, ...rest } = row;
+    const raw = { ...((fields as Record<string, unknown> | null) ?? {}) };
+    if (mf) raw.merge_followup = mf;
+    else delete raw.merge_followup;
+    s.saveTicket({ ...rest, fields: raw as never });
+  };
+
+  async function seed() {
+    const s = open(tmpDb());
+    seedProject(s);
+    const { sup: make } = supervisorWithEnqueue(s, () => {});
+    const mk = (text: string, scope: string) =>
+      make.createManualTicket({
+        project_id: "demo-1234",
+        ticket_text: text,
+        origin: "manual",
+        write_scope: [scope],
+        interfaces: [{ file: `${scope.replace("/**", "")}/index.ts`, symbol: "x" }],
+      });
+    const a = await mk("做 A", "lib/a/**");
+    const b = await mk("做 B", "lib/b/**");
+    const c = await mk("做 C", "lib/c/**");
+    // 「重启」：A 已合入、带标记；C 已合入、没标记；B 还在 coding
+    s.saveTicket({ ...s.getTicket(a.ticket_id)!, status: "merged" });
+    s.saveTicket({ ...s.getTicket(b.ticket_id)!, status: "coding" });
+    s.saveTicket({ ...s.getTicket(c.ticket_id)!, status: "merged" });
+    patch(s, a.ticket_id, { at: "t", pr_id: "pr-a", merge_sha: SHA_F });
+    return { s, a: a.ticket_id, b: b.ticket_id, c: c.ticket_id };
+  }
+
+  it("在 adopt / enqueue 之后，对带标记的 merged 单调 recoverMergeFollowup（带接口声明）；没标记的不调", async () => {
+    const { s, a, b } = await seed();
+    const order: string[] = [];
+    const sup = createSupervisor({
+      ...baseDeps(s),
+      enqueue: (t) => void order.push(`enqueue:${t.ticket_id}`),
+      recoverMergeFollowup: async (t, info) => {
+        order.push(`recover:${t.ticket_id}:${info.pr_id}:${info.merge_sha.slice(0, 4)}`);
+        expect(t.interfaces).toEqual([{ file: "lib/a/index.ts", symbol: "x" }]);
+        expect(t.trace_id).toBeTruthy();
+        patch(s, t.ticket_id, undefined); // 9 发完后经组合根清标记
+        return "emitted";
+      },
+    });
+    const r = await sup.takeOver();
+    expect(order).toEqual([`enqueue:${b}`, `recover:${a}:pr-a:ffff`]);
+    expect(r.followups).toEqual([{ ticket_id: a, result: "emitted" }]);
+    // 标记清了：再接管一次（模拟又一次重启）不再补做
+    const again = createSupervisor({
+      ...baseDeps(s),
+      enqueue: () => {},
+      recoverMergeFollowup: async () => {
+        throw new Error("不该再调");
+      },
+    });
+    expect((await again.takeOver()).followups).toEqual([]);
+  });
+
+  it("补做失败（返回 failed 或抛错）：记进 followups，标记留着，下次 takeOver 再补", async () => {
+    const { s, a } = await seed();
+    let n = 0;
+    const deps = {
+      ...baseDeps(s),
+      enqueue: () => {},
+      recoverMergeFollowup: async () => {
+        if (++n === 1) return "failed" as const;
+        throw new Error("9 抛错");
+      },
+    };
+    expect((await createSupervisor(deps).takeOver()).followups).toEqual([
+      { ticket_id: a, result: "failed" },
+    ]);
+    expect((await createSupervisor(deps).takeOver()).followups).toEqual([
+      { ticket_id: a, result: "failed", error: "9 抛错" },
+    ]);
+    expect((s.getTicket(a)!.fields as Record<string, unknown>).merge_followup).toBeDefined();
+  });
+
+  it("没注入 recoverMergeFollowup：不补做，followups 为空", async () => {
+    const { s } = await seed();
+    const r = await createSupervisor({ ...baseDeps(s), enqueue: () => {} }).takeOver();
+    expect(r.followups).toEqual([]);
+  });
+});
