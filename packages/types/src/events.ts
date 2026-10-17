@@ -150,6 +150,20 @@ export const GroupMessageSchema = ev("group_message", {
   flash_calls: z.array(Id),
 });
 
+/**
+ * 单级警告的代码（T-040）：所有需求单级别的警告都用 `ticket_warning`，代码只加不改。
+ * - `write_scope_defaulted`：手动 / 测试单没给写入范围（或给了第一段不是字面量的范围，如 `**`），按 `**` 处理。
+ * - `fields_invalid`：需求单的结构化字段缺失、损坏或不合格式（含写入范围复查不过），这张单不能续跑。
+ */
+export const TICKET_WARNING_CODES = ["write_scope_defaulted", "fields_invalid"] as const;
+export type TicketWarningCode = (typeof TICKET_WARNING_CODES)[number];
+/** ticket_warning 是单级事件，ticket_id 必须非 null。 */
+export const TicketWarningSchema = ev("ticket_warning", {
+  project_id: Id,
+  code: z.enum(TICKET_WARNING_CODES),
+  detail: z.string(),
+}).extend({ ticket_id: Id.describe("出警告的单号，必填") });
+
 export const EventSchema = z.discriminatedUnion("type", [
   ProjectCreatedSchema,
   CallCompletedSchema,
@@ -161,6 +175,7 @@ export const EventSchema = z.discriminatedUnion("type", [
   SupervisorBacklogSchema,
   ReviewBacklogSchema,
   GroupMessageSchema,
+  TicketWarningSchema,
 ]);
 export type BakaEvent = z.infer<typeof EventSchema>;
 export type EventType = BakaEvent["type"];

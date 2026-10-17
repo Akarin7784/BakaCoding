@@ -205,4 +205,93 @@ describe("渲染进程从 preload API 读真实数据", () => {
     await screen.findByRole("button", { name: /real-proj/ });
     expect(screen.queryByRole("button", { name: /未归属/ })).toBeNull();
   });
+
+  const warning = (
+    n: number,
+    project_id: string,
+    ticket_id: string,
+    code: string,
+    detail: string,
+  ) =>
+    ({
+      ...base(n, "R-1", ticket_id),
+      type: "ticket_warning",
+      payload: { project_id, code, detail },
+    }) as unknown as UiEvent;
+
+  it("ticket_warning 在项目群顶部以提示显示，PR 行带提示图标；不认识的代码原样显示（T-050）", async () => {
+    const { api } = fakeApi({
+      ...snapshot,
+      events: [
+        ...events,
+        warning(5, "P-1", "T-1", "write_scope_defaulted", "手工单没给 write_scope"),
+        warning(6, "P-1", "T-2", "some_future_code", "以后的新代码"),
+      ],
+      last_seq: 6,
+    });
+    render(<App api={api} />);
+    fireEvent.click(await screen.findByRole("button", { name: /real-proj/ }));
+    const list = screen.getByRole("status", { name: "需求单提示" });
+    const items = screen.getAllByTestId("ticket-warning").map((el) => el.textContent);
+    expect(items).toEqual([
+      "T-1 · 没给写入范围，按整个仓库可写处理：手工单没给 write_scope",
+      "T-2 · some_future_code：以后的新代码",
+    ]);
+    expect(list.textContent).not.toContain("需要人工介入");
+    // 上报照旧，警告不算上报
+    expect(screen.getByRole("alert", { name: "需要人工介入" }).textContent).toContain("T-2");
+
+    fireEvent.click(screen.getByRole("button", { name: "打开侧边栏" }));
+    expect(
+      screen.getByRole("img", { name: "提示：没给写入范围，按整个仓库可写处理" }),
+    ).toBeTruthy();
+    expect(screen.getByRole("img", { name: "提示：some_future_code" })).toBeTruthy();
+  });
+
+  it("增量来的 fields_invalid 即时显示；项目对不上的警告进「未归属」（T-050）", async () => {
+    const { api, push } = fakeApi(snapshot);
+    render(<App api={api} />);
+    fireEvent.click(await screen.findByRole("button", { name: /real-proj/ }));
+    expect(screen.queryByRole("status", { name: "需求单提示" })).toBeNull();
+    act(() =>
+      push({
+        db: snapshot.db,
+        events: [
+          warning(5, "P-1", "T-1", "fields_invalid", "fields 为 null"),
+          warning(6, "P-gone", "T-8", "fields_invalid", "别的项目"),
+        ],
+        last_seq: 6,
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("status", { name: "需求单提示" }).textContent).toContain(
+        "T-1 · 单子的结构化字段缺失或损坏，不能续跑：fields 为 null",
+      ),
+    );
+    const btn = screen.getByRole("button", { name: /未归属/ });
+    expect(btn.textContent).toContain("1");
+    fireEvent.click(btn);
+    expect(screen.getByRole("status", { name: "需求单提示" }).textContent).toContain("T-8");
+    expect(screen.queryByText("没有未归属的上报")).toBeNull();
+  });
+
+  it("reason 是 merged_but 的上报带「代码已进集成分支」提示（T-050）", async () => {
+    const { api } = fakeApi({
+      ...snapshot,
+      events: [
+        ...events,
+        {
+          ...base(5, "R-1", "T-1"),
+          type: "escalated",
+          payload: { reason: "merged_but", detail: "merged_but: save_merge_result 失败" },
+        } satisfies BakaEvent as UiEvent,
+      ],
+      last_seq: 5,
+    });
+    render(<App api={api} />);
+    fireEvent.click(await screen.findByRole("button", { name: /real-proj/ }));
+    expect(screen.getByRole("alert", { name: "需要人工介入" }).textContent).toContain(
+      "需要人工介入 · T-1 · 合并后续步骤失败（代码已进集成分支）：merged_but: save_merge_result 失败",
+    );
+  });
 });

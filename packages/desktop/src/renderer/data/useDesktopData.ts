@@ -38,6 +38,13 @@ export function useDesktopData(api: BakaDesktopApi | undefined): DesktopData | n
   const views = useMemo(() => (state ? buildViews(state) : null), [state]);
   if (!api) return null;
   if (!state || !views)
-    return { projects: [], flashCalls: {}, unattributed: [], db: null, loading: true };
+    return {
+      projects: [],
+      flashCalls: {},
+      unattributed: [],
+      unattributedWarnings: [],
+      db: null,
+      loading: true,
+    };
   return { ...views, db: state.db, loading: false };
 }

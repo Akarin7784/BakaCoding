@@ -309,6 +309,11 @@ describe("需求单 fields 不进诊断包（T-056）", () => {
     for (const scope of [
       { kind: "ticket", ticket_id: "T-1" } as const,
       { kind: "requirement", requirement_id: "R-1" } as const,
+      {
+        kind: "time_range",
+        from: "2026-10-10T00:00:00Z",
+        to: "2026-10-10T23:59:59Z",
+      } as const,
     ]) {
       const out_dir = mkdtempSync(path.join(dir, "out-"));
       const zip_path = await exportPackage(
@@ -323,7 +328,11 @@ describe("需求单 fields 不进诊断包（T-056）", () => {
       ]) {
         expect(s).not.toContain(MARK_VAL);
         expect(s).not.toContain(MARK_KEY);
-        expect(s).not.toContain('"fields"');
+      }
+      // 只查需求单记录本身有没有 fields 键，不拦整个包里的 "fields" 字样（别处以后可能有同名字段）
+      const ticketsJsonl = entries.find((e) => e.name === "tickets.jsonl")!.data.toString("utf8");
+      for (const line of ticketsJsonl.split("\n").filter(Boolean)) {
+        expect(Object.keys(JSON.parse(line) as object)).not.toContain("fields");
       }
       const pkg = await readPackage(zip_path);
       expect(pkg.tickets.map((t) => t.ticket_id)).toContain("T-1");

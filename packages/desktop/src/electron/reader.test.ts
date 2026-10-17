@@ -76,6 +76,12 @@ const escalated = (): BakaEvent => ({
   type: "escalated",
   payload: { reason: "review_limit", resubmit_counts: { review: 3, conflict: 0 } },
 });
+const ticketWarning = (): BakaEvent =>
+  ({
+    ...common("R-1", "T-1"),
+    type: "ticket_warning",
+    payload: { project_id: "P-1", code: "write_scope_defaulted", detail: "手工单没给 write_scope" },
+  }) as BakaEvent;
 const backlog = (): BakaEvent => ({
   ...common("R-1"),
   type: "review_backlog",
@@ -125,6 +131,7 @@ describe("主进程只读读取（临时 SQLite，用模块 2 的 API 写入）"
       callCompleted(),
       backlog(),
       escalated(),
+      ticketWarning(),
     ])
       s.ingest(e);
     saveTicket(s, "resubmitting");
@@ -140,12 +147,16 @@ describe("主进程只读读取（临时 SQLite，用模块 2 的 API 写入）"
       "group_message",
       "call_completed",
       "escalated",
+      "ticket_warning",
     ]);
+    const warn = snap.events.find((e) => e.type === "ticket_warning");
+    expect(warn?.ticket_id).toBe("T-1");
+    expect(warn?.type === "ticket_warning" && warn.payload.code).toBe("write_scope_defaulted");
     const call = snap.events.find((e) => e.type === "call_completed");
     expect(call?.type === "call_completed" && call.payload.prompt).toBe("");
     expect(call?.type === "call_completed" && call.payload.output).toBe("写好了 due_date");
     expect(snap.events[0]!.requirement_id).toBeNull();
-    expect(snap.last_seq).toBe(5);
+    expect(snap.last_seq).toBe(6);
     expect(snap.tickets).toEqual([
       {
         ticket_id: "T-1",

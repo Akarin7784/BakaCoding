@@ -91,6 +91,18 @@ interface MergeLogItem {
   changed_interfaces: ChangedInterface[];
 }
 
+/** 待补发的 interface_changed（T-046）；affected_ticket_ids 在发时重算 */
+/** 合法的合并 sha（40 位小写十六进制） */
+const SHA_RE = /^[0-9a-f]{40}$/;
+
+interface PendingInterface {
+  e: Entry;
+  pr_id: string;
+  sha: string;
+  files: string[];
+  changed: ChangedInterface[];
+}
+
 interface Entry {
   ticket: SchedulerTicket;
   status: TicketStatus;
@@ -182,6 +194,10 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   let reviewBacklog = { pending: 0, capacity: deps.config.backpressure.reviews_per_member };
   let supervisorBacklog: { pending: number; capacity: number } | null = null;
   let pumping: Promise<void> | undefined;
+  /**
+   * 合并循环运行期间来过触发：每轮开始时清掉（那一轮会看到当时的队列）。循环体退出后、收尾（finally）前
+   * 进来的触发也只能置这个标记，收尾时看到就清掉再跑一轮，不丢（T-061）。
+   */
   let pumpAgain = false;
   let stopped = false;
   /** 正在 step 里处理的单（出错时上报它） */
@@ -190,6 +206,13 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   let currentMerged = false;
   const sleepers = new Set<() => void>();
   const timers = new Set<ReturnType<typeof setTimeout>>();
+  /**
+   * 发失败、待补发的 interface_changed（T-046）：键为「单号 + 合并 sha」，同一事件只排一条。
+   * 每轮合并循环前和每次 sync() 时重试，不设上限；只在进程内，重启即丢（已知缺口）。
+   */
+  const pendingInterface = new Map<string, PendingInterface>();
+  /** 正在补发（合并循环和 sync() 可能并发调用，后来的直接返回，避免同一事件发两次） */
+  let resending = false;
   /** start() 时目标分支的 HEAD：合并日志第 0 条之前的基线 */
   let startHead: string | undefined;
 
@@ -291,7 +314,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
    * 状态保持 `merged`（代码已在集成分支上，依赖它的单照常放行），另发一条 `escalated(merged_but)` 交主管。
    * 上报本身失败只调 onError。
    */
-  async function reportMergedBut(e: Entry, err: unknown): Promise<void> {
+  async function reportMergedBut(e: Entry, err: unknown, prefix = ""): Promise<void> {
     onError(err, e.ticket.ticket_id);
     removeFromQueue(e.ticket.ticket_id);
     e.status = "merged";
@@ -302,7 +325,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         payload: {
           reason: "merged_but",
           resubmit_counts: { ...e.counts },
-          detail: `merged_but: ${errorMessage(err)}`.slice(0, 500),
+          detail: `merged_but: ${prefix}${errorMessage(err)}`.slice(0, 500),
         },
       });
     } catch (err2) {
@@ -447,13 +470,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     }
   }
 
-  async function onMerged(e: Entry, pr_id: string, sha: string): Promise<void> {
-    removeFromQueue(e.ticket.ticket_id);
-    await setStatus(e, "merged");
-    const files = await changedFiles(pr_id);
-    const changed = (e.ticket.interfaces ?? []).filter((i) => files.includes(i.file));
-    mergeLog.push({ ticket_id: e.ticket.ticket_id, sha, files, changed_interfaces: changed });
-    const affected = [...entries.values()]
+  /** 受这次合并影响的其他非终态单（补发时按当时状态重算，T-046）。 */
+  function affectedBy(e: Entry, files: string[], changed: ChangedInterface[]): string[] {
+    return [...entries.values()]
       .filter((o) => o !== e && !TERMINAL.has(o.status))
       .filter(
         (o) =>
@@ -465,19 +484,11 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           ),
       )
       .map((o) => o.ticket.ticket_id);
-    const r: MergeResultRecord = {
-      conflict: e.conflicted,
-      base_changed: e.base_changed,
-      re_reviewed: e.re_reviewed,
-      merged: true,
-    };
-    record(e, pr_id, r);
-    await deps.saveMergeResult?.(e.ticket.ticket_id, {
-      conflicted: e.conflicted,
-      base_changed: e.base_changed,
-      re_reviewed: e.re_reviewed,
-      merged: true,
-    });
+  }
+
+  /** 在注入的 deps.bus 上发一条 interface_changed（onMerged、sync 手动合并、补发共用）。 */
+  async function publishInterfaceChanged(p: PendingInterface): Promise<void> {
+    const { e, pr_id, sha, files, changed } = p;
     await deps.bus.publish({
       ...common(e.ticket),
       type: "interface_changed",
@@ -490,9 +501,91 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
             ? `，涉及接口 ${changed.map((c) => `${c.file}#${c.symbol}`).join("、")}`
             : ""
         }`,
-        affected_ticket_ids: affected,
+        affected_ticket_ids: affectedBy(e, files, changed),
       },
     });
+  }
+
+  /**
+   * 记合并日志并发 interface_changed；发失败进待补发列表（按单号 + sha 去重），只在首次入列时
+   * 发一次 escalated(merged_but, "interface_changed_unsent: …")。不抛。
+   */
+  async function announceMerge(
+    e: Entry,
+    pr_id: string,
+    sha: string,
+    files: string[],
+    logSha: string = sha,
+  ): Promise<void> {
+    const changed = (e.ticket.interfaces ?? []).filter((i) => files.includes(i.file));
+    mergeLog.push({
+      ticket_id: e.ticket.ticket_id,
+      sha: logSha,
+      files,
+      changed_interfaces: changed,
+    });
+    const p: PendingInterface = { e, pr_id, sha, files, changed };
+    try {
+      await publishInterfaceChanged(p);
+    } catch (err) {
+      const key = `${e.ticket.ticket_id}@${sha}`;
+      if (pendingInterface.has(key)) {
+        onError(err, e.ticket.ticket_id);
+        return;
+      }
+      pendingInterface.set(key, p);
+      await reportMergedBut(e, err, "interface_changed_unsent: ");
+    }
+  }
+
+  /** 重试待补发的 interface_changed；成功即移出，不另发事件；失败只调 onError，留到下次。 */
+  async function resendPending(): Promise<void> {
+    if (resending || !pendingInterface.size) return;
+    resending = true;
+    try {
+      for (const [key, p] of [...pendingInterface]) {
+        try {
+          await publishInterfaceChanged(p);
+          pendingInterface.delete(key);
+        } catch (err) {
+          onError(err, p.e.ticket.ticket_id);
+        }
+      }
+    } finally {
+      resending = false;
+    }
+  }
+
+  /**
+   * 合并成功后的收尾。写状态、saveMergeResult 各自 try：失败照旧报 merged_but（detail 格式不变），
+   * 但不挡 interface_changed（T-046）。状态始终保持 merged。不抛。
+   */
+  async function onMerged(e: Entry, pr_id: string, sha: string): Promise<void> {
+    removeFromQueue(e.ticket.ticket_id);
+    e.status = "merged";
+    try {
+      await setStatus(e, "merged");
+    } catch (err) {
+      await reportMergedBut(e, err);
+    }
+    const files = await changedFiles(pr_id);
+    record(e, pr_id, {
+      conflict: e.conflicted,
+      base_changed: e.base_changed,
+      re_reviewed: e.re_reviewed,
+      merged: true,
+    });
+    try {
+      await deps.saveMergeResult?.(e.ticket.ticket_id, {
+        conflicted: e.conflicted,
+        base_changed: e.base_changed,
+        re_reviewed: e.re_reviewed,
+        merged: true,
+      });
+    } catch (err) {
+      await reportMergedBut(e, err);
+    }
+    await announceMerge(e, pr_id, sha, files);
   }
 
   /**
@@ -731,11 +824,13 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   /** 尝试合并一张；返回 false 表示队列里没有可出队的单。 */
   async function step(): Promise<boolean> {
     if (stopped) return false;
-    const id = queue.find((t) => dependencyState(t) === "ready");
+    // 后台任务（复投、重审）进行中的单跳过、留在队里（T-061）：它可能已排回队里、busy 还没清，
+    // 后台任务结束时会再触发一轮
+    const id = queue.find((t) => !entries.get(t)?.busy && dependencyState(t) === "ready");
     if (!id) return false;
     const e = getEntry(id);
     current = e;
-    if (e.status !== "merge_queued" || e.busy || !e.pr_id) {
+    if (e.status !== "merge_queued" || !e.pr_id) {
       // 状态不对（不该在队里）：拿掉，不合并
       removeFromQueue(id);
       return true;
@@ -842,6 +937,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           currentMerged = false;
           let more: boolean;
           try {
+            await resendPending();
             more = await step();
           } catch (err) {
             // 出错的单上报 github_manual，队列继续
@@ -860,6 +956,11 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       .finally(() => {
         pumping = undefined;
         current = undefined;
+        // 循环体退出后才到的触发：补跑一轮（T-061）
+        if (pumpAgain && !stopped) {
+          pumpAgain = false;
+          kick();
+        }
       });
     return pumping;
   }
@@ -1219,16 +1320,34 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           continue;
         try {
           if (c.to === "merged") {
-            // 用户在 GitHub 上手动合并：同步为 merged；没有合并 sha，不发 interface_changed
+            // 用户在 GitHub 上手动合并：同步为 merged，用 6 给的合并 sha 补发 interface_changed（T-046）；
+            // 没有合法 sha 不发、不拿 targetHead() 兜底（可能已含后续提交），只调 onError。
+            // 合并日志一律记空串：手动合并在合并序列里的位置未知，按发现顺序记 sha 会让基于它的单
+            // 误判基线已含之后 9 合入的改动；sha 只用于事件的 base_commit 和补发去重键
             removeFromQueue(e.ticket.ticket_id);
-            await setStatus(e, "merged");
+            e.status = "merged";
+            try {
+              await setStatus(e, "merged");
+            } catch (err) {
+              await reportMergedBut(e, err);
+            }
             const files = await changedFiles(c.pr_id);
-            mergeLog.push({
-              ticket_id: e.ticket.ticket_id,
-              sha: "",
-              files,
-              changed_interfaces: [],
-            });
+            if (c.merge_sha && SHA_RE.test(c.merge_sha)) {
+              await announceMerge(e, c.pr_id, c.merge_sha, files, "");
+            } else {
+              mergeLog.push({
+                ticket_id: e.ticket.ticket_id,
+                sha: "",
+                files,
+                changed_interfaces: [],
+              });
+              onError(
+                new Error(
+                  `${c.pr_id} 手动合并但没有合法的 merge_sha（${c.merge_sha ?? "缺省"}），不发 interface_changed`,
+                ),
+                e.ticket.ticket_id,
+              );
+            }
             applied.push(c);
           } else if (c.to === "closed") {
             // 用户手动关闭：6 已发 escalated(github_manual)，9 只改状态
@@ -1243,6 +1362,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           onError(err, e.ticket.ticket_id);
         }
       }
+      // 先应用本次变化再补发：affected 按最新状态重算（T-046）
+      await resendPending();
       if (applied.length) {
         kick();
         kickDispatch();

@@ -56,6 +56,8 @@ export interface SyncChange {
   pr_id: string;
   from: PrStatus;
   to: PrStatus;
+  /** to 为 "merged" 时 GitHub 返回的合并提交 sha（merge_commit_sha）；拿不到时缺省。本地 provider 不填。 */
+  merge_sha?: string;
 }
 
 export type GetSecret = (name: string) => string | undefined | Promise<string | undefined>;

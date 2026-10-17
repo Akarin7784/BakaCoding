@@ -49,4 +49,4 @@ const zip_path = await exportPackage(
 
 ## 需求单 `fields` 不进包（T-056）
 
-模块 2 的需求单结构化字段 `fields` 按设计不脱敏，所以诊断包不带它：存储的 `diagnosticsSource()` 不读出这一列，`buildPackage` 也只按字段白名单拼 `DiagTicket`，不展开整条记录。`storage-source.test.ts` 里有回归测试，两道各测一次。
+模块 2 的需求单结构化字段 `fields` 按设计不脱敏，所以诊断包不带它：存储的 `diagnosticsSource()` 不读出这一列，`buildPackage` 也只按字段白名单拼 `DiagTicket`，不展开整条记录。`storage-source.test.ts` 里有回归测试，两道各测一次；存储那道按单子、需求、时间范围三种范围各导一次（时间范围由 T-050 补上），并检查 `tickets.jsonl` 里每条记录都没有 `fields` 键。

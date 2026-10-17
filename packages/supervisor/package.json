@@ -17,6 +17,8 @@
     "@bakacoding/scheduler": "workspace:*",
     "@bakacoding/storage": "workspace:*",
     "@bakacoding/sub-agent": "workspace:*",
-    "@bakacoding/types": "workspace:*"
+    "@bakacoding/types": "workspace:*",
+    "@bakacoding/workspace": "workspace:*",
+    "zod": "^3.25.76"
   }
 }
