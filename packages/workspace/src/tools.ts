@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { Worker } from "node:worker_threads";
 import { chmod, mkdir, open, readdir, realpath, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, join, posix } from "node:path";
 import { minimatch } from "minimatch";
@@ -13,6 +14,12 @@ import {
   resolveInWorkspace,
   type ResolvedPath,
 } from "./guard.js";
+import {
+  defaultPermissionRegistry,
+  requestWriteScope,
+  type PermissionRegistry,
+  type ScopeRequestOptions,
+} from "./permissions.js";
 
 /** 与 5 的 `ToolResult` 同形：失败带 FS_* 错误码，原样交还模型。 */
 export type ToolResult =
@@ -25,7 +32,17 @@ export type FileTools = Record<FileToolName, (input: unknown) => Promise<ToolRes
 export interface CreateToolsOptions {
   ticket_id: string;
   worktree_path: string;
+  /** 初始权限清单，登记进 `registry`；之后 `applyPermissions` 可整份替换。 */
   permission_list: PermissionList;
+  /** 权限登记表，默认进程内共享的 `defaultPermissionRegistry`（`applyPermissions` 作用于它）。 */
+  registry?: PermissionRegistry;
+  /**
+   * 越界写申请：给了才在写被权限清单拒绝时发 `write_scope_requested` 并等批复；
+   * 不给就直接返回 FS_PERMISSION_DENIED。受保护路径和工作区外路径从不申请。
+   */
+  scope_requests?: ScopeRequestOptions;
+  /** grep 一次调用的总时长上限，默认 GREP_TIMEOUT_MS。 */
+  grep_timeout_ms?: number;
 }
 
 export interface ToolDefinition {
@@ -44,6 +61,10 @@ export const READ_MAX_BYTES = 50 * 1024;
 export const GLOB_LIMIT = 100;
 /** grep 最多返回的匹配行数。 */
 export const GREP_LIMIT = 250;
+/** grep 正则的最大长度（字符）。 */
+export const GREP_PATTERN_MAX_LENGTH = 1000;
+/** grep 一次调用的总时长上限：正则在独立线程里跑，超时直接终止线程，防灾难性回溯卡死进程。 */
+export const GREP_TIMEOUT_MS = 10_000;
 /** read / write / edit / grep 处理的单文件大小上限。 */
 export const MAX_FILE_BYTES = 10 * 1024 * 1024;
 /** glob / grep 一次最多遍历的条目数，防止扫到巨型目录卡死。 */
@@ -51,9 +72,9 @@ export const WALK_LIMIT = 50_000;
 
 /**
  * 五个文件工具的定义（名称、参数与 DeepSeek Harness dsh-v0.2.1-alpha.5 完整模式一致），
- * 由 5 放进公共前缀；内容是常量，逐字节稳定。
+ * 由 5 放进公共前缀；内容是常量，逐字节稳定，并且整棵深冻结（改任何一层都会在严格模式下抛 TypeError）。
  */
-export const FILE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
+export const FILE_TOOL_DEFINITIONS: readonly ToolDefinition[] = deepFreeze<ToolDefinition[]>([
   {
     name: "read",
     description:
@@ -148,7 +169,16 @@ export const FILE_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
       additionalProperties: false,
     },
   },
-];
+]);
+
+/** 递归冻结（含 input_schema 里的每一层）：公共前缀的字节不能被任何调用方改掉。 */
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const v of Object.values(value)) deepFreeze(v);
+    Object.freeze(value);
+  }
+  return value;
+}
 
 const NOT_OBSERVED = (p: string): string =>
   `cannot modify "${p}": file has not been read — read the file, then retry`;
@@ -299,7 +329,8 @@ async function walk(
     for (const e of entries) {
       if (++visited > WALK_LIMIT) return { files, capped: true };
       const rel = dir.rel === "" ? e.name : `${dir.rel}/${e.name}`;
-      if (isProtectedPath(rel)) continue;
+      // 目录按写入规则判（.env.example 目录也拒），文件按只读规则判（.env.example 文件可列出、可搜索）
+      if (isProtectedPath(rel, e.isDirectory() ? "rw" : "ro")) continue;
       const abs = join(dir.abs, e.name);
       if (e.isDirectory()) {
         stack.push({ abs, rel });
@@ -309,7 +340,7 @@ async function walk(
         try {
           const target = await realpath(abs);
           const r = relInside(root, target);
-          if (r === null || r === "" || isProtectedPath(r)) continue;
+          if (r === null || r === "" || isProtectedPath(r, "ro")) continue;
           if (!(await stat(target)).isFile()) continue;
           if (permissionFor(list, rel) === "deny" || permissionFor(list, r) === "deny") continue;
           files.push({ rel, abs: target });
@@ -320,6 +351,81 @@ async function walk(
     }
   }
   return { files, capped: false };
+}
+
+/**
+ * 独立线程里的正则匹配：线程按需启动、每次 grep 一个；从第一次匹配起计总时长，超时直接 terminate，
+ * 灾难性回溯只会卡住这个线程，不会卡住主进程。代码以字符串内联（eval），不依赖构建产物路径。
+ */
+const GREP_WORKER_SOURCE = `
+const { parentPort, workerData } = require("node:worker_threads");
+const re = new RegExp(workerData.pattern);
+parentPort.on("message", (m) => {
+  const hits = [];
+  for (let i = 0; i < m.lines.length && hits.length < m.max; i++) if (re.test(m.lines[i])) hits.push(i);
+  parentPort.postMessage(hits);
+});
+`;
+
+class GrepMatcher {
+  private worker: Worker | undefined;
+  private deadline = 0;
+  constructor(
+    private readonly pattern: string,
+    private readonly timeoutMs: number,
+  ) {}
+
+  private timeoutError(): FsToolError {
+    return new FsToolError(
+      `grep pattern took longer than ${this.timeoutMs} ms and was stopped — simplify the regular expression (avoid nested quantifiers such as (a+)+) or narrow path / include`,
+      "FS_GREP_TIMEOUT",
+    );
+  }
+
+  /** 返回匹配的行下标（最多 max 个，升序）。 */
+  async match(lines: readonly string[], max: number): Promise<number[]> {
+    if (lines.length === 0 || max <= 0) return [];
+    if (!this.worker) {
+      this.worker = new Worker(GREP_WORKER_SOURCE, {
+        eval: true,
+        workerData: { pattern: this.pattern },
+      });
+      this.deadline = Date.now() + this.timeoutMs;
+    }
+    const worker = this.worker;
+    const left = this.deadline - Date.now();
+    if (left <= 0) throw this.timeoutError();
+    return await new Promise<number[]>((resolve, reject) => {
+      const cleanup = (): void => {
+        clearTimeout(timer);
+        worker.off("message", onMessage);
+        worker.off("error", onError);
+      };
+      const onMessage = (hits: number[]): void => {
+        cleanup();
+        resolve(hits);
+      };
+      const onError = (err: Error): void => {
+        cleanup();
+        reject(new FsToolError(`grep failed: ${err.message}`, "FS_IO_ERROR"));
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        void worker.terminate();
+        this.worker = undefined;
+        reject(this.timeoutError());
+      }, left);
+      worker.on("message", onMessage);
+      worker.on("error", onError);
+      worker.postMessage({ lines, max });
+    });
+  }
+
+  async close(): Promise<void> {
+    const w = this.worker;
+    this.worker = undefined;
+    if (w) await w.terminate();
+  }
 }
 
 function compileGlob(pattern: string): (rel: string) => boolean {
@@ -334,10 +440,48 @@ function compileGlob(pattern: string): (rel: string) => boolean {
  * - `.git`、`.env` 类、私钥类文件永不放行（FS_PROTECTED_PATH），权限清单给 rw 也不行。
  * - 权限清单后条覆盖前条，未匹配即拒绝（FS_PERMISSION_DENIED）；glob / grep 结果里直接跳过被拒文件。
  * - 失败时文件不动；写入走同目录临时文件 + rename。
- * - 不提供 shell、网络、git。越界写目前直接返回 FS_PERMISSION_DENIED，申请扩大写入范围由 T-011 接入。
+ * - 不提供 shell、网络、git。越界写：配了 scope_requests 就发「需要扩大写入范围」等批复，否则直接 FS_PERMISSION_DENIED。
+ * - 权限清单登记在 registry 里，`applyPermissions(ticket_id, list)` 整份替换后立刻生效。
+ * - grep 的正则在独立线程里跑，总时长超过 grep_timeout_ms 就终止线程并报 FS_GREP_TIMEOUT。
  */
 export function createTools(opts: CreateToolsOptions): FileTools {
-  const list = opts.permission_list;
+  const registry = opts.registry ?? defaultPermissionRegistry;
+  registry.applyPermissions(opts.ticket_id, opts.permission_list);
+  // 每次判定都取登记表里的当前清单：applyPermissions / 批准的范围立刻生效
+  const perms = (): PermissionList => registry.get(opts.ticket_id) ?? [];
+
+  /**
+   * 写入判定：被权限清单拒绝（FS_PERMISSION_DENIED）且配了 scope_requests 时，
+   * 发「需要扩大写入范围」并等批复；批准后把范围以 rw 追加到清单末尾再判一次，拒绝或超时返回 FS_PERMISSION_DENIED。
+   */
+  const ensureWritable = async (target: ResolvedPath): Promise<void> => {
+    try {
+      assertAllowed(perms(), target, "rw");
+      return;
+    } catch (err) {
+      if (
+        !(err instanceof FsToolError) ||
+        err.code !== "FS_PERMISSION_DENIED" ||
+        !opts.scope_requests
+      )
+        throw err;
+    }
+    const scope = [...new Set([target.display, target.realRel])];
+    const decision = await requestWriteScope(
+      opts.scope_requests,
+      opts.ticket_id,
+      scope,
+      `write "${target.display}" is outside the current write scope`,
+    );
+    if (!decision.granted) {
+      throw new FsToolError(
+        `writing "${target.display}" needs a wider write scope and the request was denied: ${decision.reason}`,
+        "FS_PERMISSION_DENIED",
+      );
+    }
+    registry.grant(opts.ticket_id, decision.granted_scope);
+    assertAllowed(perms(), target, "rw");
+  };
   const observed = new Map<string, string>();
   let rootP: Promise<string> | undefined;
   const root = (): Promise<string> => (rootP ??= realpath(opts.worktree_path));
@@ -366,7 +510,7 @@ export function createTools(opts: CreateToolsOptions): FileTools {
 
   const read = wrap(async (input, r) => {
     const target = await resolveInWorkspace(r, input.file_path);
-    assertAllowed(list, target, "ro");
+    assertAllowed(perms(), target, "ro");
     const offset = optPositiveInt(input.offset, "offset", 1);
     const limit = Math.min(optPositiveInt(input.limit, "limit", READ_LIMIT), READ_LIMIT);
     if (!target.exists) throw new FsToolError(`"${target.display}" not found`, "FS_NOT_FOUND");
@@ -410,7 +554,7 @@ export function createTools(opts: CreateToolsOptions): FileTools {
     if (typeof input.content !== "string") {
       throw new FsToolError("content must be a string", "FS_INVALID_INPUT");
     }
-    assertAllowed(list, target, "rw");
+    await ensureWritable(target);
     const content = input.content;
     if (Buffer.byteLength(content, "utf8") > MAX_FILE_BYTES) {
       throw new FsToolError(`content is larger than ${MAX_FILE_BYTES} bytes`, "FS_FILE_TOO_LARGE");
@@ -457,7 +601,7 @@ export function createTools(opts: CreateToolsOptions): FileTools {
     if (typeof replaceAll !== "boolean") {
       throw new FsToolError("replace_all must be a boolean", "FS_INVALID_INPUT");
     }
-    assertAllowed(list, target, "rw");
+    await ensureWritable(target);
     const seen = observed.get(target.abs);
     if (!target.exists) {
       if (seen !== undefined) throw staleEdit(target.display);
@@ -519,7 +663,7 @@ export function createTools(opts: CreateToolsOptions): FileTools {
       throw new FsToolError(`"${dir.display}" is not a directory`, "FS_NOT_A_DIRECTORY");
     }
     const match = compileGlob(input.pattern.replace(/^\.\//, ""));
-    const { files, capped } = await walk(r, dir, list);
+    const { files, capped } = await walk(r, dir, perms());
     const prefix = dir.realRel === "" ? "" : `${dir.realRel}/`;
     const hits: Array<{ rel: string; mtime: number }> = [];
     for (const f of files) {
@@ -548,9 +692,15 @@ export function createTools(opts: CreateToolsOptions): FileTools {
     if (typeof input.pattern !== "string" || input.pattern.length === 0) {
       throw new FsToolError("pattern must be a non-empty string", "FS_INVALID_INPUT");
     }
-    let re: RegExp;
+    if (input.pattern.length > GREP_PATTERN_MAX_LENGTH) {
+      throw new FsToolError(
+        `pattern is longer than ${GREP_PATTERN_MAX_LENGTH} characters`,
+        "FS_INVALID_INPUT",
+      );
+    }
     try {
-      re = new RegExp(input.pattern);
+      // 只在这里检查语法；真正的匹配在独立线程里跑
+      new RegExp(input.pattern);
     } catch (err) {
       throw new FsToolError(
         `invalid regular expression: ${(err as Error).message}`,
@@ -570,45 +720,50 @@ export function createTools(opts: CreateToolsOptions): FileTools {
     let capped = false;
     const isDir = (await stat(start.abs)).isDirectory();
     if (isDir) {
-      ({ files, capped } = await walk(r, start, list));
+      ({ files, capped } = await walk(r, start, perms()));
       files.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
     } else {
-      assertAllowed(list, start, "ro");
+      assertAllowed(perms(), start, "ro");
       files = [{ rel: start.display, abs: start.abs }];
     }
     const prefix = start.realRel === "" ? "" : `${start.realRel}/`;
     const groups: string[] = [];
     let total = 0;
     let more = false;
-    for (const f of files) {
-      const relToStart = isDir ? f.rel.slice(prefix.length) : posix.basename(f.rel);
-      if (!include(relToStart)) continue;
-      let buf: Buffer;
-      try {
-        if ((await stat(f.abs)).size > MAX_FILE_BYTES) continue;
-        const fh = await open(f.abs, "r");
+    const matcher = new GrepMatcher(input.pattern, opts.grep_timeout_ms ?? GREP_TIMEOUT_MS);
+    try {
+      for (const f of files) {
+        const relToStart = isDir ? f.rel.slice(prefix.length) : posix.basename(f.rel);
+        if (!include(relToStart)) continue;
+        let buf: Buffer;
         try {
-          buf = await fh.readFile();
-        } finally {
-          await fh.close();
+          if ((await stat(f.abs)).size > MAX_FILE_BYTES) continue;
+          const fh = await open(f.abs, "r");
+          try {
+            buf = await fh.readFile();
+          } finally {
+            await fh.close();
+          }
+        } catch {
+          continue;
         }
-      } catch {
-        continue;
-      }
-      if (isBinary(buf)) continue;
-      const lines = splitLines(buf.toString("utf8"));
-      const hits: string[] = [];
-      for (let i = 0; i < lines.length; i++) {
-        if (!re.test(lines[i] as string)) continue;
-        if (total >= GREP_LIMIT) {
-          more = true;
-          break;
+        if (isBinary(buf)) continue;
+        const lines = splitLines(buf.toString("utf8"));
+        const hits: string[] = [];
+        // 多要一条，用来判断是否还有更多匹配
+        for (const i of await matcher.match(lines, GREP_LIMIT - total + 1)) {
+          if (total >= GREP_LIMIT) {
+            more = true;
+            break;
+          }
+          hits.push(`  ${i + 1}: ${truncateLine(lines[i] as string)}`);
+          total++;
         }
-        hits.push(`  ${i + 1}: ${truncateLine(lines[i] as string)}`);
-        total++;
+        if (hits.length > 0) groups.push(`${f.rel}\n${hits.join("\n")}`);
+        if (more) break;
       }
-      if (hits.length > 0) groups.push(`${f.rel}\n${hits.join("\n")}`);
-      if (more) break;
+    } finally {
+      await matcher.close();
     }
     if (groups.length === 0) {
       return capped

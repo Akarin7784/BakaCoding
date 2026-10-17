@@ -35,16 +35,24 @@ const ENV_SEGMENT = /^\.env(rc)?(\..*)?$/i;
 const KEY_BASENAME = /^(id_(rsa|dsa|ecdsa|ed25519)|\.netrc|\.pgpass|_netrc)$/i;
 const KEY_EXT = /\.(pem|key|p12|pfx|jks|keystore)$/i;
 
+/** 唯一的只读例外：文件名正好是 `.env.example`（大小写不敏感）。 */
+const ENV_EXAMPLE = /^\.env\.example$/i;
+
 /**
- * 外层硬边界里永远不放行的路径（权限清单写 rw 也不行）：
+ * 外层硬边界里不放行的路径（权限清单写 rw 也不行）：
  * 任何一段是 `.git`；任何一段是 `.env` / `.env.*` / `.envrc` / `.envrc.*`（大小写不敏感，与模块 11 同规则）；
  * 私钥类文件（id_rsa 等、.netrc、.pgpass、*.pem / *.key / *.p12 / *.pfx / *.jks / *.keystore）。
+ * 例外：`access` 为 "ro" 时，最后一段是 `.env.example` 且前面各段都不受保护，放行给权限清单判定（只读）；
+ * 写 `.env.example` 仍然拒绝。
  */
-export function isProtectedPath(rel: string): boolean {
+export function isProtectedPath(rel: string, access: "ro" | "rw" = "rw"): boolean {
   if (rel === "" || rel === ".") return false;
   const segs = rel.split("/");
-  if (segs.some((s) => s.toLowerCase() === ".git" || ENV_SEGMENT.test(s))) return true;
   const base = segs[segs.length - 1] ?? "";
+  const dirs = segs.slice(0, -1);
+  if (dirs.some((s) => s.toLowerCase() === ".git" || ENV_SEGMENT.test(s))) return true;
+  if (access === "ro" && ENV_EXAMPLE.test(base)) return false;
+  if (base.toLowerCase() === ".git" || ENV_SEGMENT.test(base)) return true;
   return KEY_BASENAME.test(base) || KEY_EXT.test(base);
 }
 
@@ -145,7 +153,7 @@ export async function resolveInWorkspace(
 
 export function protectedError(display: string): FsToolError {
   return new FsToolError(
-    `"${display}" is a protected path (.git, .env files and private keys are never accessible)`,
+    `"${display}" is a protected path (.git, .env files and private keys are never accessible; .env.example is read-only)`,
     "FS_PROTECTED_PATH",
   );
 }
@@ -157,7 +165,7 @@ export function assertAllowed(
   need: "ro" | "rw",
 ): void {
   const rels = [...new Set([target.display, target.realRel])];
-  if (rels.some(isProtectedPath)) throw protectedError(target.display);
+  if (rels.some((r) => isProtectedPath(r, need))) throw protectedError(target.display);
   for (const rel of rels) {
     const level = permissionFor(list, rel);
     if (level === "deny") {

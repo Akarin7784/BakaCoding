@@ -26,3 +26,4 @@ storage.health(); // { ok, lease_lost, closed, ingest_failures, last_failure? }
 - **保留期**：`purgeExpired()` 把超过 `retention_days` 的调用的提示词和输出清掉，只留统计和输出前 200 字的摘要（查出来 `prompt` 为空串、`output` 为摘要）；`markForEvalSet(ticket_id)` 的单永久保留。
 - **表结构升级**：`src/schema.sql.ts` 按 `PRAGMA user_version` 依次执行，只加不改；v2（T-022）给旧库加毫秒列并回填，加 `events.seq` 唯一索引（旧库若已有重复 seq，升级会失败并停在 v1，不会悄悄丢数据）。
 - **项目列表与轮次评审人（T-010）**：`listProjects()`（写入方和只读连接都有）返回 `{ project_id, created_at }[]`，按创建时间排序。PR 轮次记录可带 `reviewer`（评审组成员 id、`"supervisor"` 或 `null`），结构字段原样往返、不脱敏、不校验成员；旧记录读出 `null`。
+- **按单取轮次（T-011）**：`listPrRounds(ticket_id)`（写入方和只读连接都有）返回该单全部 PR 轮次，按轮次升序，旧记录 `reviewer` 读出 `null`，单不存在返回空数组。
