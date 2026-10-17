@@ -53,36 +53,45 @@ const MAX_NOTE_SUMMARY = 2000;
  */
 const SCOPE_REQUEST_WILDCARD = /[*?[\]{}()!+@]/;
 
-/** 依赖清单 / 锁文件的文件名模式：`DEPENDENCY_MANIFEST_GLOBS` 里不带目录的那些（`package.json`、`*.lock` 等）。 */
+/**
+ * 依赖清单 / 锁文件的文件名模式：`DEPENDENCY_MANIFEST_GLOBS` 里不带目录的那些（`package.json`、`*.lock` 等），
+ * 统一转小写（T-065：文件名不区分大小写，只在依赖文件判定这里做，模块 4 的 glob 语义不变）。
+ */
 const DEPENDENCY_BASENAME_RULES = DEPENDENCY_MANIFEST_GLOBS.filter((g) => !g.includes("/")).map(
-  (glob) => ({ glob, level: "rw" as const }),
+  (glob) => ({ glob: glob.toLowerCase(), level: "rw" as const }),
 );
 
 /**
  * 是否是依赖清单 / 锁文件（T-041c 起导出，组合根重启补判用）：一律按文件名（basename）匹配
  * `DEPENDENCY_MANIFEST_GLOBS` 的文件名模式，所以任意子目录里的 `package.json`、`pnpm-lock.yaml` 等都算；
- * `docs/package.json.md` 这类只是名字像的不算。匹配规则同模块 4。
+ * 文件名不区分大小写（T-065：`Package.json`、`PNPM-LOCK.YAML` 也算），但仍要整个文件名匹配，
+ * `docs/package.json.md`、`docs/Package.json.md` 这类只是名字像的不算。匹配规则同模块 4（先把文件名转小写）。
  */
 export function isDependencyFile(path: string): boolean {
   const name = path.split("/").filter(Boolean).at(-1);
   if (!name) return false;
-  return permissionFor(DEPENDENCY_BASENAME_RULES, name) === "rw";
+  return permissionFor(DEPENDENCY_BASENAME_RULES, name.toLowerCase()) === "rw";
 }
 
 /**
- * diff 里的一个文件算不算高风险（T-041c）：落在依赖清单 / 锁文件上，或是改名（`renamed`）。
- * 改名一律算：6 的 DiffFile 只有新路径，把 `package.json` 改名走的 diff 看不出旧路径是依赖文件。
- * T-065 给 DiffFile 加 `old_path` 后，改名兜底收窄成只看新旧路径是不是依赖文件——只改这一处。
+ * diff 里的一个文件算不算高风险（T-041c，T-065 收窄）：新路径 `path` 是依赖清单 / 锁文件；或者是改名
+ * （`renamed`），且旧路径 `old_path`（6 对改名的文件填上）是依赖文件——例如把 `package.json` 改名成 `x.json`。
+ * 改名但没有 `old_path`（旧数据、别的 PR 实现）看不出旧路径，仍按 041c 的兜底一律算高风险。
+ * 删除的文件 `path` 就是原路径，照常按 `path` 判。带 `old_path` 的普通文件改名（`a.ts` → `b.ts`）不算。
  * 8 评审前判高风险、组合根重启接管时补判（N4）都用它。
  */
-export function isHighRiskDiffFile(file: Pick<DiffFile, "path" | "status">): boolean {
-  return file.status === "renamed" || isDependencyFile(file.path);
+export function isHighRiskDiffFile(file: Pick<DiffFile, "path" | "status" | "old_path">): boolean {
+  return (
+    isDependencyFile(file.path) ||
+    (file.status === "renamed" && (file.old_path === undefined || isDependencyFile(file.old_path)))
+  );
 }
 
 /**
  * 高风险的理由（T-041c，`pendingHighRisk` / T-062 界面用）：
  * - `dependency_kind`：主管把单标成依赖类（`kind: "dependency"`）；
- * - `dependency_file`：diff 改了依赖清单 / 锁文件（含删除的；改名的一律算，见 `isHighRiskDiffFile`）；
+ * - `dependency_file`：diff 改了依赖清单 / 锁文件（含删除的；改名的看新旧路径，没有旧路径的改名一律算，
+ *   见 `isHighRiskDiffFile`）；
  * - `diff_unavailable`：取不到 diff（重启补判或扣住时取 diff 出错），按高风险处理；
  * - `unverified`：9 标了高风险，但现在的 diff 看不出依赖改动（例如 8 交出前重取 diff 失败）。
  */
@@ -92,17 +101,29 @@ export type HighRiskReason =
 /** `highRiskEvidence` 最多列出的文件数，其余计入 `files_more`。 */
 export const HIGH_RISK_FILES_MAX = 20;
 
+/** 一个命中的高风险文件（T-065 起是对象）：`path` 是 diff 里的路径（改名为新路径）；改名的带 `old_path`。 */
+export interface HighRiskFile {
+  path: string;
+  old_path?: string;
+}
+
 /**
  * 整理一张高风险单的理由和命中的文件（T-041c）：纯函数，不取 diff。`files` 传 null 表示取不到 diff。
  * 命中的文件按 diff 的顺序最多列 `HIGH_RISK_FILES_MAX` 个，其余只计数。
  */
 export function highRiskEvidence(input: {
   kind?: string | undefined;
-  files: readonly Pick<DiffFile, "path" | "status">[] | null;
-}): { reasons: HighRiskReason[]; files: string[]; files_more: number } {
+  files: readonly Pick<DiffFile, "path" | "status" | "old_path">[] | null;
+}): { reasons: HighRiskReason[]; files: HighRiskFile[]; files_more: number } {
   const reasons: HighRiskReason[] = [];
   if (input.kind === "dependency") reasons.push("dependency_kind");
-  const hit = input.files ? input.files.filter(isHighRiskDiffFile).map((f) => f.path) : [];
+  const hit: HighRiskFile[] = input.files
+    ? input.files
+        .filter(isHighRiskDiffFile)
+        .map((f) =>
+          f.old_path !== undefined ? { path: f.path, old_path: f.old_path } : { path: f.path },
+        )
+    : [];
   if (hit.length) reasons.push("dependency_file");
   if (input.files === null) reasons.push("diff_unavailable");
   else if (!reasons.length) reasons.push("unverified");
@@ -838,7 +859,7 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
       s.stage = "diff";
       const diff = await deps.pr.diff(pr_id);
       // 依赖类单标高风险（T-038）：主管标了 kind: "dependency"，或 diff 改了依赖清单 / 锁文件；
-      // T-041c 起改名的文件也算（isHighRiskDiffFile，T-065 收窄）
+      // 改名的文件看新旧路径（isHighRiskDiffFile，T-065）
       let high_risk = s.ticket.kind === "dependency" || diff.files.some(isHighRiskDiffFile);
       let result: ReviewResult;
       s.stage = "permissions";
