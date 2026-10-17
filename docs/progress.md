@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`1d0c4a9` · main 上测试：30 个测试文件、427 个测试全部通过 · 更新日期：2026-10-17（UTC+8）
+> 上次更新时 main：`61eed0c` · main 上测试：31 个测试文件、477 个测试全部通过 · 更新日期：2026-10-17（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -37,8 +37,8 @@ flowchart BT
   classDef doing fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef done fill:#dcfce7,stroke:#16a34a,color:#14532d
 
-  class M0,M2,M6,M11,M12,T done
-  class M1,M3,M4,M5,M7,M8,M9 doing
+  class M0,M1,M2,M6,M11,M12,T done
+  class M3,M4,M5,M7,M8,M9 doing
   class M10 todo
 ```
 
@@ -58,7 +58,7 @@ flowchart BT
 | T-001 | 共享类型：事件、权限清单、LedgerStore 与 zod schema | 共享类型包 | 基础层开发 | 已合入 | #3 | `56cfaca` |
 | T-002 | 读配置与读密钥接口（getConfig / validate / getSecret），补齐示例配置 | 3 | 基础层开发 | 已合入 | #5 | `adf612a` |
 | T-003 | 事件总线 publish / subscribe | 0 | 基础层开发 | 已合入 | #13 | `ea51630` |
-| T-004 | 模型接入层 call / capabilities / rateLimitState；多轮 `chat()`、可选 `signal`、超预算抛 `BudgetExceededError` | 1 | 基础层开发 | 待评审 | #39 | — |
+| T-004 | 模型接入层 call / capabilities / rateLimitState；多轮 `chat()`、可选 `signal`、超预算抛 `BudgetExceededError` | 1 | 基础层开发 | 已合入 | #39 | `61eed0c` |
 | T-005 | SQLite（WAL）与事件落库；另含总线 `initialSeq`、订阅队列上限、`DiagnosticsSource` 移入 types、modules.md 公共字段措辞 | 2 | 基础层开发 | 已合入 | #19 | `95cd3f3` |
 | T-006 | 预算台账 recordCost / budgetState | 3 | 基础层开发 | 已合入 | #23 | `14c1698` |
 | T-007 | 脱敏函数 redact（light / full） | 3 | 基础层开发 | 已合入 | #6 | `4f20ce0` |
