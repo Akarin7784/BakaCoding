@@ -41,6 +41,31 @@ export function sanitizeReloadReason(
   return sanitizeSyncErrorMessage(out, env, max);
 }
 
+/** 切换项目失败原因上限（与导入结果同一档） */
+export const SWITCH_REASON_MAX = 2000;
+
+/**
+ * 切换项目失败原因脱敏（UI-03，同 #95 / T-093 的做法）：新仓库根写成「<新仓库>」、原仓库根写成「<原仓库>」
+ * （长的先换，嵌套目录也不会换错），其余绝对路径、密钥值、令牌再走 sanitizeReloadReason。
+ */
+export function sanitizeSwitchReason(
+  message: string,
+  newRepo: string,
+  oldRepo: string,
+  env: Readonly<Record<string, string | undefined>>,
+  max = SWITCH_REASON_MAX,
+): string {
+  const roots = [
+    { root: newRepo, label: "<新仓库>" },
+    { root: oldRepo, label: "<原仓库>" },
+  ]
+    .filter((r) => r.root.length > 1)
+    .sort((a, b) => b.root.length - a.root.length);
+  let out = message;
+  for (const r of roots) out = out.split(r.root).join(r.label);
+  return sanitizeReloadReason(out, "", env, max);
+}
+
 export interface SwitcherOptions {
   /** 排队重载时检查在途单的间隔（默认 1000ms，测试注入） */
   reloadPollMs?: number;
@@ -158,6 +183,8 @@ export class BackendSwitcher implements BackendHandle {
     const quitting: SwitchResult = { ok: false, reason: "程序正在退出" };
     this.switching = true;
     const oldRepo = this.current.repoRoot();
+    // UI-03：失败原因里的新 / 原仓库路径和其他绝对路径都换成占位符
+    const clean = (m: string) => sanitizeSwitchReason(m, repo, oldRepo, this.env);
     const wasReady = this.rendererReady;
     this.rendererReady = false;
     try {
@@ -179,14 +206,18 @@ export class BackendSwitcher implements BackendHandle {
         if (back.handle && back.handle.status().mode === "live") {
           this.install(back.handle);
           this.restoreReady(wasReady);
-          return { ok: false, reason: `新仓库没能启动（${next.why}），已回到原仓库` };
+          return { ok: false, reason: clean(`新仓库没能启动（${next.why}），已回到原仓库`) };
         }
         await back.handle?.stop();
-        this.install(readonlyBackend(oldRepo, `切换项目失败，原仓库也没能重新启动（${back.why}）`));
+        this.install(
+          readonlyBackend(oldRepo, clean(`切换项目失败，原仓库也没能重新启动（${back.why}）`)),
+        );
         this.restoreReady(wasReady);
         return {
           ok: false,
-          reason: `新仓库没能启动（${next.why}），原仓库也没能重新启动（${back.why}），现在是只读模式，请重启程序`,
+          reason: clean(
+            `新仓库没能启动（${next.why}），原仓库也没能重新启动（${back.why}），现在是只读模式，请重启程序`,
+          ),
         };
       }
       try {
@@ -198,11 +229,7 @@ export class BackendSwitcher implements BackendHandle {
         return {
           ok: false,
           switched: true,
-          reason: sanitizeSyncErrorMessage(
-            `已切换到新仓库，但导入项目失败：${msg}`,
-            this.env,
-            2000,
-          ),
+          reason: clean(`已切换到新仓库，但导入项目失败：${msg}`),
         };
       }
     } finally {

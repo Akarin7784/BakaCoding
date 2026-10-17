@@ -355,7 +355,6 @@ export const WINDOW_THEME_FAILED = "主题设置失败";
  * 主题同步 IPC（UI-02）：渲染进程把「跟随系统 / 浅 / 深」发过来，主进程设 nativeTheme.themeSource，
  * 再按实际深浅刷新标题栏叠层颜色。参数不认识就拒绝，不改主进程状态。
  */
-
 export function serveWindowTheme(ipc: IpcMainLike, deps: WindowThemeDeps): () => void {
   ipc.handle(IPC_CHANNELS.windowTheme, (...args: unknown[]) => {
     const source = args[1];

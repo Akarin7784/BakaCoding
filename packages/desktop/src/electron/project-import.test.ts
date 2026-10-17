@@ -966,3 +966,117 @@ describe("评审跟进（T-072 #82）", () => {
     });
   });
 });
+
+describe("T-100：导入检查的 JSON / 价格表错误不带原文和路径", () => {
+  const MARK = "MARKER_raw_text_q9";
+
+  it("models.json 坏 JSON 有位置：只报行列号，不拼 Node 的 message", () => {
+    const r = repo();
+    writeFileSync(join(r, "config", "models.json"), `{\n  "${MARK}": 1 "b": 2}`);
+    const c = checkProjectDir(r, env);
+    expect(c.ok).toBe(false);
+    if (c.ok) return;
+    expect(c.reason).toContain("config/models.json 不是合法 JSON（第 2 行第 ");
+    expect(c.reason).not.toContain("position");
+    expect(c.reason).not.toContain("Expected");
+    expect(c.reason).not.toContain(r);
+  });
+
+  it("models.json 坏 JSON 没有位置：只说不是合法 JSON，原文片段不出现", () => {
+    const r = repo();
+    writeFileSync(join(r, "config", "models.json"), `{\n  "a": ${MARK} }`);
+    const c = checkProjectDir(r, env);
+    expect(c.ok).toBe(false);
+    if (c.ok) return;
+    expect(c.reason).toContain("config/models.json 不是合法 JSON");
+    expect(c.reason).not.toContain(MARK);
+    expect(c.reason).not.toContain("Unexpected");
+  });
+
+  it("models.json 读不到：只报错误码", () => {
+    const r = repo();
+    rmSync(join(r, "config", "models.json"));
+    mkdirSync(join(r, "config", "models.json"));
+    const c = checkProjectDir(r, env);
+    expect(c.ok).toBe(false);
+    if (c.ok) return;
+    expect(c.reason).toContain("config/models.json 读取失败（EISDIR）");
+    expect(c.reason).not.toContain("illegal operation");
+    expect(c.reason).not.toContain(r);
+  });
+
+  it("pricing.json 坏：直接用 3 的 ConfigError 各条（只有文件名和行列号），不带原文和完整路径", () => {
+    const r = repo();
+    writeFileSync(join(r, "config", "pricing.json"), `{\n  "a": ${MARK} }`);
+    const c = checkProjectDir(r, env);
+    expect(c.ok).toBe(false);
+    if (c.ok) return;
+    expect(c.reason).toContain("config/pricing.json 校验失败：价格表 pricing.json 不是合法 JSON");
+    expect(c.reason).not.toContain("配置校验失败：\n");
+    expect(c.reason).not.toContain(MARK);
+    expect(c.reason).not.toContain(r);
+  });
+});
+
+describe("UI-03：切换项目失败原因脱敏（新 / 原仓库路径、其他绝对路径、密钥值）", () => {
+  it("新仓库组装抛错带路径：原因里只有占位符", async () => {
+    const a = repo();
+    const b = repo();
+    const start = async (r: string) => {
+      if (r === b) throw new Error(`cannot open ${b}/x and /etc/secret-dir/y key=${FAKE_DS}`);
+      return startOn(r);
+    };
+    const sw = new BackendSwitcher(await startOn(a), start, env);
+    const r = await sw.switchTo(b);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toContain("<新仓库>");
+    expect(r.reason).toContain("<路径>");
+    expect(r.reason).not.toContain(b);
+    expect(r.reason).not.toContain("/etc/secret-dir");
+    expect(r.reason).not.toContain(FAKE_DS);
+    await sw.stop();
+  });
+
+  it("两边都失败：新 / 原仓库路径都不出现（状态里的只读原因也一样）", async () => {
+    const a = repo();
+    const b = repo();
+    const start = async (r: string) => {
+      throw new Error(`fail at ${r}`);
+    };
+    const sw = new BackendSwitcher(await startOn(a), start, env);
+    const r = await sw.switchTo(b);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toContain("<新仓库>");
+    expect(r.reason).toContain("<原仓库>");
+    expect(r.reason).not.toContain(a);
+    expect(r.reason).not.toContain(b);
+    expect(sw.status().reason).not.toContain(a);
+    await sw.stop();
+  });
+
+  it("导入项目失败带路径：只剩占位符", async () => {
+    const a = repo();
+    const b = repo();
+    const sw = new BackendSwitcher(
+      await startOn(a),
+      async (r) => {
+        const be = await startOn(r);
+        if (r === b)
+          be.importCurrentRepo = async () => {
+            throw new Error(`EACCES ${b}/config`);
+          };
+        return be;
+      },
+      env,
+    );
+    const r = await sw.switchTo(b);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toContain("导入项目失败");
+    expect(r.reason).toContain("<新仓库>/config");
+    expect(r.reason).not.toContain(b);
+    await sw.stop();
+  });
+});

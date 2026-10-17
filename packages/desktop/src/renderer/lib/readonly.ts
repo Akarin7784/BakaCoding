@@ -46,3 +46,20 @@ export function readonlyDetailText(s: DesktopBackendStatus): string {
     .map((r) => `${r.label}：${r.value}`)
     .join("\n");
 }
+
+/**
+ * 只读原因对应的一键修复（UI-03，`docs/ui-design.md` §4.1）：按主进程给的错误码路由——
+ * 组合根 RepoNotReadyError 的 `no_commits` / `no_main`（错误名必须对上），以及「不是 Git 仓库」的 `not_git`。
+ * 修复入口要等仓库修复的 IPC 定下来才接上；这里只给出该去哪一项。
+ */
+export type RepoFixRoute = "init_repo" | "initial_commit" | "create_main";
+
+export function repoFixRoute(s: DesktopBackendStatus): RepoFixRoute | null {
+  if (s.mode !== "readonly" || !s.error) return null;
+  const { name, code } = s.error;
+  if (code === "not_git") return "init_repo";
+  if (name !== "RepoNotReadyError") return null;
+  if (code === "no_commits") return "initial_commit";
+  if (code === "no_main") return "create_main";
+  return null;
+}

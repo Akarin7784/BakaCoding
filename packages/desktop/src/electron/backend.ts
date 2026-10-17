@@ -7,6 +7,7 @@ import path from "node:path";
 import {
   acquireWriterLock,
   assemble,
+  checkRepo as checkRepoDefault,
   isTicketActive,
   createDefaultDeps,
   ensureBakacodingIgnored,
@@ -40,6 +41,7 @@ import type {
 import { DB_PATH_ENV, DEFAULT_DB_RELATIVE, resolveDbPath } from "./config.js";
 import { createSerialQueue, runSupervisorChat } from "./supervisor-chat.js";
 import { backendErrorDetail } from "./backend-error.js";
+import { sanitizeReloadReason } from "./backend-switcher.js";
 import { errorDetail, toDesktopSyncState, unavailableSyncState } from "./sync-state.js";
 
 /** 仓库路径：`--repo` > BAKACODING_REPO > cwd */
@@ -99,6 +101,10 @@ export interface BackendOptions {
   importProject?: typeof importProjectDefault;
   /** 测试注入：模块 4 的 ensureBakacodingIgnored（T-078） */
   ensureIgnored?: (dir: string) => Promise<boolean>;
+  /** 测试注入：模块 4 的 checkRepo（UI-03：启动失败时判断是不是「不是 Git 仓库」） */
+  checkRepo?: (
+    dir: string,
+  ) => Promise<{ items: readonly { id: string; ok: boolean; code?: string }[] }>;
 }
 
 export interface BackendHandle {
@@ -288,15 +294,85 @@ function takeOverCounts(r: TakeOverReport): NonNullable<BackendStatus["takeOver"
   };
 }
 
-function readonlyReasonFromError(e: unknown): string {
+/** 不是 Git 仓库时的只读原因（UI-03，对应 4 的 checkRepo `not_git`）：固定文案，不透出 git 原始输出。 */
+export const NOT_GIT_REASON = "这个文件夹还不是 Git 仓库";
+/** 只读原因 / 日志里错误信息的上限 */
+export const BACKEND_LOG_DETAIL_MAX = 500;
+
+/** 组合根 T-084 的 RepoNotReadyError：按名字认（跨包实例判断不可靠），code 只认两种。 */
+export function isRepoNotReady(e: unknown): e is Error & { code: "no_commits" | "no_main" } {
+  if (!(e instanceof Error) || e.name !== "RepoNotReadyError") return false;
+  const code = (e as { code?: unknown }).code;
+  return code === "no_commits" || code === "no_main";
+}
+
+/**
+ * 只读原因（横幅上那一句）。RepoNotReadyError（UI-03）显示它自己的 message（不含路径，
+ * 只有 no_main 带分支名），仍按仓库路径 / 绝对路径 / 密钥值脱敏一遍；其他未知错误只写错误名，不透出 message。
+ */
+export function readonlyReasonFromError(
+  e: unknown,
+  repoRoot = "",
+  env: Readonly<Record<string, string | undefined>> = {},
+): string {
   if (e instanceof StorageLeaseError) return "库被其他进程占用（StorageLeaseError）";
   if (e instanceof ConfigError) {
     if (e.message.includes("DEEPSEEK_API_KEY")) return "缺少环境变量 DEEPSEEK_API_KEY";
     return "配置校验失败（ConfigError）";
   }
+  if (isRepoNotReady(e)) {
+    const m = sanitizeReloadReason(e.message, repoRoot, env, BACKEND_LOG_DETAIL_MAX).trim();
+    return m || "仓库还没准备好（RepoNotReadyError）";
+  }
   const name = e instanceof Error ? e.name : "unknown";
   // 绝不把 Error.message 原样透出（可能含路径里的敏感片段以外的值）；只用名字
   return `启动失败（${name}）`;
+}
+
+/**
+ * 日志里的错误（UI-03）：与 backendErrorDetail 同一套脱敏——仓库根和其他绝对路径换成占位符，
+ * 再换密钥值、light 脱敏、截断。不再把原始错误对象交给 console。
+ */
+export function backendLogDetail(
+  e: unknown,
+  repoRoot: string,
+  env: Readonly<Record<string, string | undefined>> = {},
+): string {
+  let text: string;
+  if (e instanceof Error || typeof e !== "object" || e === null) text = errorDetail(e);
+  else {
+    try {
+      text = JSON.stringify(e) ?? String(e);
+    } catch {
+      text = Object.prototype.toString.call(e);
+    }
+  }
+  return sanitizeReloadReason(text, repoRoot, env, BACKEND_LOG_DETAIL_MAX);
+}
+
+/**
+ * 交给组合根的 logger / onError（UI-03）：文案和附带的错误都过 backendLogDetail 那套脱敏，
+ * 只往桌面 logger 写一行字符串，不再把原始错误对象交给 console。
+ */
+export function sanitizedDepsLogging(
+  logger: { warn(message: string, detail?: unknown): void },
+  repoRoot: string,
+  env: Readonly<Record<string, string | undefined>> = {},
+): {
+  logger: { warn(message: string, detail?: unknown): void };
+  onError: (err: unknown, where: string) => void;
+} {
+  const text = (m: string) => sanitizeReloadReason(m, repoRoot, env, BACKEND_LOG_DETAIL_MAX);
+  return {
+    logger: {
+      warn: (m, d) =>
+        logger.warn(
+          d === undefined ? text(m) : `${text(m)}：${backendLogDetail(d, repoRoot, env)}`,
+        ),
+    },
+    onError: (err, where) =>
+      logger.warn(`${text(String(where))}：${backendLogDetail(err, repoRoot, env)}`),
+  };
 }
 
 /**
@@ -314,6 +390,7 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
   const loadConfig = opts.getConfig ?? getConfig;
 
   const repoRoot = resolveRepoPath(argv, env, cwd, opts.lastRepo);
+  const logDetail = (e: unknown) => backendLogDetail(e, repoRoot, env);
   const doImport = opts.importProject ?? importProjectDefault;
   const dbPath = resolveRepoDbPath(argv, env, repoRoot);
   const configPath = resolveConfigPath(argv, env, repoRoot);
@@ -330,7 +407,7 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
     try {
       return app.supervisor.pendingHighRisk();
     } catch (e) {
-      logger.warn("pendingHighRisk 失败", e);
+      logger.warn(`pendingHighRisk 失败：${logDetail(e)}`);
       return [];
     }
   };
@@ -401,13 +478,26 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
   };
   let stopping: Promise<void> | undefined;
 
+  /** 未归类的启动错误：用 4 的 checkRepo 看是不是「不是 Git 仓库」（只读检查；查不了就按原样处理）。 */
+  const isNotGitFailure = async (e: unknown): Promise<boolean> => {
+    if (e instanceof StorageLeaseError || e instanceof ConfigError || isRepoNotReady(e))
+      return false;
+    try {
+      const r = await (opts.checkRepo ?? checkRepoDefault)(repoRoot);
+      const git = r.items.find((i) => i.id === "git");
+      return !!git && !git.ok && git.code === "not_git";
+    } catch {
+      return false;
+    }
+  };
+
   // T-078：建写入锁 / 数据库之前先把 /.bakacoding/ 写进仓库的 .git/info/exclude；传仓库根（db 可能不在仓库里）。
   // 失败只记 warn（只记 errorDetail），不挡启动。
   try {
     if (!(await (opts.ensureIgnored ?? ensureBakacodingIgnored)(repoRoot)))
       logger.warn("仓库不是 git 仓库，未写 .git/info/exclude");
   } catch (e) {
-    logger.warn(`写 .git/info/exclude 失败：${errorDetail(e)}`);
+    logger.warn(`写 .git/info/exclude 失败：${logDetail(e)}`);
   }
 
   const acquired = acquireWriterLock(dbPath);
@@ -435,8 +525,7 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
         notifyUser,
         ...(opts.pricingPath !== undefined && { pricingPath: opts.pricingPath }),
         env,
-        logger: { warn: (m, d) => logger.warn(m, d) },
-        onError: (err, where) => logger.warn(String(where), err),
+        ...sanitizedDepsLogging(logger, repoRoot, env),
       });
 
       opts.onDeps?.(depsHandle);
@@ -457,8 +546,14 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
       mode = "live";
       reason = undefined;
     } catch (e) {
-      reason = readonlyReasonFromError(e);
-      startError = backendErrorDetail(e, repoRoot, env);
+      if (await isNotGitFailure(e)) {
+        // UI-03：不是 Git 仓库——git 的原始报错（可能带路径）不进横幅、详情和日志
+        reason = NOT_GIT_REASON;
+        startError = { name: "Error", message: NOT_GIT_REASON, code: "not_git" };
+      } else {
+        reason = readonlyReasonFromError(e, repoRoot, env);
+        startError = backendErrorDetail(e, repoRoot, env);
+      }
       logger.warn(`退回只读：${reason}`);
       await cleanupPartial();
     }
