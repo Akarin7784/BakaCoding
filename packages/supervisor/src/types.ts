@@ -1,4 +1,5 @@
 import type { Config } from "@bakacoding/config-budget";
+import type { PrProvider } from "@bakacoding/pr";
 import type { ModelGateway } from "@bakacoding/model-gateway";
 import type { SchedulerTicket } from "@bakacoding/scheduler";
 import type { Storage } from "@bakacoding/storage";
@@ -111,10 +112,9 @@ export interface TicketValidationError {
   message: string;
 }
 
-type PublishOf<K extends "group_message" | "ticket_warning" | "escalated"> = Omit<
-  EventOf<K>,
-  "seq"
->;
+type PublishOf<
+  K extends "group_message" | "ticket_warning" | "escalated" | "supervisor_backlog"
+> = Omit<EventOf<K>, "seq">;
 
 /**
  * 上报处理的结果（T-041b，提案 S9）：
@@ -135,7 +135,7 @@ export interface SupervisorDeps {
   /** 3：用 roles.supervisor 和 pipeline.resplit_limit（T-041b，提案 S4；3 的 Config 本来就满足） */
   getConfig: () => {
     roles: Pick<Config["roles"], "supervisor">;
-    pipeline: Pick<Config["pipeline"], "resplit_limit">;
+    pipeline: Pick<Config["pipeline"], "resplit_limit" | "supervisor_backlog_limit" | "main_merge">;
   };
   /** 3 的 promptTemplate（T-008）；10 不带默认模板 */
   promptTemplate: (role: "supervisor") => MaybePromise<string>;
@@ -168,7 +168,11 @@ export interface SupervisorDeps {
    * 10 自己填 event_id、ts。
    */
   publish: (
-    event: PublishOf<"group_message"> | PublishOf<"ticket_warning"> | PublishOf<"escalated">,
+    event:
+      | PublishOf<"group_message">
+      | PublishOf<"ticket_warning">
+      | PublishOf<"escalated">
+      | PublishOf<"supervisor_backlog">,
   ) => unknown;
   /** 0：订阅 project_created，T-041b 起另订阅 escalated（提案 S2） */
   subscribe: <K extends SubscribedType>(
@@ -209,6 +213,19 @@ export interface SupervisorDeps {
   timers?: {
     setTimeout: (fn: () => void, ms: number) => unknown;
     clearTimeout: (handle: unknown) => void;
+  };
+  /**
+   * 可选（T-042）：6 的 PR 能力，组合根传同一实例。不注入时 `reviewIntegration` / `mergeMain` 抛 `unavailable`。
+   */
+  pr?: Pick<PrProvider, "openIntegration" | "diff" | "checks" | "merge" | "kind">;
+  /**
+   * 可选（T-042）：集成分支触发与 C3。
+   * - `idle`：组合根接「9 里没有非终态单」；自动审时用。
+   * - `userMainWorktree`：本地模式下若用户 worktree 检出了 main，返回路径；C3 用。
+   */
+  integration?: {
+    idle(): MaybePromise<boolean>;
+    userMainWorktree?(): MaybePromise<string | null>;
   };
   /**
    * 可选（T-041c，提案 S5）：9 的高风险闸门，组合根接 9 的 `checkHighRisk` / `releaseHighRisk` / `rejectHighRisk`。
@@ -356,4 +373,75 @@ export interface Supervisor {
    * 通知用户暂停原因，并写明待合并 PR 里有几张是被高风险闸门扣着、等用户裁决的。
    */
   backpressurePaused(state: BackpressurePausedInput): Promise<void>;
+  /**
+   * 集成分支审查（T-042）：开集成记录、查 CI、调主管模型。结果记内存供 mergeMain 绑定 head。
+   * 不注入 `pr` 时抛 `MainMergeError` code `unavailable`。
+   */
+  reviewIntegration(opts?: { project_id?: string }): Promise<IntegrationReview>;
+  /**
+   * 合入 main（T-042）：按上次 ok 审查的 head_sha 绑定。
+   * `main_merge=user` 且 `by:supervisor` → 只通知，返回 notified。
+   * 本地 + 用户 worktree 在 main 且 `by:supervisor` → 不自动合（C3），返回 notified。
+   * `expected_head` 等 T-066：合前重取 head，窗口缩小；真正 expected_head 入 6 的 merge 另开单。
+   */
+  mergeMain(opts: {
+    by: "supervisor" | "user";
+    head_sha: string;
+    project_id?: string;
+  }): Promise<MainMergeResult>;
 }
+
+/** T-042：集成分支审查结果 */
+export type IntegrationBlockReason =
+  | { code: "nothing_to_merge" }
+  | { code: "tickets_in_flight"; ticket_ids: string[] }
+  | {
+      code: "ci_failed";
+      checks: { name: string; conclusion: string; url?: string }[];
+    }
+  | { code: "ci_pending"; checks: { name: string; status: string }[] }
+  | { code: "model_blocked"; items: { detail: string; file?: string }[] }
+  | { code: "review_failed"; detail: string };
+
+export type IntegrationReview =
+  | {
+      result: "ok";
+      pr_id: string;
+      head_sha: string;
+      base_sha: string;
+      summary: string;
+      ci: "green" | "none";
+    }
+  | {
+      result: "blocked";
+      pr_id: string | null;
+      head_sha: string | null;
+      reasons: IntegrationBlockReason[];
+      summary?: string;
+    };
+
+export type MainMergeResult =
+  | { result: "merged"; pr_id: string; sha: string }
+  | { result: "notified"; reason?: string };
+
+export type MainMergeErrorCode =
+  | "unavailable"
+  | "not_reviewed"
+  | "stale_head"
+  | "conflict"
+  | "merge_blocked"
+  | "rate_limit"
+  | "target_dirty"
+  | "error";
+
+export class MainMergeError extends Error {
+  readonly code: MainMergeErrorCode;
+  constructor(code: MainMergeErrorCode, message: string) {
+    super(message);
+    this.name = "MainMergeError";
+    this.code = code;
+  }
+}
+
+/** diff 截断上限（码点）；无实测依据，见 modules.md */
+export const INTEGRATION_DIFF_MAX_CODEPOINTS = 200_000;
