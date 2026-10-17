@@ -384,7 +384,9 @@ export class GithubPrProvider implements PrProvider {
         this.logger.warn(
           `[bakacoding/pr] 同步差异：${rec.pr_id}（GitHub PR #${rec.remote.number}）在 GitHub 上被手动合并，本地 ${from} → merged`,
         );
-        changes.push({ pr_id: rec.pr_id, from, to: "merged" });
+        const change: SyncChange = { pr_id: rec.pr_id, from, to: "merged" };
+        if (pull.merge_commit_sha) change.merge_sha = pull.merge_commit_sha;
+        changes.push(change);
       } else {
         await this.store.put({ ...latest, status: "closed", updated_ts: ts });
         await this.escalate(rec, `GitHub PR #${rec.remote.number}：用户在 GitHub 手动关闭`);
