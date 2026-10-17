@@ -25,6 +25,7 @@ const ESCALATION_REASON: Record<EscalationView["reason"], string> = {
   github_manual: "需人工处理 GitHub",
   coder_failed: "编码多次未完成",
   budget_exceeded: "本单预算用完",
+  internal_error: "内部错误",
 };
 
 function FlashCalls({ ids, calls }: { ids: string[]; calls: Record<string, FlashCallSummary> }) {

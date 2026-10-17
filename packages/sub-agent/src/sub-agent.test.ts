@@ -552,12 +552,12 @@ describe("预算", () => {
     expect(t.rounds).toHaveLength(1);
   });
 
-  it("评审抛非预算错误：handle 里上报 review_limit，detail 带错误", async () => {
+  it("评审抛非预算错误：handle 里上报 internal_error，detail 带错误", async () => {
     const t = setup({ runs: [done()], reviews: [new Error("boom")] });
     const out = await t.agent.handle(TICKET);
     expect(out).toMatchObject({
       kind: "escalated",
-      reason: "review_limit",
+      reason: "internal_error",
       detail: "review_error: Error: boom",
     });
     expect(t.statuses.at(-1)).toBe("escalated");
@@ -779,7 +779,8 @@ describe("#40 评审跟进", () => {
     ["open", "github_manual", /^open_error: GithubError \[422\]: No commits between/],
     ["submit", "github_manual", /^submit_error: Error: 队列满/],
     ["diff", "github_manual", /^diff_error: Error: diff 坏了/],
-    ["round_save", "review_limit", /^round_save_error: Error: 写库失败/],
+    ["round_save", "internal_error", /^round_save_error: Error: 写库失败/],
+    ["budget", "internal_error", /^budget_error: Error: 账本读不出/],
   ] as const)(
     "handle 里 %s 抛未知异常：上报 %s，detail 带错误，不停在 coding",
     async (where, reason, re) => {
@@ -809,13 +810,21 @@ describe("#40 评审跟进", () => {
         over.submit = () => {
           throw err("队列满");
         };
+      if (where === "budget")
+        over.budgetState = () => {
+          throw err("账本读不出");
+        };
       if (where === "round_save")
         over.rounds = {
           save: () => {
             throw err("写库失败");
           },
         };
-      const t = setup({ runs: [done()], reviews: [PASS()], over });
+      const runs =
+        where === "budget"
+          ? [{ status: "budget_exceeded" as const, summary: "", changed_files: [] }]
+          : [done()];
+      const t = setup({ runs, reviews: [PASS()], over });
       const out = await t.agent.handle(TICKET);
       expect(out).toMatchObject({ kind: "escalated", reason });
       if (out.kind !== "escalated") throw new Error();

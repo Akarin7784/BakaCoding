@@ -169,7 +169,7 @@ export interface ResumeToken {
  * 编码池抛错记 `coder_failed`，读预算出错记 `budget_exceeded`，`detail` 写 `<阶段>_error: <name>: <message>`。
  */
 export type SubAgentEscalationReason =
-  "review_limit" | "coder_failed" | "budget_exceeded" | "github_manual";
+  "review_limit" | "coder_failed" | "budget_exceeded" | "github_manual" | "internal_error";
 
 export type SubAgentOutcome =
   /** 评审通过，已调 9 的 submit（冲突复投 / 重审不调） */

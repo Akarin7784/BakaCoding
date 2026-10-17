@@ -182,6 +182,20 @@ describe("EventSchema", () => {
       false,
     );
   });
+  it("escalated：internal_error 可解析，带 detail 与 resubmit_counts", () => {
+    const base = { ...common, type: "escalated" };
+    const internal = {
+      ...base,
+      payload: {
+        reason: "internal_error",
+        detail: "review_error: Error: boom",
+        resubmit_counts: { review: 1, conflict: 0 },
+      },
+    };
+    expect(EventSchema.parse(internal)).toEqual(internal);
+    expect(ESCALATION_REASONS).toContain("internal_error");
+    expect(EventSchema.safeParse({ ...base, payload: { reason: "internal" } }).success).toBe(false);
+  });
   it("escalated：github_manual 只带 detail", () => {
     const ev = {
       ...common,

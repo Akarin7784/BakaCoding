@@ -42,9 +42,9 @@ const STAGE_REASON: Record<SubAgentStage, SubAgentEscalationReason> = {
   commit: "github_manual",
   diff: "github_manual",
   submit: "github_manual",
-  budget: "budget_exceeded",
-  review: "review_limit",
-  round_save: "review_limit",
+  budget: "internal_error",
+  review: "internal_error",
+  round_save: "internal_error",
 };
 
 /**
