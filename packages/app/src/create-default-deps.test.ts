@@ -12,6 +12,7 @@ import {
   integrationTargetHead,
   PrNotWiredError,
 } from "./create-default-deps.js";
+import { RepoNotReadyError } from "./index.js";
 
 const examplePath = fileURLToPath(new URL("../../../config/models.example.json", import.meta.url));
 const pricingPath = fileURLToPath(new URL("../../../config/pricing.json", import.meta.url));
@@ -32,10 +33,11 @@ afterEach(() => {
   dirs = [];
 });
 
+/** 默认分支 main、一个提交（T-084 起没有 main 的仓库启动即抛 RepoNotReadyError） */
 function gitRepo(): { root: string; db: string } {
   const root = mkdtempSync(join(tmpdir(), "bc-cdd-"));
   dirs.push(root);
-  execFileSync("git", ["init"], { cwd: root });
+  execFileSync("git", ["init", "-b", "main"], { cwd: root });
   execFileSync("git", ["config", "user.email", "t@test"], { cwd: root });
   execFileSync("git", ["config", "user.name", "t"], { cwd: root });
   writeFileSync(join(root, "README.md"), "x\n");
@@ -219,10 +221,12 @@ describe("targetHead 读集成分支（T-079）", () => {
     expect(await integrationTargetHead(root)).not.toBe(feature);
   });
 
-  it("仓库里没有 main（默认分支叫别的）：退回检出的 HEAD，不抛错", async () => {
+  it("仓库里没有 main（默认分支叫别的）：不退回检出的 HEAD，抛 RepoNotReadyError no_main（T-084）", async () => {
     const { root } = gitRepo();
     git(root, "branch", "-m", "trunk");
-    expect(await integrationTargetHead(root)).toBe(git(root, "rev-parse", "HEAD"));
+    const err = await integrationTargetHead(root).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RepoNotReadyError);
+    expect(err).toMatchObject({ code: "no_main", current: "trunk" });
   });
 
   it("基线分支由参数给出：集成分支未建时读该分支，不写死 main", async () => {
@@ -253,5 +257,140 @@ describe("targetHead 读集成分支（T-079）", () => {
     expect(head).toBe(merged);
     expect(head).not.toBe(feature);
     expect(head).not.toBe(main);
+  });
+});
+
+describe("仓库没准备好时启动报明确原因（T-084）", () => {
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+
+  /** 空仓库（未提交）；`commit` 时在 branch 上提交一次 */
+  function repo(branch: string, commit: boolean): { root: string; db: string } {
+    const root = mkdtempSync(join(tmpdir(), "bc-t084-"));
+    dirs.push(root);
+    git(root, "init", "-q", "-b", branch);
+    git(root, "config", "user.email", "t@test");
+    git(root, "config", "user.name", "t");
+    if (commit) {
+      writeFileSync(join(root, "README.md"), "x\n");
+      git(root, "add", ".");
+      git(root, "commit", "-q", "-m", "init");
+    }
+    const dbDir = join(root, ".bakacoding");
+    mkdirSync(dbDir, { recursive: true });
+    return { root, db: join(dbDir, "bakacoding.db") };
+  }
+
+  async function startErr(root: string, db: string): Promise<unknown> {
+    const storage = openDb(db);
+    try {
+      const handle = await createDefaultDeps(getConfig(examplePath), storage, {
+        repoRoot: root,
+        notifyUser: () => {},
+        pricingPath,
+        env,
+        logger: { warn: () => {} },
+      });
+      disposers.push(handle.dispose);
+      return undefined;
+    } catch (e) {
+      return e;
+    }
+  }
+
+  function expectNoPath(err: unknown, root: string): void {
+    const msg = (err as Error).message;
+    expect(msg).not.toContain(root);
+    expect(msg).not.toContain(tmpdir());
+    expect(msg).not.toMatch(/bc-t084-/);
+  }
+
+  it("空仓库（一次提交都没有）→ no_commits，消息是中文原因、不含路径", async () => {
+    const { root, db } = repo("main", false);
+    const err = await startErr(root, db);
+    expect(err).toBeInstanceOf(RepoNotReadyError);
+    expect(err).toBeInstanceOf(Error);
+    const e = err as RepoNotReadyError;
+    expect(e.name).toBe("RepoNotReadyError");
+    expect(e.code).toBe("no_commits");
+    expect(e.current).toBeUndefined();
+    expect(e.message).toBe("仓库没有任何提交，请先提交一次再启动");
+    expectNoPath(e, root);
+  });
+
+  it("只有 master → no_main，current 为 master", async () => {
+    const { root, db } = repo("master", true);
+    const err = await startErr(root, db);
+    expect(err).toBeInstanceOf(RepoNotReadyError);
+    const e = err as RepoNotReadyError;
+    expect(e.code).toBe("no_main");
+    expect(e.current).toBe("master");
+    expect(e.message).toBe("仓库里没有 main 分支（当前是 master），这一版只支持 main");
+    expectNoPath(e, root);
+  });
+
+  it("分离 HEAD 且没有 main → no_main，current 缺省，消息写分离 HEAD", async () => {
+    const { root, db } = repo("master", true);
+    git(root, "checkout", "-q", "--detach");
+    git(root, "branch", "-D", "master");
+    const err = await startErr(root, db);
+    expect(err).toBeInstanceOf(RepoNotReadyError);
+    const e = err as RepoNotReadyError;
+    expect(e.code).toBe("no_main");
+    expect(e.current).toBeUndefined();
+    expect(e.message).toBe("仓库里没有 main 分支（当前是 分离 HEAD），这一版只支持 main");
+    expectNoPath(e, root);
+  });
+
+  it("有提交但 HEAD 在未出生的分支、仓库里只有 master → no_main（不是 no_commits）", async () => {
+    const { root, db } = repo("master", true);
+    git(root, "checkout", "-q", "--orphan", "fresh");
+    const err = await startErr(root, db);
+    expect(err).toMatchObject({ code: "no_main", current: "fresh" });
+  });
+
+  it("有 main：正常建好，targetHead 是 main 的提交", async () => {
+    const { root, db } = repo("main", true);
+    const storage = openDb(db);
+    const handle = await createDefaultDeps(getConfig(examplePath), storage, {
+      repoRoot: root,
+      notifyUser: () => {},
+      pricingPath,
+      env,
+      logger: { warn: () => {} },
+    });
+    disposers.push(handle.dispose);
+    expect(await handle.deps.targetHead()).toBe(git(root, "rev-parse", "main"));
+  });
+
+  it("main 不存在但集成分支在 → 照常启动（targetHead 读集成分支）", async () => {
+    const { root, db } = repo("master", true);
+    git(root, "branch", "bakacoding/integration", "master");
+    const storage = openDb(db);
+    const handle = await createDefaultDeps(getConfig(examplePath), storage, {
+      repoRoot: root,
+      notifyUser: () => {},
+      pricingPath,
+      env,
+      logger: { warn: () => {} },
+    });
+    disposers.push(handle.dispose);
+    expect(await handle.deps.targetHead()).toBe(git(root, "rev-parse", "master"));
+  });
+
+  it("仓库检查先于其他：没准备好时连缺 DEEPSEEK_API_KEY 都不报，也不建总线", async () => {
+    const { root, db } = repo("master", true);
+    const storage = openDb(db);
+    const before = storage.nextSeq();
+    const err = await createDefaultDeps(getConfig(examplePath), storage, {
+      repoRoot: root,
+      notifyUser: () => {},
+      pricingPath,
+      env: {},
+      logger: { warn: () => {} },
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RepoNotReadyError);
+    expect(err).not.toBeInstanceOf(ConfigError);
+    expect(storage.nextSeq()).toBe(before);
   });
 });

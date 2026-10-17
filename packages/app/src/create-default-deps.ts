@@ -25,6 +25,7 @@ import {
 import type { Storage } from "@bakacoding/storage";
 import { PermissionRegistry, WorktreeManager, WORKTREES_DIR } from "@bakacoding/workspace";
 import type { AppDeps } from "./assemble.js";
+import { RepoNotReadyError } from "./repo-not-ready.js";
 
 const run = promisify(execFile);
 
@@ -98,10 +99,51 @@ async function refExists(repoRoot: string, ref: string): Promise<boolean> {
   }
 }
 
+async function revResolves(repoRoot: string, rev: string): Promise<boolean> {
+  try {
+    await run("git", ["rev-parse", "--verify", "--quiet", rev], { cwd: repoRoot });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 当前检出的分支短名；分离 HEAD 时 undefined */
+async function currentBranch(repoRoot: string): Promise<string | undefined> {
+  try {
+    const { stdout } = await run("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], {
+      cwd: repoRoot,
+    });
+    const name = stdout.trim();
+    return name.length > 0 ? name : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * T-084：集成分支和基线分支都没有时，查清是哪种没准备好。
+ * HEAD 解析不出提交、本地也没有任何分支 → `no_commits`；否则 → `no_main`（带当前分支名）。
+ * 不是 git 仓库时 `for-each-ref` 照抛 git 的错（不归到这两种）。
+ */
+async function repoNotReady(repoRoot: string, baseBranch: string): Promise<RepoNotReadyError> {
+  const { stdout } = await run(
+    "git",
+    ["for-each-ref", "--count=1", "--format=%(refname)", "refs/heads"],
+    { cwd: repoRoot },
+  );
+  const hasBranch = stdout.trim().length > 0;
+  if (!hasBranch && !(await revResolves(repoRoot, "HEAD^{commit}"))) {
+    return new RepoNotReadyError("no_commits");
+  }
+  return new RepoNotReadyError("no_main", await currentBranch(repoRoot), baseBranch);
+}
+
 /**
  * T-079：9 / 10 的 targetHead = 合入目标（集成分支）当前的提交，不是仓库检出的 HEAD。
- * 集成分支还没建（新仓库第一张单合入前）时退回基线分支 baseBranch，和 6 建分支的起点一致（T-076）；
- * 仓库里连基线分支都没有时才退回检出的 HEAD。
+ * 集成分支还没建（新仓库第一张单合入前）时退回基线分支 baseBranch，和 6 建分支的起点一致（T-076）。
+ * T-084：两者都没有时不再退回检出的 HEAD（那样 6 合入时 ensureBranch 才失败），
+ * 直接抛 `RepoNotReadyError`：没有任何提交为 `no_commits`，否则为 `no_main`。
  */
 export async function integrationTargetHead(
   repoRoot: string,
@@ -111,16 +153,15 @@ export async function integrationTargetHead(
   if (await refExists(repoRoot, ref)) return gitRevParse(repoRoot, `${ref}^{commit}`);
   const base = `refs/heads/${baseBranch}`;
   if (await refExists(repoRoot, base)) return gitRevParse(repoRoot, `${base}^{commit}`);
-  // 连基线分支都没有（默认分支叫 master 等）：退回检出的 HEAD，保持启动不挂；
-  // 这种仓库 6 合入时 ensureBranch(..., baseBranch) 本来也会失败，属已知限制
-  return gitRevParse(repoRoot, "HEAD");
+  throw await repoNotReady(repoRoot, baseBranch);
 }
 
 /**
  * 按仓库建好组装用的 AppDeps（v1：一次组装对应一个仓库，不是按项目）。
  * 只创建对象：不调 takeOver、不派单。调用方再 `assemble(deps)` → `takeOver` 已在 assemble 内完成。
  *
- * 建好的顺序：总线 → storage.attach → 预算（先于网关）→ 模型网关 → worktree / 登记表 →
+ * 最先查仓库（T-084）：集成分支和基线分支都没有就抛 `RepoNotReadyError`，什么都不建。
+ * 建好的顺序：仓库检查 → 总线 → storage.attach → 预算（先于网关）→ 模型网关 → worktree / 登记表 →
  * 编码池（chat）→ 评审池（PR 占位转发）→ createPr（assemble 时接线）→ targetHead。
  */
 export async function createDefaultDeps(
@@ -128,6 +169,9 @@ export async function createDefaultDeps(
   storage: Storage,
   opts: CreateDefaultDepsOpts,
 ): Promise<DefaultDepsHandle> {
+  // T-084：先查仓库，没有提交 / 没有 main 直接抛 RepoNotReadyError（信息不含路径），不建 9 / 10
+  await integrationTargetHead(opts.repoRoot, BASE_BRANCH);
+
   const env = opts.env ?? process.env;
   const logger = opts.logger ?? {
     warn: (m: string, d?: unknown) => console.warn(`[app] ${m}`, d ?? ""),

@@ -9,6 +9,8 @@ export {
   type CreateDefaultDepsOpts,
   type DefaultDepsHandle,
 } from "./create-default-deps.js";
+// T-084：仓库没有提交 / 没有 main 时 createDefaultDeps 抛它；code 与模块 4 checkRepo() 一致
+export { RepoNotReadyError, type RepoNotReadyCode } from "./repo-not-ready.js";
 export {
   acquireWriterLock,
   WRITER_LOCK_FILENAME,
