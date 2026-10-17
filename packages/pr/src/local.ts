@@ -3,7 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DiffSchema, type Diff, type DiffFile } from "@bakacoding/types";
 import { git, GitError } from "./git.js";
-import type { CheckResult, MergeResult, PrProvider } from "./provider.js";
+import {
+  INTEGRATION_BRANCH,
+  type CheckResult,
+  type MergeResult,
+  type PrProvider,
+} from "./provider.js";
 import type { PrRecord, PrStore } from "./store.js";
 
 export interface LocalPrProviderOptions {
@@ -13,6 +18,8 @@ export interface LocalPrProviderOptions {
   /** 提交身份，默认 BakaCoding <bakacoding@localhost> */
   author?: { name: string; email: string };
   now?: () => Date;
+  /** 集成分支所在仓库（任一 worktree 路径均可）；openIntegration 需要 */
+  repo?: string;
 }
 
 export class PrNotFoundError extends Error {
@@ -47,13 +54,17 @@ export class LocalPrProvider implements PrProvider {
   private readonly baseBranch: string;
   private readonly author: { name: string; email: string };
   private readonly now: () => Date;
+  private readonly repo: string | undefined;
   private seq = 0;
+  /** 串行化 openIntegration，避免并发调用建出两条记录 */
+  private integrationLock: Promise<unknown> = Promise.resolve();
 
   constructor(opts: LocalPrProviderOptions) {
     this.store = opts.store;
     this.baseBranch = opts.baseBranch ?? "main";
     this.author = opts.author ?? { name: "BakaCoding", email: "bakacoding@localhost" };
     this.now = opts.now ?? (() => new Date());
+    this.repo = opts.repo;
   }
 
   private identityEnv(): NodeJS.ProcessEnv {
@@ -100,6 +111,7 @@ export class LocalPrProvider implements PrProvider {
     const pr_id = `local-${ticket_id}-${existing + ++this.seq}`;
     const ts = this.now().toISOString();
     await this.store.put({
+      kind: "ticket",
       pr_id,
       ticket_id,
       worktree_path,
@@ -114,14 +126,64 @@ export class LocalPrProvider implements PrProvider {
     return pr_id;
   }
 
+  openIntegration(branch: string = INTEGRATION_BRANCH, target: string = "main"): Promise<string> {
+    const run = this.integrationLock.then(() => this.openIntegrationLocked(branch, target));
+    this.integrationLock = run.catch(() => undefined);
+    return run;
+  }
+
+  private async openIntegrationLocked(branch: string, target: string): Promise<string> {
+    const cwd = this.repo;
+    if (!cwd) throw new Error("openIntegration 需要 LocalPrProviderOptions.repo");
+    const records = await this.store.list();
+    const live = records.find(
+      (r) =>
+        r.kind === "integration" &&
+        r.branch === branch &&
+        r.base_branch === target &&
+        (r.status === "open" || r.status === "conflict"),
+    );
+    if (live) return live.pr_id;
+
+    const tgt = await this.revParse(cwd, target);
+    const ref = `refs/heads/${branch}`;
+    const exists =
+      (await git(cwd, ["show-ref", "--verify", "--quiet", ref], { allowCodes: [1] })).code === 0;
+    // 不 checkout：空旧值保证只在分支不存在时创建
+    if (!exists) await git(cwd, ["update-ref", ref, tgt, ""]);
+    const head = await this.revParse(cwd, branch);
+    const base = (await git(cwd, ["merge-base", tgt, head])).stdout.trim();
+
+    let n = records.filter((r) => r.kind === "integration").length + 1;
+    while (await this.store.get(`local-integration-${n}`)) n++;
+    const pr_id = `local-integration-${n}`;
+    const ts = this.now().toISOString();
+    await this.store.put({
+      kind: "integration",
+      pr_id,
+      repo_path: cwd,
+      branch,
+      base_branch: target,
+      base_sha: base,
+      head_sha: head,
+      status: "open",
+      created_ts: ts,
+      updated_ts: ts,
+    });
+    return pr_id;
+  }
+
   async diff(pr_id: string): Promise<Diff> {
     const rec = await this.mustGet(pr_id);
-    const head =
-      rec.status === "open" || rec.status === "conflict"
-        ? await this.revParse(rec.worktree_path, rec.branch)
-        : rec.head_sha;
-    const cwd = rec.worktree_path;
-    const range = [rec.base_sha, head];
+    const cwd = cwdOf(rec);
+    const live = rec.status === "open" || rec.status === "conflict";
+    const head = live ? await this.revParse(cwd, rec.branch) : rec.head_sha;
+    // 集成分支会一直前进：未结束时 base 也现算
+    const base =
+      live && rec.kind === "integration"
+        ? (await git(cwd, ["merge-base", rec.base_branch, head])).stdout.trim()
+        : rec.base_sha;
+    const range = [base, head];
     const ns = (await git(cwd, ["diff", "-M", "--name-status", "-z", ...range])).stdout;
     const num = (await git(cwd, ["diff", "-M", "--numstat", "-z", ...range])).stdout;
 
@@ -152,7 +214,7 @@ export class LocalPrProvider implements PrProvider {
       const c = counts.get(e.path) ?? { a: 0, d: 0 };
       files.push({ path: e.path, status: e.status, additions: c.a, deletions: c.d, patch });
     }
-    return DiffSchema.parse({ base_sha: rec.base_sha, head_sha: head, files });
+    return DiffSchema.parse({ base_sha: base, head_sha: head, files });
   }
 
   /**
@@ -165,7 +227,7 @@ export class LocalPrProvider implements PrProvider {
     const rec = await this.mustGet(pr_id);
     if (rec.status === "merged" || rec.status === "closed")
       throw new Error(`PR 已${rec.status === "merged" ? "合并" : "关闭"}：${pr_id}`);
-    const cwd = rec.worktree_path;
+    const cwd = cwdOf(rec);
     const head = await this.revParse(cwd, rec.branch);
     const tgt = await this.revParse(cwd, target);
     const ref = `refs/heads/${target}`;
@@ -199,7 +261,7 @@ export class LocalPrProvider implements PrProvider {
             "-p",
             head,
             "-m",
-            `Merge ${pr_id} (${rec.ticket_id}) into ${target}`,
+            `Merge ${pr_id} (${rec.kind === "ticket" ? rec.ticket_id : rec.branch}) into ${target}`,
           ],
           { env: this.identityEnv() },
         )
@@ -224,8 +286,14 @@ export class LocalPrProvider implements PrProvider {
     } else {
       await git(cwd, ["update-ref", ref, sha, tgt]);
     }
+    // 集成记录合并后冻结：base_sha 记为合并时的 merge-base，之后 diff 用记录值
+    const base_sha =
+      rec.kind === "integration"
+        ? (await git(cwd, ["merge-base", tgt, head])).stdout.trim()
+        : rec.base_sha;
     await this.store.put({
       ...rec,
+      base_sha,
       head_sha: head,
       status: "merged",
       merged_into: target,
@@ -261,4 +329,8 @@ export class LocalPrProvider implements PrProvider {
   private async revParse(cwd: string, rev: string): Promise<string> {
     return (await git(cwd, ["rev-parse", "--verify", `${rev}^{commit}`])).stdout.trim();
   }
+}
+
+function cwdOf(rec: PrRecord): string {
+  return rec.kind === "ticket" ? rec.worktree_path : rec.repo_path;
 }
