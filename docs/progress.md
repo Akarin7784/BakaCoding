@@ -63,7 +63,7 @@ flowchart BT
 | T-007 | 脱敏函数 redact（light / full） | 3 | 基础层开发 | 已合入 | #6 | `4f20ce0` |
 | T-008 | 项目导入与提示词模板 importProject / promptTemplate | 3 | 基础层开发 | 未开始 | — | — |
 | T-009 | 工作区 createWorktree / cleanup | 4 | 基础层开发 | 已合入 | #7 | `cdb1ed7` |
-| T-010 | 受限文件工具 read / write / edit / glob / grep | 4 | 基础层开发 | 待评审 | #31 | — |
+| T-010 | 受限文件工具 read / write / edit / glob / grep | 4 | 基础层开发 | 待评审 | #32 | — |
 | T-011 | 三级权限与写入范围申请 applyPermissions（含权限清单写入接口） | 4 | 基础层开发 | 未开始 | — | — |
 | T-012 | PR 抽象接口与本地实现（含 diff 与 commitPatch） | 6 | 执行层开发 | 已合入 | #10 | `b8983a7` |
 | T-013 | 桌面界面壳子（三栏 + 假数据） | 12 | 界面与诊断开发 | 已合入 | #9 | `c8f169d` |
