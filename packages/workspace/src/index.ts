@@ -1,4 +1,7 @@
-// 模块 4 占位，接口见 docs/modules.md「4.」一节。
+// 模块 4：工作区与受限工具层，接口见 docs/modules.md「4.」一节。
 export const MODULE_ID = 4 as const;
 export const MODULE_NAME = "@bakacoding/workspace" as const;
 export * from "./worktree.js";
+export * from "./tools.js";
+export { FsToolError, isProtectedPath, permissionFor, resolveInWorkspace } from "./guard.js";
+export type { ResolvedPath } from "./guard.js";

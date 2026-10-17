@@ -287,6 +287,9 @@ importers:
       '@bakacoding/types':
         specifier: workspace:*
         version: link:../types
+      minimatch:
+        specifier: ^10.2.6
+        version: 10.2.6
 
 packages:
 
