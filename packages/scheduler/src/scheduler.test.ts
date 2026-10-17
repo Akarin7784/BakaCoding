@@ -197,7 +197,7 @@ const escalations = (h: Harness) =>
   h.published.filter((e) => e.type === "escalated") as unknown as EventOf<"escalated">[];
 
 describe("模块 9 合并队列（T-035）", () => {
-  it("1. 启动时把 eventContext 注入 6：按 ticket_id、其次 pr_id 查 trace；未知 PR 报错", async () => {
+  it("1. 启动时把 eventContext 注入 6：按 ticket_id、其次 pr_id 查 trace；未知 PR 给最小上下文", async () => {
     const h = harness();
     const s = await started(h);
     expect(h.eventContextInjected).toEqual([s.eventContext]);
@@ -215,7 +215,12 @@ describe("模块 9 合并队列（T-035）", () => {
     };
     expect(s.eventContext({ pr_id: "x", ticket_id: "T-1" })).toEqual(want);
     expect(s.eventContext({ pr_id: "pr-1", ticket_id: null })).toEqual(want);
-    expect(() => s.eventContext({ pr_id: "nope", ticket_id: null })).toThrow(/找不到/);
+    // 不认识的 PR（集成记录、重启后）：不抛错，给最小上下文
+    expect(s.eventContext({ pr_id: "local-integration-1", ticket_id: null })).toMatchObject({
+      requirement_id: "unattributed:local-integration-1",
+      trace_id: "unattributed:local-integration-1",
+      parent_span_id: null,
+    });
   });
 
   it("2. merge_blocked：发 escalated(github_manual) 带 6 的 detail，不复投", async () => {
@@ -301,6 +306,8 @@ describe("模块 9 合并队列（T-035）", () => {
       "close:pr-100:冲突复投，由 pr-101 取代",
       "cleanup:/wt/T-1-r1",
       "merge:pr-101:bakacoding/integration",
+      // 最终上报：清掉 9 建的 r2 worktree
+      "cleanup:/wt/T-1-r2",
     ]);
     expect(h.resubmit.mock.calls[0]![0]).toMatchObject({
       conflicted_files: ["a.ts"],
@@ -341,6 +348,7 @@ describe("模块 9 合并队列（T-035）", () => {
     expect(s.status("T-1")).toBe("escalated");
     expect(escalations(h)).toEqual([]);
     expect(h.calls).toContain("close:pr-1:冲突复投，由 pr-9 取代");
+    expect(h.calls).toContain("cleanup:/wt/T-1-r1");
   });
 
   it("5. sync：手动合并 → merged；手动关闭 → escalated 且不重复上报（6 已发）；旧 PR 忽略", async () => {
@@ -430,6 +438,8 @@ describe("模块 9 合并队列（T-035）", () => {
     expect(s.status("T-1")).toBe("escalated");
     expect(h.statuses.filter(([t]) => t === "T-1").at(-1)).toEqual(["T-1", "escalated"]);
     expect(h.calls.some((c) => c.startsWith("close:"))).toBe(false);
+    // 9 建的 r1 worktree 在上报时清掉
+    expect(h.calls).toContain("cleanup:/wt/T-1-r1");
   });
 
   it("Q3b. 建 worktree 抛错也走同一条：resubmit_error 上报，不停在 resubmitting", async () => {
@@ -521,6 +531,187 @@ describe("模块 9 合并队列（T-035）", () => {
     h.deps.targetHead = spy;
     await started(h);
     expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("R1a. 合并成功后的收尾（发 interface_changed）抛错：该单上报 github_manual，队列继续，无未处理 rejection", async () => {
+    const h = harness();
+    const pub = h.deps.bus.publish;
+    let failed = false;
+    h.deps.bus.publish = (e) => {
+      if (e.type === "interface_changed" && !failed) {
+        failed = true;
+        throw new Error("bus down");
+      }
+      return pub(e);
+    };
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.enqueue(ticket("T-2"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1" });
+    await s.submit({ ticket_id: "T-2", pr_id: "pr-2", worktree_path: "/2" });
+    await s.idle();
+    expect(escalations(h).map((e) => [e.ticket_id, e.payload])).toEqual([
+      ["T-1", { reason: "github_manual", detail: "merge_error: bus down" }],
+    ]);
+    expect(s.status("T-1")).toBe("escalated");
+    expect(s.status("T-2")).toBe("merged");
+    expect(
+      h.published.filter((e) => e.type === "interface_changed").map((e) => e.ticket_id),
+    ).toEqual(["T-2"]);
+  });
+
+  it("R1b. step 里 targetHead 抛错：该单上报，后面的单照常合", async () => {
+    const h = harness();
+    const s = await started(h);
+    h.deps.targetHead = () => {
+      throw new Error("rev-parse failed");
+    };
+    await s.enqueue(ticket("T-1"));
+    await s.enqueue(ticket("T-2"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("9") });
+    await s.submit({ ticket_id: "T-2", pr_id: "pr-2", worktree_path: "/2" });
+    await s.idle();
+    expect(escalations(h).map((e) => e.payload)).toEqual([
+      { reason: "github_manual", detail: "merge_error: rev-parse failed" },
+    ]);
+    expect(s.status("T-2")).toBe("merged");
+  });
+
+  it("R2. 关旧 PR 抛错：先已记下新 PR，再上报 resubmit_error，清掉 9 建的新 worktree", async () => {
+    const h = harness();
+    const inner = h.deps.createPr;
+    h.deps.createPr = async (opts) => {
+      const pr = await inner(opts);
+      return {
+        ...pr,
+        close: async () => {
+          throw new Error("close 403");
+        },
+      };
+    };
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    h.merges.set("pr-1", [conflict()]);
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/wt/T-1-r0" });
+    await s.idle();
+    expect(s.snapshot()[0]).toMatchObject({ pr_id: "pr-100", status: "escalated", round: 1 });
+    expect(s.eventContext({ pr_id: "pr-100", ticket_id: null }).span_id).toBe("span-T-1");
+    expect(escalations(h).map((e) => e.payload)).toEqual([
+      { reason: "github_manual", detail: "resubmit_error: close 403" },
+    ]);
+    expect(h.calls).toContain("cleanup:/wt/T-1-r1");
+    expect(h.calls).not.toContain("cleanup:/wt/T-1-r0");
+  });
+
+  it("R3. sync：一条变化处理出错不影响其余", async () => {
+    const h = harness();
+    const s = await started(h);
+    await s.enqueue(ticket("T-0"));
+    await s.enqueue(ticket("T-1", { depends_on: ["T-0"] }));
+    await s.enqueue(ticket("T-2", { depends_on: ["T-0"] }));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1" });
+    await s.submit({ ticket_id: "T-2", pr_id: "pr-2", worktree_path: "/2" });
+    await s.idle();
+    const set = h.deps.tickets.setStatus;
+    h.deps.tickets.setStatus = (t, st) => {
+      if (t === "T-1") throw new Error("db locked");
+      return set(t, st);
+    };
+    h.syncChanges.push(
+      { pr_id: "pr-1", from: "open", to: "closed" },
+      { pr_id: "pr-2", from: "open", to: "closed" },
+    );
+    expect((await s.sync()).map((c) => c.pr_id)).toEqual(["pr-2"]);
+    expect(h.errors.map((e) => (e as Error).message)).toEqual(["db locked"]);
+    expect(s.status("T-2")).toBe("escalated");
+  });
+
+  it("R5a. submit 状态检查：已在队里 / 正在复投的单再交报错", async () => {
+    const h = harness();
+    let release!: () => void;
+    h.resubmit.mockImplementationOnce(
+      () =>
+        new Promise<SubAgentOutcome>((r) => {
+          release = () => r({ pr_id: "pr-100" });
+        }),
+    );
+    const s = await started(h);
+    await s.enqueue(ticket("T-0"));
+    await s.enqueue(ticket("W", { depends_on: ["T-0"] }));
+    await s.submit({ ticket_id: "W", pr_id: "pr-w", worktree_path: "/w" });
+    await expect(s.submit({ ticket_id: "W", pr_id: "pr-w2", worktree_path: "/w" })).rejects.toThrow(
+      /已在合并队列中/,
+    );
+    await s.enqueue(ticket("T-1"));
+    h.merges.set("pr-1", [conflict()]);
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1" });
+    await vi.waitFor(() => expect(h.resubmit).toHaveBeenCalled());
+    await expect(
+      s.submit({ ticket_id: "T-1", pr_id: "pr-x", worktree_path: "/x" }),
+    ).rejects.toThrow(/正在处理/);
+    release();
+    await s.idle();
+    expect(h.calls.filter((c) => c.startsWith("merge:pr-100"))).toHaveLength(1);
+  });
+
+  it("R5b. 等 8 期间单子已被用户手动关闭（escalated）：8 返回后不覆盖终态，不再排队，清掉新 worktree", async () => {
+    const h = harness();
+    const ref: { s?: Awaited<ReturnType<typeof started>> } = {};
+    h.resubmit.mockImplementationOnce(async () => {
+      h.syncChanges.push({ pr_id: "pr-1", from: "open", to: "closed" });
+      expect((await ref.s!.sync()).map((c) => c.pr_id)).toEqual(["pr-1"]);
+      return { pr_id: "pr-100" };
+    });
+    const s = (ref.s = await started(h));
+    await s.enqueue(ticket("T-1"));
+    h.merges.set("pr-1", [conflict()]);
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/wt/T-1-r0" });
+    await s.idle();
+    expect(s.status("T-1")).toBe("escalated");
+    expect(h.calls.filter((c) => c.startsWith("merge:pr-100"))).toEqual([]);
+    expect(h.calls).toContain("cleanup:/wt/T-1-r1");
+    expect(h.statuses.filter(([t]) => t === "T-1").at(-1)).toEqual(["T-1", "escalated"]);
+  });
+
+  it("R5c. stop()：停掉合并循环并取消等待中的定时器", async () => {
+    const h = harness();
+    delete h.deps.clock; // 用真定时器
+    h.deps.target_dirty_retry_ms = 60_000;
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    h.merges.set("pr-1", [
+      { merged: false, conflict: false, reason: "target_dirty", worktree_path: "/x" },
+    ]);
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1" });
+    await vi.waitFor(() => expect(h.calls).toContain("merge:pr-1:bakacoding/integration"));
+    const t0 = Date.now();
+    s.stop();
+    await s.idle();
+    expect(Date.now() - t0).toBeLessThan(5_000);
+    expect(h.calls.filter((c) => c.startsWith("merge:"))).toHaveLength(1);
+    expect(s.status("T-1")).toBe("merge_queued");
+  });
+
+  it("R5d. target_dirty 连续重试 10 次后上报 github_manual", async () => {
+    const h = harness();
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    const dirty = {
+      merged: false,
+      conflict: false,
+      reason: "target_dirty",
+      worktree_path: "/repo",
+    } as const;
+    h.merges.set(
+      "pr-1",
+      Array.from({ length: 11 }, () => dirty),
+    );
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1" });
+    await s.idle();
+    expect(h.sleeps).toEqual(Array.from({ length: 10 }, () => 5000));
+    expect(escalations(h).map((e) => e.payload)).toEqual([
+      { reason: "github_manual", detail: "target_dirty: /repo" },
+    ]);
   });
 
   it("6. 当日预算用完：暂停派新单，在途的单照常合并；重置后恢复", async () => {

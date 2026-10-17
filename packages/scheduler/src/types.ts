@@ -1,5 +1,5 @@
 import type { BudgetState, Config } from "@bakacoding/config-budget";
-import type { EventContextFn, PrProvider, SyncChange } from "@bakacoding/pr";
+import type { EventContext, EventContextFn, PrProvider, SyncChange } from "@bakacoding/pr";
 import type { EventOf, EventType, TicketStatus } from "@bakacoding/types";
 
 export type MaybePromise<T> = T | Promise<T>;
@@ -150,6 +150,12 @@ export interface SchedulerDeps {
   newId?: () => string;
   /** target_dirty 后的重试间隔，默认 30 秒 */
   target_dirty_retry_ms?: number;
+  /**
+   * 找不到所属单的 PR（集成记录、重启后不认识的 PR）的事件上下文。不传时返回最小上下文：
+   * requirement_id / trace_id 为 `unattributed:<pr_id>`，span_id 新生成，parent_span_id 为 null。
+   * （EventContext 没有 project_id / ticket_id 字段；ticket_id 由 6 按 PR 记录自己填，集成记录为 null。）
+   */
+  unknownEventContext?: (info: { pr_id: string; ticket_id: string | null }) => EventContext;
   /** 后台任务（复投、重审）出错时调用，默认 console.warn；9 随后发 escalated(github_manual) */
   onError?: (error: unknown, ticket_id: string) => void;
 }
