@@ -11,7 +11,13 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { openStorage, openStorageReadonly, StorageLeaseError } from "@bakacoding/storage";
+import { acquireWriterLock, type App } from "@bakacoding/app";
+import {
+  openStorage,
+  openStorageReadonly,
+  StorageLeaseError,
+  type Storage,
+} from "@bakacoding/storage";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   NotifyBuffer,
@@ -294,5 +300,108 @@ describe("startBackend 在建库之前写 .git/info/exclude（T-078）", () => {
       }
       await backend.stop();
     }
+  });
+});
+
+describe("T-105：拆后端先 await app.stop() 再关库、放写锁（真实 backend）", () => {
+  /**
+   * 真实的 startBackend + 真实 openStorage / createDefaultDeps / assemble；只在 onAssembled 里给 App.stop
+   * 包一层：先调原来的 stop（真的停 10/8/9），再模拟一个慢的在途收尾——过 30ms 往库里写一条。
+   * 修复前 cleanupPartial 不等 stop，这条写入会落到已关的库上。
+   */
+  function slowWindDown(order: string[], db: string) {
+    let st: Storage | undefined;
+    const open: typeof openStorage = (o) => {
+      const s = openStorage(o);
+      st = s;
+      const close = s.close.bind(s);
+      s.close = () => {
+        order.push("close");
+        close();
+      };
+      return s;
+    };
+    const onAssembled = (app: App) => {
+      const orig = app.stop.bind(app);
+      app.stop = async () => {
+        order.push("stop:begin");
+        await orig();
+        await new Promise((r) => setTimeout(r, 30));
+        // 收尾期间写锁必须还在本进程手里
+        const probe = acquireWriterLock(db);
+        if ("heldBy" in probe) order.push("lock:held");
+        else {
+          order.push("lock:released");
+          probe.release();
+        }
+        try {
+          st!.saveDecision({ project_id: "p-t105", content: "收尾时写入" });
+          order.push("write:ok");
+        } catch {
+          order.push("write:closed");
+        }
+        order.push("stop:end");
+      };
+    };
+    return { open, onAssembled };
+  }
+
+  it("stop()：等 app.stop() resolve 之后才关库；收尾里的写入落库；重复调用只拆一次", async () => {
+    const { root, db } = gitRepoWithConfig();
+    const order: string[] = [];
+    const { open, onAssembled } = slowWindDown(order, db);
+    const backend = await startBackend({
+      argv: ["node", "app", `--repo=${root}`],
+      env: { DEEPSEEK_API_KEY: "sk-test-live" },
+      cwd: root,
+      pricingPath,
+      logger: { warn: () => {} },
+      openStorage: open,
+      onAssembled,
+    });
+    expect(backend.status().mode).toBe("live");
+    const p1 = backend.stop();
+    const p2 = backend.stop();
+    expect(p2).toBe(p1);
+    await p1;
+    expect(order).toEqual(["stop:begin", "lock:held", "write:ok", "stop:end", "close"]);
+    expect(backend.status().mode).toBe("readonly");
+    const ro = openStorageReadonly({ path: db, logger: { warn: () => {} } });
+    try {
+      expect(ro.listDecisions("p-t105").map((d) => d.content)).toEqual(["收尾时写入"]);
+    } finally {
+      ro.close();
+    }
+    // 拆完写锁已放：能再拿到
+    const again = acquireWriterLock(db);
+    expect("heldBy" in again).toBe(false);
+    if (!("heldBy" in again)) again.release();
+  });
+
+  it("启动中途失败（cleanupPartial）：同样先等 app.stop() 收尾再关库，startBackend 等拆完才返回只读", async () => {
+    const { root, db } = gitRepoWithConfig();
+    const order: string[] = [];
+    const { open, onAssembled } = slowWindDown(order, db);
+    const backend = await startBackend({
+      argv: ["node", "app", `--repo=${root}`],
+      env: { DEEPSEEK_API_KEY: "sk-test-live" },
+      cwd: root,
+      pricingPath,
+      logger: { warn: () => {} },
+      openStorage: open,
+      onAssembled: (app) => {
+        onAssembled(app);
+        throw new Error("组装后钩子失败");
+      },
+    });
+    expect(backend.status().mode).toBe("readonly");
+    expect(order).toEqual(["stop:begin", "lock:held", "write:ok", "stop:end", "close"]);
+    const ro = openStorageReadonly({ path: db, logger: { warn: () => {} } });
+    try {
+      expect(ro.listDecisions("p-t105")).toHaveLength(1);
+    } finally {
+      ro.close();
+    }
+    await backend.stop();
   });
 });

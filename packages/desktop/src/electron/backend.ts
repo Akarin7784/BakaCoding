@@ -350,7 +350,12 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
   const busUnsubs: Array<() => void> = [];
   const chatQueue = createSerialQueue();
 
-  const cleanupPartial = (): void => {
+  /**
+   * 拆后端（T-105）：先同步退订，再 await 10/8/9 的 `app.stop()`（T-096：等 9 收尾，从不 reject），
+   * 之后才 dispose deps、关库、放写锁——收尾里的写库不会落到已关的库上。
+   * 开头就把句柄摘下来，收尾期间别的入口看到的已是「没有 app / storage」，重复调用也不会二次关库。
+   */
+  const cleanupPartial = async (): Promise<void> => {
     while (busUnsubs.length) {
       try {
         busUnsubs.pop()?.();
@@ -358,33 +363,38 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
         /* ignore */
       }
     }
-    try {
-      app?.stop();
-    } catch {
-      /* ignore */
-    }
+    const a = app;
+    const h = depsHandle;
+    const s = storage;
+    const l = lock;
     app = undefined;
-    try {
-      depsHandle?.dispose();
-    } catch {
-      /* ignore */
-    }
     depsHandle = undefined;
+    storage = undefined;
+    lock = undefined;
     try {
-      storage?.close();
+      await a?.stop();
+    } catch {
+      /* ignore：T-096 约定从不 reject，这里只兜底 */
+    }
+    try {
+      h?.dispose();
     } catch {
       /* ignore */
     }
-    storage = undefined;
-    if (lock && "release" in lock) {
+    try {
+      s?.close();
+    } catch {
+      /* ignore */
+    }
+    if (l && "release" in l) {
       try {
-        lock.release();
+        l.release();
       } catch {
         /* ignore */
       }
     }
-    lock = undefined;
   };
+  let stopping: Promise<void> | undefined;
 
   // T-078：建写入锁 / 数据库之前先把 /.bakacoding/ 写进仓库的 .git/info/exclude；传仓库根（db 可能不在仓库里）。
   // 失败只记 warn（只记 errorDetail），不挡启动。
@@ -444,7 +454,7 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
     } catch (e) {
       reason = readonlyReasonFromError(e);
       logger.warn(`退回只读：${reason}`);
-      cleanupPartial();
+      await cleanupPartial();
     }
   }
 
@@ -574,11 +584,15 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
         return runSupervisorChat(sup ? (m) => sup.chat(m) : undefined, message, env, reason);
       });
     },
-    async stop() {
-      cleanupPartial();
-      // 拆完就不再是 live（切换失败时不能还报 live）
-      mode = "readonly";
-      reason = reason ?? "后端已停止";
+    stop(): Promise<void> {
+      // T-105：等 app.stop() 收尾后再关库；重复调用返回同一个 Promise
+      stopping ??= (async () => {
+        await cleanupPartial();
+        // 拆完就不再是 live（切换失败时不能还报 live）
+        mode = "readonly";
+        reason = reason ?? "后端已停止";
+      })();
+      return stopping;
     },
   };
 }
