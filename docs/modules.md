@@ -136,8 +136,15 @@ graph BT
 
 ### 7. 评审池
 - **职责**：评审池成员按负载分配，复投的单交给原来的模型，被限流的模型跳过；评审输入固定为「diff + 需求单 + 精简摘要」，从 6 读 diff，对照需求单审查（是否完成需求、是否越界、有没有明显 bug、是否违反架构约束），给出评审结论；判不过的门槛待实测，由 11 的诊断包统计评审精度后再定；成员数为 0 时由主管兼任。
-- **对外接口（草案）**：`review(ticket, pr_id, permission_list, attempt) → { verdict, reasons[] }`；`backlog() → { pending, capacity }`；事件：评审积压 `review_backlog`（9 订阅，9 不直接调用 7）。
-- **依赖**：1、2、3（提示词模板）、6。
+- **对外接口（草案）**：`createReviewPool(deps)` 返回 `review({ ticket, pr_id, permission_list, summary, ctx }) → { verdict, reasons[] }` 和 `backlog() → { pending, capacity }`；事件：评审积压 `review_backlog`（9 订阅，9 不直接调用 7）。`ctx` 即 1 的 `call()` 的 `ctx`，是否复投看 `ctx.is_resubmit`（不再传 `attempt`）。`verdict` 取 `pass` / `fail`；`reasons[]` 每项 `{ category, detail, file?, line? }`，`category` 取 `incomplete` / `out_of_scope` / `bug` / `arch_violation` / `ci_failed`，`fail` 至少一条。类型和 zod schema（`ReviewResultSchema`、`ReviewReasonSchema`、模型输出用的 `ReviewModelOutputSchema`）放在 `@bakacoding/types`。
+- **评审规则**（T-030）：
+  - 精简摘要由 8 写好作为 `summary` 传入，7 不另调模型；评审输入固定为「diff（6 的 `diff(pr_id)`）+ 需求单 + 精简摘要」，另附 `permission_list`（判断越界）和需求单里的架构约束；提示词模板取 3 的 `promptTemplate("reviewer")`（3 尚未提供，暂由调用方注入）。
+  - 先调 6 的 `checks(pr_id)`：有结论为 `failure` / `timed_out` 的 check 就直接判 `fail`，每个失败的 check 一条 `ci_failed`，不读 diff、不调模型；check 还在跑或没配 CI 的不等，照常评审。
+  - 成员数为 0 时主管兼任：用 `roles.supervisor` 的 provider / model，`effort` 固定 `max`，调用和事件里 `role` 记 `reviewer`（台账随之记在评审组一栏）；7 不依赖 10。容量按 1 个成员算。
+  - 分配：非复投按 `review_assignment`（目前只有 `least_busy`：未限流、未满 `reviews_per_member` 的成员里正在评审数最少的，平手按配置顺序）。复投且 `sticky_on_resubmit` 时交给上一轮的成员（忙就排队等它）；它被限流或已不在配置里就换人。记住成员用注入的 `AssignmentStore { get(ticket_id), set(ticket_id, member_id) }`，默认内存实现，等 2 的 PR 记录轮次字段定下来再接 2。`skip_rate_limited` 时用 1 的 `rateLimitState()`（注入为 `isRateLimited({ provider, model })`）跳过被限流的成员；全忙或全被限流时排队等待并定时重查，不交给主管。
+  - 模型须输出 JSON，用 zod 校验；解析不了就换一个成员重试一次（只有一个成员就同一个再试），仍不行判 `fail`，`{ category: "bug", detail: "评审输出无法解析" }`。
+  - `review_backlog`：`pending` = 已进入 `review()`、尚未返回的单数（含正在评审和排队），`capacity` = 成员数 × `backpressure.reviews_per_member`（0 成员按 1 算）；任一值变化时经 0 发出，公共字段取自本单的 `ctx`，相同值不重复发。
+- **依赖**：1（`call`、`rateLimitState`）、2（复投成员记录，暂用注入的内存实现）、3（配置、提示词模板）、6（`diff`、`checks`）。
 - **对应章节**：PD §8、§10。
 - **配置字段**：`roles.review_board.members`、`roles.review_board.review_assignment`、`roles.review_board.sticky_on_resubmit`、`roles.review_board.skip_rate_limited`、`backpressure.reviews_per_member`。
 
@@ -202,7 +209,7 @@ graph BT
 | 已拒绝 `write_scope_denied` | 9 | 4 | `ticket_id`、`request_id`、`requested_scope`、`reason` | PD §6 |
 | 上报 `escalated` | 6（`github_manual`：鉴权失败或需要手动解冲突）、8（评审不过超限）、9（冲突超限、加锁失败）、10（重拆超限 `resplit_limit`，由主管自己发出） | 10；`resplit_limit` 由 12 订阅，提示「需要人工介入」 | `ticket_id`、`requirement_id`、`reason`（`review_limit` / `conflict_limit` / `scope_lock_failed` / `resplit_limit` / `github_manual`）、`resubmit_counts`（可选；`github_manual` 不带）、`detail`（可选，自由文本；`github_manual` 必写） | PD §6、§7、§8 |
 | 接口已变更 `interface_changed` | 9（合并成功后） | 8 | `pr_id`、`ticket_id`（必填）、`base_commit`（合并后新基线）、`changed_interfaces`（改动的接口列表，每项为文件 + 符号）、`summary`、`affected_ticket_ids`（写入范围或接口声明与本次改动有交集的在途单） | PD §9 |
-| 评审积压 `review_backlog` | 7 | 9（反压） | `pending`、`capacity` | PD §9 |
+| 评审积压 `review_backlog` | 7（`pending` 或 `capacity` 变化时） | 9（反压） | `pending`（进入评审尚未返回的单数，含排队）、`capacity`（成员数 × `reviews_per_member`，0 成员按 1 算） | PD §9 |
 | 主管待办指标 `supervisor_backlog` | 10 | 9 | `pending`、`capacity` | PD §9 |
 | 群消息 `group_message` | 8、10 | 2（存储）、12（展示） | `project_id`、`requirement_id`（话题）、`sender`（主管 / 副 Agent）、`kind`（派单 / 回报 / 评审结论 / 复投记录 / 上报 `escalation`）、`content`、`flash_calls`（折叠的调用引用） | PD §16 |
 
