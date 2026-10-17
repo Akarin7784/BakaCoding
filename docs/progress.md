@@ -184,8 +184,10 @@ flowchart BT
 - 已解决（T-066 + T-042）：6 的 `merge` 已支持 `expected_head`；10 的 `mergeMain` 合入时传入当前 head。
 - 已解决（T-042）：9 对 `SyncPartialError` 先应用 `changes`，限流退避 / 鉴权停定时同步看 `cause`。
 - 已解决（T-070）：高风险待裁决只计入 9 的待合并 PR 数（`pending_pr_limit`），不再计入主管待办 `supervisor_backlog.pending`，两条反压不再重复触发；主管待办照样经 `pendingHighRisk()` 展示。
-- 模块 10（T-042）：`INTEGRATION_DIFF_MAX_CODEPOINTS` = 200000，没有实测依据，**待实测**（T-070 不改）。
+- 模块 10（T-042）：`INTEGRATION_DIFF_MAX_CODEPOINTS` = 200000，待实测。
 - 已解决（T-066）：7 / 10 发 `review_backlog` / `supervisor_backlog` 时 `requirement_id` / `ticket_id` 为 null，trace 新开。
+- 模块 12（T-067）：测试没锁住脱敏顺序（先把环境变量里的密钥值替换成 `[REDACTED:变量名]`，再跑 `redact(text, "light")`），也没锁住 `serveSyncState` 的 `clearInterval`。定时器要等应用退出才停，关窗口时不停；没有窗口时会跳过，没有危害。不开单。
+- 模块 6（T-069）：响应里没有 `total_count` 时没有测试，代码会在当页停止翻页。不开单。
 
 ### 不对应需求单的 PR
 
