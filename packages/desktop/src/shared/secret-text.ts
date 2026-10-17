@@ -16,7 +16,7 @@ export const PROVIDER_TEST_TEXT: Record<DesktopProviderTestCode, string> = {
   no_secret: "还没有设置密钥，没有发出请求",
   auth_failed: "密钥无效或没有权限，请检查密钥",
   quota_exhausted: "服务商账户余额不足，请先去服务商那里充值",
-  rate_limited: "请求太频繁，被服务商限流了，稍后再试",
+  rate_limited: "服务商限流了，请稍后再试",
   network: "连不上服务商，请检查网络或代理",
   config_error: "模型配置有问题：服务商或模型没配置，或者没有单价",
   http_error: "服务商返回了错误",
