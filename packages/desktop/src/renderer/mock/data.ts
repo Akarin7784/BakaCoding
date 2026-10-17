@@ -149,6 +149,7 @@ export const projects: ProjectView[] = [
       },
     ],
     escalations: [],
+    warnings: [],
     git: {
       current_branch: "bakacoding/T-2",
       integration_branch: "bakacoding/integration",
@@ -172,6 +173,7 @@ export const projects: ProjectView[] = [
     messages: [],
     prs: [],
     escalations: [],
+    warnings: [],
     git: {
       current_branch: "main",
       integration_branch: "bakacoding/integration",

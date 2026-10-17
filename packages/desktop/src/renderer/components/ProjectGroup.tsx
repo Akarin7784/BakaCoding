@@ -1,7 +1,7 @@
 import { ChevronDown, ChevronRight, PanelRight } from "lucide-react";
 import { AgentIcon } from "./AgentIcon";
 import { Button } from "./ui/button";
-import { EscalationItem } from "./Escalations";
+import { EscalationItem, TicketWarningList } from "./Escalations";
 import type {
   FlashCallSummary,
   GroupMessageEvent,
@@ -93,6 +93,7 @@ export function ProjectGroup({
           ))}
         </ul>
       )}
+      <TicketWarningList warnings={view.warnings} />
       <div className="flex-1 overflow-y-auto px-4 py-2">
         {view.requirements.length === 0 && (
           <p className="py-8 text-center text-sm text-muted-foreground">还没有需求</p>
