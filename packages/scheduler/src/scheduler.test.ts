@@ -2360,3 +2360,77 @@ describe("T-041a 重启接管 adopt", () => {
     });
   });
 });
+
+describe("T-041b adopt 写状态失败回滚", () => {
+  const wt = (id: string) => `/wt/${id}-r0`;
+  it("写 merge_queued 抛错：adopt 原样抛错，不留登记、PR 映射和锁，不入队；之后同一 PR 能重新接回", async () => {
+    const h = harness();
+    const s = await started(h);
+    const set = h.deps.tickets.setStatus;
+    let fail = true;
+    h.deps.tickets.setStatus = (t, st) => {
+      if (fail && t === "A") throw new Error("写库失败");
+      return set(t, st);
+    };
+    const input = { pr_id: "pr-A", head_sha: SHA("b"), worktree_path: wt("A") };
+    await expect(
+      s.adopt(ticket("A", { write_scope: ["src/**"], depends_on: ["Z"] }), input),
+    ).rejects.toThrow(/写库失败/);
+    expect(s.status("A")).toBeUndefined();
+    expect(s.snapshot()).toEqual([]);
+    // PR 映射撤掉：按 pr_id 查回到不认识的最小上下文
+    expect(s.eventContext({ pr_id: "pr-A", ticket_id: null }).requirement_id).toBe(
+      "unattributed:pr-A",
+    );
+    // 锁已放掉：写入范围重叠的另一张单能接回
+    expect(
+      await s.adopt(ticket("B", { write_scope: ["src/b.ts"], depends_on: ["Z"] }), {
+        pr_id: "pr-B",
+        head_sha: SHA("b"),
+        worktree_path: wt("B"),
+      }),
+    ).toBe("adopted");
+    expect(s.lock("B", ["src/**"])).toBe("ok");
+    await s.idle();
+    expect(h.calls.filter((c) => c === "merge:pr-A:bakacoding/integration")).toEqual([]);
+    // 修好后同一 PR 重试（B 合不了：依赖 Z 没登记、一直持锁，所以换一张不重叠的范围）
+    fail = false;
+    expect(await s.adopt(ticket("A", { write_scope: ["lib/**"], depends_on: ["Z"] }), input)).toBe(
+      "adopted",
+    );
+    expect(s.status("A")).toBe("merge_queued");
+  });
+});
+
+describe("T-041b replaceDependency", () => {
+  it("依赖已上报单的下游单 held → 换成新单后 waiting，新单合入后 ready 并合入；终态单不改；返回被改的单号", async () => {
+    const h = harness();
+    const d = withHandle(h, { max: 4 });
+    const s = await started(h);
+    await s.enqueue(ticket("X", { write_scope: ["x/**"] }));
+    await s.enqueue(ticket("D", { write_scope: ["d/**"], depends_on: ["X", "Y"] }));
+    await s.enqueue(ticket("Y", { write_scope: ["y/**"] }));
+    await settle(s);
+    expect(d.handled.sort()).toEqual(["X", "Y"]);
+    await pass(s, d, "Y");
+    // X 上报：D 挂起
+    d.pending.get("X")!.resolve({ kind: "escalated", pr_id: null });
+    await settle(s);
+    expect(s.status("X")).toBe("escalated");
+    expect(s.dependencyState("D")).toBe("held");
+
+    await s.enqueue(ticket("X2", { write_scope: ["x/**"] }));
+    expect(s.replaceDependency("X", ["X2", "X2", "D"])).toEqual(["D"]);
+    expect(s.dependencyState("D")).toBe("waiting");
+    // 对同一个旧单号再换一次：没有单再依赖它
+    expect(s.replaceDependency("X", ["X2"])).toEqual([]);
+    await settle(s);
+    expect(d.handled).toContain("X2");
+    await pass(s, d, "X2");
+    expect(d.handled).toContain("D");
+    await pass(s, d, "D");
+    expect(s.status("D")).toBe("merged");
+    // 终态的单不改依赖
+    expect(s.replaceDependency("Y", ["Q"])).toEqual([]);
+  });
+});
