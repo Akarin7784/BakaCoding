@@ -10,6 +10,7 @@ import {
   serveHighRisk,
   serveProjectSettings,
   serveReader,
+  serveRepoFix,
   serveSupervisorChat,
   serveSyncState,
   serveWindowTheme,
@@ -155,6 +156,11 @@ if (!gotLock) {
     const onNativeTheme = () => applyTitleBar(nativeTheme.shouldUseDarkColors);
     nativeTheme.on("updated", onNativeTheme);
     const stopBackendReload = serveBackendReload(ipcMain, backend, process.env);
+    // UI-03a：项目准备页的仓库检查与修复，作用于当前仓库；写操作成功后走 reconnect
+    const stopRepoFix = serveRepoFix(ipcMain, {
+      repoRoot: () => backend.repoRoot(),
+      reconnect: () => backend.reconnect(),
+    });
 
     // T-105：before-quit 里拦下退出，等 backend.stop()（9 收尾后才关库、放写锁）结束再退；
     // 最多等 QUIT_STOP_TIMEOUT_MS，超时只写一条不带路径的 warn。我们自己再发起的退出直接放行。
@@ -171,6 +177,7 @@ if (!gotLock) {
         stopWindowTheme();
         nativeTheme.off("updated", onNativeTheme);
         stopBackendReload();
+        stopRepoFix();
         reader.close();
       },
       warn: (m) => console.warn(`[desktop] ${m}`),

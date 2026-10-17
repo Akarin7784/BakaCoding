@@ -475,6 +475,24 @@ describe("UI-03：只读原因按 RepoNotReadyError 的 message / 不是 Git 仓
     await be.stop();
   });
 
+  it("UI-03a：不是 Git 仓库又缺 config/models.json（ConfigError）：按准备页顺序先报 not_git", async () => {
+    const root = unpreparedRepo("not_git");
+    rmSync(join(root, "config"), { recursive: true, force: true });
+    const be = await start(root);
+    const st = be.status();
+    expect(st.reason).toBe(NOT_GIT_REASON);
+    expect(st.error).toEqual({ name: "Error", message: NOT_GIT_REASON, code: "not_git" });
+    await be.stop();
+  });
+
+  it("是 Git 仓库但缺 config/models.json：照旧报配置校验失败", async () => {
+    const root = unpreparedRepo("no_main");
+    rmSync(join(root, "config"), { recursive: true, force: true });
+    const be = await start(root);
+    expect(be.status().reason).toBe("配置校验失败（ConfigError）");
+    await be.stop();
+  });
+
   it("checkRepo 说是仓库（或查不了）时，未知错误照旧只写错误名", async () => {
     const root = unpreparedRepo("not_git");
     for (const checkRepo of [

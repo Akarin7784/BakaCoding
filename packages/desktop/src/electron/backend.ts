@@ -478,10 +478,12 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
   };
   let stopping: Promise<void> | undefined;
 
-  /** 未归类的启动错误：用 4 的 checkRepo 看是不是「不是 Git 仓库」（只读检查；查不了就按原样处理）。 */
+  /**
+   * 启动错误先用 4 的 checkRepo 看是不是「不是 Git 仓库」（只读检查；查不了就按原样处理）。
+   * UI-03a：缺配置 / 配置坏 / 缺密钥（ConfigError）也先查——不是 Git 仓库时按准备页的顺序先报 not_git。
+   */
   const isNotGitFailure = async (e: unknown): Promise<boolean> => {
-    if (e instanceof StorageLeaseError || e instanceof ConfigError || isRepoNotReady(e))
-      return false;
+    if (e instanceof StorageLeaseError || isRepoNotReady(e)) return false;
     try {
       const r = await (opts.checkRepo ?? checkRepoDefault)(repoRoot);
       const git = r.items.find((i) => i.id === "git");

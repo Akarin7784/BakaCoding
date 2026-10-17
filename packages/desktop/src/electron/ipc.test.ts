@@ -16,6 +16,7 @@ import {
   serveHighRisk,
   serveProjectSettings,
   serveReader,
+  serveRepoFix,
   serveSupervisorChat,
   serveSyncState,
   serveWindowTheme,
@@ -124,6 +125,23 @@ const SERVE: Record<string, (ipc: IpcMainLike, backend: BackendHandle) => () => 
     serveWindowTheme(ipc, { setThemeSource: (s) => s === "dark", applyTitleBar: () => {} }),
   serveBackendReload: (ipc, backend) =>
     serveBackendReload(ipc, backend as unknown as Parameters<typeof serveBackendReload>[1]),
+  // UI-03a：修复函数注入假的，链路测试只看参数往返
+  serveRepoFix: (ipc) =>
+    serveRepoFix(ipc, {
+      repoRoot: () => "/repo",
+      reconnect: async () => ({ state: "reloaded" as const }),
+      fns: {
+        checkRepo: async () => ({
+          items: [{ id: "git" as const, ok: true }],
+          current_branch: "main",
+          identity: { name: true, email: true },
+        }),
+        initRepo: async () => {},
+        listInitialCommitFiles: async () => ({ include: ["a.txt"], excluded: [] }),
+        initialCommit: async () => ({ commit: "c0ffee" }),
+        createMainBranch: async () => ({ from: "master" }),
+      },
+    }),
   serveProjectSettings: (ipc, backend) =>
     serveProjectSettings(ipc, {
       backend: backend as unknown as ProjectSettingsDeps["backend"],
@@ -265,6 +283,24 @@ describe("handler 参数：第一个是 event，渲染进程参数从第二个�
       waitingChat: false,
     });
     await expect(api.reconnectBackend()).resolves.toEqual({ state: "reloaded" });
+    // UI-03a：仓库检查与修复
+    await expect(api.checkRepo!()).resolves.toMatchObject({ ok: true });
+    await expect(api.initRepo!()).resolves.toEqual({ ok: true, reload: { state: "reloaded" } });
+    await expect(api.listInitialFiles!()).resolves.toEqual({
+      ok: true,
+      include: ["a.txt"],
+      excluded: [],
+    });
+    await expect(api.initialCommit!({ files: ["a.txt"] })).resolves.toEqual({
+      ok: true,
+      commit: "c0ffee",
+      reload: { state: "reloaded" },
+    });
+    await expect(api.createMainBranch!()).resolves.toEqual({
+      ok: true,
+      from: "master",
+      reload: { state: "reloaded" },
+    });
     // 以 IPC_CHANNELS 为准：新增 invoke 通道而这里没往返、或主进程没注册，都会失败
     expect([...seen].sort()).toEqual(INVOKE_CHANNELS);
     expect([...handlers.keys()].sort()).toEqual(INVOKE_CHANNELS);
@@ -379,6 +415,8 @@ describe("preload 暴露的只读 API", () => {
   it("暴露只读与后端状态相关成员，且不可改", () => {
     const api = createDesktopApi(fakeIpc(), "linux");
     expect(Object.keys(api).sort()).toEqual([
+      "checkRepo",
+      "createMainBranch",
       "decideHighRisk",
       "exportDiagnostics",
       "getBackendStatus",
@@ -387,6 +425,9 @@ describe("preload 暴露的只读 API", () => {
       "getSnapshot",
       "getSyncState",
       "importProject",
+      "initRepo",
+      "initialCommit",
+      "listInitialFiles",
       "markSupervisorReady",
       "onPendingHighRisk",
       "onSupervisorNotify",

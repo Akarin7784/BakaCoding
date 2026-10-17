@@ -47,6 +47,16 @@ export const IPC_CHANNELS = {
   backendReload: "bakacoding:backend:reload",
   /** invoke：只读横幅的「重新连接」；与 backend:reload 同一条路径（T-093）。 */
   backendReconnect: "bakacoding:backend:reconnect",
+  /** invoke：项目准备页逐项检查当前仓库（UI-03a，4 的 checkRepo，只读）。 */
+  repoCheck: "bakacoding:repo:check",
+  /** invoke：初始化 Git（UI-03a，4 的 initRepo）；成功后自动 backend:reconnect。 */
+  repoInit: "bakacoding:repo:init",
+  /** invoke：首次提交确认框要列的文件（UI-03a，4 的 listInitialCommitFiles，只读）。 */
+  repoListInitialFiles: "bakacoding:repo:list-initial-files",
+  /** invoke：首次提交（UI-03a，4 的 initialCommit）；成功后自动 backend:reconnect。 */
+  repoInitialCommit: "bakacoding:repo:initial-commit",
+  /** invoke：从当前分支新建 main（UI-03a，4 的 createMainBranch）；成功后自动 backend:reconnect。 */
+  repoCreateMain: "bakacoding:repo:create-main",
 } as const;
 
 /** 界面主题偏好（与渲染进程 lib/theme.ts 的 THEME_PREFERENCES 一致，测试锁住）。 */
@@ -146,6 +156,68 @@ export type DesktopReloadResult =
   | { state: "queued"; waitingTickets: number; waitingChat: boolean }
   | { state: "failed"; reason: string };
 
+/** 4 的 checkRepo() 检查项（UI-03a）：detail 是中文、不含路径；current 只在 no_main 时给。 */
+export interface DesktopRepoCheckItem {
+  id: "git" | "commit" | "main" | "ignored";
+  ok: boolean;
+  code?: "not_git" | "no_commits" | "no_main" | "not_ignored";
+  detail?: string;
+  current?: string;
+}
+
+/** 4 的 checkRepo() 结果：items 固定 git / commit / main / ignored 顺序；identity 只回是否已配。 */
+export interface DesktopRepoCheck {
+  items: DesktopRepoCheckItem[];
+  current_branch: string | null;
+  identity: { name: boolean; email: boolean };
+}
+
+/** Git 身份：只写进本仓库 .git/config。 */
+export interface DesktopGitIdentity {
+  name: string;
+  email: string;
+}
+
+/**
+ * 仓库修复失败（UI-03a）：code 取 4 的 RepoFixError 码，reason 是它的固定中文文案（不含路径和 git 原始输出）。
+ * 主进程拿到非 RepoFixError 的异常一律记成 git_failed。
+ */
+export interface DesktopRepoFixFailure {
+  ok: false;
+  code:
+    | "not_git"
+    | "repo_exists"
+    | "no_commits"
+    | "has_commits"
+    | "main_exists"
+    | "no_identity"
+    | "invalid_identity"
+    | "invalid_files"
+    | "timeout"
+    | "git_failed";
+  reason: string;
+}
+
+export type DesktopRepoCheckResult = { ok: true; check: DesktopRepoCheck } | DesktopRepoFixFailure;
+
+/** 首次提交会带上的文件（相对仓库根、posix 分隔符）与默认排除的文件。 */
+export type DesktopRepoFilesResult =
+  | {
+      ok: true;
+      include: string[];
+      excluded: { path: string; reason: "protected" | "bakacoding" }[];
+    }
+  | DesktopRepoFixFailure;
+
+/** 写操作结果：成功后主进程已调 backend:reconnect，reload 是它的结果。 */
+export type DesktopRepoFixResult =
+  { ok: true; reload: DesktopReloadResult; commit?: string; from?: string } | DesktopRepoFixFailure;
+
+/** repo:initial-commit 的参数：files 只认 repo:list-initial-files 列出的相对路径。 */
+export type DesktopInitialCommitRequest = ({ files: string[] } | { empty: true }) & {
+  identity?: DesktopGitIdentity;
+};
+
 export interface SupervisorNotifyMessage {
   text: string;
   project_id?: string;
@@ -234,6 +306,16 @@ export interface BakaDesktopApi {
   reloadBackend(): Promise<DesktopReloadResult>;
   /** 只读横幅「重新连接」（T-093）。 */
   reconnectBackend(): Promise<DesktopReloadResult>;
+  /** 项目准备页（UI-03a）：逐项检查当前仓库；旧版 preload / 测试假 API 可以没有。 */
+  checkRepo?(): Promise<DesktopRepoCheckResult>;
+  /** 初始化 Git（UI-03a）。 */
+  initRepo?(req?: { identity?: DesktopGitIdentity }): Promise<DesktopRepoFixResult>;
+  /** 首次提交确认框的文件清单（UI-03a）。 */
+  listInitialFiles?(): Promise<DesktopRepoFilesResult>;
+  /** 首次提交（UI-03a）。 */
+  initialCommit?(req: DesktopInitialCommitRequest): Promise<DesktopRepoFixResult>;
+  /** 从当前分支新建 main（UI-03a）。 */
+  createMainBranch?(): Promise<DesktopRepoFixResult>;
 }
 
 export type {

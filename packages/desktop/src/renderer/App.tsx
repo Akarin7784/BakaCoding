@@ -17,7 +17,9 @@ import { StatusDot } from "./components/StatusDot";
 import { attentionItems, globalLevel, runningCount } from "./lib/globalStatus";
 import { describeSyncState } from "./lib/sync-labels";
 import { notifyError, notifyOk } from "./lib/notify";
-import { READONLY_COPY } from "./lib/readonly";
+import { READONLY_COPY, repoFixRoute } from "./lib/readonly";
+import { PREP_COPY } from "./lib/repoPrep";
+import { RepoPrepPage } from "./components/RepoPrepPage";
 import { useWindowControlsInset } from "./lib/useWindowControlsInset";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { CommandPalette } from "./components/CommandPalette";
@@ -74,6 +76,8 @@ export function App(props: AppProps) {
   const inset = useWindowControlsInset(api?.platform);
 
   const [selection, setSelection] = useState<Selection>({ kind: "supervisor" });
+  /** UI-03a：项目准备页（从只读横幅「准备仓库」进来，占内容区；左栏选别的就关掉） */
+  const [prepOpen, setPrepOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [panelTab, setPanelTab] = useState<RightPanelTab>("overview");
   const [lastProjectId, setLastProjectId] = useState<string | undefined>(
@@ -81,6 +85,7 @@ export function App(props: AppProps) {
   );
 
   const select = (s: Selection) => {
+    setPrepOpen(false);
     setSelection(s);
     if (s.kind === "project") setLastProjectId(s.projectId);
   };
@@ -124,52 +129,55 @@ export function App(props: AppProps) {
       只读
     </span>
   ) : null;
-  const title =
-    selection.kind === "unattributed" ? (
-      <>
-        <span className="truncate">未归属</span>
-        {readonlyTag}
-      </>
-    ) : showProject ? (
-      <>
-        <span className="truncate"># {current.project.payload.name}</span>
-        {readonlyTag}
-      </>
-    ) : (
-      <>
-        <AgentIcon supervisor />
-        <span>主管</span>
-      </>
-    );
+  const prepRoute = backend.status ? repoFixRoute(backend.status) : null;
+  const canPrepare = !!api?.checkRepo;
+  const showPrep = prepOpen && canPrepare;
+  const title = showPrep ? (
+    <span className="truncate">{PREP_COPY.title}</span>
+  ) : selection.kind === "unattributed" ? (
+    <>
+      <span className="truncate">未归属</span>
+      {readonlyTag}
+    </>
+  ) : showProject ? (
+    <>
+      <span className="truncate"># {current.project.payload.name}</span>
+      {readonlyTag}
+    </>
+  ) : (
+    <>
+      <AgentIcon supervisor />
+      <span>主管</span>
+    </>
+  );
   // 主管页的导入 / 导出放在标题栏（都是次按钮；每屏最多一个主按钮，§5.3）
-  const titleActions =
-    selection.kind === "supervisor" || !current ? (
-      <>
-        {api && (
-          <Button
-            variant="secondary"
-            size="sm"
-            aria-label="导入项目"
-            disabled={actions.busy !== null}
-            onClick={() => void actions.importProject()}
-          >
-            <FolderOpen strokeWidth={1.5} />
-            {actions.busy === "import" ? "导入中…" : "导入项目"}
-          </Button>
-        )}
+  const titleActions = showPrep ? null : selection.kind === "supervisor" || !current ? (
+    <>
+      {api && (
         <Button
           variant="secondary"
           size="sm"
-          aria-label="导出诊断包"
-          disabled={actions.busy !== null || backendReadonly}
-          title={backendReadonly ? READONLY_COPY.exportDisabled : undefined}
-          onClick={() => void actions.exportDiagnostics()}
+          aria-label="导入项目"
+          disabled={actions.busy !== null}
+          onClick={() => void actions.importProject()}
         >
-          <Download strokeWidth={1.5} />
-          {actions.busy === "export" ? "导出中…" : "导出"}
+          <FolderOpen strokeWidth={1.5} />
+          {actions.busy === "import" ? "导入中…" : "导入项目"}
         </Button>
-      </>
-    ) : null;
+      )}
+      <Button
+        variant="secondary"
+        size="sm"
+        aria-label="导出诊断包"
+        disabled={actions.busy !== null || backendReadonly}
+        title={backendReadonly ? READONLY_COPY.exportDisabled : undefined}
+        onClick={() => void actions.exportDiagnostics()}
+      >
+        <Download strokeWidth={1.5} />
+        {actions.busy === "export" ? "导出中…" : "导出"}
+      </Button>
+    </>
+  ) : null;
 
   const panelDocked = layout.rightPanelOpen && !layout.drawer;
 
@@ -248,10 +256,20 @@ export function App(props: AppProps) {
             status={backend.status}
             reconnecting={reconnecting}
             {...(reconnect && { onReconnect: () => void reconnect() })}
+            {...(canPrepare && prepRoute && !showPrep && { onPrepare: () => setPrepOpen(true) })}
           />
         )}
-        <HighRiskPanel items={panelItems} disabled={backendReadonly} onDecide={highRisk.decide} />
-        {selection.kind === "unattributed" ? (
+        {!showPrep && (
+          <HighRiskPanel items={panelItems} disabled={backendReadonly} onDecide={highRisk.decide} />
+        )}
+        {showPrep && api ? (
+          <RepoPrepPage
+            api={api}
+            route={prepRoute}
+            onBack={() => setPrepOpen(false)}
+            onFixed={() => backend.refresh()}
+          />
+        ) : selection.kind === "unattributed" ? (
           <UnattributedPanel
             escalations={unattributed}
             warnings={unattributedWarnings}
