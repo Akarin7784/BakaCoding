@@ -92,7 +92,9 @@ flowchart BT
 | T-038 | 模块 8 补充：8 是 `write_scope_requested` 唯一答复方（不安全路径直接拒，范围内直接批，范围外交 9 新增的 `extendScope`；所有批准都先发 `write_scope_granted` 再写回需求单记录，`recordGrantedScope` 改为内部）、订阅 `interface_changed`（`onInterfaceChanged` / `attach`，说明作不可信反馈带给下一次编码，在手的单交出前重审、不计复投，`ResumeToken.interface_notes`）、依赖类单标高风险（`DEPENDENCY_MANIFEST_GLOBS`、需求单 `kind: "dependency"`，`high_risk` 带给 7 / 9 / 结果，模块 7 加 `ReviewInput.high_risk?`）；9 的 `merged_but` 保持 `merged` 并发 `escalated(merged_but)`；8 / 9 的 `isUnsafeGlob` / `isUnsafeScope` 转调模块 4（`@deprecated`）；`clampPermissionList` 不安全的 rw 丢掉、ro 改 deny | 8、9、7 | 编排层开发 | 已合入 | #50 | `ad58693` |
 | T-039 | 模块 9 调度器：入队与依赖排序、写入范围锁与独占区、写入范围申请回复、编码槽位、闲时 `deferred`（读 T-035 的反压信号）；另含：预算续跑接派单闸门、冲突复投传 sha 基线、后台出错不覆盖终态、8 的 `reReview` 重启后读 2 的 PR 记录、worktree 根目录软链接逃逸测试、`stop()` 的取消信号经 8 传给 5/7 | 9、8 | 编排层开发 | 已合入 | #45 | `501853a` |
 | T-040 | 模块 10 主管：`chat` / `split`（接口声明必填、决策记忆、项目创建告知用户） | 10 | 编排层开发 | 已合入 | #56 | `79bc488` |
-| T-041 | 模块 10 上报处理（重拆最多 2 次，`budget_exceeded` 直接交用户）与高风险 PR 裁决 | 10 | 编排层开发 | 未开始 | — | — |
+| T-041a | 模块 10 组装根 `@bakacoding/app`（8 / 9 / 10 共用一条总线）、重启接管 `takeOver`（派单沿用已开的 PR；已在合并队列的单经模块 9 新增的 `adopt` 接回；`fields_invalid` 的单不接回、只发一次警告） | 10、9 | 编排层开发 | 待评审 | — | — |
+| T-041b | 模块 10 上报处理和重拆（重拆最多 2 次，`budget_exceeded` 直接交用户；含模块 9 `replaceDependency`、重拆关旧 PR、写入范围空格条目） | 10、9 | 编排层开发 | 未开始 | — | — |
+| T-041c | 模块 10 高风险 PR 裁决（含模块 9 高风险闸门） | 10、9 | 编排层开发 | 未开始 | — | — |
 | T-042 | 模块 10 集成分支审查与合入 main、主管待办指标 | 10 | 编排层开发 | 未开始 | — | — |
 | T-043 | 不可信文本包装与转义：评审池的需求单 / 摘要 / 架构约束 / diff 与编码池 feedback 统一包进带 nonce 的 `untrusted` 区块；转义前做 NFKC、忽略零宽字符和软连字符；共用函数放 `@bakacoding/types`；nonce 不进编码池公共前缀 | 5、7 | 执行层开发 | 已合入 | #35 | `876cac0` |
 | T-044 | 模块 5/7 把 `signal` 透传给模型调用（`runTicket` 加可选 `signal`，调模型前、工具调用前检查取消）；编码池工具轮把上一轮的 `reasoning`（含 `signature`）原样放进 assistant 消息回传 | 5、7 | 执行层开发 | 已合入 | #43 | `d646d20` |
@@ -131,6 +133,13 @@ flowchart BT
 - 模块 9（T-046）：用户在 GitHub 手动合并而 GitHub 没给合法的 `merge_commit_sha`（40 位小写十六进制）时，不发 `interface_changed`（不用 `targetHead()` 兜底），只调 `onError`。
 - 模块 9（T-046）：合并日志不持久化，重启后不从 2 恢复（`TicketRecord.merge` 没有 sha 和改动文件），重启后基线定不了的单按 T-035 保守重审。
 - 模块 9（T-046）：没补发成功的 `interface_changed` 待补发列表只在进程内，重启即丢。
+- 组合根（T-041a）：重启时 `escalated` 的单只列出，补跑上报处理在 T-041b；高风险闸门的打开在 T-041c。
+- 组合根（T-041a）：重启接管时依赖里已上报（`escalated`）或没接回（`fields_invalid`、接管失败）的单，9 不认识，依赖它的单会一直 `waiting`（不是 `held`）。
+- 模块 9（T-041a）：`adopt` 接回的单复投数是估的：评审复投数从 0 记起（9 只用它报上报的 `resubmit_counts`，8 的复投上限按事件日志算），冲突复投数按 worktree 轮次估。
+- 模块 9（T-041a → T-041b）：`adopt` 只按单的原 `write_scope` 加锁；重启前经 `extendScope` 扩出的范围不恢复。
+- 组合根（T-041a）：`fields_invalid` 的「只通知一次」只在同一进程内去重；每次重启都会再发一条 `ticket_warning(fields_invalid)`，跨重启去重由桌面端做（T-062，按单号 + 警告码去重）。
+- 组合根（T-041a）：一次组装对应一个仓库；12 的主进程还没接 `assemble`（另开单）。
+- 组合根（T-041a）：派单查当前 PR 用 2 的 `prStore().list()` 全量过滤，PR 记录多时偏慢（v1 可接受）。
 - 已解决（T-053）：中途写入范围申请里的路径曾按 glob 原样批准，文件名本身带通配符（如 `docs/**`）会批成整个目录可写；现在申请路径带通配字符一律拒绝。
 - 已解决（T-038）：合并成功后收尾出错（`merged_but`）不再把 `merged` 改成 `escalated`，状态保持 `merged` 并另发 `escalated(merged_but)`。
 - 已解决（T-048，#47）：写入范围重叠判断展开花括号（`src/{a,b}.ts` 与 `src/a.ts` 算重叠），独占区域按多个代表路径判断（`src/**/*.json` 命中 `**/package.json`）。

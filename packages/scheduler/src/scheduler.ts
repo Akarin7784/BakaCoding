@@ -592,6 +592,36 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
    * 基线在合并日志里的位置：本会话内某次合并的 sha → 之后的合并才算基线前进；start() 时的目标分支 HEAD →
    * 本会话的合并都算；都不是（或拿不到）→ 记录不足，合并前和目标分支 HEAD 比。
    */
+  /** 新登记一张单的内存条目（状态 pending，没派过、没持锁）。enqueue 和 adopt 共用。 */
+  function newEntry(ticket: SchedulerTicket): Entry {
+    return {
+      ticket: { ...ticket },
+      status: "pending",
+      pr_id: null,
+      worktree_path: null,
+      round: 0,
+      base_seq: mergeLog.length,
+      base_unknown: false,
+      base_commit: undefined,
+      counts: { review: 0, conflict: 0 },
+      rate_limit_streak: 0,
+      target_dirty_streak: 0,
+      own_worktree: false,
+      busy: false,
+      resume_token: undefined,
+      pending_replace: undefined,
+      resuming: false,
+      resume_not_before: 0,
+      dispatched: false,
+      coding: false,
+      lock_scope: null,
+      conflicted: false,
+      base_changed: false,
+      re_reviewed: false,
+      high_risk: false,
+    };
+  }
+
   function locateBase(base: string | undefined): { seq: number; unknown: boolean } {
     const i = base ? mergeLog.map((m) => m.sha).lastIndexOf(base) : -1;
     if (i >= 0) return { seq: i + 1, unknown: false };
@@ -957,7 +987,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         pumping = undefined;
         current = undefined;
         // 循环体退出后才到的触发：补跑一轮（T-061）
-        if (pumpAgain && !stopped) {
+        if (pumpAgain) {
           pumpAgain = false;
           kick();
         }
@@ -1214,32 +1244,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     },
     async enqueue(ticket) {
       if (entries.has(ticket.ticket_id)) throw new Error(`重复登记的单：${ticket.ticket_id}`);
-      const e: Entry = {
-        ticket: { ...ticket },
-        status: "pending",
-        pr_id: null,
-        worktree_path: null,
-        round: 0,
-        base_seq: mergeLog.length,
-        base_unknown: false,
-        base_commit: undefined,
-        counts: { review: 0, conflict: 0 },
-        rate_limit_streak: 0,
-        target_dirty_streak: 0,
-        own_worktree: false,
-        busy: false,
-        resume_token: undefined,
-        pending_replace: undefined,
-        resuming: false,
-        resume_not_before: 0,
-        dispatched: false,
-        coding: false,
-        lock_scope: null,
-        conflicted: false,
-        base_changed: false,
-        re_reviewed: false,
-        high_risk: false,
-      };
+      const e = newEntry(ticket);
       entries.set(ticket.ticket_id, e);
       await setStatus(e, "pending");
       kickDispatch();
@@ -1306,6 +1311,59 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       }
       kick();
       kickDispatch();
+    },
+    async adopt(ticket, input) {
+      const { pr_id, head_sha, worktree_path } = input;
+      if (typeof pr_id !== "string" || pr_id.length === 0)
+        throw new Error(`adopt ${ticket.ticket_id}：没有 PR id，不能直接恢复进合并队列`);
+      if (typeof head_sha !== "string" || head_sha.length === 0)
+        throw new Error(`adopt ${ticket.ticket_id}：PR ${pr_id} 没有 head，不能直接恢复进合并队列`);
+      if (typeof worktree_path !== "string" || worktree_path.length === 0)
+        throw new Error(`adopt ${ticket.ticket_id}：没有 worktree 路径`);
+      const existing = entries.get(ticket.ticket_id);
+      if (existing) {
+        // 幂等：同一 PR 已经接回过（还在队里、正在合并或后台重审 / 复投中）就什么都不做
+        if (
+          existing.pr_id === pr_id &&
+          !TERMINAL.has(existing.status) &&
+          existing.status !== "pending"
+        )
+          return "already";
+        throw new Error(
+          `adopt ${ticket.ticket_id}：已登记（状态 ${existing.status}，PR ${existing.pr_id ?? "无"}），不能再接回 PR ${pr_id}`,
+        );
+      }
+      const e = newEntry(ticket);
+      // 写入范围锁先加：和别的持锁单重叠、或碰独占区域而另一张独占单正持锁，就抛错，什么都不写、不入队
+      // （重启接管的重试、或两张重叠的单先后 adopt，都不能叠锁）
+      const lock = tryLock(e, scopeOf(ticket));
+      if (!lock.ok)
+        throw new Error(
+          lock.exclusive
+            ? `adopt ${ticket.ticket_id}：写入范围碰到独占区域，独占区域正被 ${lock.with.join("、")} 占用，不能接回 PR ${pr_id}`
+            : `adopt ${ticket.ticket_id}：写入范围与在途单 ${lock.with.join("、")} 重叠，不能接回 PR ${pr_id}`,
+        );
+      // 不派单：PR 已经开出并评审过；从不交给 8 的 handle
+      e.dispatched = true;
+      e.pr_id = pr_id;
+      e.worktree_path = worktree_path;
+      e.round = input.round ?? 0;
+      e.counts = {
+        review: input.review_resubmits ?? 0,
+        conflict: input.conflict_resubmits ?? e.round,
+      };
+      e.high_risk = input.high_risk === true;
+      // 重启后合并日志是空的：基线一般定不了（base_unknown），合并前和目标分支 HEAD 比，不同就保守重审
+      e.base_commit = input.base_commit || undefined;
+      const loc = locateBase(e.base_commit);
+      e.base_unknown = loc.unknown;
+      if (!loc.unknown) e.base_seq = loc.seq;
+      entries.set(ticket.ticket_id, e);
+      prToTicket.set(pr_id, ticket.ticket_id);
+      await setStatus(e, "merge_queued");
+      queue.push(ticket.ticket_id);
+      kick(); // 只触发合并循环，不触发派单
+      return "adopted";
     },
     eventContext,
     mergeResult: (pr_id) => results.get(pr_id),

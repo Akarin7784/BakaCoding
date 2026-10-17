@@ -41,6 +41,9 @@
       "path": "packages/supervisor"
     },
     {
+      "path": "packages/app"
+    },
+    {
       "path": "packages/diagnostics"
     },
     {

@@ -306,6 +306,33 @@ export interface Scheduler {
     high_risk?: boolean;
   }): Promise<void>;
   /**
+   * 重启接管（T-041a，提案 R3）：把重启前已在合并队列里（2 里是 merge_queued / conflict / re_reviewing）的单
+   * 直接登记成 `merge_queued` 并排到队尾，**不派单**（不交 8 的 handle）、只触发合并循环。
+   * - 必须带 PR id 和 head（`pr_id`、`head_sha` 非空，还要 `worktree_path`），否则抛错、不登记。
+   * - 幂等：同一单已用同一个 PR 接回过（还没到终态）再调返回 `"already"`，什么都不改；单已用别的 PR 登记、
+   *   是 pending（enqueue 过）或已到终态时抛错。
+   * - 基线：`base_commit` 一般是 PR 记录的 `base_sha`；重启后合并日志定不了它，合并前和目标分支 HEAD 比，
+   *   不同就保守重审（同 submit 的 base_unknown）。冲突复投数默认取 `round`（worktree 的轮次 n）。
+   * - 写入范围锁按原 `write_scope` 加（没写按整个仓库），规则同派单：与其他持锁单可能重叠，或碰独占区域而
+   *   另一张独占单正持锁，就抛错（错误里写明和哪些单冲突、是否因独占区域），不登记、不入队、不写状态。
+   *   重启前经 extendScope 扩出的范围不恢复。
+   */
+  adopt(
+    ticket: SchedulerTicket,
+    input: {
+      pr_id: string;
+      /** PR 当前 head 提交（6 的记录里的 head_sha）；没有就不接 */
+      head_sha: string;
+      worktree_path: string;
+      round?: number;
+      base_commit?: string;
+      review_resubmits?: number;
+      /** 默认等于 round */
+      conflict_resubmits?: number;
+      high_risk?: boolean;
+    },
+  ): Promise<"adopted" | "already">;
+  /**
    * 8 转来的范围外写入申请（T-038，8 是 write_scope_requested 的唯一答复方，9 不再订阅它）：对本单重新加锁，
    * 成功把范围并进本单 write_scope 并返回 ok；失败不改锁、发 `escalated(scope_lock_failed)`，返回原因。
    * 未登记或已终态的单返回失败。granted / denied 事件由 8 发。

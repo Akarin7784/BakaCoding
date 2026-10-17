@@ -1,9 +1,15 @@
-// T-040：模块 10 主管——chat / split / 手动单 / loadTicket / 项目导入告知。
+// T-040：模块 10 主管——chat / split / 手动单 / loadTicket / 项目导入告知。T-041a：重启接管 takeOver。
 import { randomBytes, randomUUID } from "node:crypto";
 import type { SchedulerTicket } from "@bakacoding/scheduler";
 import type { StoredTicket } from "@bakacoding/storage";
 import type { SubAgentTicket } from "@bakacoding/sub-agent";
-import { untrustedNotice, wrapUntrusted, type CallCtx, type Trace } from "@bakacoding/types";
+import {
+  untrustedNotice,
+  wrapUntrusted,
+  type CallCtx,
+  type TicketStatus,
+  type Trace,
+} from "@bakacoding/types";
 import { isUnsafeGlob } from "@bakacoding/workspace";
 import {
   ChatOutputSchema,
@@ -21,6 +27,7 @@ import {
   type Supervisor,
   type SupervisorDeps,
   type SupervisorTicket,
+  type TakeOverReport,
   type TicketValidationError,
   type UserMessage,
 } from "./types.js";
@@ -93,6 +100,20 @@ function mergeReplies(first: ChatReply, second: ChatReply): ChatReply {
 const MAX_FILES_IN_PROMPT = 500;
 const MAX_FEEDBACK_DETAIL = 2000;
 
+/** 重启接管：这些状态的单重新 enqueue（派单时组合根按 PR 记录沿用已开的 PR，不重复开）。 */
+const TAKEOVER_ENQUEUE: ReadonlySet<TicketStatus> = new Set<TicketStatus>([
+  "pending",
+  "coding",
+  "in_review",
+  "resubmitting",
+]);
+/** 重启接管：这些状态的单已在合并队列里，经 9 的 adopt 直接恢复成 merge_queued（不派单）。 */
+const TAKEOVER_ADOPT: ReadonlySet<TicketStatus> = new Set<TicketStatus>([
+  "merge_queued",
+  "conflict",
+  "re_reviewing",
+]);
+
 interface ProjectInfo {
   project_id: string;
   name: string;
@@ -106,6 +127,10 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   };
   /** 追问项目时暂存的需求（1:1 历史 v1 不持久化，只在本进程） */
   let pending: { text: string; kind: "requirement" | "decision" } | undefined;
+  /** 本进程已交给 9 的单（拆单 / 手动单 / 接管）：takeOver 不再重复 enqueue（9 对重复登记报错） */
+  const enqueuedIds = new Set<string>();
+  /** 本进程接管时判过 fields_invalid 的单：再次 takeOver 不再重复发警告 */
+  const skippedInvalid = new Set<string>();
 
   const nowIso = () => clock().toISOString();
   const shortId = () =>
@@ -215,6 +240,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         interfaces: t.interfaces,
         priority: t.priority,
       };
+      enqueuedIds.add(t.ticket_id);
       await deps.enqueue(st);
     }
     for (const t of tickets) {
@@ -549,6 +575,110 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     };
   }
 
+  /**
+   * T-041a 重启接管：按 2 的 tickets.status 接回没到终态的单。先接已在合并队列里的单（让它们先占上写入范围锁），
+   * 再 enqueue 其余的。
+   * - merge_queued / conflict / re_reviewing：loadTicket 复查后经 deps.adopt 直接恢复进 9 的合并队列，一律记成
+   *   merge_queued、不派单：conflict 的单合并循环会再试一次合并、照常走冲突复投；re_reviewing 的单重启后基线
+   *   定不了，合并前和目标分支 HEAD 比，不同就重审。没注入 adopt 时只列进 awaiting_adopt。
+   * - pending / coding / in_review / resubmitting：loadTicket 复查后 enqueue；派单时由组合根查 PR 记录，
+   *   带 HandleOptions.pr_id / worktree 交给 8（PD §12：不重复开 PR）。
+   * - loadTicket 返回 undefined（fields_invalid）：它已发过一次 ticket_warning(fields_invalid)，这里不接回、
+   *   不重拆、不发 escalated（Q7），同一进程里不再重复判。
+   * - escalated：TODO(T-041b)：没有 escalation_handled 的补跑一次上报处理。现在只列出。
+   * - merged：跳过。
+   */
+  async function takeOver(): Promise<TakeOverReport> {
+    const report: TakeOverReport = {
+      enqueued: [],
+      adopted: [],
+      skipped_invalid: [],
+      awaiting_adopt: [],
+      escalated: [],
+      merged: [],
+      failed: [],
+    };
+    const rows = deps.storage.listTickets();
+    const statusOf = new Map(rows.map((r) => [r.ticket_id, r.status ?? "pending"]));
+    const toAdopt: StoredTicket[] = [];
+    const toEnqueue: StoredTicket[] = [];
+    for (const row of rows) {
+      const id = row.ticket_id;
+      if (enqueuedIds.has(id) || skippedInvalid.has(id)) continue;
+      const status: TicketStatus = row.status ?? "pending";
+      if (status === "merged") report.merged.push(id);
+      else if (status === "escalated")
+        report.escalated.push(id); // TODO(T-041b)：补跑上报处理
+      else if (TAKEOVER_ADOPT.has(status)) toAdopt.push(row);
+      else if (TAKEOVER_ENQUEUE.has(status)) toEnqueue.push(row);
+    }
+
+    const prepare = async (row: StoredTicket) => {
+      const loaded = await loadTicket(row.ticket_id);
+      const f = decodeFields(row.fields);
+      if (!loaded || !f.ok) {
+        skippedInvalid.add(row.ticket_id);
+        report.skipped_invalid.push(row.ticket_id);
+        return undefined;
+      }
+      const st: SchedulerTicket & { kind?: "dependency" } = {
+        ticket_id: loaded.ticket_id,
+        requirement_id: loaded.requirement_id,
+        trace_id: loaded.trace_id,
+        span_id: loaded.span_id,
+        parent_span_id: loaded.parent_span_id,
+        // 9 重启后不认识已合入的单，留着会一直 waiting
+        depends_on: f.fields.depends_on.filter((d) => statusOf.get(d) !== "merged"),
+        write_scope: f.fields.write_scope,
+        interfaces: f.fields.interfaces,
+        priority: f.fields.priority,
+        ...(loaded.kind ? { kind: loaded.kind } : {}),
+      };
+      return st;
+    };
+    const hand = async (
+      row: StoredTicket,
+      fn: (t: SchedulerTicket & { kind?: "dependency" }) => unknown,
+      done: string[],
+      what: string,
+    ) => {
+      const st = await prepare(row);
+      if (!st) return;
+      const id = row.ticket_id;
+      enqueuedIds.add(id);
+      try {
+        await fn(st);
+        done.push(id);
+      } catch (err) {
+        enqueuedIds.delete(id);
+        const error = err instanceof Error ? err.message : String(err);
+        logger.warn(`重启接管：单 ${id} ${what} 失败`, err);
+        report.failed.push({ ticket_id: id, error: error.slice(0, 500) });
+      }
+    };
+
+    const adopt = deps.adopt;
+    for (const row of toAdopt) {
+      if (!adopt) {
+        logger.warn(`重启接管：单 ${row.ticket_id} 已在合并队列里，没注入 adopt，本次没有接回`);
+        report.awaiting_adopt.push(row.ticket_id);
+        continue;
+      }
+      await hand(row, adopt, report.adopted, "adopt");
+    }
+    for (const row of toEnqueue) {
+      await hand(
+        row,
+        // enqueue 只要 SchedulerTicket 的字段
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        ({ kind: _kind, ...t }) => deps.enqueue(t),
+        report.enqueued,
+        "enqueue",
+      );
+    }
+    return report;
+  }
+
   function start(): () => void {
     return deps.subscribe("project_created", (e) => {
       const p = e.payload;
@@ -712,5 +842,5 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     return act(out.intent, msg.text, out.decision, project, note, requirement_id);
   }
 
-  return { chat, split, start, createManualTicket, loadTicket };
+  return { chat, split, start, createManualTicket, loadTicket, takeOver };
 }
