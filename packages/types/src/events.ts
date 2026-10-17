@@ -165,6 +165,7 @@ export const TICKET_WARNING_CODES = [
   "fields_invalid",
   "requirement_truncated",
   "pr_close_failed",
+  "high_risk_reject_not_applied", // T-041c：拒绝高风险 PR 时已关（或试图关）PR，但 9 那边拒绝没生效（如 PR 中途换了，stale_pr）
 ] as const;
 export type TicketWarningCode = (typeof TICKET_WARNING_CODES)[number];
 /** ticket_warning 是单级事件，ticket_id 必须非 null。 */

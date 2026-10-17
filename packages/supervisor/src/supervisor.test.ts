@@ -1692,6 +1692,33 @@ describe("T-041c 高风险 PR 裁决", () => {
     expect(t.timers).toEqual([]);
   });
 
+  it("check 之后、reject 之前 PR 换了：9 的 reject 抛 stale_pr，10 发 high_risk_reject_not_applied、通知「PR 已关、裁决未生效」，错误照抛", async () => {
+    const { t, calls, current } = await hrSetup();
+    await t.sup.highRiskHeld(held("req-1-1", "pr-1", "submit"));
+    current.set("req-1-1", "pr-1");
+    // 关 PR 的这段时间里 9 那边换成了新 PR
+    t.closeResult = () => {
+      current.set("req-1-1", "pr-2");
+      return "closed";
+    };
+    const err = await t.sup.decideHighRisk("req-1-1", "pr-1", "reject", "不要").catch((e) => e);
+    expect(err).toBeInstanceOf(HighRiskDecisionError);
+    expect((err as HighRiskDecisionError).code).toBe("stale_pr");
+    expect(calls).toEqual(["check:req-1-1:pr-1", "close:req-1-1", "reject:req-1-1:pr-1:不要"]);
+    const warn = t.published.filter(
+      (e) => e.type === "ticket_warning" && e.payload.code === "high_risk_reject_not_applied",
+    );
+    expect(warn).toHaveLength(1);
+    expect(warn[0]).toMatchObject({ ticket_id: "req-1-1" });
+    expect(String((warn[0]!.payload as { detail: string }).detail)).toMatch(
+      /PR pr-1 已关、裁决未生效（stale_pr）/,
+    );
+    expect(t.notified.at(-1)!.text).toMatch(/PR pr-1 已关、裁决未生效.*换了新的.*重新查看/);
+    // 没生效：不重试关 PR，待裁决清单里还在
+    expect(t.timers).toEqual([]);
+    expect(t.sup.pendingHighRisk().map((p) => p.ticket_id)).toEqual(["req-1-1"]);
+  });
+
   it("decideHighRisk 拒绝时 PR 其实已合入：抛 already_merged，不让 9 上报（保留的规则）", async () => {
     const { t, calls } = await hrSetup();
     t.closeResult = () => "merged";

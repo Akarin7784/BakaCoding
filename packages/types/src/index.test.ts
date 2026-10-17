@@ -229,6 +229,7 @@ describe("EventSchema", () => {
       "fields_invalid",
       "requirement_truncated",
       "pr_close_failed",
+      "high_risk_reject_not_applied",
     ]);
     const tw = {
       ...common,

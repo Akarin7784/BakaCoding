@@ -1613,10 +1613,66 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         ...(errText !== undefined ? { error: errText } : {}),
       },
     });
-    await gate.reject(ticket_id, pr_id, why);
+    try {
+      // 9 自己再按 pr_id 校验一次（check 与 reject 之间 PR 可能换了）
+      await gate.reject(ticket_id, pr_id, why);
+    } catch (err) {
+      await rejectNotApplied(ticket_id, pr_id, state, err);
+      throw err;
+    }
     pendingHR.delete(ticket_id);
     if (state === "unconfirmed") await rejectCloseFailed(ticket_id, pr_id, why, 0, closeErr);
     return { decision, pr_close: state };
+  }
+
+  /**
+   * 关 PR 之后 9 的 reject 抛错（T-041c）：最常见是 check 与 reject 之间 PR 换了（stale_pr）。PR 已关（或关失败）、
+   * 但裁决没生效——不静默：发 ticket_warning(high_risk_reject_not_applied)、通知用户，错误照抛给调用方。
+   * 不重试关 PR、不改待裁决清单（9 那边新 PR 照常扣着，等用户重新裁决）。
+   */
+  async function rejectNotApplied(
+    id: string,
+    pr_id: string,
+    state: "closed" | "none" | "unconfirmed",
+    err: unknown,
+  ): Promise<void> {
+    const code = err instanceof HighRiskDecisionError ? err.code : "error";
+    const msg = errMessage(err);
+    logger.warn(`单 ${id} 拒绝高风险 PR ${pr_id}：关 PR 之后 9 的拒绝没生效（${code}）`, err);
+    const closed =
+      state === "closed"
+        ? `PR ${pr_id} 已关、裁决未生效`
+        : state === "none"
+          ? `没有找到要关的 PR、裁决未生效`
+          : `PR ${pr_id} 关闭未确认、裁决未生效`;
+    const row = deps.storage.getTicket(id);
+    if (!row) return;
+    const where = { project_id: row.project_id, requirement_id: row.requirement_id };
+    const trace = traceOf(row);
+    try {
+      await deps.publish({
+        type: "ticket_warning",
+        event_id: newId(),
+        ts: nowIso(),
+        trace_id: trace.trace_id,
+        span_id: newId(),
+        parent_span_id: trace.span_id,
+        requirement_id: row.requirement_id,
+        ticket_id: id,
+        payload: {
+          project_id: row.project_id,
+          code: "high_risk_reject_not_applied",
+          detail: `${closed}（${code}）：${msg}`.slice(0, 500),
+        },
+      });
+    } catch (e2) {
+      logger.warn(`单 ${id} 发 ticket_warning(high_risk_reject_not_applied) 失败`, e2);
+    }
+    const why =
+      code === "stale_pr"
+        ? "这期间单子的 PR 已经换了新的，新 PR 仍扣在合并队列里，请重新查看后再裁决。"
+        : `原因：${msg.slice(0, 500)}。请重新查看后再裁决。`;
+    await notify(`单 ${id} 的高风险裁决（拒绝）：${closed}。${why}`, where);
   }
 
   /** 拒绝后关 PR 失败（T-041c，N5）：首次发 ticket_warning(pr_close_failed)，按 041b 的间隔重试，用完交用户。 */
