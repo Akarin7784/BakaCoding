@@ -1334,6 +1334,34 @@ describe("T-066 checks 翻页 + commit status（C2）", () => {
     ).toEqual([1, 2].map((n) => `/commits/${head}/check-runs?per_page=100&page=${n}`));
   });
 
+  it("已知缺口 2：check-runs 响应不带 total_count：按已收到的条数算，第 1 页之后不再翻页", async () => {
+    await integrationAhead();
+    const iid = await pr.openIntegration();
+    // 第 1 页不带 total_count；第 2 页若被请求会带一条失败（不该被请求）
+    gh.override = (method, path) => {
+      if (method !== "GET" || !path.endsWith("/check-runs")) return undefined;
+      const runs = gh.calls.at(-1)!.path.endsWith("page=1")
+        ? [
+            { name: "nt-1", status: "completed", conclusion: "success" },
+            { name: "nt-2", status: "in_progress", conclusion: null },
+          ]
+        : [{ name: "nt-late", status: "completed", conclusion: "failure" }];
+      return new Response(JSON.stringify({ check_runs: runs }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+    const res = await pr.checks(iid);
+    expect(res.filter((r) => r.name.startsWith("nt-"))).toEqual([
+      { name: "nt-1", status: "completed", conclusion: "success" },
+      { name: "nt-2", status: "in_progress", conclusion: null },
+    ]);
+    const head = await rev(repo, INTEGRATION_BRANCH);
+    expect(
+      gh.calls.filter((c) => c.path.startsWith(`/commits/${head}/check-runs`)).map((c) => c.path),
+    ).toEqual([`/commits/${head}/check-runs?per_page=100&page=1`]);
+  });
+
   it("T-069 check-runs 超过页数上限仍未取满 total_count：抛错", async () => {
     await integrationAhead();
     const iid = await pr.openIntegration();
