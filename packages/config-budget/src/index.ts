@@ -4,3 +4,4 @@ export const MODULE_NAME = "@bakacoding/config-budget" as const;
 export * from "./config.js";
 export * from "./redact.js";
 export * from "./pricing.js";
+export * from "./budget.js";

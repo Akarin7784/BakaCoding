@@ -22,3 +22,11 @@
 | `backpressure.*`、`diagnostics.retention_days` | 默认值取自整体设计 §10、§14 |
 
 示例配置不再含 `effort_map`：思考档位到服务商字段的映射以模块 1 的服务商能力表为准。
+
+## 预算台账（T-006）
+
+- `createBudget({ budget, pricing, ledger, now? })`：`budget` 取配置里的 `budget` 段，`ledger` 是启动时注入的 `LedgerStore`（模块 2 实现，本包不依赖存储）。
+- `attach(bus, { onError })`：订阅 `call_completed` 记一笔，`entry_id` 取 `event_id`（重放不重复计费），闲时按事件 `ts` 用 `isOffpeak` 判断；落库失败交给 `onError`（默认 `console.error`），不抛给总线。
+- `recordCost(entry)`：手工补记一条 `LedgerEntry`。
+- `budgetState(ticket_id?)`：当日（UTC）上限、已花、复投、剩余、`daily_exhausted`，每单上限（每日预算 × `per_ticket_ratio`，向下取整），按角色分列，`offpeak_now`、`offpeak_preference`；传 `ticket_id` 时另带该单累计花费（含复投、不分日期）和 `exhausted`。已花 ≥ 上限即 exhausted。模块 1 每次调用前先查。
+- `computeCost(pricing, model, tokens, at)`：缓存命中输入、未命中输入、输出分别按单价计，按调用时刻选高峰或闲时价，向上取整到微美元；模型不在 `pricing.json` 里直接报错。

@@ -1,5 +1,8 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
+import type { TokensSchema } from "@bakacoding/types";
+
+type Tokens = z.infer<typeof TokensSchema>;
 
 const MicroUsd = z.number().int().nonnegative();
 const HHMM = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
@@ -72,4 +75,30 @@ export function isOffpeak(date: Date, pricing: Pricing): boolean {
   const minutes = date.getUTCHours() * 60 + date.getUTCMinutes();
   const toMin = (s: string) => Number(s.slice(0, 2)) * 60 + Number(s.slice(3, 5));
   return !pricing.peak_hours_utc.some(([a, b]) => minutes >= toMin(a) && minutes < toMin(b));
+}
+
+export interface CallCost {
+  /** 整数微美元，向上取整（宁可多算）。 */
+  cost_micro_usd: number;
+  offpeak: boolean;
+}
+
+/**
+ * 单次调用的费用：缓存命中输入、未命中输入、输出分别按单价计，按调用时刻选高峰或闲时价。
+ * 单价是每 1M token 的微美元价，结果向上取整到 1 微美元。模型不在价目表里直接报错。
+ */
+export function computeCost(pricing: Pricing, model: string, tokens: Tokens, at: Date): CallCost {
+  const m = pricing.models[model];
+  if (!m) throw new RangeError(`pricing.json 里没有模型 ${model} 的单价`);
+  if (tokens.cache_hit_input > tokens.input)
+    throw new RangeError(
+      `cache_hit_input（${tokens.cache_hit_input}）不能大于 input（${tokens.input}）`,
+    );
+  const offpeak = isOffpeak(at, pricing);
+  const r = offpeak ? m.offpeak : m.peak;
+  const scaled =
+    tokens.cache_hit_input * r.input_cache_hit +
+    (tokens.input - tokens.cache_hit_input) * r.input_cache_miss +
+    tokens.output * r.output;
+  return { cost_micro_usd: Math.ceil(scaled / 1_000_000), offpeak };
 }
