@@ -460,4 +460,23 @@ describe("凭据 URL 各种写法不进诊断包（T-060）", () => {
     expect(detail).toContain("[REDACTED:url_credentials]");
     expect(detail).not.toContain("[REDACTED:email]");
   });
+  // 10 万字符的 detail 导出不能卡住（T-059 修 redact 的平方级耗时；修复前 full 档 `a.a.…` 约 23 秒）
+  it.each([
+    ["a.a.…", "a.".repeat(50_000)],
+    ["纯字母", "a".repeat(100_000)],
+    ["a@a@…", "a@".repeat(50_000)],
+    ["a:a:…", "a:".repeat(50_000)],
+    ["https://u:u:…", `https://u:${"u:".repeat(50_000)}`],
+  ])(
+    "10 万字符的 %s detail 导出在 500ms 内",
+    async (_label, big) => {
+      storage.ingest(ev("escalated", "2026-10-10T01:00:00.999Z", "R-1", "T-2", { detail: big }));
+      const t0 = performance.now();
+      const { zip_path } = await exportT2();
+      expect(performance.now() - t0).toBeLessThan(500);
+      const pkg = await readPackage(zip_path);
+      expect(pkg.events.some((e) => e.type === "escalated" && e.ticket_id === "T-2")).toBe(true);
+    },
+    120_000,
+  );
 });
