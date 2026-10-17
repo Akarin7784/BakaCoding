@@ -17,6 +17,8 @@
 // dist-renderer、prompts/（模块 3 运行时按 main.js 的 ../prompts/ 读）、
 // node_modules/better-sqlite3（build/Release/better_sqlite3.node 进 asarUnpack，main.ts 找不到
 // native/electron/ 时由 better-sqlite3 经 bindings 加载这一份）+ bindings、file-uri-to-path。
+// 注意：electron-builder 的 smart unpack 检测到含 .node 的包会把整个 better-sqlite3（包括 lib/）
+// 都解到 app.asar.unpacked/，不只是 build/；多解出几个 JS 文件，无害。
 // Windows：打包后用 resedit（纯 JS，不要 wine）写 exe 版本信息；有 build/icon.ico 时一并换图标。
 import { Buffer } from "node:buffer";
 import { execFileSync } from "node:child_process";
@@ -32,7 +34,12 @@ import * as ResEdit from "resedit";
 export const PACKAGE_ELECTRON = "43.8.0";
 export const ELECTRON_ABI = "148";
 export const SQLITE_VERSION = "12.12.0";
-/** 官方下载的 SHA256：预编译包与 GitHub release 资产的 digest 一致；源码包为 tag v12.12.0（72abfc3）的归档。 */
+/**
+ * 官方下载的 SHA256：预编译包与 GitHub release 资产的 digest 一致；源码包为 tag v12.12.0（72abfc3）的归档。
+ * 源码包是 GitHub 自动生成的 archive，GitHub 不保证它逐字节稳定（压缩实现变了 SHA256 就会变）。
+ * 校验不通过时：先确认 tag v12.12.0 仍指向 72abfc3（git ls-remote https://github.com/WiseLibs/better-sqlite3 v12.12.0），
+ * 确认无误后再更新下面的常量；tag 被改指向就不要更新，先查清楚。
+ */
 export const SHA256 = {
   [`better-sqlite3-${SQLITE_VERSION}-src.tar.gz`]:
     "a90fc4990ccd0bd78e8c52ce20c46396ef63558ba4da8b9ad775d6f32d0293f0",
