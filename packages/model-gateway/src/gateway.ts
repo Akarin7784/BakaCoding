@@ -208,6 +208,9 @@ export function createModelGateway(opts: CreateModelGatewayOptions): ModelGatewa
     req.signal?.throwIfAborted();
 
     const key = apiKey(conf.credential_ref);
+    const maxTokens =
+      modelConf.max_tokens ??
+      (conf.protocol === "anthropic-messages" ? caps.default_max_tokens : undefined);
     const adapter = ADAPTERS[conf.protocol];
     const http = adapter.build(
       {
@@ -215,7 +218,8 @@ export function createModelGateway(opts: CreateModelGatewayOptions): ModelGatewa
         api_key: key,
         model: req.model,
         effort,
-        ...(modelConf.max_tokens !== undefined ? { max_tokens: modelConf.max_tokens } : {}),
+        // Anthropic 协议 max_tokens 必填：一律传（配置值，没配就用能力表输出上限）；OpenAI 协议填了才传
+        ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
         system: req.system,
         tools: req.tools,
         messages: req.messages,
@@ -391,7 +395,18 @@ export function createModelGateway(opts: CreateModelGatewayOptions): ModelGatewa
       throw e;
     } finally {
       // call_completed 发布时总线会等台账写完，所以释放放在最后
-      await hold.release();
+      // release 自身出错不能盖住原始错误
+      try {
+        await hold.release();
+      } catch (e) {
+        warn({
+          provider: req.provider,
+          model: req.model,
+          requested: req.effort,
+          effort,
+          message: `${req.provider}/${req.model}：释放预算预占失败：${e instanceof Error ? e.message : String(e)}`,
+        });
+      }
     }
   }
 

@@ -141,7 +141,8 @@ export const anthropicAdapter: ProtocolAdapter = {
     const body: Record<string, unknown> = {
       model: input.model,
       stream: false,
-      ...(input.max_tokens !== undefined ? { max_tokens: input.max_tokens } : {}),
+      // Anthropic 协议 max_tokens 必填，没传就用能力表的输出上限
+      max_tokens: input.max_tokens ?? caps.default_max_tokens,
       messages,
       thinking: { type: input.effort === "off" ? "disabled" : "enabled" },
       ...(input.effort === "off"

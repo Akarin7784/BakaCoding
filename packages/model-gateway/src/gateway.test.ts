@@ -182,8 +182,8 @@ describe("chat：DeepSeek Anthropic 兼容接口", () => {
       messages: [{ role: "user", content: [{ type: "text", text: "改 a.ts" }] }],
     });
     expect(r.body).not.toHaveProperty("budget_tokens");
-    // 模型配置没填 max_tokens：不传，用服务端默认值
-    expect(r.body).not.toHaveProperty("max_tokens");
+    // Anthropic 协议 max_tokens 必填：没配就传能力表的输出上限
+    expect(r.body.max_tokens).toBe(DEEPSEEK_ANTHROPIC.default_max_tokens);
   });
 
   it("off 档：thinking disabled，不带 output_config", async () => {
@@ -662,7 +662,7 @@ describe("取消与错误", () => {
   it("请求中途取消：中止 HTTP 请求，抛 AbortError，发 call_completed（error ABORTED）", async () => {
     const ac = new AbortController();
     let seenSignal: AbortSignal | undefined;
-    const { gw, events } = setup({
+    const { gw, events, holds } = setup({
       responses: [
         (init) =>
           new Promise<Response>((_, reject) => {
@@ -680,6 +680,36 @@ describe("取消与错误", () => {
     expect(seenSignal!.aborted).toBe(true);
     expect(events).toHaveLength(1);
     expect(events[0]!.payload).toMatchObject({ cost: 0, output: "", error: { code: "ABORTED" } });
+    expect(holds[0]!.released).toBe(1);
+  });
+
+  it("200 之后适配器抛出非预期异常：照样抛出，预占已释放", async () => {
+    const { gw, holds, events } = setup({
+      responses: [
+        json(200, {
+          content: 123,
+          usage: { input_tokens: 10, cache_read_input_tokens: 0, output_tokens: 5 },
+        }),
+      ],
+    });
+    await expect(gw.chat({ ...baseReq, ctx: ctx() })).rejects.toBeTruthy();
+    expect(holds[0]!.released).toBe(1);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.payload.error).not.toBeNull();
+  });
+
+  it("release() 自身抛错：不覆盖原始错误，只记警告", async () => {
+    const s = setup({ responses: [json(400, { error: { message: "bad" } })] });
+    s.reserve.mockImplementationOnce(async () => ({
+      ok: true as const,
+      release: async () => {
+        throw new Error("ledger down");
+      },
+    }));
+    await expect(s.gw.chat({ ...baseReq, ctx: ctx() })).rejects.toMatchObject({
+      code: "INVALID_REQUEST",
+    });
+    expect(s.warnings.some((w) => w.includes("ledger down"))).toBe(true);
   });
 
   it("重试前检查 signal：退避期间取消就不再发请求", async () => {
@@ -937,6 +967,7 @@ describe("DeepSeek OpenAI 兼容接口", () => {
     const body = requests[0]!.body;
     expect(requests[0]!.url).toBe("https://api.deepseek.com/chat/completions");
     expect(body).toMatchObject({ thinking: { type: "enabled" }, reasoning_effort: "max" });
+    // OpenAI 协议没配 max_tokens 就不传
     expect(body).not.toHaveProperty("max_tokens");
     expect((body.messages as Record<string, unknown>[])[2]).toMatchObject({
       role: "assistant",

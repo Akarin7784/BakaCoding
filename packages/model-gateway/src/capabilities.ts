@@ -16,8 +16,8 @@ export interface Capabilities {
   /** 工具调用不能并行时由本地保证串行（DeepSeek 忽略 disable_parallel_tool_use） */
   serial_tools_local: boolean;
   /**
-   * 只用于预算预占的输出上限估算：模型配置没填 max_tokens 时请求里不传 max_tokens（用服务端默认值），
-   * 预占按这个值估。
+   * 输出上限：模型配置没填 max_tokens 时，Anthropic 协议请求里传这个值（max_tokens 必填），
+   * OpenAI 协议不传（用服务端默认值）；两种协议的预算预占都按它估。
    */
   default_max_tokens: number;
   /** 请求体带 thinking: { type: enabled | disabled } 开关 */
