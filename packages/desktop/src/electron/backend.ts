@@ -12,6 +12,7 @@ import {
   createDefaultDeps,
   ensureBakacodingIgnored,
   type App,
+  type TestConnectionResult,
   type DefaultDepsHandle,
   type WriterLock,
 } from "@bakacoding/app";
@@ -161,8 +162,16 @@ export interface BackendHandle {
   exportDiagnostics(target: string, now?: Date): Promise<string>;
   /** 主管 1:1 对话（T-071）：转给 10 的 chat()；只读 / 抛错为 ok:false，reason 已脱敏截断 */
   supervisorChat(message: UserMessage): Promise<DesktopChatResult>;
+  /**
+   * 测试连接（UI-03b，`provider:test`）：live 时转给组合根同一个网关的 testConnection（1 的语义不变），
+   * 只读（没有网关）时回 `unavailable`，不发请求。
+   */
+  testConnection(target: { provider: string; model?: string }): Promise<BackendTestResult>;
   stop(): Promise<void>;
 }
+
+/** 1 的 testConnection 结果，加上只读时的 unavailable */
+export type BackendTestResult = TestConnectionResult | { ok: false; reason: "unavailable" };
 
 const NOTIFY_BUFFER_MAX = 200;
 
@@ -726,6 +735,11 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
         const sup = app?.supervisor;
         return runSupervisorChat(sup ? (m) => sup.chat(m) : undefined, message, env, reason);
       });
+    },
+    async testConnection(target): Promise<BackendTestResult> {
+      const h = depsHandle;
+      if (mode !== "live" || !h) return { ok: false, reason: "unavailable" };
+      return h.testConnection(target);
     },
     stop(): Promise<void> {
       // T-105：等 app.stop() 收尾后再关库；重复调用返回同一个 Promise

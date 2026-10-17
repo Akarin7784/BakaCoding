@@ -1,6 +1,7 @@
 // UI-02 设置弹层外壳（§4.6）：居中 880×600，Ctrl+, 或左栏底部齿轮打开。
 // 7 个标签与可编辑内容在 UI-07；这一版里面放现有的只读设置页 + 主题切换。
 import type { DesktopSettings } from "../../shared/api";
+import type { WizardApi } from "./ModelSetupWizard";
 import { SettingsPanel } from "./SettingsPanel";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "./ui/dialog";
 
@@ -9,11 +10,14 @@ export function SettingsDialog({
   onOpenChange,
   settings,
   error,
+  api,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   settings: DesktopSettings | null;
   error?: string | null;
+  /** UI-03b：密钥项 / 模型设置向导 */
+  api?: WizardApi;
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -29,6 +33,7 @@ export function SettingsDialog({
           settings={settings}
           error={error ?? null}
           embedded
+          {...(api && { api })}
           onBack={() => onOpenChange(false)}
         />
       </DialogContent>

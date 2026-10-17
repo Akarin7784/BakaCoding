@@ -17,6 +17,7 @@ import {
   serveProjectSettings,
   serveReader,
   serveRepoFix,
+  serveSecretProvider,
   serveSupervisorChat,
   serveSyncState,
   serveWindowTheme,
@@ -142,6 +143,21 @@ const SERVE: Record<string, (ipc: IpcMainLike, backend: BackendHandle) => () => 
         listInitialCommitFiles: async () => ({ include: ["a.txt"], excluded: [] }),
         initialCommit: async () => ({ commit: "c0ffee" }),
         createMainBranch: async () => ({ from: "master" }),
+      },
+    }),
+  // UI-03b：3 的密钥函数注入假的，链路测试只看参数往返
+  serveSecretProvider: (ipc) =>
+    serveSecretProvider(ipc, {
+      secretDeps: {},
+      backend: {
+        status: () => ({ mode: "live" as const }),
+        reconnect: async () => ({ state: "reloaded" as const }),
+        testConnection: async () => ({ ok: true as const, latency_ms: 5, cost_micro_usd: 1 }),
+      },
+      fns: {
+        secretStatus: async () => ({ set: true, source: "bakacoding" as const, last4: "WXYZ" }),
+        setUserSecret: async () => ({ ok: true as const, last4: "WXYZ" }),
+        clearUserSecret: async () => ({ ok: true as const }),
       },
     }),
   serveProjectSettings: (ipc, backend) =>
@@ -303,6 +319,19 @@ describe("handler 参数：第一个是 event，渲染进程参数从第二个�
       from: "master",
       reload: { state: "reloaded" },
     });
+    // UI-03b：密钥与测试连接
+    const st = { set: true, source: "bakacoding", last4: "WXYZ" };
+    await expect(api.secretStatus!("DEEPSEEK_API_KEY")).resolves.toEqual({ ok: true, status: st });
+    await expect(api.setSecret!("DEEPSEEK_API_KEY", "sk-wire-test-WXYZ")).resolves.toEqual({
+      ok: true,
+      status: st,
+    });
+    await expect(api.clearSecret!("GITHUB_TOKEN")).resolves.toEqual({ ok: true, status: st });
+    await expect(api.testProvider!({ provider: "deepseek" })).resolves.toEqual({
+      ok: true,
+      latency_ms: 5,
+      cost_micro_usd: 1,
+    });
     // 以 IPC_CHANNELS 为准：新增 invoke 通道而这里没往返、或主进程没注册，都会失败
     expect([...seen].sort()).toEqual(INVOKE_CHANNELS);
     expect([...handlers.keys()].sort()).toEqual(INVOKE_CHANNELS);
@@ -418,6 +447,7 @@ describe("preload 暴露的只读 API", () => {
     const api = createDesktopApi(fakeIpc(), "linux");
     expect(Object.keys(api).sort()).toEqual([
       "checkRepo",
+      "clearSecret",
       "createMainBranch",
       "decideHighRisk",
       "exportDiagnostics",
@@ -439,8 +469,11 @@ describe("preload 暴露的只读 API", () => {
       "platform",
       "reconnectBackend",
       "reloadBackend",
+      "secretStatus",
+      "setSecret",
       "setWindowTheme",
       "supervisorChat",
+      "testProvider",
     ]);
     expect(Object.isFrozen(api)).toBe(true);
     expect(typeof api.getSnapshot).toBe("function");
