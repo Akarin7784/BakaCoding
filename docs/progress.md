@@ -104,7 +104,7 @@ flowchart BT
 | T-052 | 模块 4 `applyPermissions`：不安全的 ro 条目原位改成 deny（不再丢弃），不安全的 rw 照旧丢掉 | 4 | 基础层开发 | 已合入 | #49 | `2f48868` |
 | T-053 | 模块 8：越界写申请任一路径含通配字符（`* ? [ ] { } ( ) ! + @`）整条拒绝（不调 9 的 `extendScope`、不写回、不发 `write_scope_granted`），防止字面名 `docs/**` 被批成整个目录可写 | 8 | 编排层开发 | 已合入 | #51 | `2bea5bf` |
 | T-054 | 模块 4 越界写申请：路径带通配字符直接拒绝、不发申请（T-053 的纵深防御） | 4 | 基础层开发 | 已合入 | #53 | `33a38e0` |
-| T-055 | 模块 2：`tickets` 加可空 JSON 列 `fields`（v3 迁移），`saveTicket` 可带 `fields`（原样往返不脱敏，不传不覆盖）；新增 `getTicket`、`listTickets`（写入方和只读连接都有）；`listProjects` 带上 `name` | 2 | 基础层开发 | 待评审 | #? | |
+| T-055 | 模块 2：`tickets` 加可空 JSON 列 `fields`（v3 迁移），`saveTicket` 可带 `fields`（原样往返不脱敏，不传不覆盖）；新增 `getTicket`、`listTickets`（写入方和只读连接都有）；`listProjects` 带上 `name` | 2 | 基础层开发 | 待评审 | #54 | |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单。
 
