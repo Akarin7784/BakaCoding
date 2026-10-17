@@ -194,12 +194,11 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   let reviewBacklog = { pending: 0, capacity: deps.config.backpressure.reviews_per_member };
   let supervisorBacklog: { pending: number; capacity: number } | null = null;
   let pumping: Promise<void> | undefined;
-  let pumpAgain = false;
   /**
-   * 合并循环运行期间来过触发（T-061）：循环体退出后、收尾（finally）前进来的触发只能置这个标记，
-   * 收尾时看到就清掉再跑一轮，不丢。每轮开始时清掉（那一轮会看到当时的队列）。
+   * 合并循环运行期间来过触发：每轮开始时清掉（那一轮会看到当时的队列）。循环体退出后、收尾（finally）前
+   * 进来的触发也只能置这个标记，收尾时看到就清掉再跑一轮，不丢（T-061）。
    */
-  let triggeredWhileRunning = false;
+  let pumpAgain = false;
   let stopped = false;
   /** 正在 step 里处理的单（出错时上报它） */
   let current: Entry | undefined;
@@ -825,13 +824,13 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   /** 尝试合并一张；返回 false 表示队列里没有可出队的单。 */
   async function step(): Promise<boolean> {
     if (stopped) return false;
-    // 后台任务（复投、重审）进行中的单跳过、留在队里（T-061）：它可能已排回队尾、busy 还没清，
+    // 后台任务（复投、重审）进行中的单跳过、留在队里（T-061）：它可能已排回队里、busy 还没清，
     // 后台任务结束时会再触发一轮
     const id = queue.find((t) => !entries.get(t)?.busy && dependencyState(t) === "ready");
     if (!id) return false;
     const e = getEntry(id);
     current = e;
-    if (e.status !== "merge_queued" || e.busy || !e.pr_id) {
+    if (e.status !== "merge_queued" || !e.pr_id) {
       // 状态不对（不该在队里）：拿掉，不合并
       removeFromQueue(id);
       return true;
@@ -928,13 +927,11 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   function pump(): Promise<void> {
     if (pumping) {
       pumpAgain = true;
-      triggeredWhileRunning = true;
       return pumping;
     }
     pumping = (async () => {
       do {
         pumpAgain = false;
-        triggeredWhileRunning = false;
         for (;;) {
           current = undefined;
           currentMerged = false;
@@ -960,8 +957,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         pumping = undefined;
         current = undefined;
         // 循环体退出后才到的触发：补跑一轮（T-061）
-        if (triggeredWhileRunning && !stopped) {
-          triggeredWhileRunning = false;
+        if (pumpAgain && !stopped) {
+          pumpAgain = false;
           kick();
         }
       });
