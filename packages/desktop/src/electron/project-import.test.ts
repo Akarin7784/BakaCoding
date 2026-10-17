@@ -67,7 +67,7 @@ function tmp(prefix: string): string {
 function repo(opts: { git?: boolean; models?: boolean; pricing?: boolean } = {}): string {
   const root = tmp("bc-imp-");
   if (opts.git !== false) {
-    execFileSync("git", ["init", "-q"], { cwd: root });
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: root });
     execFileSync("git", ["config", "user.email", "t@test"], { cwd: root });
     execFileSync("git", ["config", "user.name", "t"], { cwd: root });
     writeFileSync(join(root, "README.md"), "x\n");
