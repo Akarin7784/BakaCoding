@@ -1,12 +1,11 @@
 // T-041a：组合根。把 0 事件总线、2 存储、3 配置 / 预算、6 PR 与编排层 8 / 9 / 10 装到同一条总线上，并做重启接管。
 // 不是功能模块：在编排层之上、12 之下（modules.md「组合根」一节）。
 import { isTicketActive } from "./active-tickets.js";
-import { execFile } from "node:child_process";
+import { repoGit } from "./repo-git.js";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import { promisify } from "node:util";
 import type { Budget, Config } from "@bakacoding/config-budget";
 import type { CoderPool } from "@bakacoding/coder-pool";
 import { createEventBus, type EventBus, type PublishInput } from "@bakacoding/event-bus";
@@ -57,7 +56,7 @@ import {
   type ReviewResult,
   type TicketStatus,
 } from "@bakacoding/types";
-import { gitEnv, isUnsafeGlob, REPO_GIT_TIMEOUT_MS, type ScopeBus } from "@bakacoding/workspace";
+import { isUnsafeGlob, type ScopeBus } from "@bakacoding/workspace";
 
 export type MaybePromise<T> = T | Promise<T>;
 
@@ -148,16 +147,15 @@ export interface App {
  * T-042 C3：用户仓库里检出 main 的 worktree 路径，没有检出（或 git 出错）时 null。
  * 仓库根优先取 `AppDeps.repoRoot`（T-094 加的，`createDefaultDeps` 传 4 的 `WorktreeManager.repoRoot`）；
  * 没给时才按 `worktreeRoot = <repo>/.bakacoding/worktrees` 往上推两级（T-096）。从 assemble.ts 导出供测试。
+ * T-101：git 走 `repoGit`（`gitEnv()` + `REPO_GIT_TIMEOUT_MS`），外部 `GIT_DIR` 等不影响查询；超时也返回 null。
  */
 export async function userMainWorktreeFor(
   deps: Pick<AppDeps, "repoRoot" | "worktreeRoot">,
 ): Promise<string | null> {
   const repo = deps.repoRoot ?? dirname(dirname(deps.worktreeRoot));
   try {
-    const { stdout } = await promisify(execFile)("git", ["worktree", "list", "--porcelain"], {
-      cwd: repo,
-      encoding: "utf8",
-    });
+    // T-101：走 repoGit，带 gitEnv() 和超时；超时 / 出错照旧返回 null
+    const { stdout } = await repoGit(repo, ["worktree", "list", "--porcelain"]);
     let path: string | undefined;
     for (const line of stdout.split("\n")) {
       if (line.startsWith("worktree ")) path = line.slice(9);
@@ -454,11 +452,11 @@ export async function assemble(deps: AppDeps): Promise<App> {
     }
     if (repo !== undefined)
       try {
-        const { stdout } = await promisify(execFile)(
-          "git",
-          ["for-each-ref", "--format=%(refname)", "refs/heads/bakacoding/"],
-          { cwd: repo, encoding: "utf8", env: gitEnv(), timeout: REPO_GIT_TIMEOUT_MS },
-        );
+        const { stdout } = await repoGit(repo, [
+          "for-each-ref",
+          "--format=%(refname)",
+          "refs/heads/bakacoding/",
+        ]);
         for (const ref of stdout.split("\n")) {
           const m = /^refs\/heads\/bakacoding\/(.+)-r\d+$/.exec(ref.trim());
           if (m) ids.add(m[1]!);

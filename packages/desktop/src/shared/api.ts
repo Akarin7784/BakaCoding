@@ -57,6 +57,8 @@ export const IPC_CHANNELS = {
   repoInitialCommit: "bakacoding:repo:initial-commit",
   /** invoke：从当前分支新建 main（UI-03a，4 的 createMainBranch）；成功后自动 backend:reconnect。 */
   repoCreateMain: "bakacoding:repo:create-main",
+  /** 主进程 → 渲染进程：开始退出收尾，界面显示「正在退出…」；不带内容，每次退出只发一次（T-106）。 */
+  appQuitting: "bakacoding:app:quitting",
 } as const;
 
 /** 界面主题偏好（与渲染进程 lib/theme.ts 的 THEME_PREFERENCES 一致，测试锁住）。 */
@@ -328,6 +330,8 @@ export interface BakaDesktopApi {
   initialCommit?(req: DesktopInitialCommitRequest): Promise<DesktopRepoFixResult>;
   /** 从当前分支新建 main（UI-03a）。 */
   createMainBranch?(): Promise<DesktopRepoFixResult>;
+  /** 订阅「正在退出」（T-106），返回取消订阅函数；旧版 preload / 测试假 API 可以没有。 */
+  onQuitting?(listener: () => void): () => void;
 }
 
 export type {

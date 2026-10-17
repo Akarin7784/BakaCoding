@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme } from "electron";
 import { lastRepoForStart, resolveRepoDbPath, startBackend, type RepoSource } from "./backend.js";
 import {
+  notifyAppQuitting,
   serveBackend,
   serveBackendReload,
   serveHighRisk,
@@ -18,7 +19,7 @@ import {
 import { titleBarOverlayFor, usesTitleBarOverlay, windowChromeOptions } from "./window-chrome.js";
 import { BackendSwitcher } from "./backend-switcher.js";
 import { openEventReader, type EventReader } from "./reader.js";
-import { createQuitGuard } from "./quit-guard.js";
+import { createQuitGuard, createWindowCloseHandler, type QuitGuard } from "./quit-guard.js";
 import { readLastRepo, writeLastRepo } from "./repo-store.js";
 import { readSavedTheme, writeSavedTheme } from "./theme-store.js";
 
@@ -33,6 +34,8 @@ function electronSqliteBinding(): string | undefined {
 }
 
 let win: BrowserWindow | null = null;
+/** T-106：后端组装好后才有；建窗口时用它拦关闭（还没有就按原样关） */
+let quitGuardRef: QuitGuard | null = null;
 
 /** 标题栏按钮叠层跟随当前深浅（UI-02）；没有叠层的平台不做。 */
 function applyTitleBar(dark: boolean): void {
@@ -61,6 +64,13 @@ function createWindow(): void {
       sandbox: true,
     },
   });
+  // T-106：点关闭先不关窗口，发起退出并留着窗口显示「正在退出…」，收尾结束后由 app.quit() 关
+  const onClose = createWindowCloseHandler({
+    guard: { state: () => quitGuardRef?.state() ?? "done" },
+    platform: process.platform,
+    quit: () => app.quit(),
+  });
+  win.on("close", (event) => onClose(event));
   win.on("closed", () => (win = null));
   const devUrl = process.env["VITE_DEV_SERVER_URL"];
   if (devUrl) void win.loadURL(devUrl);
@@ -174,7 +184,9 @@ if (!gotLock) {
     // T-105：before-quit 里拦下退出，等 backend.stop()（9 收尾后才关库、放写锁）结束再退；
     // 最多等 QUIT_STOP_TIMEOUT_MS，超时只写一条不带路径的 warn。我们自己再发起的退出直接放行。
     // 收尾期间 IPC 照常开着（界面还能轮询）；切换 / 重载会被 switcher 以「程序正在退出」拒绝。
+    // T-106：开始收尾时通知渲染进程显示「正在退出…」（只发一次；窗口已销毁就跳过，不影响退出）。
     const quitGuard = createQuitGuard({
+      onStopping: () => void notifyAppQuitting(sink),
       stop: () => backend.stop(),
       afterStop() {
         stopReader();
@@ -192,6 +204,7 @@ if (!gotLock) {
       warn: (m) => console.warn(`[desktop] ${m}`),
       quit: () => app.quit(),
     });
+    quitGuardRef = quitGuard;
     app.on("before-quit", (event) => quitGuard.onBeforeQuit(event));
     createWindow();
   });

@@ -494,7 +494,60 @@ describe("仓库检查不受外部 GIT_* 环境变量影响（T-084，#97 评审
     expect(await integrationTargetHead(root)).toBe(mainSha);
   });
 
+  it("listFiles（T-101）：GIT_DIR 指向另一个仓库时仍列目标仓库的文件", async () => {
+    const other = repo("main", true);
+    writeFileSync(join(other.root, "only-in-other.txt"), "o\n");
+    git(other.root, "add", ".");
+    git(other.root, "commit", "-q", "-m", "other");
+    const { root, db } = repo("main", true);
+    const head = git(root, "rev-parse", "main");
+    setEnv("GIT_DIR", join(other.root, ".git"));
+    const storage = openDb(db);
+    const handle = await createDefaultDeps(getConfig(examplePath), storage, {
+      repoRoot: root,
+      notifyUser: () => {},
+      pricingPath,
+      env,
+      logger: { warn: () => {} },
+    });
+    disposers.push(handle.dispose);
+    expect(await handle.deps.listFiles?.("p", "HEAD")).toEqual(["README.md"]);
+    expect(await handle.deps.listFiles?.("p", head)).toEqual(["README.md"]);
+  });
+
   it("测试设的 GIT_DIR 在用例之后已恢复原值", () => {
     expect(process.env.GIT_DIR).toBe(originalGitDir);
+  });
+});
+
+describe("listFiles 大输出（T-101）", () => {
+  it("ls-tree 输出超过默认 1 MiB 也能读完（listFiles 自带 16 MiB 上限）", async () => {
+    const { root, db } = gitRepo();
+    const g = (input: string | undefined, ...args: string[]) =>
+      execFileSync("git", args, { cwd: root, encoding: "utf8", input }).trim();
+    // 用底层命令直接造一棵 6000 个长文件名的树（同一个 blob），比真建文件快
+    const blob = g("x\n", "hash-object", "-w", "--stdin");
+    const pad = "n".repeat(200);
+    const names = Array.from(
+      { length: 6000 },
+      (_, i) => `${pad}-${String(i).padStart(5, "0")}.txt`,
+    );
+    const tree = g(names.map((n) => `100644 blob ${blob}\t${n}`).join("\n") + "\n", "mktree");
+    const commit = g(undefined, "commit-tree", tree, "-m", "big");
+    const bytes = names.reduce((n, s) => n + Buffer.byteLength(s) + 1, 0);
+    expect(bytes).toBeGreaterThan(1024 * 1024);
+
+    const storage = openDb(db);
+    const handle = await createDefaultDeps(getConfig(examplePath), storage, {
+      repoRoot: root,
+      notifyUser: () => {},
+      pricingPath,
+      env,
+      logger: { warn: () => {} },
+    });
+    disposers.push(handle.dispose);
+    const files = await handle.deps.listFiles?.("p", commit);
+    expect(files).toHaveLength(6000);
+    expect(files).toEqual([...names].sort());
   });
 });

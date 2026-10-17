@@ -6,10 +6,13 @@ import { EscalatedSchema } from "@bakacoding/types";
 import {
   createPrProvider,
   ExpectedHeadMismatchError,
+  GithubApiError,
   GithubAuthError,
   GithubBranchDivergedError,
   GithubRateLimitError,
   GithubPrProvider,
+  GithubTimeoutError,
+  GITHUB_REQUEST_TIMEOUT_MS,
   InMemoryPrStore,
   InvalidPrRecordError,
   INTEGRATION_BRANCH,
@@ -1458,5 +1461,186 @@ describe("merge 重试幂等（T-103）", () => {
     expect(await rev(repo, INTEGRATION_BRANCH)).toBe(mergeSha);
     expect(await store.get(id)).toMatchObject({ status: "merged", merge_sha: mergeSha });
     expect(events).toEqual([]);
+  });
+});
+
+describe("请求级超时与 signal（T-102a）", () => {
+  type Match = (method: string, path: string) => boolean;
+  /** 命中 match 的请求挂住，直到 init.signal 中止（按 signal.reason reject，同真 fetch）；其余转给 gh。 */
+  function hangOn(match: Match) {
+    return async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = new URL(String(input));
+      const path = url.pathname.replace(/^\/repos\/acme\/widget/, "");
+      const method = init?.method ?? "GET";
+      if (!match(method, path)) return gh.fetch(input, init);
+      gh.calls.push({ method, path, auth: null, body: undefined });
+      const signal = init?.signal;
+      return new Promise<Response>((_, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason as Error), { once: true });
+      });
+    };
+  }
+  /** 命中 match 的请求立即回 200 头，但响应体一直不结束，直到 signal 中止。 */
+  function hangBodyOn(match: Match) {
+    return async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = new URL(String(input));
+      const path = url.pathname.replace(/^\/repos\/acme\/widget/, "");
+      if (!match(init?.method ?? "GET", path)) return gh.fetch(input, init);
+      const signal = init?.signal;
+      const body = new ReadableStream<Uint8Array>({
+        start(ctrl) {
+          ctrl.enqueue(new TextEncoder().encode("{"));
+          signal?.addEventListener("abort", () => ctrl.error(signal.reason), { once: true });
+        },
+      });
+      return new Response(body, { status: 200 });
+    };
+  }
+  const isGetPull: Match = (m, p) => m === "GET" && p === "/pulls/1";
+
+  async function openTicket(ticket: string) {
+    await pr.openIntegration();
+    const t = await ticketPr(ticket);
+    return t;
+  }
+
+  it("默认超时常量是 30 秒", () => {
+    expect(GITHUB_REQUEST_TIMEOUT_MS).toBe(30_000);
+  });
+
+  it("请求挂住：到时抛 GithubTimeoutError（status null、带 op 和 timeout_ms），记录不变", async () => {
+    const { id } = await openTicket("T-41");
+    const before = await store.get(id);
+    const p = provider({ fetch: hangOn(isGetPull), requestTimeoutMs: 50 });
+    const err = await p.merge(id, INTEGRATION_BRANCH).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(GithubTimeoutError);
+    expect(err).toMatchObject({
+      status: null,
+      op: "GET /pulls/{n}",
+      timeout_ms: 50,
+      retryable: true,
+    });
+    expect(await store.get(id)).toEqual(before);
+    expect(gh.calls.some((c) => c.method === "PUT")).toBe(false);
+    expect(events).toEqual([]);
+  });
+
+  it("响应体读不完也算超时（计时覆盖读响应体）", async () => {
+    const { id } = await openTicket("T-42");
+    const p = provider({ fetch: hangBodyOn(isGetPull), requestTimeoutMs: 50 });
+    await expect(p.merge(id, INTEGRATION_BRANCH)).rejects.toBeInstanceOf(GithubTimeoutError);
+  });
+
+  it("外部 signal 中止：原样抛 signal.reason（不包装），记录不变，不上报", async () => {
+    const { id } = await openTicket("T-43");
+    const before = await store.get(id);
+    const p = provider({ fetch: hangOn(isGetPull) });
+    const ctl = new AbortController();
+    const reason = new Error("stop");
+    const run = p.merge(id, INTEGRATION_BRANCH, { signal: ctl.signal });
+    setTimeout(() => ctl.abort(reason), 20);
+    const err = await run.catch((e: unknown) => e);
+    expect(err).toBe(reason);
+    expect(err).not.toBeInstanceOf(GithubApiError);
+    expect(await store.get(id)).toEqual(before);
+    expect(events).toEqual([]);
+  });
+
+  it("已中止的 signal：merge / checks / close / sync 都不发请求，直接抛 reason", async () => {
+    const { id } = await openTicket("T-44");
+    const before = await store.get(id);
+    const n = gh.calls.length;
+    const ctl = new AbortController();
+    const reason = new Error("already");
+    ctl.abort(reason);
+    const signal = ctl.signal;
+    await expect(pr.merge(id, INTEGRATION_BRANCH, { signal })).rejects.toBe(reason);
+    await expect(pr.checks(id, { signal })).rejects.toBe(reason);
+    await expect(pr.close(id, "x", { signal })).rejects.toBe(reason);
+    await expect(pr.sync({ signal })).rejects.toBe(reason);
+    expect(gh.calls.length).toBe(n);
+    expect(await store.get(id)).toEqual(before);
+  });
+
+  it("本地实现：已中止的 signal 进入即抛 reason，不改记录", async () => {
+    const local = new LocalPrProvider({ store, repo, author: { name: "t", email: "t@t" } });
+    await git(repo, ["branch", INTEGRATION_BRANCH, "main"]);
+    const { wt, branch } = await ticketBranch("T-45");
+    const id = await local.open("T-45", wt, branch);
+    const before = await store.get(id);
+    const ctl = new AbortController();
+    const reason = new Error("stop");
+    ctl.abort(reason);
+    const signal = ctl.signal;
+    await expect(local.merge(id, INTEGRATION_BRANCH, { signal })).rejects.toBe(reason);
+    await expect(local.diff(id, { signal })).rejects.toBe(reason);
+    await expect(local.open("T-45b", wt, branch, { signal })).rejects.toBe(reason);
+    await expect(local.openIntegration(undefined, undefined, { signal })).rejects.toBe(reason);
+    expect(await store.get(id)).toEqual(before);
+  });
+
+  it("PUT 回 405 后回查超时：抛 GithubTimeoutError，不判冲突、不判 merge_blocked，记录仍是 open", async () => {
+    const { id } = await openTicket("T-46");
+    let gets = 0;
+    const p = provider({
+      requestTimeoutMs: 50,
+      fetch: async (input, init) => {
+        const path = new URL(String(input)).pathname.replace(/^\/repos\/acme\/widget/, "");
+        const method = init?.method ?? "GET";
+        if (method === "PUT" && path.endsWith("/merge"))
+          return new Response(JSON.stringify({ message: "Pull Request is not mergeable" }), {
+            status: 405,
+          });
+        if (isGetPull(method, path) && gets++ >= 1) return hangOn(() => true)(input, init);
+        return gh.fetch(input, init);
+      },
+    });
+    await expect(p.merge(id, INTEGRATION_BRANCH)).rejects.toBeInstanceOf(GithubTimeoutError);
+    expect(gets).toBe(2);
+    expect((await store.get(id))?.status).toBe("open");
+    expect(events).toEqual([]);
+  });
+
+  it("GitHub 没给 merge_commit_sha、期间又有别的单合入：记的是本单当时的合并提交 C，不是 target 最新提交", async () => {
+    await pr.openIntegration();
+    const a = await ticketBranch("T-47");
+    const idA = await pr.open("T-47", a.wt, a.branch);
+    const headA = await rev(a.wt, "HEAD");
+    const put = store.put.bind(store);
+    let armed = true;
+    store.put = (r: PrRecord) => {
+      if (armed && r.status === "merged") {
+        armed = false;
+        return Promise.reject(new Error("模拟中断"));
+      }
+      return put(r);
+    };
+    await expect(pr.merge(idA, INTEGRATION_BRANCH)).rejects.toThrow("模拟中断");
+    const pullA = pullOf(a.branch)!;
+    const c = pullA.merge_commit_sha!;
+    pullA.merge_commit_sha = null;
+    // 别的单随后合入，远端 target 前进
+    const b = await ticketBranch("T-48");
+    const idB = await pr.open("T-48", b.wt, b.branch);
+    expect(await pr.merge(idB, INTEGRATION_BRANCH)).toMatchObject({ merged: true });
+    const tip = await rev(bare, `refs/heads/${INTEGRATION_BRANCH}`);
+    expect(tip).not.toBe(c);
+
+    const r = await provider().merge(idA, INTEGRATION_BRANCH);
+    expect(r).toEqual({ merged: true, sha: c, fast_forward: false });
+    expect(await store.get(idA)).toMatchObject({ status: "merged", merge_sha: c, head_sha: headA });
+  });
+
+  it("GitHub 没给 merge_commit_sha、当时是快进：记 head", async () => {
+    const { id, branch, sha: head } = await openTicket("T-49");
+    // 模拟用户在 GitHub 上用快进方式合入：远端 target 直接指向 head
+    await git(bare, ["update-ref", `refs/heads/${INTEGRATION_BRANCH}`, head]);
+    const pull = pullOf(branch)!;
+    pull.merged = true;
+    pull.state = "closed";
+    pull.merge_commit_sha = null;
+    const r = await pr.merge(id, INTEGRATION_BRANCH);
+    expect(r).toEqual({ merged: true, sha: head, fast_forward: true });
+    expect(await store.get(id)).toMatchObject({ status: "merged", merge_sha: head });
   });
 });

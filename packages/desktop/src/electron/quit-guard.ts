@@ -19,6 +19,11 @@ export interface QuitGuardDeps {
   quit(): void;
   /** stop 结束或超时后、quit 之前执行（注销 IPC、关只读连接等） */
   afterStop?(): void;
+  /**
+   * T-106：第一次拦下退出、开始收尾时调一次（在 stop() 之前），用来通知渲染进程显示「正在退出…」。
+   * 只调一次；抛错不影响退出。
+   */
+  onStopping?(): void;
   warn(message: string): void;
   timeoutMs?: number;
   setTimer?: (fn: () => void, ms: number) => unknown;
@@ -88,9 +93,35 @@ export function createQuitGuard(deps: QuitGuardDeps): QuitGuard {
       event.preventDefault();
       if (state === "stopping") return;
       state = "stopping";
+      safe(() => deps.onStopping?.());
       running = run();
     },
     state: () => state,
     settled: () => running,
+  };
+}
+
+export interface WindowCloseEventLike {
+  preventDefault(): void;
+}
+
+/**
+ * T-106：窗口的 close 事件。点关闭后窗口先不关，留着显示「正在退出…」，等收尾结束由 app.quit() 统一关窗口。
+ * - done：我们自己发起的退出，放行（app.quit() 关窗口时会走到这里）。
+ * - stopping：正在收尾，拦下（重复点关闭不会提前关窗口，也不会重复 stop）。
+ * - idle：Windows / Linux 关掉最后一个窗口就是退出（window-all-closed → app.quit()），这里拦下窗口关闭、
+ *   直接发起退出，before-quit 照常走 quit guard；macOS 关窗口不退出程序，放行，行为不变。
+ */
+export function createWindowCloseHandler(deps: {
+  guard: Pick<QuitGuard, "state">;
+  platform: string;
+  quit(): void;
+}): (event: WindowCloseEventLike) => void {
+  return (event) => {
+    const st = deps.guard.state();
+    if (st === "done") return;
+    if (st === "idle" && deps.platform === "darwin") return;
+    event.preventDefault();
+    if (st === "idle") deps.quit();
   };
 }

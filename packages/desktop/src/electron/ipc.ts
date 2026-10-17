@@ -52,6 +52,21 @@ export interface UpdateSink {
 
 export const DEFAULT_POLL_MS = 1000;
 
+/**
+ * T-106：开始退出收尾时通知渲染进程显示「正在退出…」（`app:quitting`，主进程 → 渲染进程，不带内容）。
+ * 窗口没有 / 已销毁就跳过；send 抛错也吞掉（退出路径上不能被它挡住）。返回是否发出。
+ */
+export function notifyAppQuitting(sink: () => UpdateSink | null): boolean {
+  try {
+    const s = sink();
+    if (!s || s.isDestroyed()) return false;
+    s.send(IPC_CHANNELS.appQuitting, null);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function serveReader(
   ipc: IpcMainLike,
   reader: EventReader,

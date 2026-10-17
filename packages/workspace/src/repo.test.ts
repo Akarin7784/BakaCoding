@@ -163,6 +163,15 @@ describe("initRepo", () => {
     );
     expect(existsSync(p)).toBe(false);
   });
+  it("identity 可以只给一项，只写给了的那项（T-108）", async () => {
+    const p = join(base, "partial");
+    await initRepo(p, { identity: { email: "eva@example.com" } });
+    const g = (...a: string[]) => execFileSync("git", a, { cwd: p, encoding: "utf8" }).trim();
+    expect(g("config", "--local", "user.email")).toBe("eva@example.com");
+    expect(() => g("config", "--local", "user.name")).toThrow();
+    expect(await code(initRepo(join(base, "p2"), { identity: {} }))).toBe("invalid_identity");
+    expect(existsSync(join(base, "p2"))).toBe(false);
+  });
 });
 
 describe("listInitialCommitFiles / initialCommit", () => {
@@ -261,6 +270,66 @@ describe("listInitialCommitFiles / initialCommit", () => {
     expect(
       await code(initialCommit(dir, { empty: true, identity: { name: "", email: "x@y.z" } })),
     ).toBe("invalid_identity");
+  });
+
+  // T-108：只缺一项时只补那一项；先校验再写。
+  const localCfg = () => readFileSync(join(dir, ".git", "config"), "utf8");
+
+  it("只缺 email 时只补 email，原来的 name 不动", async () => {
+    git("config", "--unset", "user.email");
+    await initialCommit(dir, { empty: true, identity: { email: "eva@example.com" } });
+    expect(git("log", "-1", "--format=%an <%ae>")).toBe("t <eva@example.com>");
+    expect(git("config", "--local", "user.name")).toBe("t");
+  });
+
+  it("只缺 name 时只补 name", async () => {
+    git("config", "--unset", "user.name");
+    await initialCommit(dir, { empty: true, identity: { name: "Eva" } });
+    expect(git("log", "-1", "--format=%an <%ae>")).toBe("Eva <t@example.com>");
+  });
+
+  it("给的加上已配的还凑不齐 → no_identity，.git/config 不改", async () => {
+    git("config", "--unset", "user.name");
+    git("config", "--unset", "user.email");
+    const before = localCfg();
+    expect(await code(initialCommit(dir, { empty: true, identity: { name: "Eva" } }))).toBe(
+      "no_identity",
+    );
+    expect(localCfg()).toBe(before);
+  });
+
+  it("文件不合法 → invalid_files，身份不写进 .git/config", async () => {
+    git("config", "--unset", "user.name");
+    git("config", "--unset", "user.email");
+    const before = localCfg();
+    expect(
+      await code(
+        initialCommit(dir, {
+          files: [".env"],
+          identity: { name: "Eva", email: "eva@example.com" },
+        }),
+      ),
+    ).toBe("invalid_files");
+    expect(localCfg()).toBe(before);
+    expect(await code(initialCommit(dir, { files: [], identity: { name: "Eva" } }))).toBe(
+      "invalid_files",
+    );
+    expect(localCfg()).toBe(before);
+  });
+
+  it.each([
+    [{}],
+    [{ name: undefined, email: undefined }],
+    [{ email: "nope" }],
+    [{ name: " " }],
+    [{ name: "a\nb" }],
+    [null],
+  ])("身份不合法 → invalid_identity，什么都不改：%j", async (identity) => {
+    const before = localCfg();
+    expect(await code(initialCommit(dir, { empty: true, identity: identity as never }))).toBe(
+      "invalid_identity",
+    );
+    expect(localCfg()).toBe(before);
   });
 
   it("不跑 hooks", async () => {
