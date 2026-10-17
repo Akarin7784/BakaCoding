@@ -1,3 +1,5 @@
+import { isUnsafeGlob } from "@bakacoding/workspace";
+
 /** 花括号展开后最多保留的模式数；超过就保守地按 `**`（匹配一切）处理。 */
 export const MAX_BRACE_EXPANSIONS = 256;
 
@@ -157,17 +159,11 @@ function overlapFrom(a: string[], i: number, b: string[], j: number): boolean {
 }
 
 /**
- * 写入范围 glob 是否可能逃出仓库路径的正常形状（#47 安全修复）：花括号展开前后任一处有 `..` / `.` 段、
- * `/` 开头、盘符、`~` 开头，或含 `..`。这样的范围在写入范围锁里按「与所有范围重叠」处理，在独占区域判断里按落在独占区域处理。
+ * 写入范围 glob 是否不安全（#47）：转用模块 4 的 `isUnsafeGlob`（T-051，全项目只此一份规则），保留同名导出。
+ * 这样的范围在写入范围锁里按「与所有范围重叠」处理，在独占区域判断里按落在独占区域处理。
+ * @deprecated 以模块 4（`@bakacoding/workspace`）的 `isUnsafeGlob` 为准；这里只是转调，保留名字兼容已有调用方。
  */
-export function isUnsafeScope(glob: string): boolean {
-  const g = glob.replace(/\\/g, "/");
-  if (g.includes("..")) return true;
-  if (/^[/~]/.test(g) || /^[A-Za-z]:/.test(g)) return true;
-  return expandBraces(g).some((x) =>
-    x.split("/").some((seg, i, all) => seg === "." || (seg === "" && i > 0 && i < all.length - 1)),
-  );
-}
+export const isUnsafeScope: (glob: string) => boolean = isUnsafeGlob;
 
 /**
  * 两个写入范围 glob 是否可能匹配同一个路径（T-039 写入范围锁用）。按段比较，`**` 可匹配零段或多段；

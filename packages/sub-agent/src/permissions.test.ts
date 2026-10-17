@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openStorage, type Storage } from "@bakacoding/storage";
-import { permissionFor } from "@bakacoding/workspace";
+import { isUnsafeGlob as workspaceIsUnsafeGlob, permissionFor } from "@bakacoding/workspace";
 import {
   appendGrantedScope,
   clampPermissionList,
@@ -100,6 +100,25 @@ describe("#47 安全修复：.. / . / 绝对路径等不能逃出写入范围", 
       expect(isUnsafeGlob(g), g).toBe(false);
   });
 
+  it("isUnsafeGlob 与模块 4 的 isUnsafeGlob 结果一致（转调，@deprecated）", () => {
+    const patterns = [
+      "src/../**",
+      "/etc/**",
+      "src/../src/secret/**",
+      "~/x",
+      "src/{a,../x}",
+      "src\\a.ts",
+      "src/**",
+      "src/*.ts",
+      "src/{a,b}.ts",
+      "docs/a.md",
+      ".github/**",
+    ];
+    for (const g of patterns) expect(isUnsafeGlob(g), g).toBe(workspaceIsUnsafeGlob(g));
+    expect(patterns.filter(isUnsafeGlob)).toEqual(patterns.slice(0, 6));
+    expect(isUnsafeGlob).toBe(workspaceIsUnsafeGlob);
+  });
+
   it("写入范围 src/** 时，这些 glob 都不算在范围内；写入范围不写（**）时也一样", () => {
     for (const g of ESCAPES) {
       expect(globWithinScope(g, ["src/**"]), JSON.stringify(g)).toBe(false);
@@ -107,7 +126,7 @@ describe("#47 安全修复：.. / . / 绝对路径等不能逃出写入范围", 
     }
   });
 
-  it("生成时：评审点名的 5 种写法全部降为只读（reason: unsafe_glob），模块 4 判定下范围外一个都写不了", () => {
+  it("生成时：评审点名的 5 种 rw 写法全部丢掉（reason: unsafe_glob，T-038 规则），模块 4 判定下范围外一个都写不了", () => {
     const named = ["src/../**", "src/*/../../a", "src/**/../../a", "src/{a,../../x}", "src/**/.."];
     const { permission_list, cut } = generatePermissionList({
       permission_list: [
@@ -116,28 +135,53 @@ describe("#47 安全修复：.. / . / 绝对路径等不能逃出写入范围", 
       ],
       write_scope: ["src/**"],
     });
-    expect(permission_list).toEqual([
-      { glob: "src/**", level: "rw" },
-      ...named.map((glob) => ({ glob, level: "ro" })),
-    ]);
+    expect(permission_list).toEqual([{ glob: "src/**", level: "rw" }]);
     expect(cut.map((c) => [c.entry.glob, c.reason])).toEqual(named.map((g) => [g, "unsafe_glob"]));
     for (const p of ["a", "package.json", "x", "lib/b.ts"])
       expect(permissionFor(permission_list, p), p).not.toBe("rw");
-    // 降为 ro 的条目照样参与匹配（后条覆盖前条），只会让更多路径变成只读，不会多出写权限
-    expect(permissionFor(permission_list, "src/a.ts")).toBe("ro");
-    // 没写写入范围也照样裁
+    expect(permissionFor(permission_list, "src/a.ts")).toBe("rw");
+    // 没写写入范围也照样裁；裁完为空时写一条显式的 ** deny
     expect(
       generatePermissionList({ permission_list: [{ glob: "src/../**", level: "rw" }] })
         .permission_list,
-    ).toEqual([{ glob: "src/../**", level: "ro" }]);
+    ).toEqual([{ glob: "**", level: "deny" }]);
   });
 
-  it("写入范围里的不安全条目不匹配任何东西（报在 ignored_scope），默认提议里的那条也降为只读", () => {
+  it("不安全的 ro 原位改成 deny（T-038）：src/** rw + src/../src/secret/** ro 之后 src/secret 不可写", () => {
+    const { permission_list, cut } = generatePermissionList({
+      permission_list: [
+        { glob: "src/**", level: "rw" },
+        { glob: "src/../src/secret/**", level: "ro" },
+        { glob: "/etc/**", level: "deny" },
+      ],
+      write_scope: ["src/**"],
+    });
+    expect(permission_list).toEqual([
+      { glob: "src/**", level: "rw" },
+      { glob: "src/../src/secret/**", level: "deny" },
+      { glob: "/etc/**", level: "deny" },
+    ]);
+    expect(cut).toEqual([
+      { entry: { glob: "src/../src/secret/**", level: "ro" }, reason: "unsafe_glob" },
+    ]);
+    expect(permissionFor(permission_list, "src/secret/key.pem")).not.toBe("rw");
+    expect(permissionFor(permission_list, "src/a.ts")).toBe("rw");
+    // 读回需求单记录时同样按新规则裁
+    const r = clampPermissionList(
+      [
+        { glob: "src/**", level: "rw" },
+        { glob: "src/../src/secret/**", level: "ro" },
+      ],
+      ["src/**"],
+    );
+    expect(permissionFor(r.permission_list, "src/secret/a")).not.toBe("rw");
+  });
+
+  it("写入范围里的不安全条目不匹配任何东西（报在 ignored_scope），默认提议里的那条 rw 丢掉", () => {
     const r = generatePermissionList({ permission_list: [], write_scope: ["../**", "src/**"] });
     expect(r.ignored_scope).toEqual(["../**"]);
     expect(r.permission_list).toEqual([
       { glob: "**", level: "ro" },
-      { glob: "../**", level: "ro" },
       { glob: "src/**", level: "rw" },
     ]);
     const all = generatePermissionList({
@@ -160,7 +204,6 @@ describe("#47 安全修复：.. / . / 绝对路径等不能逃出写入范围", 
     expect(r.permission_list).toEqual([
       { glob: "**", level: "ro" },
       { glob: "src/**", level: "rw" },
-      { glob: "src/../**", level: "ro" },
       { glob: "docs/**", level: "rw" },
       { glob: "lib/**", level: "ro" },
     ]);

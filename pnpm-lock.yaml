@@ -205,6 +205,9 @@ importers:
       '@bakacoding/types':
         specifier: workspace:*
         version: link:../types
+      '@bakacoding/workspace':
+        specifier: workspace:*
+        version: link:../workspace
 
   packages/storage:
     dependencies:

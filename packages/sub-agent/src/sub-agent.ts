@@ -1,17 +1,19 @@
+import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { defaultIsBudgetExceeded } from "@bakacoding/coder-pool";
 import { CommitPatchError, NoChangesError } from "@bakacoding/pr";
-import type { ScopeBus, ScopeRequestOptions } from "@bakacoding/workspace";
-import type {
-  BakaEvent,
-  CallCtx,
-  Effort,
-  EventOf,
-  PermissionList,
-  ReviewReason,
-  ReviewResult,
-  TicketStatus,
+import { permissionFor, type ScopeBus, type ScopeRequestOptions } from "@bakacoding/workspace";
+import {
+  DEPENDENCY_MANIFEST_GLOBS,
+  type BakaEvent,
+  type CallCtx,
+  type Effort,
+  type EventOf,
+  type PermissionList,
+  type ReviewReason,
+  type ReviewResult,
+  type TicketStatus,
 } from "@bakacoding/types";
 import type {
   ConflictResubmitRequest,
@@ -31,10 +33,52 @@ import {
   appendGrantedScope,
   clampPermissionList,
   generatePermissionList,
+  globWithinScope,
   isUnsafeGlob,
   memoryTicketPermissions,
+  safeScope,
   type GeneratedPermissions,
 } from "./permissions.js";
+import { registerRecorder } from "./internal.js";
+
+/** 每单最多攒多少条没带给编码池的接口变更说明（多了丢最早的） */
+const MAX_INTERFACE_NOTES = 20;
+/** 每条接口变更说明里合并说明（summary）的最大长度 */
+const MAX_NOTE_SUMMARY = 2000;
+
+/** 是否落在依赖清单 / 锁文件上（`DEPENDENCY_MANIFEST_GLOBS`，匹配规则同模块 4）。 */
+function isDependencyFile(path: string): boolean {
+  return (
+    permissionFor(
+      DEPENDENCY_MANIFEST_GLOBS.map((glob) => ({ glob, level: "rw" as const })),
+      path,
+    ) === "rw"
+  );
+}
+
+/** 清单里最后一条匹配 path 的条目是不是显式 deny（未匹配不算显式）。 */
+function explicitlyDenied(list: PermissionList, path: string): boolean {
+  for (let i = list.length - 1; i >= 0; i--) {
+    const e = list[i]!;
+    if (permissionFor([{ glob: e.glob, level: "rw" }], path) === "rw") return e.level === "deny";
+  }
+  return false;
+}
+
+/** 一条 interface_changed 写给受影响单的说明（作为不可信反馈交给编码池，5 负责包装）。 */
+function interfaceNote(ev: EventOf<"interface_changed">): string {
+  const e = ev.payload;
+  const ifaces = e.changed_interfaces.map((c) => `${c.file}#${c.symbol}`).join("、");
+  const summary =
+    e.summary.length > MAX_NOTE_SUMMARY
+      ? `${e.summary.slice(0, MAX_NOTE_SUMMARY)}…（已截断）`
+      : e.summary;
+  return `${ev.ticket_id} 的 PR ${e.pr_id} 已合入集成分支（新基线 ${e.base_commit}），可能影响本单。改动的接口：${ifaces || "（未列出）"}。合并说明：${summary || "（无）"}`;
+}
+
+function notesSection(notes: readonly string[]): string {
+  return `接口变更通知（合并队列在本单编码期间合入了别的单，请确认本单与之兼容）：\n${notes.map((n) => `- ${n}`).join("\n")}`;
+}
 
 /** 续跑时接在 feedback 最前面的说明（PD：当日预算用完暂停，第二天同一 worktree 续跑）。 */
 export const BUDGET_RESUME_NOTE =
@@ -194,6 +238,8 @@ interface RunState {
   stage: SubAgentStage;
   /** 取消信号（T-039）：原样传给 runTicket / review；中止后抛 signal.reason，不上报 */
   signal?: AbortSignal;
+  /** 已从待带队列取出、要带给下一次 runTicket 的接口变更说明（T-038；预算暂停时进 ResumeToken） */
+  interface_notes?: string[];
 }
 
 export function createSubAgent(deps: SubAgentDeps): SubAgent {
@@ -211,6 +257,10 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
   const grantedHere = new Map<string, Set<string>>();
   /** 正在 runTicket 的单：4 的登记表按 ticket_id 释放，同一单绝不能同时有两个 runTicket（T-048） */
   const coding = new Set<string>();
+  /** 收到但还没带给编码池的接口变更说明（T-038，v1 只在内存里） */
+  const pendingNotes = new Map<string, string[]>();
+  /** 每单收到的接口变更通知计数：评审开始后又涨了，就在交出去之前再评审一次 */
+  const noteSeq = new Map<string, number>();
 
   function register(t: SubAgentTicket): void {
     if (!t.ticket_id || !t.project_id) throw new Error("需求单必须带 ticket_id 和 project_id");
@@ -329,7 +379,7 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
     if (r.cut.length === 0) return;
     const scope = t.write_scope?.length ? t.write_scope.join(", ") : "**";
     logger.warn(
-      `[bakacoding/sub-agent] ${t.ticket_id} ${when}权限清单里有 ${r.cut.length} 条写权限超出写入范围 [${scope}] 或不安全，已降为只读：${r.cut.map((c) => `${c.entry.glob}（${c.reason}）`).join(", ")}`,
+      `[bakacoding/sub-agent] ${t.ticket_id} ${when}权限清单里有 ${r.cut.length} 条权限超出写入范围 [${scope}] 或不安全，已裁剪（范围外的 rw 降为只读，不安全的 rw 丢掉、ro 改为 deny）：${r.cut.map((c) => `${c.entry.glob}（${c.reason}）`).join(", ")}`,
     );
   }
 
@@ -397,48 +447,103 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
     });
   }
 
+  /** 本单的有效写入范围：没写按 `**`；不安全的条目不匹配任何东西。 */
+  function scopeOf(t: SubAgentTicket): string[] {
+    return t.write_scope && t.write_scope.length > 0 ? safeScope(t.write_scope) : ["**"];
+  }
+
   /**
-   * 给 runTicket 的 `scope_requests`（不注入 deps.scopeRequests 就不带）。bus 包一层：记下本次运行发出的
-   * request_id，同一 request_id 的「已批准」到达时先把 granted_scope 排进写回链，再交给 4 的处理函数。
+   * 审批本单的越界写申请（T-038，8 是唯一答复方）：
+   * 1. 有不安全的路径（`isUnsafeGlob`）→ 拒绝，不交 9、不写回；
+   * 2. 被本单权限清单显式 deny 的 → 拒绝；
+   * 3. 全部落在「写入范围 ∪ 已批准范围」里 → 直接批；否则把范围外的部分交 `deps.scheduler.extendScope`，成功才批。
+   * 批准时先发 `write_scope_granted`，发成功后再写回需求单记录（`writeBackGrant`）；拒绝发 `write_scope_denied`。
+   */
+  async function decideScopeRequest(
+    t: SubAgentTicket,
+    req: { trace_id: string; span_id: string; request_id: string; requested_scope: string[] },
+  ): Promise<void> {
+    const { request_id } = req;
+    const requested = [...new Set(req.requested_scope)];
+    const head = {
+      trace_id: req.trace_id,
+      span_id: randomUUID(),
+      parent_span_id: req.span_id,
+      requirement_id: t.requirement_id,
+      ticket_id: t.ticket_id,
+    };
+    const deny = async (reason: string): Promise<void> => {
+      await deps.publish({
+        ...head,
+        type: "write_scope_denied",
+        payload: { request_id, requested_scope: requested, reason },
+      });
+    };
+    try {
+      const unsafe = requested.filter(isUnsafeGlob);
+      if (requested.length === 0 || unsafe.length > 0)
+        return await deny(
+          `申请的路径不安全（含 .. / . 段、绝对路径等），不批：${unsafe.join(", ") || "（空）"}`,
+        );
+      const list = await permissionsFor(t);
+      const denied = requested.filter((g) => explicitlyDenied(list, g));
+      if (denied.length > 0) return await deny(`本单权限清单显式拒绝：${denied.join(", ")}`);
+      const allowed = [...scopeOf(t), ...(await grantedFor(t))];
+      const outside = requested.filter((g) => !globWithinScope(g, allowed));
+      if (outside.length > 0) {
+        if (!deps.scheduler)
+          return await deny(
+            `申请超出本单写入范围，且没有接 9 的 extendScope：${outside.join(", ")}`,
+          );
+        const r = await deps.scheduler.extendScope(t.ticket_id, outside);
+        if (!r.ok) return await deny(r.reason);
+      }
+    } catch (err) {
+      logger.warn(
+        `[bakacoding/sub-agent] ${t.ticket_id} 审批越界写申请出错，按拒绝处理：${String(err)}`,
+      );
+      return deny(`审批出错：${String(err)}`.slice(0, 500));
+    }
+    // 先发事件（4 据此放行，2 的事件日志据此跨重启保留批准范围），再写回需求单记录
+    await deps.publish({
+      ...head,
+      type: "write_scope_granted",
+      payload: { request_id, granted_scope: requested },
+    });
+    await writeBackGrant(t, requested).catch((err: unknown) =>
+      logger.warn(
+        `[bakacoding/sub-agent] ${t.ticket_id} 批准的写入范围 ${requested.join(", ")} 写回需求单记录失败（重启前靠内存、重启后靠事件日志）：${String(err)}`,
+      ),
+    );
+  }
+
+  /**
+   * 给 runTicket 的 `scope_requests`（不注入 deps.scopeRequests 就不带）。bus 包一层：4 发的申请原样发到总线，
+   * 然后由 8 审批并答复（T-038）；订阅原样转给总线。
    */
   function scopeRequestsFor(t: SubAgentTicket): ScopeRequestOptions | undefined {
     const sr = deps.scopeRequests;
     if (!sr) return undefined;
-    const mine = new Set<string>();
-    function subscribe(
-      type: "write_scope_granted",
-      handler: (e: EventOf<"write_scope_granted">) => void,
-    ): () => void;
-    function subscribe(
-      type: "write_scope_denied",
-      handler: (e: EventOf<"write_scope_denied">) => void,
-    ): () => void;
-    function subscribe(
-      type: "write_scope_granted" | "write_scope_denied",
-      handler:
-        | ((e: EventOf<"write_scope_granted">) => void)
-        | ((e: EventOf<"write_scope_denied">) => void),
-    ): () => void {
-      if (type === "write_scope_denied")
-        return sr!.bus.subscribe(type, handler as (e: EventOf<"write_scope_denied">) => void);
-      const onGranted = handler as (e: EventOf<"write_scope_granted">) => void;
-      return sr!.bus.subscribe("write_scope_granted", (e) => {
-        if (e.ticket_id === t.ticket_id && mine.delete(e.payload.request_id)) {
-          writeBackGrant(t, e.payload.granted_scope).catch((err: unknown) =>
-            logger.warn(
-              `[bakacoding/sub-agent] ${t.ticket_id} 批准的写入范围 ${e.payload.granted_scope.join(", ")} 写回需求单记录失败（下一轮会丢）：${String(err)}`,
-            ),
-          );
-        }
-        onGranted(e);
-      });
-    }
     const bus: ScopeBus = {
-      publish(input) {
-        if (input.ticket_id === t.ticket_id) mine.add(input.payload.request_id);
-        return sr.bus.publish(input);
+      async publish(input) {
+        const r = await sr.bus.publish(input);
+        if (input.ticket_id !== t.ticket_id) {
+          logger.warn(
+            `[bakacoding/sub-agent] ${t.ticket_id} 的工具发来别的单（${input.ticket_id}）的越界写申请，不答复`,
+          );
+          return r;
+        }
+        await decideScopeRequest(t, {
+          trace_id: input.trace_id,
+          span_id: input.span_id,
+          request_id: input.payload.request_id,
+          requested_scope: input.payload.requested_scope,
+        }).catch((err: unknown) =>
+          logger.warn(`[bakacoding/sub-agent] ${t.ticket_id} 答复越界写申请失败：${String(err)}`),
+        );
+        return r;
       },
-      subscribe,
+      subscribe: sr.bus.subscribe.bind(sr.bus) as ScopeBus["subscribe"],
     };
     return {
       bus,
@@ -448,6 +553,20 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
       },
       ...(sr.timeout_ms !== undefined ? { timeout_ms: sr.timeout_ms } : {}),
     };
+  }
+
+  /** 取出本单待带的接口变更说明（取走即清空）。 */
+  function takeNotes(ticket_id: string): string[] {
+    const n = pendingNotes.get(ticket_id) ?? [];
+    pendingNotes.delete(ticket_id);
+    return n;
+  }
+
+  /** 没带出去的说明放回队首（runTicket 抛错时）。 */
+  function restoreNotes(ticket_id: string, notes: readonly string[] | undefined): void {
+    if (!notes?.length) return;
+    const merged = [...notes, ...(pendingNotes.get(ticket_id) ?? [])].slice(-MAX_INTERFACE_NOTES);
+    pendingNotes.set(ticket_id, merged);
   }
 
   function remember(s: RunState): void {
@@ -515,6 +634,7 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
         mode: s.mode,
         ...(s.feedback !== undefined ? { feedback: s.feedback } : {}),
         ...(s.last ? { last: s.last } : {}),
+        ...(s.interface_notes?.length ? { interface_notes: [...s.interface_notes] } : {}),
       };
       return { kind: "requeue_budget", resume };
     }
@@ -546,6 +666,16 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
           );
         coding.add(ticket_id);
         let res: Awaited<ReturnType<SubAgentDeps["coder"]["runTicket"]>>;
+        // 接口变更说明（T-038）：作为不可信反馈接在 feedback 后面（5 按 T-043 包装）；s.feedback 本身不变
+        const notes = [...(s.interface_notes ?? []), ...takeNotes(ticket_id)].slice(
+          -MAX_INTERFACE_NOTES,
+        );
+        s.interface_notes = notes.length ? notes : undefined;
+        const feedback = notes.length
+          ? s.feedback !== undefined
+            ? `${s.feedback}\n\n${notesSection(notes)}`
+            : notesSection(notes)
+          : s.feedback;
         try {
           const permission_list = await permissionsFor(s.ticket);
           const scope_requests = scopeRequestsFor(s.ticket);
@@ -556,16 +686,22 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
             worktree_path: s.worktree_path,
             permission_list,
             effort,
-            ...(s.feedback !== undefined ? { feedback: s.feedback } : {}),
+            ...(feedback !== undefined ? { feedback } : {}),
             ctx: ctx(s.ticket, s.is_resubmit),
             ...(s.signal ? { signal: s.signal } : {}),
             ...(scope_requests ? { scope_requests } : {}),
           });
+        } catch (e) {
+          restoreNotes(ticket_id, s.interface_notes);
+          s.interface_notes = undefined;
+          throw e;
         } finally {
           coding.delete(ticket_id);
         }
         throwIfAborted(s.signal);
+        // 预算暂停：说明还没真正用上，留在 RunState 里进续跑凭据；否则已带给编码池
         if (res.status === "budget_exceeded") return budgetStop(s);
+        s.interface_notes = undefined;
 
         let failure: { status: CoderFailureStatus; feedback: string } | undefined;
         if (res.status === "done") {
@@ -623,13 +759,22 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
         const files = (await deps.pr.diff(pr_id)).files.map((f) => f.path);
         s.last = { summary: "", changed_files: files };
       }
-      const summary = deps.summarize
+      const seqAtReview = noteSeq.get(s.ticket.ticket_id) ?? 0;
+      const baseSummary = deps.summarize
         ? await deps.summarize({
             ticket: s.ticket,
             summary: s.last.summary,
             changed_files: s.last.changed_files,
           })
         : defaultSummary(s.last);
+      // 编码之后才收到的接口变更说明也给评审看（摘要整体由 7 包进不可信区块）
+      const lateNotes = pendingNotes.get(s.ticket.ticket_id) ?? [];
+      const summary = lateNotes.length
+        ? `${baseSummary}\n\n${notesSection(lateNotes)}`
+        : baseSummary;
+      // 依赖类单标高风险（T-038）：主管标了 kind: "dependency"，或 diff 改了依赖清单 / 锁文件
+      const high_risk =
+        s.ticket.kind === "dependency" || s.last.changed_files.some(isDependencyFile);
       let result: ReviewResult;
       s.stage = "permissions";
       const permission_list = await permissionsFor(s.ticket);
@@ -646,6 +791,7 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
           summary,
           ctx: ctx(s.ticket, s.is_resubmit),
           ...(s.signal ? { signal: s.signal } : {}),
+          ...(high_risk ? { high_risk: true } : {}),
         });
       } catch (e) {
         throwIfAborted(s.signal);
@@ -676,6 +822,15 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
       );
 
       if (result.verdict === "pass") {
+        // 评审期间收到了影响本单的接口变更、本单还没交给 9：交出去之前再评审一次，不计复投（T-038）
+        if ((noteSeq.get(s.ticket.ticket_id) ?? 0) !== seqAtReview) {
+          await say(
+            s.ticket,
+            "report",
+            `${s.ticket.ticket_id} 评审期间收到接口变更通知，交出前再评审一次（不计复投）。`,
+          );
+          continue;
+        }
         remember(s);
         if (s.submit) {
           // 先写 merge_queued 再交给 9：交出去之后的状态归 9，8 不再写
@@ -688,6 +843,7 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
             round: s.worktree_round,
             review_resubmits: s.counts.review,
             base_commit: s.base_commit,
+            ...(high_risk ? { high_risk: true } : {}),
           });
         }
         return {
@@ -696,6 +852,7 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
           round,
           resubmit_counts: { ...s.counts },
           reviewer: result.reviewer,
+          ...(high_risk ? { high_risk: true } : {}),
         };
       }
       if (s.counts.review >= limit) return escalate(s, "review_limit");
@@ -766,7 +923,17 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
     return { requeue_budget: true, resume: o.resume };
   }
 
-  return {
+  function onInterfaceChanged(e: EventOf<"interface_changed">): void {
+    const note = interfaceNote(e);
+    for (const id of new Set(e.payload.affected_ticket_ids)) {
+      if (id === e.ticket_id) continue;
+      const list = [...(pendingNotes.get(id) ?? []), note].slice(-MAX_INTERFACE_NOTES);
+      pendingNotes.set(id, list);
+      noteSeq.set(id, (noteSeq.get(id) ?? 0) + 1);
+    }
+  }
+
+  const agent: SubAgent = {
     async handle(ticket, options: HandleOptions = {}) {
       throwIfAborted(options.signal);
       register(ticket);
@@ -825,6 +992,7 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
             : token.feedback,
         is_resubmit: token.is_resubmit,
         ...(token.last ? { last: token.last } : {}),
+        ...(token.interface_notes?.length ? { interface_notes: [...token.interface_notes] } : {}),
         mode: token.mode ?? "handle",
         // 9 的 resume 约定：续跑评审通过一律由 8 调 submit（含冲突复投途中暂停的单）
         submit: true,
@@ -878,10 +1046,23 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
       return toScheduler(o);
     },
 
-    async recordGrantedScope(minimal, granted_scope) {
-      return writeBackGrant(await lookup(minimal), granted_scope);
+    onInterfaceChanged,
+
+    attach(bus) {
+      return bus.subscribe("interface_changed", (e) => {
+        try {
+          onInterfaceChanged(e);
+        } catch (err) {
+          logger.warn(`[bakacoding/sub-agent] 处理 interface_changed 出错：${String(err)}`);
+        }
+      });
     },
   };
+  // recordGrantedScope 只留内部用（T-038）：生产路径只在审批通过、发完 write_scope_granted 之后调 writeBackGrant
+  registerRecorder(agent, async (minimal, granted_scope) =>
+    writeBackGrant(await lookup(minimal), granted_scope),
+  );
+  return agent;
 }
 
 function defaultSummary(last: LastRun): string {

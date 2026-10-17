@@ -20,6 +20,7 @@ import { randomUUID } from "node:crypto";
 import { PermissionRegistry, WorktreeManager, type ScopeBus } from "@bakacoding/workspace";
 import {
   createSubAgent,
+  eventLogGrantedScopes,
   eventLogResubmitHistory,
   storageTicketPermissions,
   type SubAgent,
@@ -28,6 +29,7 @@ import {
   type SubAgentTicket,
   type StoredPrRecord,
 } from "./index.js";
+import { recordGrantedScope } from "./internal.js";
 
 const run = promisify(execFile);
 const ENV = {
@@ -549,7 +551,7 @@ describe("T-048：权限清单以 2 的需求单记录为准（真 4/5/6/2）", 
         listsSeenByReview.push(input.permission_list);
         if (!input.ctx.is_resubmit) {
           // T-038 的批准方（这里是替身）批准了 docs/**：8 写回需求单记录
-          await holder.agent!.recordGrantedScope({ ticket_id: "T-48" }, ["docs/**"]);
+          await recordGrantedScope(holder.agent!, { ticket_id: "T-48" }, ["docs/**"]);
           return {
             verdict: "fail",
             reasons: [{ category: "incomplete", detail: "docs/b.md 还没写" }],
@@ -612,8 +614,8 @@ describe("T-048：权限清单以 2 的需求单记录为准（真 4/5/6/2）", 
   });
 });
 
-describe("T-048：越界写经 4 申请、批准后写回 2，5 释放登记表后下一轮仍可写（真 4/5/2）", () => {
-  it("第一轮申请 docs/** 被批准并写回；5 结束即 release；复投那一轮不再申请就能写", async () => {
+describe("T-048 / T-038：越界写经 4 申请、8 审批（范围外交 9）、先发批准事件再写回 2，5 释放登记表后下一轮仍可写（真 4/5/2）", () => {
+  it("第一轮申请 docs/a.md：范围外 → 9 的 extendScope 批 → 发 write_scope_granted → 写回；复投那一轮不再申请就能写", async () => {
     const base = await git(repo, "rev-parse", "HEAD");
     const ticket: SubAgentTicket = {
       ticket_id: "T-49",
@@ -627,33 +629,29 @@ describe("T-048：越界写经 4 申请、批准后写回 2，5 释放登记表�
       permission_list: [],
       write_scope: ["src/**"],
     };
-    // 总线替身 + T-038 批准方替身：申请 docs/ 下的都批
-    const handlers = new Set<(e: never) => void>();
+    // 总线替身：4 发的申请经 8 包装后到这里；8 用 publish 发的 granted / denied 也投给 4 的订阅
+    const handlers = new Map<string, Set<(e: never) => void>>();
     const requested: string[][] = [];
+    const requestSpans: string[] = [];
     const bus: ScopeBus = {
       async publish(input) {
         requested.push([...input.payload.requested_scope]);
-        const e = {
-          type: "write_scope_granted",
-          trace_id: input.trace_id,
-          span_id: randomUUID(),
-          parent_span_id: input.span_id,
-          requirement_id: input.requirement_id,
-          ticket_id: input.ticket_id,
-          seq: 1,
-          event_id: randomUUID(),
-          ts: new Date().toISOString(),
-          payload: { request_id: input.payload.request_id, granted_scope: ["docs/**"] },
-        };
-        for (const h of handlers) (h as (x: typeof e) => void)(e);
+        requestSpans.push(input.span_id);
         return undefined;
       },
       subscribe: ((type: string, h: (e: never) => void) => {
-        if (type !== "write_scope_granted") return () => undefined;
-        handlers.add(h);
-        return () => void handlers.delete(h);
+        const set = handlers.get(type) ?? new Set();
+        handlers.set(type, set);
+        set.add(h);
+        return () => void set.delete(h);
       }) as ScopeBus["subscribe"],
     };
+    const publish: SubAgentPublish = (e) => {
+      ingest(e);
+      const full = { ...e, seq: 1, event_id: randomUUID(), ts: new Date().toISOString() };
+      for (const h of handlers.get(e.type) ?? []) (h as (x: typeof full) => void)(full);
+    };
+    const extendScope = vi.fn(async () => ({ ok: true as const }));
 
     const write = (id: string, file_path: string, content: string): ChatResponse => ({
       content: "",
@@ -666,7 +664,9 @@ describe("T-048：越界写经 4 申请、批准后写回 2，5 释放登记表�
     const script = [
       write("w1", "docs/a.md", "一\n"),
       finish,
-      write("w2", "docs/b.md", "二\n"),
+      // 复投那一轮改写同一文件（4 要求先读再改）：清单里已有写回的 docs/a.md，不再申请
+      { content: "", tool_calls: [{ id: "r2", name: "read", input: { file_path: "docs/a.md" } }] },
+      write("w2", "docs/a.md", "二\n"),
       finish,
     ];
     const registry = new PermissionRegistry();
@@ -701,7 +701,7 @@ describe("T-048：越界写经 4 申请、批准后写回 2，5 释放登记表�
         return verdict === "fail"
           ? {
               verdict,
-              reasons: [{ category: "incomplete", detail: "docs/b.md 也要" }],
+              reasons: [{ category: "incomplete", detail: "docs/a.md 要改写" }],
               reviewer: "r",
             }
           : { verdict, reasons: [], reviewer: "r" };
@@ -714,24 +714,37 @@ describe("T-048：越界写经 4 申请、批准后写回 2，5 释放登记表�
       worktreeRoot: join(repo, ".bakacoding", "worktrees"),
       worktrees: { create: (id, b, n) => mgr.createWorktree(id, b, n) },
       submit: vi.fn(),
-      publish: ingest,
+      publish,
       permissions: storageTicketPermissions(storage),
       scopeRequests: { bus, timeout_ms: 1000 },
+      scheduler: { extendScope },
+      grantedScopes: eventLogGrantedScopes(storage),
       logger: { warn: () => undefined },
     });
 
     const out = await agent.handle(ticket);
     expect(out).toMatchObject({ kind: "merge_queued", resubmit_counts: { review: 1 } });
     expect(requested).toEqual([["docs/a.md"]]); // 只在第一轮申请了一次
+    expect(extendScope).toHaveBeenCalledTimes(1);
+    expect(extendScope).toHaveBeenCalledWith("T-49", ["docs/a.md"]);
     expect(registryAfterRuns).toEqual([undefined, undefined]);
     const rec = storage.query({ project_id: "P-1", ticket_id: "T-49" })[0]!;
     expect(rec.permission_list).toEqual([
       { glob: "**", level: "ro" },
       { glob: "src/**", level: "rw" },
-      { glob: "docs/**", level: "rw" },
+      { glob: "docs/a.md", level: "rw" },
     ]);
+    // 批准事件落进 2 的事件日志（跨重启的批准来源），答复挂在申请的 span 下
+    const granted = storage
+      .queryEvents({ ticket_id: "T-49" })
+      .filter((e) => e.type === "write_scope_granted");
+    expect(granted).toHaveLength(1);
+    expect(granted[0]).toMatchObject({
+      parent_span_id: requestSpans[0],
+      payload: { granted_scope: ["docs/a.md"] },
+    });
+    expect(eventLogGrantedScopes(storage)("T-49")).toEqual(["docs/a.md"]);
     const wt = join(repo, ".bakacoding", "worktrees", "T-49-r0");
-    expect(await readFile(join(wt, "docs", "a.md"), "utf8")).toBe("一\n");
-    expect(await readFile(join(wt, "docs", "b.md"), "utf8")).toBe("二\n");
+    expect(await readFile(join(wt, "docs", "a.md"), "utf8")).toBe("二\n");
   });
 });

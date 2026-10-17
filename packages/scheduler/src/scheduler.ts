@@ -5,7 +5,7 @@ import {
   type MergeResult,
   type SyncChange,
 } from "@bakacoding/pr";
-import type { EventOf, TicketStatus } from "@bakacoding/types";
+import { DEPENDENCY_MANIFEST_GLOBS, type TicketStatus } from "@bakacoding/types";
 import { BackpressureController } from "./backpressure.js";
 import { inExclusiveZone, matchesAny, scopesOverlap } from "./glob.js";
 import type {
@@ -40,32 +40,8 @@ export const WHOLE_REPO_SCOPE: readonly string[] = ["**"];
  * 公共类型的位置因项目而异，这里只列常见的 `types` 目录和声明文件；项目可用 `deps.exclusive_zones` 整体替换。
  */
 export const DEFAULT_EXCLUSIVE_ZONES: readonly string[] = [
-  // 依赖清单
-  "package.json",
-  "**/package.json",
-  "pnpm-workspace.yaml",
-  "requirements*.txt",
-  "**/requirements*.txt",
-  "pyproject.toml",
-  "**/pyproject.toml",
-  "go.mod",
-  "**/go.mod",
-  "Cargo.toml",
-  "**/Cargo.toml",
-  "Gemfile",
-  "pom.xml",
-  "**/pom.xml",
-  "build.gradle*",
-  "**/build.gradle*",
-  // 锁文件
-  "pnpm-lock.yaml",
-  "package-lock.json",
-  "**/package-lock.json",
-  "yarn.lock",
-  "**/yarn.lock",
-  "**/*.lock",
-  "go.sum",
-  "**/go.sum",
+  // 依赖清单与锁文件（与 8 判定依赖类单共用，T-038）
+  ...DEPENDENCY_MANIFEST_GLOBS,
   // 全局配置
   "tsconfig*.json",
   "tsconfig.base.json",
@@ -156,6 +132,8 @@ interface Entry {
   conflicted: boolean;
   base_changed: boolean;
   re_reviewed: boolean;
+  /** 8 在 submit 时打的高风险标记（依赖类单，T-038）；只打标，不扣留 */
+  high_risk: boolean;
 }
 
 const TERMINAL: ReadonlySet<TicketStatus> = new Set(["merged", "escalated"]);
@@ -249,13 +227,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     };
   }
 
-  async function escalate(
-    e: Entry,
-    reason: EscalateReason,
-    detail?: string,
-    opts: { overrideTerminal?: boolean } = {},
-  ): Promise<void> {
-    if (TERMINAL.has(e.status) && !opts.overrideTerminal) {
+  async function escalate(e: Entry, reason: EscalateReason, detail?: string): Promise<void> {
+    if (TERMINAL.has(e.status)) {
       // 不覆盖终态（如 sync 已标 merged）：只记一笔，不改状态、不发上报
       onError(
         new Error(
@@ -290,29 +263,52 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
 
   /**
    * 出错的单直接上报（默认 github_manual）；上报本身再失败也只调 onError，保证队列继续。
-   * 单子已是终态（merged / escalated）时不覆盖，只调 onError（T-039）。唯一例外是合并循环里本单刚合并成功、
-   * 收尾出错的 `merged_but`（已定：状态改 escalated 交主管），由调用方显式传 overrideTerminal。
+   * 单子已是终态（merged / escalated）时不覆盖，只调 onError（T-039）。合并成功后收尾出错走 `reportMergedBut`。
    */
   async function escalateOnError(
     e: Entry,
     prefix: string,
     err: unknown,
-    opts: { reason?: EscalateReason; overrideTerminal?: boolean } = {},
+    opts: { reason?: EscalateReason } = {},
   ): Promise<void> {
     onError(err, e.ticket.ticket_id);
-    if (TERMINAL.has(e.status) && !opts.overrideTerminal) return;
+    if (TERMINAL.has(e.status)) return;
     try {
       await escalate(
         e,
         opts.reason ?? "github_manual",
         `${prefix}: ${errorMessage(err)}`.slice(0, 500),
-        { overrideTerminal: opts.overrideTerminal },
       );
     } catch (err2) {
       removeFromQueue(e.ticket.ticket_id);
       e.status = "escalated";
       onError(err2, e.ticket.ticket_id);
     }
+  }
+
+  /**
+   * 合并已经成功、之后的收尾（写状态、diff、saveMergeResult、发 interface_changed 等）出错（T-038）：
+   * 状态保持 `merged`（代码已在集成分支上，依赖它的单照常放行），另发一条 `escalated(merged_but)` 交主管。
+   * 上报本身失败只调 onError。
+   */
+  async function reportMergedBut(e: Entry, err: unknown): Promise<void> {
+    onError(err, e.ticket.ticket_id);
+    removeFromQueue(e.ticket.ticket_id);
+    e.status = "merged";
+    try {
+      await deps.bus.publish({
+        ...common(e.ticket),
+        type: "escalated",
+        payload: {
+          reason: "merged_but",
+          resubmit_counts: { ...e.counts },
+          detail: `merged_but: ${errorMessage(err)}`.slice(0, 500),
+        },
+      });
+    } catch (err2) {
+      onError(err2, e.ticket.ticket_id);
+    }
+    kickDispatch();
   }
 
   // ---------- 写入范围锁（T-039） ----------
@@ -353,54 +349,40 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     return { ok: true };
   }
 
-  /** 4 发来的写入范围申请：重新加锁，成功回 granted，失败回 denied 并上报 scope_lock_failed。 */
-  async function onScopeRequest(ev: EventOf<"write_scope_requested">): Promise<void> {
-    const { request_id, requested_scope } = ev.payload;
-    const e = entries.get(ev.ticket_id);
-    const ctx = e
-      ? common(e.ticket)
-      : {
-          event_id: newId(),
-          ts: new Date(clock.now()).toISOString(),
-          requirement_id: ev.requirement_id,
-          ticket_id: ev.ticket_id,
-          trace_id: ev.trace_id,
-          span_id: newId(),
-          parent_span_id: ev.span_id,
-        };
-    const deny = async (reason: string) => {
-      await deps.bus.publish({
-        ...ctx,
-        type: "write_scope_denied",
-        payload: { request_id, requested_scope: [...requested_scope], reason },
-      });
-    };
-    if (!e) return deny(`调度器没有登记这张单：${ev.ticket_id}`);
-    if (TERMINAL.has(e.status)) return deny(`单子已是终态 ${e.status}`);
-    const r = tryLock(e, requested_scope);
+  /**
+   * 8 转来的范围外写入申请（T-038）：对本单重新加锁，成功把范围并进 write_scope；失败不改锁，
+   * 发 `escalated(scope_lock_failed)`（进队前状态归 8，9 不改 TicketStatus）。未登记或已终态直接失败。
+   * 回 `write_scope_granted` / `write_scope_denied` 由 8 发（8 是唯一答复方），9 不发。
+   */
+  async function extendScope(
+    ticket_id: string,
+    scope: readonly string[],
+  ): Promise<{ ok: true } | { ok: false; reason: string }> {
+    const e = entries.get(ticket_id);
+    if (!e) return { ok: false, reason: `调度器没有登记这张单：${ticket_id}` };
+    if (TERMINAL.has(e.status)) return { ok: false, reason: `单子已是终态 ${e.status}` };
+    const r = tryLock(e, [...scope]);
     if (r.ok) {
-      e.ticket.write_scope = union(e.ticket.write_scope ?? [], requested_scope);
-      await deps.bus.publish({
-        ...ctx,
-        type: "write_scope_granted",
-        payload: { request_id, granted_scope: [...requested_scope] },
-      });
-      return;
+      e.ticket.write_scope = union(e.ticket.write_scope ?? [], [...scope]);
+      return { ok: true };
     }
     const why = r.exclusive
       ? `申请的范围碰到独占区域，独占区域正被 ${r.with.join("、")} 占用`
       : `申请的范围与在途单 ${r.with.join("、")} 的写入范围重叠`;
-    await deny(why);
-    // 加锁失败上报主管（modules.md §9）。进队前的状态归 8，9 不改 TicketStatus，只发事件
-    await deps.bus.publish({
-      ...common(e.ticket),
-      type: "escalated",
-      payload: {
-        reason: "scope_lock_failed",
-        resubmit_counts: { ...e.counts },
-        detail: `${why}：${requested_scope.join(", ")}`.slice(0, 500),
-      },
-    });
+    try {
+      await deps.bus.publish({
+        ...common(e.ticket),
+        type: "escalated",
+        payload: {
+          reason: "scope_lock_failed",
+          resubmit_counts: { ...e.counts },
+          detail: `${why}：${scope.join(", ")}`.slice(0, 500),
+        },
+      });
+    } catch (err) {
+      onError(err, ticket_id);
+    }
+    return { ok: false, reason: why };
   }
 
   function dependencyState(ticket_id: string, seen = new Set<string>()): DependencyState {
@@ -864,12 +846,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           } catch (err) {
             // 出错的单上报 github_manual，队列继续
             const e = current as Entry | undefined;
-            // 已经合入、收尾（发 interface_changed 等）失败：detail 用 merged_but，提醒主管代码已在集成分支上
-            if (e)
-              await escalateOnError(e, currentMerged ? "merged_but" : "merge_error", err, {
-                // 已定：本单刚合并成功、收尾失败时状态改 escalated 交主管（只有这一处允许覆盖 merged）
-                overrideTerminal: currentMerged,
-              });
+            // 已经合入、收尾（发 interface_changed 等）失败：状态保持 merged，发 escalated(merged_but)（T-038）
+            if (e && currentMerged) await reportMergedBut(e, err);
+            else if (e) await escalateOnError(e, "merge_error", err);
             else onError(err, "(queue)");
             more = !stopped;
           }
@@ -1111,13 +1090,6 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           supervisorBacklog = { pending: ev.payload.pending, capacity: ev.payload.capacity };
           kickDispatch();
         }),
-        deps.bus.subscribe("write_scope_requested", async (ev) => {
-          try {
-            await onScopeRequest(ev);
-          } catch (err) {
-            onError(err, ev.ticket_id);
-          }
-        }),
       );
       if (autoDispatch && pollMs > 0) {
         pollTimer = setInterval(kickDispatch, pollMs);
@@ -1165,6 +1137,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         conflicted: false,
         base_changed: false,
         re_reviewed: false,
+        high_risk: false,
       };
       entries.set(ticket.ticket_id, e);
       await setStatus(e, "pending");
@@ -1176,7 +1149,15 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       return tryLock(e, write_scope).ok ? "ok" : "fail";
     },
     dispatch,
-    async submit({ ticket_id, pr_id, worktree_path, round, review_resubmits, base_commit }) {
+    async submit({
+      ticket_id,
+      pr_id,
+      worktree_path,
+      round,
+      review_resubmits,
+      base_commit,
+      high_risk,
+    }) {
       const e = getEntry(ticket_id);
       if (TERMINAL.has(e.status)) throw new Error(`单 ${ticket_id} 已是终态 ${e.status}`);
       if (
@@ -1192,6 +1173,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       e.worktree_path = worktree_path;
       if (round !== undefined) e.round = round;
       if (review_resubmits !== undefined) e.counts.review = review_resubmits;
+      if (high_risk !== undefined) e.high_risk = high_risk;
       // 基线：submit 带的 base_commit，没带就用 6 的 diff(pr_id).base_sha
       let base = base_commit;
       if (!base) {
@@ -1272,6 +1254,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     async backpressureState(): Promise<BackpressureState> {
       return backpressureFrom(await deps.budgetState());
     },
+    extendScope: (ticket_id, scope) => extendScope(ticket_id, scope),
     dependencyState: (id) => dependencyState(id),
     status: (id) => entries.get(id)?.status,
     snapshot: () =>
@@ -1285,6 +1268,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         budget_paused: e.resume_token !== undefined || e.resuming,
         coding: e.coding && !TERMINAL.has(e.status),
         locked_scope: e.lock_scope && !TERMINAL.has(e.status) ? [...e.lock_scope] : null,
+        high_risk: e.high_risk,
       })),
     async idle() {
       for (;;) {

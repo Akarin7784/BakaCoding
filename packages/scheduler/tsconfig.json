@@ -20,6 +20,9 @@
     },
     {
       "path": "../types"
+    },
+    {
+      "path": "../workspace"
     }
   ],
   "exclude": ["src/**/*.test.ts"]

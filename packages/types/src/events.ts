@@ -103,6 +103,7 @@ export const ESCALATION_REASONS = [
   "coder_failed", // 模块 8：编码池 gave_up / turn_limit（或 done 但 NoChangesError）超复投上限，detail 写最后一次状态
   "budget_exceeded", // 模块 8：本单预算用完，不复投，主管直接交给用户
   "internal_error", // 模块 8：评审调用、写轮次记录、读预算出错等内部异常，detail 写 `<阶段>_error: …`；主管直接交给用户，不重拆
+  "merged_but", // 模块 9（T-038）：已合入集成分支、之后的收尾出错；单子状态保持 merged，detail 写 `merged_but: …`
 ] as const;
 export const EscalatedSchema = ev("escalated", {
   reason: z.enum(ESCALATION_REASONS),

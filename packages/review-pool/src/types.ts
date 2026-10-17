@@ -25,6 +25,11 @@ export interface ReviewInput {
    * 统一抛 signal.reason；1 没理会 signal、取消后才返回时同样丢弃结果并抛。
    */
   signal?: AbortSignal;
+  /**
+   * 可选（T-038）：8 判定的高风险单（依赖类单：改了依赖清单或锁文件，或需求单 `kind: "dependency"`）。
+   * 为 true 时评审提示词在不可信区块之前加一段系统说明（「## 高风险单（系统说明）」）；false 或不给时提示词与之前完全相同。
+   */
+  high_risk?: boolean;
 }
 
 /** 7 读到的配置子集；模块 3 的 Config 在结构上满足它。 */

@@ -26,3 +26,36 @@ export const TERMINAL_TICKET_STATUSES = [
   "merged",
   "escalated",
 ] as const satisfies readonly TicketStatus[];
+
+/**
+ * 依赖清单与锁文件的 glob（T-038，PD §4 / §6）：8 判定「依赖类需求单」（diff 里任一改动文件匹配即算，只改锁文件也算）
+ * 并标为高风险；9 的默认独占区域也以它开头。匹配规则同模块 4（minimatch，`dot: true`）。
+ */
+export const DEPENDENCY_MANIFEST_GLOBS: readonly string[] = Object.freeze([
+  // 依赖清单
+  "package.json",
+  "**/package.json",
+  "pnpm-workspace.yaml",
+  "requirements*.txt",
+  "**/requirements*.txt",
+  "pyproject.toml",
+  "**/pyproject.toml",
+  "go.mod",
+  "**/go.mod",
+  "Cargo.toml",
+  "**/Cargo.toml",
+  "Gemfile",
+  "pom.xml",
+  "**/pom.xml",
+  "build.gradle*",
+  "**/build.gradle*",
+  // 锁文件
+  "pnpm-lock.yaml",
+  "package-lock.json",
+  "**/package-lock.json",
+  "yarn.lock",
+  "**/yarn.lock",
+  "**/*.lock",
+  "go.sum",
+  "**/go.sum",
+]);
