@@ -101,12 +101,18 @@ importers:
 
   packages/desktop:
     dependencies:
+      '@bakacoding/app':
+        specifier: workspace:*
+        version: link:../app
       '@bakacoding/config-budget':
         specifier: workspace:*
         version: link:../config-budget
       '@bakacoding/storage':
         specifier: workspace:*
         version: link:../storage
+      '@bakacoding/supervisor':
+        specifier: workspace:*
+        version: link:../supervisor
       '@bakacoding/types':
         specifier: workspace:*
         version: link:../types

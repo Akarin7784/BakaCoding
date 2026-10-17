@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`a51e022` · main 上测试：51 个测试文件、1354 个测试全部通过 · 更新日期：2026-10-17（UTC+8）
+> 上次更新时 main：`5459682` · main 上测试：54 个测试文件、1372 个测试全部通过 · 更新日期：2026-10-17（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -37,8 +37,8 @@ flowchart BT
   classDef doing fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef done fill:#dcfce7,stroke:#16a34a,color:#14532d
 
-  class M0,M1,M2,M3,M4,M5,M6,M7,M8,M9,M11,M12,T done
-  class M10 doing
+  class M0,M1,M2,M3,M4,M5,M6,M7,M8,M9,M11,T done
+  class M10,M12 doing
 ```
 
 图例：绿色 = 已完成，黄色 = 进行中，灰色 = 未开始。
@@ -115,6 +115,7 @@ flowchart BT
 | T-058 | 模块 2：prStore 凭据检查收窄，`ssh://git@`、`https://user@` 放行；`user:token@`（含 `%3A`、无斜杠、嵌在文字里）、像 token 或长串十六进制 / base64 的用户名（任何 scheme）、查询参数和 `#` 片段里的 token 照样整条拒写；顺带 T-057 的三个小点（正常读到后清掉警告记录、`warn` 抛错不影响读取、注释归位）；`closed_by` 早已在 `PR_STRUCTURAL_FIELDS` 里，补一条测试锁住，接口不变 | 2 | 基础层开发 | 已合入 | #58 | `adc43ba` |
 | T-059 | 模块 3：带凭据 URL 的判断抽成模块 3 导出的 `isCredentialUrl`，2 的 prStore 拒写和 `redact` 的 `url_credentials` 规则共用，两边和 11 跑同一份 `CREDENTIAL_CASES`；`ghp_` / `github_pat_` / `glpat-` 任何位置都遮；`redact` 去掉平方级回溯（邮箱、内网主机名、env 变量名、私钥、IPv6 加上限或改线性扫描），超长主机名照样遮；接口新增 `isCredentialUrl`、`credentialUrlRanges`、`CREDENTIAL_CASES` | 3 | 基础层开发 | 已合入 | #63 | `61f5af3` |
 | T-060 | 模块 11 端到端回归：改用模块 3 的 `CREDENTIAL_CASES`，应拒的用例把带凭据文本放进上报详情和群消息，断言导出的诊断包里任何文件都找不到密文、事件确实在包里；应放行的用例详情里不出现 `[REDACTED:url_credentials]`；清单非空；40 位十六进制用户名判为 `url_credentials`；5 种 10 万字符详情的导出各在 500ms 内 | 11 | 界面与诊断开发 | 已合入 | #64 | `4c739e8` |
+| T-063 | 模块 12 / 组合根：`createDefaultDeps` 按仓库组装默认 AppDeps；`acquireWriterLock`（writer.lock）；桌面主进程 `startBackend` 接线 assemble/takeOver，失败退回只读；`backend:status` / `supervisor:notify` 缓冲；假数据 `main_merge` 改为 `supervisor` | 12、组合根 | 界面与诊断开发 | 已合入 | #69 | `5459682` |
 | T-062 | 模块 12：高风险 PR 放行和拒绝的界面与 IPC（接 pendingHighRisk / decideHighRisk，stale_pr 时提示「PR 已更新，请重新查看」）；警告列表最多显示约 50 条，其余显示 +N；detail 截断，按单号加警告码去重；requirement_truncated / pr_close_failed 配中文文案；诊断导出补按需求、按时间段两种范围的拒绝用例和 include_full_repo，耗时上限放宽到 2s | 12 | 界面与诊断开发 | 未开始 | — | — |
 | T-064 | 模块 9：定时 sync() 加限流退避 + 对账；拒绝只关指定 PR；adopt 发现已合入按手动合入；独占区用 isDependencyFile | 9、10、组合根 | 编排层开发 | 开发中 | — | — |
 | T-065 | 模块 6 / types：DiffFile 加可选 old_path，6 用 git diff -M 时填上旧路径；模块 8 `isHighRiskDiffFile` 新旧路径都检查，041c 的改名兜底（renamed 一律当高风险）收窄成只看依赖文件（没有 old_path 的改名仍算）；依赖文件名不区分大小写（仍按整个文件名匹配）；模块 10 高风险证据的命中文件改成 `{ path, old_path? }` | 6、8、10 | 执行层开发 | 已合入 | #67 | `e5c17b5` |
@@ -161,7 +162,7 @@ flowchart BT
 - 组合根（T-041a → T-041b）：依赖已上报（未被取代）或 `fields_invalid` 的单，T-041b 起重启时进 `held`、通知用户一次；依赖接管失败（`failed`）的单仍不进 `held`，9 不认识它，依赖它的单会一直 `waiting`。
 - 模块 9（T-041a）：`adopt` 接回的单复投数是估的：评审复投数从 0 记起（9 只用它报上报的 `resubmit_counts`，8 的复投上限按事件日志算），冲突复投数按 worktree 轮次估。
 - 组合根（T-041a）：`fields_invalid` 的「只通知一次」只在同一进程内去重；每次重启都会再发一条 `ticket_warning(fields_invalid)`，跨重启去重由桌面端做（T-062，按单号 + 警告码去重）。
-- 组合根（T-041a）：一次组装对应一个仓库；12 的主进程还没接 `assemble`（另开单）。
+- 组合根（T-041a / T-063）：一次组装对应一个仓库（v1）；T-063 起 12 的主进程已接 `assemble`。
 - 组合根（T-041a）：派单查当前 PR 用 2 的 `prStore().list()` 全量过滤，PR 记录多时偏慢（v1 可接受）。
 - 已解决（T-053）：中途写入范围申请里的路径曾按 glob 原样批准，文件名本身带通配符（如 `docs/**`）会批成整个目录可写；现在申请路径带通配字符一律拒绝。
 - 已解决（T-038）：合并成功后收尾出错（`merged_but`）不再把 `merged` 改成 `escalated`，状态保持 `merged` 并另发 `escalated(merged_but)`。
