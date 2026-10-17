@@ -110,6 +110,32 @@ export function gitTimeoutMs(opts: Pick<GitOptions, "remote" | "timeoutMs">): nu
 const MAX_BUFFER = 64 * 1024 * 1024;
 
 /**
+ * 一个输出流的收集器（内部，导出仅供测试）。与 execFile 的 maxBuffer 一致（实测）：累计超过 limit 时
+ * 保留到 limit 为止的部分并调 onOverflow（kill）；累计恰好等于 limit 且之后没有数据不算超出；
+ * 恰好等于 limit 之后再来任何数据都算超出。超出之后的数据丢弃。
+ */
+export function collectInto(
+  into: Buffer[],
+  limit: number,
+  onOverflow: () => void,
+): (b: Buffer) => void {
+  let size = 0;
+  let over = false;
+  return (b) => {
+    if (over) return;
+    if (size + b.length > limit) {
+      into.push(b.subarray(0, limit - size));
+      size = limit;
+      over = true;
+      onOverflow();
+      return;
+    }
+    into.push(b);
+    size += b.length;
+  };
+}
+
+/**
  * 调 git（spawn，不经 shell）。allowCodes 内的非零退出码不抛错。
  * 本地操作的环境用 `gitEnv()`：继承的 `GIT_DIR`、`GIT_WORK_TREE`、`GIT_INDEX_FILE`
  * 等不会把操作带到别的仓库或索引上（T-097）。
@@ -132,7 +158,6 @@ export function git(
     const out: Buffer[] = [];
     const err: Buffer[] = [];
     const limit = opts.maxBuffer ?? MAX_BUFFER;
-    const sizes = new Map<Buffer[], number>();
     let killedFor: "timeout" | "abort" | "buffer" | undefined;
     let settled = false;
     let timer: NodeJS.Timeout | undefined;
@@ -172,21 +197,14 @@ export function git(
       grace = setTimeout(() => child.kill("SIGKILL"), GIT_KILL_GRACE_MS);
       grace.unref?.();
     }
-    // 与 execFile 的 maxBuffer 一致：每个流单独计，超出时保留到上限为止的部分并 kill
-    const collect = (into: Buffer[]) => (b: Buffer) => {
-      const have = sizes.get(into) ?? 0;
-      if (have >= limit) return;
-      if (have + b.length > limit) {
-        into.push(b.subarray(0, limit - have));
-        sizes.set(into, limit);
-        kill("buffer");
-        return;
-      }
-      into.push(b);
-      sizes.set(into, have + b.length);
-    };
-    child.stdout.on("data", collect(out));
-    child.stderr.on("data", collect(err));
+    child.stdout.on(
+      "data",
+      collectInto(out, limit, () => kill("buffer")),
+    );
+    child.stderr.on(
+      "data",
+      collectInto(err, limit, () => kill("buffer")),
+    );
     if (timeout > 0) timer = setTimeout(() => kill("timeout"), timeout);
     if (signal && !write) signal.addEventListener("abort", onAbort, { once: true });
     child.on("error", (e) =>

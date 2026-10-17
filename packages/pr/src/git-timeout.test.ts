@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as pub from "./index.js";
 import {
+  collectInto,
   git,
   GitError,
   gitTimeoutMs,
@@ -142,6 +143,57 @@ describe("输出上限（同 T-110 之前 execFile 的 maxBuffer）", () => {
       expect(ms).toBeLessThan(5_000);
     });
   }
+});
+
+describe("输出上限边界（与 execFile 一致，实测）", () => {
+  const buf = (n: number) => Buffer.alloc(n, 0x61);
+  const run = (chunks: number[], limit = 10) => {
+    const into: Buffer[] = [];
+    let overflows = 0;
+    const push = collectInto(into, limit, () => overflows++);
+    for (const n of chunks) push(buf(n));
+    return { overflows, size: Buffer.concat(into).length };
+  };
+  it("累计恰好等于上限、之后没有数据：不算超出", () => {
+    expect(run([10])).toEqual({ overflows: 0, size: 10 });
+    expect(run([4, 6])).toEqual({ overflows: 0, size: 10 });
+  });
+  it("累计恰好等于上限之后还有数据：算超出（kill），保留到上限", () => {
+    expect(run([10, 1])).toEqual({ overflows: 1, size: 10 });
+    expect(run([4, 6, 3])).toEqual({ overflows: 1, size: 10 });
+  });
+  it("跨过上限的块：截到上限；超出之后的数据丢弃，只 kill 一次", () => {
+    expect(run([7, 5, 9, 9])).toEqual({ overflows: 1, size: 10 });
+  });
+  for (const remote of [false, true]) {
+    for (const n of [10, 70_000]) {
+      it(`端到端（${remote ? "远程" : "本地"}路径）：cat-file 读 上限+${n} 字节的 blob，抛 GitError 而不是返回截断的 stdout`, async () => {
+        const limit = 65_536;
+        await writeFile(join(root, "big.bin"), buf(limit + n));
+        const sha = execFileSync("git", ["hash-object", "-w", "big.bin"], {
+          cwd: root,
+          encoding: "utf8",
+        }).trim();
+        const args = ["cat-file", "blob", sha];
+        const e = await git(root, args, { remote, maxBuffer: limit, timeoutMs: 0 }).catch(
+          (x: unknown) => x,
+        );
+        expect(e).toBeInstanceOf(GitError);
+        expect((e as GitError).code).toBeNull();
+        expect((e as GitError).message).toBe(`git ${args.join(" ")} 失败（退出码 null）：`);
+        expect((e as GitError).stdout.length).toBe(limit);
+      });
+    }
+  }
+  it("端到端：输出恰好等于上限时正常返回", async () => {
+    await writeFile(join(root, "eq.bin"), buf(1000));
+    const sha = execFileSync("git", ["hash-object", "-w", "eq.bin"], {
+      cwd: root,
+      encoding: "utf8",
+    }).trim();
+    const r = await git(root, ["cat-file", "blob", sha], { maxBuffer: 1000 });
+    expect(r.stdout.length).toBe(1000);
+  });
 });
 
 describe("包入口（T-110）", () => {
