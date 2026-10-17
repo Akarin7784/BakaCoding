@@ -38,8 +38,8 @@ flowchart BT
   classDef done fill:#dcfce7,stroke:#16a34a,color:#14532d
 
   class M0,M2,M6,M11,M12,T done
-  class M3,M4 doing
-  class M1,M5,M7,M8,M9,M10 todo
+  class M3,M4,M7 doing
+  class M1,M5,M8,M9,M10 todo
 ```
 
 图例：绿色 = 已完成，黄色 = 进行中，灰色 = 未开始。
@@ -80,6 +80,7 @@ flowchart BT
 | T-024 | 诊断包接存储：`storage.diagnosticsSource()` 作为模块 11 数据源的集成测试与数据缺口说明 | 11 | 界面与诊断开发 | 已合入 | #24 | `94c0624` |
 | T-026 | better-sqlite3 升到 12.x（Electron 44 能编过）；存储只读打开 `openStorageReadonly`、`maxSeq`、`nativeBinding`；prStore 结构字段加 `closed_by` | 2 | 基础层开发 | 已合入 | #26 | `11c867d` |
 | T-028 | 模块 6 补接口：`commitWorktree`（提交 worktree 全部改动）、`close`（`closed_by` / `close_reason`，sync 不把自己关的当手动关闭） | 6 | 执行层开发 | 已合入 | #25 | `4a2ce07` |
+| T-030 | 模块 7 评审池：`review` / `backlog`、CI 失败直接判不过、主管兼任、复投粘性与限流跳过、输出解析重试、`review_backlog` 事件；评审结论类型进 `@bakacoding/types` | 7 | 执行层开发 | 待评审 | 待开 | — |
 
 8、9、10（编排层开发）的第二批需求单还没拆。
 
