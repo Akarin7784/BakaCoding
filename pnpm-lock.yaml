@@ -36,6 +36,45 @@ importers:
         specifier: ^5.0.5
         version: 5.0.5(@types/node@20.19.43)(jsdom@25.0.1)(vite@8.3.4(@types/node@20.19.43)(jiti@2.7.0))
 
+  packages/app:
+    dependencies:
+      '@bakacoding/coder-pool':
+        specifier: workspace:*
+        version: link:../coder-pool
+      '@bakacoding/config-budget':
+        specifier: workspace:*
+        version: link:../config-budget
+      '@bakacoding/event-bus':
+        specifier: workspace:*
+        version: link:../event-bus
+      '@bakacoding/model-gateway':
+        specifier: workspace:*
+        version: link:../model-gateway
+      '@bakacoding/pr':
+        specifier: workspace:*
+        version: link:../pr
+      '@bakacoding/review-pool':
+        specifier: workspace:*
+        version: link:../review-pool
+      '@bakacoding/scheduler':
+        specifier: workspace:*
+        version: link:../scheduler
+      '@bakacoding/storage':
+        specifier: workspace:*
+        version: link:../storage
+      '@bakacoding/sub-agent':
+        specifier: workspace:*
+        version: link:../sub-agent
+      '@bakacoding/supervisor':
+        specifier: workspace:*
+        version: link:../supervisor
+      '@bakacoding/types':
+        specifier: workspace:*
+        version: link:../types
+      '@bakacoding/workspace':
+        specifier: workspace:*
+        version: link:../workspace
+
   packages/coder-pool:
     dependencies:
       '@bakacoding/config-budget':

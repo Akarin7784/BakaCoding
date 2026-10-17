@@ -154,6 +154,31 @@ export interface SupervisorDeps {
   logger?: { warn(msg: string, detail?: unknown): void };
 }
 
+/**
+ * 重启接管的结果（T-041a）：按 2 的 `tickets.status` 分类，每张单只进一类。
+ * 单号都按 `listTickets()` 的顺序（created_at、ticket_id 升序）。
+ */
+export interface TakeOverReport {
+  /** pending / coding / in_review / resubmitting：已重新登记到 9（`enqueue`），派单时组合根沿用已开的 PR */
+  enqueued: string[];
+  /**
+   * 结构化字段缺失、不合格式或写入范围复查不过（`loadTicket` 返回 undefined，已发一次 `ticket_warning(fields_invalid)`）：
+   * 不接回、不重拆、不上报
+   */
+  skipped_invalid: string[];
+  /**
+   * merge_queued / conflict / re_reviewing：要用 9 的 `adopt` 直接恢复进合并队列（T-061 合入后另开分支做），
+   * 本次没有接回，只列出来
+   */
+  awaiting_adopt: string[];
+  /** escalated：补跑上报处理在 T-041b，本次只列出来 */
+  escalated: string[];
+  /** merged：跳过 */
+  merged: string[];
+  /** 接回时出错（如 9 的 enqueue 抛错）；不影响其余单 */
+  failed: { ticket_id: string; error: string }[];
+}
+
 export interface Supervisor {
   chat(message: UserMessage): Promise<ChatReply>;
   split(request: SplitRequest): Promise<SplitResult>;
@@ -162,4 +187,10 @@ export interface Supervisor {
   createManualTicket(input: ManualTicketInput): Promise<SupervisorTicket>;
   /** 从 2 还原单子，装配时注入 8 的 deps.loadTicket */
   loadTicket(ticket_id: string): Promise<SubAgentTicket | undefined>;
+  /**
+   * 重启接管（T-041a）：扫描 2 的 `listTickets()`，按状态把没到终态的单接回 9（见 `TakeOverReport`）。
+   * 同一进程里已经接回过（或本进程建的）单不再重复登记。重新登记时 `depends_on` 里已 merged 的单去掉
+   * （9 重启后不认识它们，留着会一直 waiting）。
+   */
+  takeOver(): Promise<TakeOverReport>;
 }

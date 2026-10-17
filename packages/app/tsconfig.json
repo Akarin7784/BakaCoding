@@ -1,0 +1,23 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../coder-pool" },
+    { "path": "../config-budget" },
+    { "path": "../event-bus" },
+    { "path": "../model-gateway" },
+    { "path": "../pr" },
+    { "path": "../review-pool" },
+    { "path": "../scheduler" },
+    { "path": "../storage" },
+    { "path": "../sub-agent" },
+    { "path": "../supervisor" },
+    { "path": "../types" },
+    { "path": "../workspace" }
+  ],
+  "exclude": ["src/**/*.test.ts"]
+}

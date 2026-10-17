@@ -12,6 +12,8 @@
 
 **共享类型包** `@bakacoding/types`：只依赖 zod，放事件类型、常量和 zod schema（含 `permission_list`、`LedgerStore`、`DiagnosticsSource`、`call()` 的 `ctx`、diff 结构）。所有模块包都依赖它；它不是功能模块，依赖它不算模块之间的依赖，图中不画。
 
+**组合根** `@bakacoding/app`（T-041a，蓝色大肥鱼 定 Q1 方案 A）：在编排层之上、12 之下，把 0/2/3/6 与 8/9/10 装到同一条事件总线上并做重启接管。它不是功能模块，不在 13 个模块里，图中不画；功能模块都不依赖它。见文末「组合根」一节。
+
 | 层 | 模块 |
 | --- | --- |
 | 底层（0 无依赖；其余内部依赖只有 1→3、2→3） | 0 事件总线 · 1 模型接入层 · 2 存储与事件日志 · 3 配置与预算 · 4 工作区与受限工具层 |
@@ -251,6 +253,13 @@ graph BT
   - `createManualTicket({ project_id, ticket_text, origin: manual | test, write_scope?, interfaces?, depends_on?, priority?, requirement_id?, base_commit? })`：`**` 只能从这里来——不给 `write_scope`，或任一条第一段不是字面量（含整仓 `**`）时按 `["**"]` 派单，并发 `ticket_warning { code: "write_scope_defaulted" }`；其他校验规则同上，不合法直接报错、无副作用。
   - `loadTicket(ticket_id) → SubAgentTicket | undefined`：从 2 的 `getTicket` 还原，装配时注入 8 的 `deps.loadTicket`。`fields` 为 `null`（T-055 之前的旧单、库里损坏）、不合 10 的格式，或写入范围按本单来源（split / manual / test）用 `validateWriteScope` 复查不过（如 split 单存了 `**`）时：经注入的 `publish` 发 `ticket_warning { code: "fields_invalid" }`（字段解得出 trace 就沿用，否则以 `requirement_id` 作 trace_id；发失败只记警告），记一条警告（「没有结构化字段 / 结构化字段不合格式 / 写入范围复查不过，不能续跑，需要重拆或人工处理」），返回 `undefined`：不按整仓 `**` 兜底续跑，以免把写权限放宽到整个仓库；8 据此按「单不存在」报错，9 转上报，由 T-041 决定重拆还是交用户。重拆时这类旧单的单号仍算「本项目已有单号」，但不提供 trace。
   - `start()`：订阅「项目已创建」，在 1:1 里告知用户，返回退订函数。
+  - `takeOver() → Promise<TakeOverReport>`（T-041a，重启接管，由组合根在 9 启动、8 / 10 订阅之后调用一次）：扫描 2 的 `listTickets()`，按 `tickets.status` 分类，每张单只进一类：
+    - `pending` / `coding` / `in_review` / `resubmitting` → 先 `loadTicket` 复查，过了就 `enqueue` 回 9（`enqueued`）；`depends_on` 里已 `merged` 的单去掉（9 重启后不认识它们，留着会一直 `waiting`）。派单时组合根按 2 的 PR 记录带 `HandleOptions.pr_id` / `worktree` 交给 8，不重复开 PR（PD §12，见「组合根」）。
+    - `loadTicket` 返回 `undefined`（`fields_invalid`）→ 不接回、不重拆、不发 `escalated`（Q7）；通知用户靠 `loadTicket` 已发的那一条 `ticket_warning(fields_invalid)`（12 已能显示），同一进程里再次 `takeOver` 不重复发（`skipped_invalid`）。
+    - `merge_queued` / `conflict` / `re_reviewing` → 只列进 `awaiting_adopt`、记警告，**不 enqueue**（会从 `pending` 重新派单、和已有 PR 抢跑）；等 9 的 `adopt`（Q6 方案 A，T-061 合入后另开分支）。
+    - `escalated` → 只列进 `escalated`，补跑上报处理在 T-041b。`merged` → 跳过（`merged`）。
+    - `enqueue` 抛错 → 记进 `failed: { ticket_id, error }`（截到 500 字），不影响其余单，下次 `takeOver` 再试。本进程已交给 9 的单（拆单、手动单、已接管的）不重复 `enqueue`。
+  - 类型 `TakeOverReport = { enqueued, skipped_invalid, awaiting_adopt, escalated, merged: string[]; failed: { ticket_id, error }[] }`，单号按 `listTickets()` 顺序。
 - **依赖**：1、2、3（提示词模板）、4（只用 `isUnsafeGlob`）、6（CI 结果）、8、9。
 - **对应章节**：PD §3、§4、§8、§9、§10、§16。
 - **配置字段**：`roles.supervisor`、`pipeline.resplit_limit`、`pipeline.main_merge`、`pipeline.supervisor_backlog_limit`。
@@ -275,6 +284,19 @@ graph BT
 - **依赖**：3（项目导入）及各模块的接口；接口定下来后可以先做壳子。
 - **对应章节**：PD §15、§16。
 - **配置字段**：设计中没有专用字段；设置入口编辑模块 3 的配置。
+
+## 组合根
+
+### `@bakacoding/app`（T-041a）
+- **定位**：不是功能模块。在编排层之上、12 之下；12 的主进程以后调用它（接线另开单）。功能模块都不依赖它。
+- **对外接口**：`assemble(deps: AppDeps) → Promise<App>`，`App = { bus, supervisor, scheduler, subAgent, pr, takeOver: TakeOverReport, stop() }`。
+  - `AppDeps`：`config`（3 的 `getConfig()` 结果）、`storage`（2 的写入连接，组合根负责 `attach`，关库归调用方）、`call`（1）、`promptTemplate`（3）、`coder`（5 的 `runTicket`）、`review`（7）、`budget`（3 的 `budgetState`）、`createPr({ eventContext, publish, store }) → PrProvider`（6，通常包一层 `createPrProvider`；`store` 即 2 的 `prStore()`）、`worktrees` / `worktreeRoot`（4）、`targetHead()`、`notifyUser`；可选 `listFiles`、`architectureConstraints`、`bus`、`scheduler`（9 的 `target` / `clock` / `target_dirty_retry_ms` / `exclusive_zones` / `dispatch_poll_ms`）、`scopeTimeoutMs`、`onError`、`logger`、`newId`。
+- **一条总线**：只建（或用传进来的）一条 `EventBus`（新建时 `initialSeq = storage.nextSeq()`）。8 的 `publish`、8 的 `scopeRequests.bus`（4 的越界写申请经它到 8、8 的批复经它回 4）、8 的 `attach`（`interface_changed`）、9 的 `bus`、10 的 `publish` / `subscribe`、6 的 `publish`、2 的 `attach` 全是它。1 的 `call_completed` 和 3 的台账 `budget.attach` 由调用方用 `App.bus`（或传进来的 `bus`）接，组合根不重复 attach。
+- **接线**：8 的 `loadTicket` = 10 的 `loadTicket`；8 的 `submit` / `scheduler.extendScope` = 9 的；10 的 `enqueue` = 9 的；6 的实例只建一个，8 和 9（`createPr`）共用，6 的 `eventContext` 转调 9 的；8 的 `permissions` / `resubmitHistory` / `grantedScopes` / `prRecords` 接 2（`storageTicketPermissions`、`eventLogResubmitHistory`、`eventLogGrantedScopes`、`prStore().get`）；TicketStatus 写回 2（读回整行只换 `status`，不带 `fields`）。9 的 `subAgent.handle` / `resume` 只拿到 `SchedulerTicket`，组合根用 10 的 `loadTicket` 补全（`resume` 交 `{ ticket_id }` 由 8 自己补全）。5 的 `PermissionRegistry` 由调用方建 5 时注入（`CoderPoolDeps.registry`），不经过组合根。
+- **重启不重复开 PR**（PD §12）：9 派单时组合根查 2 的 PR 记录（`kind: ticket`、本单号、状态 `open` / `conflict` 里 `created_ts` 最新的一条），有就带 `HandleOptions.pr_id` 和记录里的 `worktree`（路径、分支）交给 8；记录里的 worktree 已不存在时直接抛错（9 报 `escalated(internal_error, dispatch_error: …)`），不另建 r0、不开新 PR。
+- **启动顺序**：建总线、2 `attach` → 建 6 → 建 10、8、9 → 9 `start()` → 8 `attach` → 10 `start()` → 10 `takeOver()`。`stop()` 按相反顺序退订并停 9，不关存储。
+- **高风险闸门**：TODO(T-041c)：9 加了闸门后由组合根打开；默认关闭只适用于单独使用 9 的场景。
+- **v1 限制**：一次组装对应一个仓库（9 只有一个合入目标、一个 `targetHead()`，10 的 `targetHead(project_id)` 也用它）。
 
 ## 事件清单
 
