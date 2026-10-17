@@ -4,5 +4,11 @@ export const MODULE_NAME = "@bakacoding/workspace" as const;
 export * from "./worktree.js";
 export * from "./tools.js";
 export * from "./permissions.js";
-export { FsToolError, isProtectedPath, permissionFor, resolveInWorkspace } from "./guard.js";
+export {
+  FsToolError,
+  isProtectedPath,
+  isUnsafeGlob,
+  permissionFor,
+  resolveInWorkspace,
+} from "./guard.js";
 export type { ResolvedPath } from "./guard.js";

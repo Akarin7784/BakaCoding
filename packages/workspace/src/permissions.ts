@@ -6,6 +6,7 @@ import {
   type PermissionList,
   type Trace,
 } from "@bakacoding/types";
+import { isUnsafeGlob } from "./guard.js";
 
 /**
  * 每单当前生效的权限清单（三级：rw / ro / deny，后条覆盖前条，未匹配即拒绝）。
@@ -13,14 +14,31 @@ import {
  * 越界写拿到「已批准」后把批准的范围以 rw 追加在末尾。只存在本进程内存里，不写 PR 记录，也不落库：
  * 需要跨轮次保留的范围由调用方（8）写回模块 2 的需求单记录，下一轮建工具时带进来。
  */
+export interface PermissionRegistryOptions {
+  /** 丢弃不安全条目时的警告，默认 console.warn。 */
+  logger?: { warn(message: string): void };
+}
+
 export class PermissionRegistry {
   private readonly lists = new Map<string, PermissionList>();
+  private readonly logger: { warn(message: string): void };
+
+  constructor(options: PermissionRegistryOptions = {}) {
+    this.logger = options.logger ?? console;
+  }
 
   /** 整份替换某单的权限清单；格式不对抛 ZodError。返回生效后的（冻结）清单。 */
   applyPermissions(ticket_id: string, permission_list: readonly PermissionEntry[]): PermissionList {
     if (typeof ticket_id !== "string" || ticket_id.length === 0)
       throw new TypeError("ticket_id 必须是非空字符串");
-    const parsed = PermissionListSchema.parse(permission_list);
+    const parsed = PermissionListSchema.parse(permission_list).filter((e) => {
+      // 不安全的 rw / ro 条目丢掉（不放行任何读写）；deny 只会收紧，保留
+      if (e.level === "deny" || !isUnsafeGlob(e.glob)) return true;
+      this.logger.warn(
+        `[workspace] ${ticket_id}: dropped unsafe permission glob ${JSON.stringify(e.glob)} (${e.level})`,
+      );
+      return false;
+    });
     // 冻结后存：调用方之后改自己手里的数组不影响已生效的清单
     const frozen = Object.freeze(
       parsed.map((e) => Object.freeze({ glob: e.glob, level: e.level })),
@@ -29,7 +47,7 @@ export class PermissionRegistry {
     return frozen;
   }
 
-  /** 在末尾追加读写条目（批准的写入范围）。 */
+  /** 在末尾追加读写条目（批准的写入范围）；不安全的 glob 丢弃并记警告。 */
   grant(ticket_id: string, globs: readonly string[]): PermissionList {
     const cur = this.lists.get(ticket_id) ?? [];
     return this.applyPermissions(ticket_id, [

@@ -23,6 +23,38 @@ export class FsToolError extends Error {
  * 一条都没匹配上按 DEFAULT_PERMISSION_LEVEL（deny）处理。
  * glob 相对工作区根目录，`dot: true`（点文件也能被 `**` 匹配）。
  */
+/**
+ * 权限清单 / 写入范围里的 glob 是否不安全（全项目只此一份，8、9 调这里）。命中任一条即不安全：
+ * - 任何位置出现 `..`（含花括号、extglob 里的；文件名本身带 `..` 也算，宁严勿宽）；`.` 段、空段（`a//b`、开头或结尾的 `/`）；
+ * - 绝对路径（`/` 开头）、盘符（`C:`）、`~` 开头、反斜杠（Windows 分隔符或 minimatch 转义）、NUL；
+ * - `!` / `#` 开头（minimatch 的否定 / 注释）；
+ * - 花括号或小括号里出现 `/`，或有一个备选正好是 `.`（展开后可能多出 / 少掉路径段）；空串。
+ * minimatch 会解析 `..`，所以 `src/../**` 这类写法若放行，等于给了整个仓库。
+ */
+export function isUnsafeGlob(glob: string): boolean {
+  if (typeof glob !== "string" || glob.length === 0) return true;
+  if (/[\\\0]/.test(glob)) return true;
+  if (/^[/~!#]/.test(glob) || /^[A-Za-z]:/.test(glob)) return true;
+  if (glob.includes("..")) return true;
+  if (glob.split("/").some((seg) => seg === "" || seg === ".")) return true;
+  let depth = 0;
+  let alt = "";
+  for (const c of glob) {
+    if (c === "{" || c === "(") {
+      depth++;
+      alt = "";
+    } else if (c === "}" || c === ")" || ((c === "," || c === "|") && depth > 0)) {
+      if (depth > 0 && alt === ".") return true;
+      if (c === "}" || c === ")") depth = Math.max(0, depth - 1);
+      alt = "";
+    } else if (depth > 0) {
+      if (c === "/") return true;
+      alt += c;
+    }
+  }
+  return false;
+}
+
 export function permissionFor(list: PermissionList, rel: string): PermissionLevel {
   let level: PermissionLevel = DEFAULT_PERMISSION_LEVEL;
   for (const entry of list) {

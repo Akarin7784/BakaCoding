@@ -8,6 +8,7 @@ import {
   FsToolError,
   assertAllowed,
   isProtectedPath,
+  isUnsafeGlob,
   permissionFor,
   protectedError,
   relInside,
@@ -466,7 +467,14 @@ export function createTools(opts: CreateToolsOptions): FileTools {
       )
         throw err;
     }
-    const scope = [...new Set([target.display, target.realRel])];
+    // 目标路径已规范化，一般都安全；文件名本身带 `..` 等不合规时不发申请，直接拒绝
+    const scope = [...new Set([target.display, target.realRel])].filter((g) => !isUnsafeGlob(g));
+    if (scope.length === 0) {
+      throw new FsToolError(
+        `writing "${target.display}" needs a wider write scope, but the path cannot be expressed as a safe scope`,
+        "FS_PERMISSION_DENIED",
+      );
+    }
     const decision = await requestWriteScope(
       opts.scope_requests,
       opts.ticket_id,
