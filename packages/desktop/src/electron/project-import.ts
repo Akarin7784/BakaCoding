@@ -3,7 +3,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { loadPricing, validate } from "@bakacoding/config-budget";
-import { CONFIG_ENV, REPO_ENV } from "./backend.js";
+import { CONFIG_ENV, DB_PATH_ENV, REPO_ENV } from "./backend.js";
 import { sanitizeSyncErrorMessage } from "./sync-state.js";
 
 export const MODELS_FILE = "config/models.json";
@@ -13,18 +13,36 @@ export const GIT_DIR = ".git";
 /** 导入错误信息上限 */
 export const IMPORT_REASON_MAX = 2000;
 
-/** 仓库被 `--repo` 或 BAKACODING_REPO 锁定时不允许导入切换。 */
+/** `--db` 的值（与 backend.resolveRepoDbPath 同一解析：取最后一个） */
+function dbArg(argv: readonly string[]): string | undefined {
+  let v: string | undefined;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!;
+    if (a.startsWith("--db=")) v = a.slice("--db=".length);
+    else if (a === "--db" && argv[i + 1] !== undefined) v = argv[i + 1];
+  }
+  return v || undefined;
+}
+
+/**
+ * 不允许导入切换的情况：`--repo` / BAKACODING_REPO 指定了仓库；或 `--db` / BAKACODING_DB_PATH 是绝对路径
+ * （所有仓库会共用一个库）。相对的库路径在每个仓库里解析，不锁。`--db` 优先于环境变量。
+ */
 export function repoLockedBy(
   argv: readonly string[],
   env: Readonly<Record<string, string | undefined>>,
-): "arg" | "env" | null {
+): "arg" | "env" | "db_arg" | "db_env" | null {
   if (argv.some((a) => a === "--repo" || a.startsWith("--repo="))) return "arg";
   if (env[REPO_ENV]) return "env";
+  const db = dbArg(argv);
+  if (db) return path.isAbsolute(db) ? "db_arg" : null;
+  const fromEnv = env[DB_PATH_ENV];
+  if (fromEnv && path.isAbsolute(fromEnv)) return "db_env";
   return null;
 }
 
 export const REPO_LOCKED_REASON =
-  "仓库已被启动参数 / 环境变量锁定（--repo 或 BAKACODING_REPO），不能在界面里切换项目";
+  "仓库已被启动参数 / 环境变量锁定（--repo、BAKACODING_REPO，或绝对路径的 --db、BAKACODING_DB_PATH），不能在界面里切换项目";
 
 export type DirCheck = { ok: true } | { ok: false; missing?: string[]; reason?: string };
 

@@ -111,6 +111,17 @@ describe("仓库路径与上次导入（T-072）", () => {
     expect(repoLockedBy([], { BAKACODING_REPO: "/x" })).toBe("env");
     expect(repoLockedBy([], {})).toBeNull();
   });
+
+  it("库路径：绝对的 --db / BAKACODING_DB_PATH 锁定；相对路径不锁", () => {
+    const abs = join(tmpdir(), "shared.db");
+    expect(repoLockedBy([`--db=${abs}`], {})).toBe("db_arg");
+    expect(repoLockedBy(["--db", abs], {})).toBe("db_arg");
+    expect(repoLockedBy([], { BAKACODING_DB_PATH: abs })).toBe("db_env");
+    expect(repoLockedBy([], { BAKACODING_DB_PATH: "data/x.db" })).toBeNull();
+    expect(repoLockedBy(["--db=data/x.db"], {})).toBeNull();
+    // 相对的 --db 覆盖环境变量（与 resolveRepoDbPath 一致）
+    expect(repoLockedBy(["--db=data/x.db"], { BAKACODING_DB_PATH: abs })).toBeNull();
+  });
 });
 
 describe("checkProjectDir（T-072）", () => {
@@ -335,7 +346,13 @@ describe("project:import / diagnostics:export / settings:get IPC（T-072）", ()
   }
 
   it("仓库被 --repo / 环境变量锁定：直接拒绝，不弹目录框", async () => {
-    for (const lock of [{ argv: ["--repo=/x"] }, { env: { BAKACODING_REPO: "/x" } }]) {
+    const absDb = join(tmpdir(), "shared.db");
+    for (const lock of [
+      { argv: ["--repo=/x"] },
+      { env: { BAKACODING_REPO: "/x" } },
+      { env: { BAKACODING_DB_PATH: absDb } },
+      { argv: [`--db=${absDb}`] },
+    ]) {
       const pick = vi.fn(async () => "/y");
       const { d, backend } = deps({ ...lock, pickDirectory: pick });
       const { ipc, invoke } = fakeIpc();
@@ -348,6 +365,18 @@ describe("project:import / diagnostics:export / settings:get IPC（T-072）", ()
       expect(pick).not.toHaveBeenCalled();
       expect(backend.switchTo).not.toHaveBeenCalled();
     }
+  });
+
+  it("相对的 BAKACODING_DB_PATH 不锁：照常弹目录框", async () => {
+    const pick = vi.fn(async () => null);
+    const { d } = deps({ env: { BAKACODING_DB_PATH: "data/x.db" }, pickDirectory: pick });
+    const { ipc, invoke } = fakeIpc();
+    serveProjectSettings(ipc, d);
+    await expect(invoke(IPC_CHANNELS.projectImport)).resolves.toEqual({
+      ok: false,
+      canceled: true,
+    });
+    expect(pick).toHaveBeenCalledTimes(1);
   });
 
   it("取消 / 缺文件 / 成功（记下路径）", async () => {
