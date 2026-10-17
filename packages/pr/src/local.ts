@@ -23,7 +23,15 @@ export interface LocalPrProviderOptions {
   now?: () => Date;
   /** 集成分支所在仓库（任一 worktree 路径均可）；openIntegration 需要 */
   repo?: string;
+  /**
+   * 进程内 git 写锁（T-094）：组合根注入 4 的 `(fn) => withGitWriteLock(repo, fn)`；merge 把结果落到 target
+   * （ff-only / update-ref）那段在锁里跑，与合入后清理、建 / 删 worktree 串行。6 不依赖 4，不注入时不加锁。
+   */
+  gitWriteLock?: GitWriteLock;
 }
+
+export type GitWriteLock = <T>(fn: () => Promise<T>) => Promise<T>;
+const NO_LOCK: GitWriteLock = (fn) => fn();
 
 export class PrNotFoundError extends Error {
   constructor(pr_id: string) {
@@ -85,6 +93,7 @@ export class LocalPrProvider implements PrProvider {
   private readonly author: { name: string; email: string };
   private readonly now: () => Date;
   private readonly repo: string | undefined;
+  private readonly gitWriteLock: GitWriteLock;
   private seq = 0;
   /** 串行化 openIntegration，避免并发调用建出两条记录 */
   private integrationLock: Promise<unknown> = Promise.resolve();
@@ -97,6 +106,7 @@ export class LocalPrProvider implements PrProvider {
     this.author = opts.author ?? { name: "BakaCoding", email: "bakacoding@localhost" };
     this.now = opts.now ?? (() => new Date());
     this.repo = opts.repo;
+    this.gitWriteLock = opts.gitWriteLock ?? NO_LOCK;
   }
 
   private identityEnv(): NodeJS.ProcessEnv {
@@ -385,24 +395,33 @@ export class LocalPrProvider implements PrProvider {
       ).stdout.trim();
       ff = false;
     }
-    const wt = await this.findCheckout(cwd, ref);
-    if (wt) {
-      const dirty = (await git(wt, ["status", "--porcelain", "--untracked-files=no"])).stdout;
-      if (dirty.trim()) {
-        return { merged: false, conflict: false, reason: "target_dirty", worktree_path: wt };
-      }
-      try {
-        await git(wt, ["merge", "--ff-only", "-q", sha]);
-      } catch (err) {
-        // 未跟踪文件会被覆盖：视同 target_dirty，记录状态不变
-        if (err instanceof GitError && /untracked working tree files/.test(err.stderr)) {
-          return { merged: false, conflict: false, reason: "target_dirty", worktree_path: wt };
+    // T-094：落到 target 这段持 git 写锁（在 mergeLock 之内；清理只拿写锁、不拿 mergeLock，不会死锁）
+    const landed = await this.gitWriteLock(async () => {
+      const wt = await this.findCheckout(cwd, ref);
+      if (wt) {
+        const dirty = (await git(wt, ["status", "--porcelain", "--untracked-files=no"])).stdout;
+        if (dirty.trim()) return { worktree_path: wt };
+        try {
+          await git(wt, ["merge", "--ff-only", "-q", sha]);
+        } catch (err) {
+          // 未跟踪文件会被覆盖：视同 target_dirty，记录状态不变
+          if (err instanceof GitError && /untracked working tree files/.test(err.stderr)) {
+            return { worktree_path: wt };
+          }
+          throw err;
         }
-        throw err;
+      } else {
+        await git(cwd, ["update-ref", ref, sha, tgt]);
       }
-    } else {
-      await git(cwd, ["update-ref", ref, sha, tgt]);
-    }
+      return undefined;
+    });
+    if (landed)
+      return {
+        merged: false,
+        conflict: false,
+        reason: "target_dirty",
+        worktree_path: landed.worktree_path,
+      };
     // 集成记录合并后冻结：base_sha 记为合并时的 merge-base，之后 diff 用记录值
     const base_sha =
       rec.kind === "integration"

@@ -6,6 +6,7 @@ import {
   LocalPrProvider,
   PrAlreadyMergedError,
   PrNotFoundError,
+  type GitWriteLock,
   type LocalPrProviderOptions,
 } from "./local.js";
 import {
@@ -195,6 +196,8 @@ export class GithubPrProvider implements PrProvider {
   private readonly logger: Logger;
   private readonly remote: string;
   private readonly now: () => Date;
+  /** T-094：本地快进 target 那段持 git 写锁（见 LocalPrProviderOptions.gitWriteLock） */
+  private readonly gitWriteLock: GitWriteLock;
 
   constructor(opts: GithubPrProviderOptions) {
     this.local = new LocalPrProvider(opts);
@@ -209,6 +212,7 @@ export class GithubPrProvider implements PrProvider {
     this.logger = opts.logger ?? console;
     this.remote = opts.remote ?? "origin";
     this.now = opts.now ?? (() => new Date());
+    this.gitWriteLock = opts.gitWriteLock ?? ((fn) => fn());
   }
 
   commitPatch(ticket_id: string, worktree_path: string, patch: string): Promise<string> {
@@ -683,7 +687,11 @@ export class GithubPrProvider implements PrProvider {
   }
 
   /** 把本地分支快进到远端；被 checkout 时只在干净的 worktree 里 ff-only，否则记日志不动。 */
-  private async advanceLocal(branch: string, remoteRef: string): Promise<void> {
+  private advanceLocal(branch: string, remoteRef: string): Promise<void> {
+    return this.gitWriteLock(() => this.advanceLocalLocked(branch, remoteRef));
+  }
+
+  private async advanceLocalLocked(branch: string, remoteRef: string): Promise<void> {
     const ref = `refs/heads/${branch}`;
     const to = await revParse(this.repo, remoteRef);
     const from = await revParse(this.repo, branch).catch(() => undefined);
