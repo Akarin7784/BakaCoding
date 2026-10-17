@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -36,14 +37,39 @@ describe("WorktreeManager", () => {
     expect(wt.branch).toBe("bakacoding/T-9-r1");
     expect(existsSync(join(wt.path, "a.txt"))).toBe(true);
     expect(existsSync(join(wt.path, ".env"))).toBe(false);
-    expect(readFileSync(join(repo, ".git/info/exclude"), "utf8")).toContain(
-      "/.bakacoding/worktrees/",
-    );
+    expect(readFileSync(join(repo, ".git/info/exclude"), "utf8")).toContain("/.bakacoding/\n");
     expect(git("status", "--porcelain")).toBe("?? .env");
     await m.ensureIgnored();
     expect(readFileSync(join(repo, ".git/info/exclude"), "utf8").match(/bakacoding/g)).toHaveLength(
       1,
     );
+  });
+  it("T-078：排除整个 .bakacoding/，数据库等运行文件不出现在 git status", async () => {
+    const m = await WorktreeManager.open(repo);
+    await m.ensureIgnored();
+    mkdirSync(join(repo, ".bakacoding"), { recursive: true });
+    writeFileSync(join(repo, ".bakacoding/bakacoding.db"), "x");
+    writeFileSync(join(repo, ".bakacoding/bakacoding.db-wal"), "x");
+    await m.createWorktree("T-1", "HEAD");
+    expect(git("status", "--porcelain", "--untracked-files=all")).toBe("?? .env");
+  });
+  it("T-078：旧版只写了 /.bakacoding/worktrees/ 的仓库补一行新规则，旧行保留，重复调用不再写", async () => {
+    const exclude = join(repo, ".git/info/exclude");
+    writeFileSync(exclude, "# user\n/.bakacoding/worktrees/");
+    const m = await WorktreeManager.open(repo);
+    await m.ensureIgnored();
+    await m.ensureIgnored();
+    expect(readFileSync(exclude, "utf8")).toBe("# user\n/.bakacoding/worktrees/\n/.bakacoding/\n");
+    mkdirSync(join(repo, ".bakacoding"), { recursive: true });
+    writeFileSync(join(repo, ".bakacoding/bakacoding.db"), "x");
+    expect(git("status", "--porcelain", "--untracked-files=all")).toBe("?? .env");
+  });
+  it("T-078：用户已自行写了等价规则时不重复追加", async () => {
+    const exclude = join(repo, ".git/info/exclude");
+    writeFileSync(exclude, ".bakacoding/\n");
+    const m = await WorktreeManager.open(repo);
+    await m.ensureIgnored();
+    expect(readFileSync(exclude, "utf8")).toBe(".bakacoding/\n");
   });
   it("cleanup 按 ticket 清掉所有轮次，按路径只清一个", async () => {
     const m = await WorktreeManager.open(repo);
