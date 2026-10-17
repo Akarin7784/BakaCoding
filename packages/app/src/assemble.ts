@@ -183,6 +183,7 @@ export async function assemble(deps: AppDeps): Promise<App> {
     promptTemplate: () => deps.promptTemplate("supervisor"),
     storage,
     enqueue: (t) => scheduler.enqueue(t),
+    adopt: (t) => adopt(t),
     publish,
     subscribe: (type, handler) => bus.subscribe(type, handler),
     targetHead: () => deps.targetHead(),
@@ -247,6 +248,30 @@ export async function assemble(deps: AppDeps): Promise<App> {
     return subAgent.handle(ticket, opts);
   }
 
+  /**
+   * 重启接管里已在合并队列的单：按 2 的 PR 记录接回 9（adopt 要 PR id 和 head）。查不到未结束的 PR、
+   * worktree 不在了都抛错（10 记进 TakeOverReport.failed），不派单、不开新 PR。
+   */
+  async function adopt(t: SchedulerTicket & { kind?: "dependency" }): Promise<void> {
+    const rec = await currentTicketPr(store, t.ticket_id);
+    if (!rec)
+      throw new Error(`需求单 ${t.ticket_id} 在 2 里没有未结束的 PR 记录，不能直接接回合并队列`);
+    if (!existsSync(rec.worktree_path))
+      throw new Error(
+        `需求单 ${t.ticket_id} 的 PR ${rec.pr_id} 的 worktree 不在了：${rec.worktree_path}`,
+      );
+    const { kind, ...ticket } = t;
+    const m = /-r(\d+)$/.exec(rec.worktree_path);
+    await scheduler.adopt(ticket, {
+      pr_id: rec.pr_id,
+      head_sha: rec.head_sha,
+      worktree_path: rec.worktree_path,
+      base_commit: rec.base_sha,
+      ...(m ? { round: Number(m[1]) } : {}),
+      ...(kind === "dependency" ? { high_risk: true } : {}),
+    });
+  }
+
   // ---- 9 ----
   const scheduler: Scheduler = createScheduler({
     ...deps.scheduler,
@@ -280,11 +305,11 @@ export async function assemble(deps: AppDeps): Promise<App> {
   unsubs.push(subAgent.attach({ subscribe: (type, handler) => bus.subscribe(type, handler) }));
   unsubs.push(supervisor.start());
 
-  // 重启接管：9 已启动、8 / 10 已订阅之后再接回（TODO(T-041a 后续)：已在合并队列里的单等 9 的 adopt）
+  // 重启接管：9 已启动、8 / 10 已订阅之后再接回（已在合并队列里的单经 9 的 adopt，其余 enqueue）
   const takeOver = await supervisor.takeOver();
-  if (takeOver.awaiting_adopt.length)
+  if (takeOver.failed.length)
     logger.warn(
-      `重启接管：${takeOver.awaiting_adopt.length} 张单已在合并队列里，要等 9 的 adopt 才能接回：${takeOver.awaiting_adopt.join("、")}`,
+      `重启接管：${takeOver.failed.length} 张单没接回：${takeOver.failed.map((f) => `${f.ticket_id}（${f.error}）`).join("；")}`,
     );
 
   return {

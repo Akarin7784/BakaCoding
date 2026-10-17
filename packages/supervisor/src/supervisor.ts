@@ -107,7 +107,7 @@ const TAKEOVER_ENQUEUE: ReadonlySet<TicketStatus> = new Set<TicketStatus>([
   "in_review",
   "resubmitting",
 ]);
-/** 重启接管：这些状态的单已在合并队列里，要用 9 的 adopt 直接恢复（T-061 合入后再接）。 */
+/** 重启接管：这些状态的单已在合并队列里，经 9 的 adopt 直接恢复成 merge_queued（不派单）。 */
 const TAKEOVER_ADOPT: ReadonlySet<TicketStatus> = new Set<TicketStatus>([
   "merge_queued",
   "conflict",
@@ -576,19 +576,22 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   }
 
   /**
-   * T-041a 重启接管：按 2 的 tickets.status 接回没到终态的单。
+   * T-041a 重启接管：按 2 的 tickets.status 接回没到终态的单。先接已在合并队列里的单（让它们先占上写入范围锁），
+   * 再 enqueue 其余的。
+   * - merge_queued / conflict / re_reviewing：loadTicket 复查后经 deps.adopt 直接恢复进 9 的合并队列，一律记成
+   *   merge_queued、不派单：conflict 的单合并循环会再试一次合并、照常走冲突复投；re_reviewing 的单重启后基线
+   *   定不了，合并前和目标分支 HEAD 比，不同就重审。没注入 adopt 时只列进 awaiting_adopt。
    * - pending / coding / in_review / resubmitting：loadTicket 复查后 enqueue；派单时由组合根查 PR 记录，
    *   带 HandleOptions.pr_id / worktree 交给 8（PD §12：不重复开 PR）。
    * - loadTicket 返回 undefined（fields_invalid）：它已发过一次 ticket_warning(fields_invalid)，这里不接回、
    *   不重拆、不发 escalated（Q7），同一进程里不再重复判。
-   * - merge_queued / conflict / re_reviewing：TODO(T-041a 后续，T-061 合入后)：调 9 的 adopt 直接恢复进合并队列。
-   *   在那之前只列进 awaiting_adopt，不 enqueue（enqueue 会从 pending 重新派单，和已有 PR 抢跑，Q6 方案 B 不采用）。
    * - escalated：TODO(T-041b)：没有 escalation_handled 的补跑一次上报处理。现在只列出。
    * - merged：跳过。
    */
   async function takeOver(): Promise<TakeOverReport> {
     const report: TakeOverReport = {
       enqueued: [],
+      adopted: [],
       skipped_invalid: [],
       awaiting_adopt: [],
       escalated: [],
@@ -597,36 +600,28 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     };
     const rows = deps.storage.listTickets();
     const statusOf = new Map(rows.map((r) => [r.ticket_id, r.status ?? "pending"]));
+    const toAdopt: StoredTicket[] = [];
+    const toEnqueue: StoredTicket[] = [];
     for (const row of rows) {
       const id = row.ticket_id;
       if (enqueuedIds.has(id) || skippedInvalid.has(id)) continue;
       const status: TicketStatus = row.status ?? "pending";
-      if (status === "merged") {
-        report.merged.push(id);
-        continue;
-      }
-      if (status === "escalated") {
-        // TODO(T-041b)：补跑上报处理（看 fields.escalation_handled）
-        report.escalated.push(id);
-        continue;
-      }
-      if (TAKEOVER_ADOPT.has(status)) {
-        // TODO(T-041a 后续)：9 的 adopt(ticket, { status: "merge_queued", pr_id, worktree_path, … })
-        logger.warn(
-          `重启接管：单 ${id} 状态 ${status}，要等 9 的 adopt 才能直接恢复进合并队列，本次没有接回`,
-        );
-        report.awaiting_adopt.push(id);
-        continue;
-      }
-      if (!TAKEOVER_ENQUEUE.has(status)) continue;
-      const loaded = await loadTicket(id);
+      if (status === "merged") report.merged.push(id);
+      else if (status === "escalated")
+        report.escalated.push(id); // TODO(T-041b)：补跑上报处理
+      else if (TAKEOVER_ADOPT.has(status)) toAdopt.push(row);
+      else if (TAKEOVER_ENQUEUE.has(status)) toEnqueue.push(row);
+    }
+
+    const prepare = async (row: StoredTicket) => {
+      const loaded = await loadTicket(row.ticket_id);
       const f = decodeFields(row.fields);
       if (!loaded || !f.ok) {
-        skippedInvalid.add(id);
-        report.skipped_invalid.push(id);
-        continue;
+        skippedInvalid.add(row.ticket_id);
+        report.skipped_invalid.push(row.ticket_id);
+        return undefined;
       }
-      const st: SchedulerTicket = {
+      const st: SchedulerTicket & { kind?: "dependency" } = {
         ticket_id: loaded.ticket_id,
         requirement_id: loaded.requirement_id,
         trace_id: loaded.trace_id,
@@ -637,17 +632,49 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         write_scope: f.fields.write_scope,
         interfaces: f.fields.interfaces,
         priority: f.fields.priority,
+        ...(loaded.kind ? { kind: loaded.kind } : {}),
       };
+      return st;
+    };
+    const hand = async (
+      row: StoredTicket,
+      fn: (t: SchedulerTicket & { kind?: "dependency" }) => unknown,
+      done: string[],
+      what: string,
+    ) => {
+      const st = await prepare(row);
+      if (!st) return;
+      const id = row.ticket_id;
       enqueuedIds.add(id);
       try {
-        await deps.enqueue(st);
-        report.enqueued.push(id);
+        await fn(st);
+        done.push(id);
       } catch (err) {
         enqueuedIds.delete(id);
         const error = err instanceof Error ? err.message : String(err);
-        logger.warn(`重启接管：单 ${id} enqueue 失败`, err);
+        logger.warn(`重启接管：单 ${id} ${what} 失败`, err);
         report.failed.push({ ticket_id: id, error: error.slice(0, 500) });
       }
+    };
+
+    const adopt = deps.adopt;
+    for (const row of toAdopt) {
+      if (!adopt) {
+        logger.warn(`重启接管：单 ${row.ticket_id} 已在合并队列里，没注入 adopt，本次没有接回`);
+        report.awaiting_adopt.push(row.ticket_id);
+        continue;
+      }
+      await hand(row, adopt, report.adopted, "adopt");
+    }
+    for (const row of toEnqueue) {
+      await hand(
+        row,
+        // enqueue 只要 SchedulerTicket 的字段
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        ({ kind: _kind, ...t }) => deps.enqueue(t),
+        report.enqueued,
+        "enqueue",
+      );
     }
     return report;
   }

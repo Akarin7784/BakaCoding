@@ -333,7 +333,7 @@ describe("组合根：重启接管", () => {
     expect(calls.merge).toEqual(["local-7"]);
   });
 
-  it("fields 无效的单不接回、只发一次 ticket_warning(fields_invalid)，不重拆、不上报；已在合并队列 / 已上报的单只列出", async () => {
+  it("fields 无效的单不接回、只发一次 ticket_warning(fields_invalid)，不重拆、不上报；已上报的单只列出；没有 PR 记录的不 adopt", async () => {
     const { storage, worktreeRoot } = setup();
     saveTicket(storage, "req-1-1", "pending", undefined); // fields 为 null（旧单）
     saveTicket(storage, "req-1-2", "coding", fields({ write_scope: ["**"] })); // split 单存了 **，复查不过
@@ -342,14 +342,18 @@ describe("组合根：重启接管", () => {
     const { pr, calls } = fakePr();
     const { app } = await start({ storage, worktreeRoot, pr });
 
-    expect(app.takeOver).toEqual({
+    expect(app.takeOver).toMatchObject({
       enqueued: [],
+      adopted: [],
       skipped_invalid: ["req-1-1", "req-1-2"],
-      awaiting_adopt: ["req-1-3"],
+      awaiting_adopt: [],
       escalated: ["req-1-4"],
       merged: [],
-      failed: [],
     });
+    // merge_queued 但 2 里没有 PR 记录：adopt 拒绝，记进 failed，不派单、不开 PR
+    expect(app.takeOver.failed).toEqual([
+      { ticket_id: "req-1-3", error: expect.stringMatching(/没有未结束的 PR 记录/) },
+    ]);
     // 再接管一次（同一进程）不重复警告
     const again = await app.supervisor.takeOver();
     expect(again.skipped_invalid).toEqual([]);
@@ -369,6 +373,52 @@ describe("组合根：重启接管", () => {
     expect(statusOf(storage, "req-1-1")).toBe("pending");
     expect(statusOf(storage, "req-1-2")).toBe("coding");
     expect(calls.open).toEqual([]);
+  });
+
+  it("已在合并队列里的单（merge_queued / conflict / re_reviewing）经 9 的 adopt 直接接回并合入，不派单、不编码", async () => {
+    const { storage, worktreeRoot } = setup();
+    const ids = [
+      ["req-1-1", "merge_queued", "lib/a/**"],
+      ["req-1-2", "conflict", "lib/b/**"],
+      ["req-1-3", "re_reviewing", "lib/c/**"],
+    ] as const;
+    for (const [id, status, scope] of ids) {
+      saveTicket(storage, id, status, fields({ write_scope: [scope] }));
+      const path = join(worktreeRoot, `${id}-r0`);
+      mkdirSync(path, { recursive: true });
+      await storage.prStore<TicketPrRecord>().put({
+        kind: "ticket",
+        pr_id: `local-${id}`,
+        ticket_id: id,
+        worktree_path: path,
+        branch: `bakacoding/${id}-r0`,
+        base_branch: "bakacoding/integration",
+        base_sha: HEAD,
+        head_sha: "d".repeat(40),
+        status: status === "conflict" ? "conflict" : "open",
+        created_ts: "2026-10-17T08:00:01Z",
+        updated_ts: "2026-10-17T08:00:01Z",
+      });
+    }
+    const runTicket = vi.fn(async () => ({
+      status: "done" as const,
+      summary: "",
+      changed_files: [],
+    }));
+    const { pr, calls } = fakePr();
+    const { app } = await start({ storage, worktreeRoot, pr, runTicket });
+    expect(app.takeOver.adopted).toEqual(["req-1-1", "req-1-2", "req-1-3"]);
+    expect(app.takeOver.failed).toEqual([]);
+    for (const [id] of ids)
+      await vi.waitFor(() => expect(statusOf(storage, id)).toBe("merged"), { timeout: 5000 });
+    await app.scheduler.idle();
+    expect(runTicket).not.toHaveBeenCalled();
+    expect(calls.open).toEqual([]);
+    expect(calls.merge).toEqual(["local-req-1-1", "local-req-1-2", "local-req-1-3"]);
+    // 再接管一次：已接回的不重复 adopt
+    const again = await app.supervisor.takeOver();
+    expect(again.adopted).toEqual([]);
+    expect(again.failed).toEqual([]);
   });
 
   it("沿用已开的 PR 时 worktree 不在了：不另开 PR，交 9 上报", async () => {

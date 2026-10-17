@@ -136,6 +136,12 @@ export interface SupervisorDeps {
   >;
   /** 9 的 enqueue */
   enqueue: (ticket: SchedulerTicket) => unknown;
+  /**
+   * 可选（T-041a）：重启接管时把已在合并队列里的单（merge_queued / conflict / re_reviewing）直接接回 9。
+   * 组合根注入：按单号查 2 的 PR 记录，转调 9 的 `adopt`（带 pr_id / head / worktree）；查不到 PR 等情况抛错。
+   * 不注入时这些单只列进 `TakeOverReport.awaiting_adopt`（单独使用 10 的场景）。
+   */
+  adopt?: (ticket: SchedulerTicket & { kind?: "dependency" }) => unknown;
   /** 0：只发 group_message 与 ticket_warning（10 自己填 event_id、ts） */
   publish: (event: PublishOf<"group_message"> | PublishOf<"ticket_warning">) => unknown;
   /** 0：只订阅 project_created */
@@ -166,16 +172,15 @@ export interface TakeOverReport {
    * 不接回、不重拆、不上报
    */
   skipped_invalid: string[];
-  /**
-   * merge_queued / conflict / re_reviewing：要用 9 的 `adopt` 直接恢复进合并队列（T-061 合入后另开分支做），
-   * 本次没有接回，只列出来
-   */
+  /** merge_queued / conflict / re_reviewing：经 `deps.adopt` 直接恢复进 9 的合并队列（状态一律 merge_queued） */
+  adopted: string[];
+  /** 同上，但没注入 `deps.adopt`（单独使用 10）：没有接回，只列出来 */
   awaiting_adopt: string[];
   /** escalated：补跑上报处理在 T-041b，本次只列出来 */
   escalated: string[];
   /** merged：跳过 */
   merged: string[];
-  /** 接回时出错（如 9 的 enqueue 抛错）；不影响其余单 */
+  /** 接回时出错（9 的 enqueue / adopt 抛错，如查不到 PR 记录）；不影响其余单，下次 takeOver 再试 */
   failed: { ticket_id: string; error: string }[];
 }
 
