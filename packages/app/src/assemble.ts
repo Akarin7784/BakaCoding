@@ -30,8 +30,9 @@ import {
   type SchedulerTicket,
   type SubAgentCallOptions,
   type HighRiskHeldInfo,
+  type MergeFollowupStore,
 } from "@bakacoding/scheduler";
-import type { Storage } from "@bakacoding/storage";
+import type { Storage, TicketFields } from "@bakacoding/storage";
 import {
   createSubAgent,
   eventLogGrantedScopes,
@@ -165,6 +166,38 @@ export async function userMainWorktreeFor(
     return null;
   }
   return null;
+}
+
+/**
+ * 9 的 merge_followup 标记（T-112）：存在 2 的需求单 `fields.merge_followup`（`{ at, pr_id, merge_sha }`，10 的
+ * `MarkersSchema` 宽松读），读回整行只改这一个键、其余 fields 原样带回（同 10 的 patchFields）。找不到单时
+ * 跳过（与写状态一致：那时也写不了 merged）；读写都是同步的，中间不让出，不会和写状态交错。
+ */
+export function storageMergeFollowup(
+  storage: Pick<Storage, "getTicket" | "saveTicket">,
+  warn: (m: string, detail?: unknown) => void,
+  now: () => Date = () => new Date(),
+): MergeFollowupStore {
+  const patch = (ticket_id: string, value: Record<string, unknown> | undefined): void => {
+    const row = storage.getTicket(ticket_id);
+    if (!row) {
+      warn(`写 merge_followup 标记时找不到需求单 ${ticket_id}，跳过`);
+      return;
+    }
+    const { fields, ...rest } = row;
+    const raw: Record<string, unknown> =
+      fields && typeof fields === "object" ? { ...(fields as Record<string, unknown>) } : {};
+    if (value === undefined) {
+      if (!("merge_followup" in raw)) return;
+      delete raw.merge_followup;
+    } else raw.merge_followup = value;
+    storage.saveTicket({ ...rest, fields: raw as TicketFields });
+  };
+  return {
+    mark: (ticket_id, info) =>
+      patch(ticket_id, { at: now().toISOString(), pr_id: info.pr_id, merge_sha: info.merge_sha }),
+    clear: (ticket_id) => patch(ticket_id, undefined),
+  };
 }
 
 /**
@@ -505,6 +538,7 @@ export async function assemble(deps: AppDeps): Promise<App> {
     storage,
     enqueue: (t) => scheduler.enqueue(withGrantedScopes(t)),
     adopt: (t) => adopt(withGrantedScopes(t)),
+    recoverMergeFollowup: (t, info) => scheduler.recoverMergeFollowup(t, info),
     closeTicketPr: (ticket_id, reason, pr_id) =>
       closeTicketPrs(
         { sync: () => scheduler.sync(), store, pr, warn: (m, d) => logger.warn(m, d) },
@@ -693,6 +727,8 @@ export async function assemble(deps: AppDeps): Promise<App> {
       };
     },
     tickets,
+    // T-112：写 merged 之前先记标记，发完 interface_changed、排上清理后清掉；重启后 10 的 takeOver 补做
+    mergeFollowup: storageMergeFollowup(storage, (m, d) => logger.warn(m, d)),
     saveMergeResult: (ticket_id, result) => storage.saveMergeResult(ticket_id, result),
     worktrees: deps.worktrees,
     subAgent: {

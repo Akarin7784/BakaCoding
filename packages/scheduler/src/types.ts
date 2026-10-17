@@ -214,6 +214,12 @@ export interface SchedulerDeps {
       Partial<Pick<BudgetState, "offpeak_now" | "offpeak_preference">>
   >;
   tickets: TicketStatusStore;
+  /**
+   * 可选（T-112）：「已合入、但 interface_changed / 合入后清理还没做完」的持久标记。组合根接 2 的需求单
+   * `fields.merge_followup`。9 在写 `merged` 之前 `mark`（写失败就不写 `merged`），发完 `interface_changed`、
+   * 排上合入后清理之后才 `clear`；重启后由 10 的 takeOver 经 `recoverMergeFollowup` 补做。不注入时不记标记。
+   */
+  mergeFollowup?: MergeFollowupStore;
   /** 2 的 saveMergeResult（诊断包用），可选 */
   saveMergeResult?(
     ticket_id: string,
@@ -363,6 +369,18 @@ export interface QueueEntryView {
   held_high_risk: boolean;
 }
 
+/** 合入后待补做的事（T-112）：哪个 PR、合并 sha（`interface_changed` 的 `base_commit`）。 */
+export interface MergeFollowup {
+  pr_id: string;
+  merge_sha: string;
+}
+
+/** `SchedulerDeps.mergeFollowup` 的存取（T-112）。 */
+export interface MergeFollowupStore {
+  mark(ticket_id: string, info: MergeFollowup): MaybePromise<void>;
+  clear(ticket_id: string): MaybePromise<void>;
+}
+
 export interface Scheduler {
   /** 合入目标分支（`deps.target`，默认 INTEGRATION_BRANCH），只读（T-094：组合根重启补清理用） */
   readonly target: string;
@@ -419,6 +437,13 @@ export interface Scheduler {
    *   重启前经 extendScope 扩出的范围由组合根并进 `write_scope` 传进来（T-041b），9 不另查。
    * - 写状态失败时撤掉登记和 PR 映射、放掉锁、不入队，原错误照抛（T-041b）。
    */
+  /**
+   * 重启补做合入后的事（T-112）：10 的 takeOver 对带 `merge_followup` 标记的 merged 单调用（在 adopt / enqueue
+   * 之后，受影响的在途单才算得全）。登记为终态 merged，重取 diff、发一次 `interface_changed`（合并日志记空串，
+   * 同手动合入）、排合入后清理，发出后 `clear` 标记，返回 `"emitted"`；取 diff 失败或没发出去返回 `"failed"`，
+   * 标记留到下次启动（没发出去的进待补发列表，补发成功时再 clear）。单已登记且不是 merged 时抛错。
+   */
+  recoverMergeFollowup(ticket: SchedulerTicket, info: MergeFollowup): Promise<"emitted" | "failed">;
   adopt(
     ticket: SchedulerTicket,
     input: {

@@ -2129,6 +2129,49 @@ function ifaceEvent(
   };
 }
 
+describe("T-112 同一条 interface_changed 收到两次（9 重启补发 / 清标记失败时可能重复）", () => {
+  // 9 补发时是一条新事件（新 event_id / seq），payload 与上一次相同
+  const again = () => ({ ...ifaceEvent(), event_id: "ev-i-2", seq: 2 });
+
+  it("编码前收到两次：照常编码、评审、交给 9，不报错、不上报；说明最多重复一次", async () => {
+    const t = setup({ runs: [done()], reviews: [PASS()] });
+    t.agent.onInterfaceChanged(ifaceEvent());
+    t.agent.onInterfaceChanged(again());
+    const out = await t.agent.handle(TICKET);
+    expect(out).toMatchObject({ kind: "merge_queued", resubmit_counts: { review: 0 } });
+    expect(t.submit).toHaveBeenCalledTimes(1);
+    expect(t.kinds()).not.toContain("resubmit");
+    expect(t.kinds().some((k) => k.startsWith("escalated"))).toBe(false);
+    const fb = t.runInputs[0]!.feedback!;
+    expect(fb).toMatch(/^接口变更通知/);
+    const n = fb.match(/T-9 的 PR pr-T-9-1/g)!.length;
+    expect(n).toBeGreaterThanOrEqual(1);
+    expect(n).toBeLessThanOrEqual(2);
+  });
+
+  it("评审期间收到两次：只多评审一次（和收到一次一样），不计复投，交给 9 一次", async () => {
+    const t = setup({ runs: [done()], reviews: [PASS(), PASS(), PASS()] });
+    const holder: { a?: SubAgent } = {};
+    const inner = t.deps.review;
+    let n = 0;
+    t.deps.review = vi.fn(async (input: ReviewInput) => {
+      const r = await inner(input);
+      if (++n === 1) {
+        holder.a!.onInterfaceChanged(ifaceEvent());
+        holder.a!.onInterfaceChanged(again());
+      }
+      return r;
+    });
+    holder.a = createSubAgent(t.deps);
+    const out = await holder.a.handle(TICKET);
+    expect(out).toMatchObject({ kind: "merge_queued", resubmit_counts: { review: 0 } });
+    expect(t.reviewInputs).toHaveLength(2);
+    expect(t.reviewInputs[1]!.ctx.is_resubmit).toBe(false);
+    expect(t.kinds()).not.toContain("resubmit");
+    expect(t.submit).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("T-038 interface_changed：说明作为不可信反馈带给下一次 runTicket；在手的单交出前再评审一次", () => {
   it("受影响的单下一次 runTicket 的 feedback 里有说明（合并的那张、不受影响的单没有）；带过一次就清掉", async () => {
     const t = setup({ runs: [done(), done()], reviews: [FAIL(), PASS()] });
