@@ -8,6 +8,7 @@ import {
   DEPENDENCY_MANIFEST_GLOBS,
   type BakaEvent,
   type CallCtx,
+  type DiffFile,
   type Effort,
   type EventOf,
   type PermissionList,
@@ -52,14 +53,24 @@ const MAX_NOTE_SUMMARY = 2000;
  */
 const SCOPE_REQUEST_WILDCARD = /[*?[\]{}()!+@]/;
 
-/** 是否落在依赖清单 / 锁文件上（`DEPENDENCY_MANIFEST_GLOBS`，匹配规则同模块 4）。 */
-function isDependencyFile(path: string): boolean {
+/** 是否落在依赖清单 / 锁文件上（`DEPENDENCY_MANIFEST_GLOBS`，匹配规则同模块 4）。T-041c 起导出，组合根重启补判用。 */
+export function isDependencyFile(path: string): boolean {
   return (
     permissionFor(
       DEPENDENCY_MANIFEST_GLOBS.map((glob) => ({ glob, level: "rw" as const })),
       path,
     ) === "rw"
   );
+}
+
+/**
+ * diff 里的一个文件算不算高风险（T-041c）：落在依赖清单 / 锁文件上，或是改名（`renamed`）。
+ * 改名一律算：6 的 DiffFile 只有新路径，把 `package.json` 改名走的 diff 看不出旧路径是依赖文件。
+ * T-065 给 DiffFile 加 `old_path` 后，改名兜底收窄成只看新旧路径是不是依赖文件——只改这一处。
+ * 8 评审前判高风险、组合根重启接管时补判（N4）都用它。
+ */
+export function isHighRiskDiffFile(file: Pick<DiffFile, "path" | "status">): boolean {
+  return file.status === "renamed" || isDependencyFile(file.path);
 }
 
 /** 清单里最后一条匹配 path 的条目是不是显式 deny（未匹配不算显式）。 */
@@ -783,9 +794,12 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
       const summary = lateNotes.length
         ? `${baseSummary}\n\n${notesSection(lateNotes)}`
         : baseSummary;
-      // 依赖类单标高风险（T-038）：主管标了 kind: "dependency"，或 diff 改了依赖清单 / 锁文件
-      const high_risk =
-        s.ticket.kind === "dependency" || s.last.changed_files.some(isDependencyFile);
+      // 本轮 diff 在评审前取一次（评审不改代码，评审后写轮次记录沿用同一份）
+      s.stage = "diff";
+      const diff = await deps.pr.diff(pr_id);
+      // 依赖类单标高风险（T-038）：主管标了 kind: "dependency"，或 diff 改了依赖清单 / 锁文件；
+      // T-041c 起改名的文件也算（isHighRiskDiffFile，T-065 收窄）
+      const high_risk = s.ticket.kind === "dependency" || diff.files.some(isHighRiskDiffFile);
       let result: ReviewResult;
       s.stage = "permissions";
       const permission_list = await permissionsFor(s.ticket);
@@ -810,8 +824,6 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
         throw e;
       }
       throwIfAborted(s.signal);
-      s.stage = "diff";
-      const diff = await deps.pr.diff(pr_id);
       s.stage = "round_save";
       const round = await nextRound(s.ticket.ticket_id);
       await deps.rounds.save({

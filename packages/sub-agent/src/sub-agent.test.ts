@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { CommitPatchError, GitError, NoChangesError } from "@bakacoding/pr";
 import type { RunTicketInput, RunTicketResult } from "@bakacoding/coder-pool";
 import type { ReviewInput } from "@bakacoding/review-pool";
-import type { Diff, ReviewResult, RoundRecord, TicketStatus } from "@bakacoding/types";
+import type { Diff, DiffFile, ReviewResult, RoundRecord, TicketStatus } from "@bakacoding/types";
 import {
   BUDGET_RESUME_NOTE,
   type ConflictResubmitRequest,
@@ -10,6 +10,8 @@ import {
   type StoredPrRecord,
   createSubAgent,
   effortFor,
+  isDependencyFile,
+  isHighRiskDiffFile,
   reasonsToFeedback,
   type SubAgentConfig,
   type SubAgentDeps,
@@ -2084,5 +2086,41 @@ describe("T-038 依赖类单标高风险（只打标，不扣留）", () => {
     expect("high_risk" in out).toBe(false);
     expect("high_risk" in t.reviewInputs[0]!).toBe(false);
     expect("high_risk" in t.submit.mock.calls[0]![0]).toBe(false);
+  });
+});
+
+describe("T-041c 高风险判定：删除、改名（isHighRiskDiffFile）", () => {
+  const f = (path: string, status: DiffFile["status"]): DiffFile => ({
+    path,
+    status,
+    additions: 0,
+    deletions: 1,
+    patch: "",
+  });
+
+  it("isDependencyFile / isHighRiskDiffFile：删除的依赖文件按路径算；改名一律算（T-065 收窄）；普通改动不算", () => {
+    expect(isDependencyFile("package.json")).toBe(true);
+    expect(isDependencyFile("packages/x/package-lock.json")).toBe(true);
+    expect(isDependencyFile("src/a.ts")).toBe(false);
+    expect(isHighRiskDiffFile(f("package.json", "deleted"))).toBe(true);
+    expect(isHighRiskDiffFile(f("go.sum", "added"))).toBe(true);
+    expect(isHighRiskDiffFile(f("src/renamed.ts", "renamed"))).toBe(true);
+    expect(isHighRiskDiffFile(f("src/a.ts", "modified"))).toBe(false);
+    expect(isHighRiskDiffFile(f("src/a.ts", "deleted"))).toBe(false);
+  });
+
+  it("diff 里删除了 package.json：评审输入、submit 都带 high_risk: true", async () => {
+    const t = setup({ runs: [done("去掉依赖")], reviews: [PASS()] });
+    t.pr.diff.mockImplementation(async () => ({ ...DIFF, files: [f("package.json", "deleted")] }));
+    const out = await t.agent.handle(TICKET);
+    expect(out).toMatchObject({ kind: "merge_queued", high_risk: true });
+    expect(t.reviewInputs[0]!.high_risk).toBe(true);
+    expect(t.submit.mock.calls[0]![0]).toMatchObject({ high_risk: true });
+  });
+
+  it("diff 里有改名的文件（看不出旧路径）：按高风险处理", async () => {
+    const t = setup({ runs: [done("改名")], reviews: [PASS()] });
+    t.pr.diff.mockImplementation(async () => ({ ...DIFF, files: [f("lib/pkg.json", "renamed")] }));
+    expect(await t.agent.handle(TICKET)).toMatchObject({ high_risk: true });
   });
 });
