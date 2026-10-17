@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`ff2fc4f` · main 上测试：51 个测试文件、1324 个测试全部通过 · 更新日期：2026-10-17（UTC+8）
+> 上次更新时 main：`e5c17b5` · main 上测试：51 个测试文件、1334 个测试全部通过 · 更新日期：2026-10-17（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -117,7 +117,8 @@ flowchart BT
 | T-060 | 模块 11 端到端回归：改用模块 3 的 `CREDENTIAL_CASES`，应拒的用例把带凭据文本放进上报详情和群消息，断言导出的诊断包里任何文件都找不到密文、事件确实在包里；应放行的用例详情里不出现 `[REDACTED:url_credentials]`；清单非空；40 位十六进制用户名判为 `url_credentials`；5 种 10 万字符详情的导出各在 500ms 内 | 11 | 界面与诊断开发 | 已合入 | #64 | `4c739e8` |
 | T-062 | 模块 12：高风险 PR 放行和拒绝的界面与 IPC（接 pendingHighRisk / decideHighRisk，stale_pr 时提示「PR 已更新，请重新查看」）；警告列表最多显示约 50 条，其余显示 +N；detail 截断，按单号加警告码去重；requirement_truncated / pr_close_failed 配中文文案；诊断导出补按需求、按时间段两种范围的拒绝用例和 include_full_repo，耗时上限放宽到 2s | 12 | 界面与诊断开发 | 未开始 | — | — |
 | T-064 | 模块 9：定时 sync() 加限流退避，用户在 GitHub 上手动合入或关闭的 PR 能同步回来 | 9 | 编排层开发 | 未开始 | — | — |
-| T-065 | 模块 6 / types：DiffFile 加可选 old_path，6 用 git diff -M 时填上旧路径；模块 8 `isHighRiskDiffFile` 新旧路径都检查，041c 的改名兜底（renamed 一律当高风险）收窄成只看依赖文件（没有 old_path 的改名仍算）；依赖文件名不区分大小写（仍按整个文件名匹配）；模块 10 高风险证据的命中文件改成 `{ path, old_path? }` | 6、8、10 | 执行层开发 | 待评审 | — | — |
+| T-065 | 模块 6 / types：DiffFile 加可选 old_path，6 用 git diff -M 时填上旧路径；模块 8 `isHighRiskDiffFile` 新旧路径都检查，041c 的改名兜底（renamed 一律当高风险）收窄成只看依赖文件（没有 old_path 的改名仍算）；依赖文件名不区分大小写（仍按整个文件名匹配）；模块 10 高风险证据的命中文件改成 `{ path, old_path? }` | 6、8、10 | 执行层开发 | 已合入 | #67 | `e5c17b5` |
+| T-066 | 模块 6：sync 中途出错也带出已收集变化；close PATCH 失败时 GET 远程状态（已合入不记 closed）；merge 加可选 expected_head；checks 翻页并读 commit status；模块 7 发 review_backlog/supervisor_backlog 时 requirement_id、ticket_id 写 null，trace 新开 | 6、7 | 执行层开发 | 未开始 | — | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
