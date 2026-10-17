@@ -95,7 +95,7 @@ flowchart BT
 | T-041a | 模块 10 组装根 `@bakacoding/app`（8 / 9 / 10 共用一条总线）、重启接管 `takeOver`（派单沿用已开的 PR；已在合并队列的单经模块 9 新增的 `adopt` 接回；`fields_invalid` 的单不接回、只发一次警告） | 10、9 | 编排层开发 | 已合入 | #62 | `694bddb` |
 | T-041b | 模块 10 上报处理和重拆（已重拆次数 ≥ 上限（默认 2）时不再重拆，`budget_exceeded` 直接交用户；重拆前先关旧 PR、失败重试；需求原文入库；重启补跑上报处理、下游挂起；含模块 9 `replaceDependency`、`adopt` 写状态失败回滚，组合根恢复 `extendScope` 扩出的范围；写入范围首尾空白条目报错） | 10、9 | 编排层开发 | 已合入 | #65 | `30d3248` |
 | T-041c | 模块 10 高风险 PR 裁决（含模块 9 高风险闸门，组合根固定打开）：用户放行 / 拒绝（`decideHighRisk`，按 pr_id 绑定，`stale_pr` 等带码错误），拒绝经 041b 的 `closeTicketPr` 关 PR（关失败记 `unconfirmed`、重试）并发 `escalated(high_risk_rejected)`、不重拆；冲突复投换新 PR 重新扣；`pendingHighRisk()` 带理由、命中文件、链接；8 评审前的 diff 绑定 head、交出前 head 变了重判；依赖文件一律按文件名匹配；重启接管按 diff 补判高风险（diff 出错按高风险）、重新扣住并通知用户；反压暂停时通知写明其中等裁决的高风险 PR 数；含模块 8 导出 `isDependencyFile` / `isHighRiskDiffFile`（删除的依赖文件按路径算、改名一律算）、桌面端 `high_risk_rejected` 文案 | 10、9、8、12 | 编排层开发 | 已合入 | #66 | `ff2fc4f` |
-| T-042 | 模块 10 集成分支审查与合入 main、主管待办指标 | 10 | 编排层开发 | 未开始 | — | — |
+| T-042 | 模块 10：集成分支审查 / 合入 main、主管待办指标（项目级 backlog 事件） | 10、组合根、types | 编排层开发 | 开发中 | — | — |
 | T-043 | 不可信文本包装与转义：评审池的需求单 / 摘要 / 架构约束 / diff 与编码池 feedback 统一包进带 nonce 的 `untrusted` 区块；转义前做 NFKC、忽略零宽字符和软连字符；共用函数放 `@bakacoding/types`；nonce 不进编码池公共前缀 | 5、7 | 执行层开发 | 已合入 | #35 | `876cac0` |
 | T-044 | 模块 5/7 把 `signal` 透传给模型调用（`runTicket` 加可选 `signal`，调模型前、工具调用前检查取消）；编码池工具轮把上一轮的 `reasoning`（含 `signature`）原样放进 assistant 消息回传 | 5、7 | 执行层开发 | 已合入 | #43 | `d646d20` |
 | T-045 | 模块 7 `storageRoundSource` 改用 `listPrRounds(ticket_id)`；模块 5 `runTicket` 结束时释放本单权限清单、加可选 `scope_requests` 透传给 `createTools` | 5、7 | 执行层开发 | 已合入 | #46 | `bbef27a` |
@@ -170,6 +170,11 @@ flowchart BT
 - 模块 9（T-064，Q-7 / N6）：独占区域对依赖文件走 8 的 `isDependencyFile`；T-065 合入前 `Package.json` 仍匹配不上（8 区分大小写）；合入后不区分大小写自动生效。在不区分大小写的文件系统上，非依赖文件只有大小写不同时仍可能被并行写。
 - 模块 6（B1 / B4，归 T-066 / 执行层）：sync 中途出错会吞掉已写进库的变化（9 对账兜住）；close 碰上远程已合入可能误标 closed。
 - 模块 10（T-064，Q-8）：关 PR 的重试仍然只在进程内。
+
+- 模块 10 / 6（T-042 / C1）：合入 main 前只重取 head 缩小窗口；6 的 `merge` 加 `expected_head` 归 T-066，未落地前仍有竞态。
+- 模块 10（T-042，Q-5）：高风险待裁决同时计入 9 的 `high_risk_held` 与主管待办，可能双计触发反压（接受）。
+- 模块 10（T-042）：`INTEGRATION_DIFF_MAX_CODEPOINTS` = 200000，没有实测依据。
+- 模块 7（T-042 / T-066）：`review_backlog` 类型已允许 `requirement_id` 为 null，7 仍带本单 ctx 发；改发 null 归 T-066。
 
 ### 不对应需求单的 PR
 
