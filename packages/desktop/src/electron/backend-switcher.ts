@@ -7,7 +7,20 @@ import { errorDetail, sanitizeSyncErrorMessage, unavailableSyncState } from "./s
 export type SwitchResult =
   | { ok: true; project: Project }
   /** switched：新仓库已在运行（只是导入失败），调用方据此记下路径 */
-  | { ok: false; reason: string; switched?: true };
+  | { ok: false; reason: string; switched?: true }
+  /**
+   * UI-03b：新仓库还没准备好（不是 Git 仓库 / 没有提交 / 没有 main），新仓库的只读后端已装上（来源 last_import），
+   * 界面进项目准备页；准备好后第一次重载进 live 时补调 importProject。
+   */
+  | { ok: false; reason: string; switched: true; needsPrep: true };
+
+/** 只读后端的原因能不能在项目准备页修（与渲染进程 repoFixRoute 同一套码） */
+export function needsRepoPrep(st: BackendStatus): boolean {
+  if (st.mode !== "readonly" || !st.error) return false;
+  const { name, code } = st.error;
+  if (code === "not_git") return true;
+  return name === "RepoNotReadyError" && (code === "no_commits" || code === "no_main");
+}
 
 /**
  * `backend:reload` / `backend:reconnect` 的结果（T-093）。
@@ -82,6 +95,8 @@ export class BackendSwitcher implements BackendHandle {
   private offs: Array<() => void> = [];
   private rendererReady = false;
   private switching = false;
+  /** UI-03b：导入时还没准备好的仓库路径；准备好后第一次重载进 live 时补调 importProject */
+  private pendingImport: string | null = null;
   private readonly swapListeners: Array<() => void> = [];
   /** 正在停起的那次重载（合并并发请求） */
   private reloading: Promise<ReloadResult> | null = null;
@@ -195,6 +210,7 @@ export class BackendSwitcher implements BackendHandle {
     const clean = (m: string) => sanitizeSwitchReason(m, repo, oldRepo, this.env);
     const wasReady = this.rendererReady;
     this.rendererReady = false;
+    this.pendingImport = null;
     try {
       await this.teardown();
       const next = await this.tryStart(repo);
@@ -204,6 +220,12 @@ export class BackendSwitcher implements BackendHandle {
       }
       if (next.handle && next.handle.status().mode === "live") {
         this.install(next.handle);
+      } else if (next.handle && needsRepoPrep(next.handle.status())) {
+        // UI-03b：没准备好的新仓库不回滚，装上它的只读后端，界面进准备页
+        this.install(next.handle);
+        this.pendingImport = next.handle.repoRoot();
+        this.restoreReady(wasReady);
+        return { ok: false, switched: true, needsPrep: true, reason: clean(next.why) };
       } else {
         await next.handle?.stop();
         const back = await this.tryStart(oldRepo, oldSource ?? "cwd");
@@ -354,6 +376,7 @@ export class BackendSwitcher implements BackendHandle {
       if (next.handle && next.handle.status().mode === "live") {
         this.install(next.handle);
         this.restoreReady(wasReady);
+        await this.finishPendingImport();
         return { state: "reloaded" };
       }
       await this.discard(next.handle);
@@ -366,6 +389,18 @@ export class BackendSwitcher implements BackendHandle {
       };
     } finally {
       this.restarting = false;
+    }
+  }
+
+  /** UI-03b：导入时没准备好的仓库，准备好后第一次进 live 补调 importProject；失败只写一条不带路径的 warn */
+  private async finishPendingImport(): Promise<void> {
+    const repo = this.pendingImport;
+    if (repo === null || repo !== this.current.repoRoot()) return;
+    this.pendingImport = null;
+    try {
+      await this.current.importCurrentRepo();
+    } catch (e) {
+      console.warn(`[desktop] 准备好后导入项目失败（${e instanceof Error ? e.name : "unknown"}）`);
     }
   }
 
@@ -440,6 +475,9 @@ export class BackendSwitcher implements BackendHandle {
   exportDiagnostics(target: string, now?: Date) {
     return this.current.exportDiagnostics(target, now);
   }
+  testConnection(target: Parameters<BackendHandle["testConnection"]>[0]) {
+    return this.current.testConnection(target);
+  }
   /** 退出：先清排队，再等进行中的重载 / 切换结束（它们见 stopped 不装新后端），最后拆当前后端 */
   async stop() {
     this.stopped = true;
@@ -481,6 +519,7 @@ export function readonlyBackend(
     chatInFlight: () => false,
     importCurrentRepo: unavailable,
     exportDiagnostics: unavailable,
+    testConnection: async () => ({ ok: false, reason: "unavailable" }),
     stop: async () => {},
   };
 }

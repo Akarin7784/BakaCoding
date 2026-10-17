@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`5906e4c` · main 上测试：112 个测试文件、2058 个测试全部通过 · 更新日期：2026-10-18（UTC+8）
+> 上次更新时 main：`d019cff` · main 上测试：114 个测试文件、2099 个测试全部通过 · 更新日期：2026-10-18（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -162,12 +162,13 @@ flowchart BT
 | T-107 | 模块 3：给 `powershellUserEnv()` 补测试（T-088 #126 评审跟进）：挪到内部文件 `secrets-powershell.ts`；mock `spawn` 断言启动参数和脚本文本里没有密钥值、值只在 stdin 里；名字拼进脚本前按白名单再核一次，不在白名单直接拒、不启动 PowerShell；Windows 默认路径（不注入 `userEnv`）保存再清除全程同样断言；接口不变，modules.md §3 同步。UI-03b 之前合入。main `7419998`，测试 105 个文件 / 1912 个 | 3 | 基础层开发 | 已合入 | #128 | `7419998` |
 | T-089 | 模块 1：`testConnection({ provider, model? })`（界面 `provider:test`，IPC 在 UI-03b）：只发一个极小请求（`max_tokens: 1`、关思考、不重试），经 `reserve` 预占并计入台账，记在主管名下（`role: "supervisor"`、`requirement_id: "provider_test"`、`ticket_id: null`，不加新角色）；预算不够返回 `budget_exhausted`、不发请求，不报成连接失败；其余失败按 `no_secret` / `auth_failed` / `quota_exhausted` / `rate_limited` / `network` / `config_error` / `http_error` 返回，不抛错；modules.md §1 同步。main `529d67c`，测试 109 个文件 / 1992 个 | 1 | 基础层开发 | 已合入 | #132 | `529d67c` |
 | T-108 | 模块 4：`initRepo` / `initialCommit` 的 `identity` 改成 `{ name?, email? }`，至少给一项，只写给了的那几项、只写本仓库 `.git/config`，报错仍是固定文案；并入 N2：`initialCommit` 先校验文件和身份再写 `.git/config`，拒绝时不改配置，补回滚测试；modules.md §4 同步。main `0374bb3`，测试 109 个文件 / 2003 个 | 4 | 基础层开发 | 已合入 | #133 | `0374bb3` |
-| UI-03b | 模块 12 模型配置：密钥项、向导、「测试连接」；`secret:*` 和 `provider:test` IPC（UI-07 复用）；依赖 T-088（#126）、T-089 | 12 | 界面与诊断开发 | 等 T-089、T-108 | — | — |
+| UI-03b | 模块 12 模型配置：密钥项、向导、「测试连接」；`secret:*` 和 `provider:test` IPC（UI-07 复用）；依赖 T-088（#126）、T-089（#132）、T-108（#133），都已合入。main `d019cff`，测试 114 个文件 / 2099 个 | 12 | 界面与诊断开发 | 已合入 | #143 | `d019cff` |
 | T-106 | 模块 12 退出时显示「正在退出」（T-105 跟进）：主进程开始退出收尾时经新 IPC `app:quitting`（主进程 → 渲染进程，不带内容）通知一次，窗口已销毁就跳过、不影响退出；preload `onQuitting`；渲染进程在内容区标题栏下显示中性横幅 + 转圈，固定文案「正在退出…」，不是遮罩；Windows / Linux 点关闭时窗口先不关，等收尾结束统一关，重复点关闭不重复发起（`createWindowCloseHandler`）；`backend-switcher.ts` 来源不明的占位后端重连按 cwd 解析补注释和测试（#130 评审小项）；modules.md §12 同步。main `c691bf2`，测试 112 个文件 / 2038 个 | 12 | 界面与诊断开发 | 已合入 | #137 | `c691bf2` |
 | T-110 | 模块 6：远程 git 操作（`fetch` / `push` / `ls-remote`）加超时并接收 signal（T-102a #135 评审跟进，remote git 当时未改）；在 T-102b 之后 | 6 | 执行层开发 | 待开发 | — | — |
 | T-111 | 模块 1：`testConnection` 补测试（T-089 评审跟进）：请求途中取消抛 AbortError、记一条 `ABORTED` 台账并释放预占；401 报错带密钥时台账事件里没有密钥；429 记入全局退避状态；modules.md §1 写明测试连接遇到 429 会触发全局退避。只加测试和文档，不改行为。main `6b11d11`，测试 112 个文件 / 2057 个；跟进 #141（`5906e4c`）：modules.md §1 改为 429 只记入共享退避状态、不阻塞后续请求，补「退避期内再测照常发出」测试，main `5906e4c`，测试 112 个文件 / 2058 个 | 1 | 基础层开发 | 已合入 | #139、#141 | `6b11d11`、`5906e4c` |
 | T-112 | 模块 9：9 调 6 的 `merge` / `sync` / `close` ×2 / `diff` ×2 都带 `stop()` 的 signal（T-102b #136 评审跟进），被中止时原样抛 `signal.reason`，不上报、不改状态；sync 中止前已处理的变化照常应用；T-102b 用例名「C3」「C4」改成描述性名字；modules.md §9「收尾要多久」去掉 150 秒 / 记录数 × 30 秒，复核桌面退出 35 秒不用改 | 9 | 编排层开发 | 待评审 #144 | #144 | — |
 | T-109 | 界面：`App.status.test` 重新连接失败用例偶发超时（flaky），定位并修稳；preview.1 之后处理（UI-03a #130 评审跟进） | 12 | 界面与诊断开发 | 待开发（preview.1 之后） | — | — |
+| T-110 | 模块 6：远程 git 超时（`REMOTE_GIT_TIMEOUT_MS` 120s）+ git 接 signal（远程 / 本地只读立刻 kill，写命令只在执行前检查，只读加 `--no-optional-locks`）；`GitTimeoutError`；close 回查不吞取消；收回 `mergeCommitContaining` 公开导出 | 6 | 执行层开发 | 待评审 #145 | — | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 

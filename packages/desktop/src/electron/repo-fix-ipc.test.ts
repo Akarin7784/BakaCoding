@@ -10,6 +10,7 @@ import { serveRepoFix, type IpcMainLike } from "./ipc.js";
 import {
   CWD_REPO_REASON,
   isSafeRelPath,
+  parseIdentity,
   parseInitialCommit,
   repoFixFailure,
   repoFolderName,
@@ -203,8 +204,23 @@ describe("repo:list-initial-files / repo:initial-commit（UI-03a）", () => {
       });
     }
     expect(
-      await invoke(IPC_CHANNELS.repoInitialCommit, { empty: true, identity: { name: "x" } }),
+      await invoke(IPC_CHANNELS.repoInitialCommit, { empty: true, identity: {} }),
     ).toMatchObject({ ok: false, code: "invalid_identity" });
+  });
+
+  it("只缺一项身份（UI-03b）：只给缺的那一项就能提交，另一项沿用本仓库配置", async () => {
+    const root = freshRepo();
+    git(root, "config", "user.email", "kept@t");
+    const { invoke } = setup(root);
+    const c = await invoke<{ ok: true; check: { identity: unknown } }>(IPC_CHANNELS.repoCheck);
+    expect(c.check.identity).toEqual({ name: false, email: true });
+    const r = await invoke<DesktopRepoFixResult>(IPC_CHANNELS.repoInitialCommit, {
+      empty: true,
+      identity: { name: "Only Name" },
+    });
+    expect(r.ok).toBe(true);
+    expect(git(root, "log", "-1", "--format=%an <%ae>")).toBe("Only Name <kept@t>");
+    expect(git(root, "config", "--local", "user.name")).toBe("Only Name");
   });
 
   it("空提交可行；已有提交再提交 has_commits", async () => {
@@ -282,7 +298,17 @@ describe("主进程参数校验先于 4（UI-03a）", () => {
       },
     );
     const call = (c: string, a: unknown) => handlers.get(c)!(FAKE_EVENT, a);
-    for (const bad of [{ name: 1, email: "a@b" }, { name: "a" }, "x", ["a", "b"]]) {
+    for (const bad of [
+      { name: 1, email: "a@b" },
+      { name: "a", email: 2 },
+      {},
+      { other: "a" },
+      { name: "x".repeat(201) },
+      { email: "x".repeat(321) },
+      "x",
+      ["a", "b"],
+      null,
+    ]) {
       expect(await call(IPC_CHANNELS.repoInit, { identity: bad })).toMatchObject({
         code: "invalid_identity",
       });
@@ -296,6 +322,40 @@ describe("主进程参数校验先于 4（UI-03a）", () => {
     expect(initRepo).toHaveBeenCalledWith("/r", { identity: ID });
     await call(IPC_CHANNELS.repoInitialCommit, { files: ["a"], identity: { ...ID, x: 1 } });
     expect(initialCommitFn).toHaveBeenCalledWith("/r", { files: ["a"], identity: ID });
+  });
+
+  it("parseIdentity 放宽（UI-03b）：只给 name 或只给 email 都交给 4，两项都没有才 invalid_identity", async () => {
+    const handlers = new Map<string, (...a: unknown[]) => unknown>();
+    const initRepo = vi.fn(async () => {});
+    const initialCommitFn = vi.fn(async () => ({ commit: "c" }));
+    serveRepoFix(
+      { handle: (c, l) => void handlers.set(c, l), removeHandler: () => {} },
+      {
+        repoRoot: () => "/r",
+        repoSource: () => "arg",
+        reconnect: async () => ({ state: "reloaded" }),
+        fns: { initRepo, initialCommit: initialCommitFn },
+      },
+    );
+    const call = (c: string, a: unknown) => handlers.get(c)!(FAKE_EVENT, a);
+    expect(await call(IPC_CHANNELS.repoInit, { identity: { name: "n" } })).toMatchObject({
+      ok: true,
+    });
+    expect(initRepo).toHaveBeenLastCalledWith("/r", { identity: { name: "n" } });
+    expect(await call(IPC_CHANNELS.repoInit, { identity: { email: "e@x" } })).toMatchObject({
+      ok: true,
+    });
+    expect(initRepo).toHaveBeenLastCalledWith("/r", { identity: { email: "e@x" } });
+    await call(IPC_CHANNELS.repoInitialCommit, { empty: true, identity: { email: "e@x", z: 1 } });
+    expect(initialCommitFn).toHaveBeenLastCalledWith("/r", {
+      empty: true,
+      identity: { email: "e@x" },
+    });
+    expect(parseIdentity({ name: "n" })).toEqual({ name: "n" });
+    expect(parseIdentity({ email: "e" })).toEqual({ email: "e" });
+    expect(parseIdentity({})).toBe("invalid");
+    expect(parseIdentity({ name: undefined, email: undefined })).toBe("invalid");
+    expect(parseIdentity(undefined)).toBeUndefined();
   });
 
   it("files 里有 `..` / 绝对路径时根本不调 4", async () => {

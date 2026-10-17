@@ -1,8 +1,20 @@
 // T-072：只读设置页——当前仓库、环境变量是否已设（只显示名字）、本地 / GitHub 模式。
-import { ArrowLeft } from "lucide-react";
-import type { DesktopSettings } from "../../shared/api";
+// UI-03b：主进程有 secret:* 时密钥那几行换成可保存 / 清除的密钥项，并能打开模型设置向导（测试连接）。
+import { useState } from "react";
+import { ArrowLeft, Wand2 } from "lucide-react";
+import {
+  DESKTOP_SECRET_NAMES,
+  type DesktopSecretName,
+  type DesktopSettings,
+} from "../../shared/api";
+import { WIZARD_COPY } from "../lib/secretItem";
+import { ModelSetupWizard, type WizardApi } from "./ModelSetupWizard";
+import { SecretItem } from "./SecretItem";
 import { Button } from "./ui/button";
 import { ThemeSwitcher } from "./ThemeSwitcher";
+
+const isEditableSecret = (n: string): n is DesktopSecretName =>
+  (DESKTOP_SECRET_NAMES as readonly string[]).includes(n);
 
 export const SETTINGS_MODE_LABEL: Record<DesktopSettings["mode"], string> = {
   github: "GitHub 模式",
@@ -15,13 +27,18 @@ export function SettingsPanel({
   error,
   onBack,
   embedded = false,
+  api,
 }: {
   settings: DesktopSettings | null;
   error?: string | null;
   onBack: () => void;
   /** UI-02：放在设置弹层里时不画「返回」，关闭由弹层负责 */
   embedded?: boolean;
+  /** UI-03b：密钥项和测试连接；没有（旧版 preload / 测试）时只读显示 */
+  api?: WizardApi;
 }) {
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const editable = !!api?.secretStatus;
   const secrets = settings?.env.filter((e) => !e.name.startsWith("BAKACODING_")) ?? [];
   const others = settings?.env.filter((e) => e.name.startsWith("BAKACODING_")) ?? [];
   const row = (e: { name: string; set: boolean }) => (
@@ -70,9 +87,32 @@ export function SettingsPanel({
             </div>
             <div>
               <h3 className="mb-1 text-xs text-muted-foreground">
-                密钥（环境变量，只显示是否已设）
+                {editable ? "密钥" : "密钥（环境变量，只显示是否已设）"}
               </h3>
-              <ul className="space-y-1">{secrets.map(row)}</ul>
+              {editable && api ? (
+                <div className="flex flex-col gap-4">
+                  {secrets
+                    .filter((e) => isEditableSecret(e.name))
+                    .map((e) => (
+                      <SecretItem key={e.name} api={api} name={e.name as DesktopSecretName} />
+                    ))}
+                  {secrets.some((e) => !isEditableSecret(e.name)) && (
+                    <ul className="space-y-1">
+                      {secrets.filter((e) => !isEditableSecret(e.name)).map(row)}
+                    </ul>
+                  )}
+                  {api.testProvider && (
+                    <div>
+                      <Button variant="secondary" size="sm" onClick={() => setWizardOpen(true)}>
+                        <Wand2 strokeWidth={1.5} />
+                        {WIZARD_COPY.open}
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <ul className="space-y-1">{secrets.map(row)}</ul>
+              )}
             </div>
             <div>
               <h3 className="mb-1 text-xs text-muted-foreground">路径（环境变量）</h3>
@@ -84,6 +124,9 @@ export function SettingsPanel({
           </>
         )}
       </div>
+      {api && wizardOpen && (
+        <ModelSetupWizard open={wizardOpen} onOpenChange={setWizardOpen} api={api} />
+      )}
     </section>
   );
 }

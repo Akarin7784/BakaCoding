@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme } from "electron";
+import { SECRET_MARKER_FILE } from "@bakacoding/config-budget";
 import { lastRepoForStart, resolveRepoDbPath, startBackend, type RepoSource } from "./backend.js";
 import {
   notifyAppQuitting,
@@ -12,6 +13,7 @@ import {
   serveProjectSettings,
   serveReader,
   serveRepoFix,
+  serveSecretProvider,
   serveSupervisorChat,
   serveSyncState,
   serveWindowTheme,
@@ -180,6 +182,11 @@ if (!gotLock) {
       repoSource: () => backend.status().repoSource,
       reconnect: () => backend.reconnect(),
     });
+    // UI-03b：密钥项与测试连接；标记文件放 userData（不在仓库里），值只交给 3
+    const stopSecretProvider = serveSecretProvider(ipcMain, {
+      secretDeps: { markerPath: path.join(userData, SECRET_MARKER_FILE) },
+      backend,
+    });
 
     // T-105：before-quit 里拦下退出，等 backend.stop()（9 收尾后才关库、放写锁）结束再退；
     // 最多等 QUIT_STOP_TIMEOUT_MS，超时只写一条不带路径的 warn。我们自己再发起的退出直接放行。
@@ -199,6 +206,7 @@ if (!gotLock) {
         nativeTheme.off("updated", onNativeTheme);
         stopBackendReload();
         stopRepoFix();
+        stopSecretProvider();
         reader.close();
       },
       warn: (m) => console.warn(`[desktop] ${m}`),
