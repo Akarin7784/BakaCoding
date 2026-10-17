@@ -99,6 +99,12 @@ describe("prStore 凭据检查（T-058）", () => {
     ["嵌在文字里的查询参数 token", "回调 https://example.com/x?token=abc 已收到"],
     ["https:/\\ 反斜杠写法", "https:/\\user:tok@h/r"],
     ["https: 不带斜杠", "https:user:tok@h/r"],
+    // #58 评审：限长正则会漏的写法
+    ["https:/\\ + 超长用户名", `https:/\\${"u".repeat(300)}:tok@h/r`],
+    ["https:/\\eva: + 超长密码", `https:/\\eva:${"p".repeat(300)}@h/r`],
+    ["https: + 超长用户名", `https:${"u".repeat(300)}:tok@h/r`],
+    ["https:eva: + 超长密码", `https:eva:${"p".repeat(300)}@h/r`],
+    ["超过 8 个斜杠", "https:/\\/\\/\\/\\/\\eva:tok@h/r"],
   ])("拒写：%s", async (_n, url) => {
     const store = open().prStore<Rec>();
     await expect(store.put({ ...base, remote: { number: 1, url } })).rejects.toThrow(
@@ -128,6 +134,9 @@ describe("prStore 凭据检查（T-058）", () => {
     ["https://u:u:… 末尾带 @", () => `https://${"u:".repeat(50_000)}@`],
     ["反复的 https://", () => "https://".repeat(12_500)],
     ["反复的 a@", () => "a@".repeat(50_000)],
+    ["a:/a:/… 末尾带 @", () => `${"a:/".repeat(34_000)}@`],
+    ["a: 后接 10 万个斜杠再 @", () => `a:${"/\\".repeat(50_000)}@`],
+    ["a:a 后接长串无冒号用户名再 @", () => `${"a:a".repeat(1_000)}${"u".repeat(100_000)}@`],
   ])("10 万字符输入不出现平方级耗时：%s", async (_n, build) => {
     const store = open().prStore<Rec>();
     const url = build();
