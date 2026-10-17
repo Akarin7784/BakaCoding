@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { resolve } from "node:path";
 import { EscalatedSchema, type Diff, type EventOf, type PrStatus } from "@bakacoding/types";
 import { git, GitError } from "./git.js";
 import {
@@ -15,7 +16,7 @@ import {
   type PrProvider,
   type SyncChange,
 } from "./provider.js";
-import { assertPrRecord, type PrRecord, type PrStore } from "./store.js";
+import { assertPrRecord, type PrRecord, type PrStore, type TicketPrRecord } from "./store.js";
 
 export type EscalatedEvent = EventOf<"escalated">;
 /** 发布入参：seq 由总线分配（与模块 0 的 PublishInput 兼容）。 */
@@ -197,8 +198,15 @@ export class GithubPrProvider implements PrProvider {
     return this.local.commitPatch(ticket_id, worktree_path, patch);
   }
 
-  commitWorktree(ticket_id: string, worktree_path: string): Promise<string> {
-    return this.local.commitWorktree(ticket_id, worktree_path);
+  /**
+   * 本地提交后只推本单分支（快进，不强推），再开远程 PR（已有就复用）；复投时推新提交，PR 自动更新。
+   * push 或开 PR 失败：本地提交保留，抛错；下次 commitWorktree / merge / checks 时补做。
+   */
+  async commitWorktree(ticket_id: string, worktree_path: string): Promise<string> {
+    const sha = await this.local.commitWorktree(ticket_id, worktree_path);
+    const rec = await this.openTicketRecord(ticket_id, worktree_path);
+    if (rec) await this.publishTicket(rec);
+    return sha;
   }
 
   /**
@@ -233,11 +241,13 @@ export class GithubPrProvider implements PrProvider {
     return this.local.diff(pr_id);
   }
 
+  /**
+   * 只建本地记录并确保远程有集成分支；不推工作分支、不开远程 PR（此时分支还没有提交，
+   * GitHub 会回 422 No commits between）。远程 PR 在第一次 commitWorktree 之后才有。
+   */
   async open(ticket_id: string, worktree_path: string, branch: string): Promise<string> {
     const pr_id = await this.local.open(ticket_id, worktree_path, branch);
     await this.ensureRemoteIntegration();
-    await this.push(worktree_path, branch);
-    await this.attachPull(pr_id, branch, INTEGRATION_BRANCH, ticket_id);
     return pr_id;
   }
 
@@ -248,8 +258,10 @@ export class GithubPrProvider implements PrProvider {
     const pr_id = await this.local.openIntegration(branch, target);
     const rec = await this.mustGet(pr_id);
     if (rec.remote) return pr_id;
+    // 集成分支要先在远程存在（单张 PR 以它为 base）；比 target 没有新提交时先不开 PR，merge 时补开
     await this.push(this.repo, branch);
-    await this.attachPull(pr_id, branch, target, `集成分支 ${branch} → ${target}`);
+    if (await this.hasCommits(this.repo, branch, target))
+      await this.attachPull(pr_id, branch, target, `集成分支 ${branch} → ${target}`);
     return pr_id;
   }
 
@@ -258,7 +270,10 @@ export class GithubPrProvider implements PrProvider {
     if (rec.status === "merged" || rec.status === "closed")
       throw new Error(`PR 已${rec.status === "merged" ? "合并" : "关闭"}：${pr_id}`);
     if (!rec.remote) rec = await this.backfillRemote(rec);
-    if (!rec.remote) throw new Error(`PR 没有对应的 GitHub PR：${pr_id}`);
+    if (!rec.remote)
+      throw new Error(
+        `PR 还没有对应的 GitHub PR（分支 ${rec.branch} 比 base 没有新提交）：${pr_id}`,
+      );
     const base = rec.kind === "ticket" ? INTEGRATION_BRANCH : rec.base_branch;
     if (target !== base)
       throw new Error(`GitHub PR #${rec.remote.number} 的 base 是 ${base}，不能合入 ${target}`);
@@ -319,6 +334,14 @@ export class GithubPrProvider implements PrProvider {
     const rec = await this.mustGet(pr_id);
     const live = rec.status === "open" || rec.status === "conflict";
     const sha = live ? await revParse(cwdOf(rec), rec.branch) : rec.head_sha;
+    // 评审读 CI 要用已推上去的 head：本单分支的本地 HEAD 还没推（上次 push / 开 PR 失败）就先补做，
+    // 补做失败直接抛错，不拿远程没有的 sha 去查（查到空结果会被当成没配 CI）
+    if (
+      live &&
+      rec.kind === "ticket" &&
+      (!rec.remote || (await this.remoteHead(rec.branch)) !== sha)
+    )
+      await this.publishTicket(rec);
     const op = "GET /commits/{sha}/check-runs";
     const res = await this.request(op, rec, "GET", `/commits/${sha}/check-runs?per_page=100`);
     if (!res.ok) throw await this.apiError(op, res);
@@ -374,24 +397,68 @@ export class GithubPrProvider implements PrProvider {
   // ---- 内部 ----
 
   /**
-   * open / openIntegration 中途失败（push 或开 PR 出错）留下的无 remote 记录：按 open 的逻辑补做
-   * push 和开 PR（先查同名 open PR，有就复用），写回 remote。
+   * 没有 remote 的记录（还没提交过，或 commitWorktree / openIntegration 的 push、开 PR 失败）：补做
+   * push 和开 PR（先查同名 open PR，有就复用），写回 remote。分支比 base 没有新提交时什么都不做
+   * （不推工作分支、不开 PR，避免 422），返回的记录仍没有 remote。
    */
   private async backfillRemote(rec: PrRecord): Promise<PrRecord> {
     if (rec.kind === "ticket") {
-      await this.ensureRemoteIntegration();
-      await this.push(rec.worktree_path, rec.branch);
-      await this.attachPull(rec.pr_id, rec.branch, INTEGRATION_BRANCH, rec.ticket_id);
+      await this.publishTicket(rec);
     } else {
       await this.push(rec.repo_path, rec.branch);
-      await this.attachPull(
-        rec.pr_id,
-        rec.branch,
-        rec.base_branch,
-        `集成分支 ${rec.branch} → ${rec.base_branch}`,
-      );
+      if (await this.hasCommits(rec.repo_path, rec.branch, rec.base_branch))
+        await this.attachPull(
+          rec.pr_id,
+          rec.branch,
+          rec.base_branch,
+          `集成分支 ${rec.branch} → ${rec.base_branch}`,
+        );
     }
     return this.mustGet(rec.pr_id);
+  }
+
+  /**
+   * 单张 PR 上远程：确保集成分支在远程；分支有新提交才推本单分支（只推 refs/heads/<branch>，快进，
+   * 远程已分叉时上报并抛 GithubBranchDivergedError，不强推），没有 remote 时开 PR（有同名 PR 就复用）。
+   */
+  private async publishTicket(rec: TicketPrRecord): Promise<void> {
+    await this.ensureRemoteIntegration();
+    if (!(await this.hasCommits(rec.worktree_path, rec.branch, INTEGRATION_BRANCH))) return;
+    await this.pushTicket(rec, rec.worktree_path);
+    if (!rec.remote)
+      await this.attachPull(rec.pr_id, rec.branch, INTEGRATION_BRANCH, rec.ticket_id);
+  }
+
+  /** commitWorktree 刚提交的那条记录（与本地实现同样的匹配规则）。 */
+  private async openTicketRecord(
+    ticket_id: string,
+    worktree_path: string,
+  ): Promise<TicketPrRecord | undefined> {
+    const wt = resolve(worktree_path);
+    return (await this.store.list())
+      .map(assertPrRecord)
+      .filter(
+        (r): r is TicketPrRecord =>
+          r.kind === "ticket" &&
+          r.ticket_id === ticket_id &&
+          resolve(r.worktree_path) === wt &&
+          (r.status === "open" || r.status === "conflict"),
+      )
+      .at(-1);
+  }
+
+  /** branch 上有没有 base 没有的提交（没有时 GitHub 开 PR 会回 422 No commits between）。 */
+  private async hasCommits(cwd: string, branch: string, base: string): Promise<boolean> {
+    const out = await git(cwd, ["rev-list", "--count", `refs/heads/${base}..refs/heads/${branch}`]);
+    return Number(out.stdout.trim()) > 0;
+  }
+
+  /** 远程上本单分支的 sha；远程没有这个分支返回 undefined。 */
+  private async remoteHead(branch: string): Promise<string | undefined> {
+    const out = (
+      await git(this.repo, ["ls-remote", this.remote, `refs/heads/${branch}`], { env: GIT_ENV })
+    ).stdout;
+    return out.trim().split(/\s+/)[0] || undefined;
   }
 
   private async attachPull(pr_id: string, head: string, base: string, title: string) {
@@ -429,8 +496,13 @@ export class GithubPrProvider implements PrProvider {
     await this.push(this.repo, INTEGRATION_BRANCH);
   }
 
-  /** 合并前推本单分支；远程已分叉（非快进被拒）时上报并抛错，绝不强推。 */
+  /** 合并前推本单分支（兜底，正常已在 commitWorktree 推过）；远程已分叉时上报并抛错，绝不强推。 */
   private async pushForMerge(rec: PrRecord, cwd: string): Promise<void> {
+    await this.pushTicket(rec, cwd);
+  }
+
+  /** 只推 refs/heads/<branch>（快进）；非快进被拒时上报并抛 GithubBranchDivergedError，绝不强推。 */
+  private async pushTicket(rec: PrRecord, cwd: string): Promise<void> {
     try {
       await this.push(cwd, rec.branch);
     } catch (err) {
@@ -440,7 +512,7 @@ export class GithubPrProvider implements PrProvider {
       ) {
         await this.escalate(
           rec,
-          `远程分支 ${rec.branch} 已分叉：合并前 push 被拒（非快进），未强推，未合并 GitHub PR #${rec.remote?.number ?? "?"}`,
+          `远程分支 ${rec.branch} 已分叉：push 被拒（非快进），未强推，未合并 GitHub PR #${rec.remote?.number ?? "?"}`,
         );
         throw new GithubBranchDivergedError(rec.branch);
       }
