@@ -6,10 +6,11 @@ import { git, GitError } from "./git.js";
 import {
   INTEGRATION_BRANCH,
   type CheckResult,
+  type SyncChange,
   type MergeResult,
   type PrProvider,
 } from "./provider.js";
-import type { PrRecord, PrStore } from "./store.js";
+import { assertPrRecord, type PrRecord, type PrStore } from "./store.js";
 
 export interface LocalPrProviderOptions {
   store: PrStore;
@@ -135,7 +136,7 @@ export class LocalPrProvider implements PrProvider {
   private async openIntegrationLocked(branch: string, target: string): Promise<string> {
     const cwd = this.repo;
     if (!cwd) throw new Error("openIntegration 需要 LocalPrProviderOptions.repo");
-    const records = await this.store.list();
+    const records = (await this.store.list()).map(assertPrRecord);
     const live = records.find(
       (r) =>
         r.kind === "integration" &&
@@ -145,12 +146,7 @@ export class LocalPrProvider implements PrProvider {
     );
     if (live) return live.pr_id;
 
-    const tgt = await this.revParse(cwd, target);
-    const ref = `refs/heads/${branch}`;
-    const exists =
-      (await git(cwd, ["show-ref", "--verify", "--quiet", ref], { allowCodes: [1] })).code === 0;
-    // 不 checkout：空旧值保证只在分支不存在时创建
-    if (!exists) await git(cwd, ["update-ref", ref, tgt, ""]);
+    const tgt = await this.ensureBranch(cwd, branch, target);
     const head = await this.revParse(cwd, branch);
     const base = (await git(cwd, ["merge-base", tgt, head])).stdout.trim();
 
@@ -308,7 +304,22 @@ export class LocalPrProvider implements PrProvider {
     return [];
   }
 
-  async sync(): Promise<void> {}
+  async sync(): Promise<SyncChange[]> {
+    return [];
+  }
+
+  /**
+   * 分支不存在时从 target 建出（update-ref，不 checkout；空旧值保证只在不存在时创建）。
+   * 返回 target 当前提交。
+   */
+  async ensureBranch(cwd: string, branch: string, target: string): Promise<string> {
+    const tgt = await this.revParse(cwd, target);
+    const ref = `refs/heads/${branch}`;
+    const exists =
+      (await git(cwd, ["show-ref", "--verify", "--quiet", ref], { allowCodes: [1] })).code === 0;
+    if (!exists) await git(cwd, ["update-ref", ref, tgt, ""]);
+    return tgt;
+  }
 
   private async findCheckout(cwd: string, ref: string): Promise<string | undefined> {
     const out = (await git(cwd, ["worktree", "list", "--porcelain"])).stdout;
@@ -323,7 +334,7 @@ export class LocalPrProvider implements PrProvider {
   private async mustGet(pr_id: string): Promise<PrRecord> {
     const r = await this.store.get(pr_id);
     if (!r) throw new PrNotFoundError(pr_id);
-    return r;
+    return assertPrRecord(r);
   }
 
   private async revParse(cwd: string, rev: string): Promise<string> {

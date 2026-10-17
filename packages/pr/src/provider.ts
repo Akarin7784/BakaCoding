@@ -1,4 +1,4 @@
-import type { Diff } from "@bakacoding/types";
+import type { Diff, PrStatus } from "@bakacoding/types";
 
 /** 默认集成分支名（v1 写死，不设配置项）。 */
 export const INTEGRATION_BRANCH = "bakacoding/integration";
@@ -7,7 +7,12 @@ export type MergeResult =
   | { merged: true; sha: string; fast_forward: boolean }
   | { merged: false; conflict: true; conflicted_files: string[] }
   /** target 在某个 worktree 里被 checkout 且有未提交改动，未合并，记录状态不变 */
-  | { merged: false; conflict: false; reason: "target_dirty"; worktree_path: string };
+  | { merged: false; conflict: false; reason: "target_dirty"; worktree_path: string }
+  /**
+   * GitHub 拒绝合并且本地无文本冲突（分支保护、必需的 check 未通过等）。记录状态不变；
+   * 6 不上报，由 9 发 escalated(github_manual)（可带 detail），且不复投。
+   */
+  | { merged: false; conflict: false; reason: "merge_blocked"; detail: string };
 
 /** CI check 结果。本地实现永远返回空数组。 */
 export interface CheckResult {
@@ -32,7 +37,15 @@ export interface PrProvider {
   /** 冲突不抛错，返回 { merged: false, conflict: true }，由模块 9 决定复投。 */
   merge(pr_id: string, target: string): Promise<MergeResult>;
   checks(pr_id: string): Promise<CheckResult[]>;
-  sync(): Promise<void>;
+  /** 把远端状态同步回本地记录，返回状态有变化的记录；本地实现永远返回 []。 */
+  sync(): Promise<SyncChange[]>;
+}
+
+/** sync() 返回的一条状态变化。 */
+export interface SyncChange {
+  pr_id: string;
+  from: PrStatus;
+  to: PrStatus;
 }
 
 export type GetSecret = (name: string) => string | undefined | Promise<string | undefined>;

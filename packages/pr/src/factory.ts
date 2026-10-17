@@ -1,3 +1,11 @@
+import {
+  GithubPrProvider,
+  parseGithubRemote,
+  type EventContextFn,
+  type FetchFn,
+  type PublishEscalated,
+} from "./github.js";
+import { git } from "./git.js";
 import { LocalPrProvider, type LocalPrProviderOptions } from "./local.js";
 import type { GetSecret, Logger, PrProvider } from "./provider.js";
 
@@ -5,26 +13,41 @@ export interface CreatePrProviderOptions extends LocalPrProviderOptions {
   getSecret: GetSecret;
   /** 默认 console */
   logger?: Logger;
+  /** 选中 GitHub 实现时必填：发 escalated(github_manual) 用 */
+  publish?: PublishEscalated;
+  /** 选中 GitHub 实现时必填：补事件公共字段（requirement_id、trace） */
+  eventContext?: EventContextFn;
+  fetch?: FetchFn;
+  apiBase?: string;
+  /** 测试用：覆盖 `git remote get-url origin` 的结果 */
+  remoteUrl?: string;
 }
 
-let githubWarned = false;
-
-/** 仅供测试：重置“每进程只警告一次”的标记。 */
-export function resetGithubWarningForTests(): void {
-  githubWarned = false;
+async function originUrl(repo: string): Promise<string | undefined> {
+  try {
+    return (await git(repo, ["remote", "get-url", "origin"])).stdout.trim() || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
- * 返回本地实现。GitHub 实现不在 T-012：有 GITHUB_TOKEN 时也用本地实现，
- * 每个进程只打一次 warn，不发事件。
+ * 读得到 GITHUB_TOKEN（经 getSecret）且 origin 是 github.com → GitHub 实现；否则本地实现。
+ * getSecret 抛错（未设置）按读不到处理。
  */
 export async function createPrProvider(opts: CreatePrProviderOptions): Promise<PrProvider> {
-  const token = await opts.getSecret("GITHUB_TOKEN");
-  if (token && !githubWarned) {
-    githubWarned = true;
-    (opts.logger ?? console).warn(
-      "[bakacoding/pr] 检测到 GITHUB_TOKEN，但 GitHub PR 实现尚未提供，使用本地 PR 记录",
-    );
+  let token: string | undefined;
+  try {
+    token = (await opts.getSecret("GITHUB_TOKEN")) || undefined;
+  } catch {
+    token = undefined;
   }
-  return new LocalPrProvider(opts);
+  if (!token || !opts.repo) return new LocalPrProvider(opts);
+  const url = opts.remoteUrl ?? (await originUrl(opts.repo));
+  const github = url ? parseGithubRemote(url) : null;
+  if (!github) return new LocalPrProvider(opts);
+  if (!opts.publish || !opts.eventContext)
+    throw new Error("GitHub PR 实现需要 publish 和 eventContext（用于发 escalated 事件）");
+  const { publish, eventContext } = opts;
+  return new GithubPrProvider({ ...opts, repo: opts.repo, github, token, publish, eventContext });
 }
