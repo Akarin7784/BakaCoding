@@ -1,4 +1,4 @@
-// 主进程 ↔ preload ↔ 渲染进程的只读数据契约。只放类型和通道名，不引入 Node 或存储模块，
+// 主进程 ↔ preload ↔ 渲染进程的数据契约。只放类型和通道名，不引入 Node 或存储模块，
 // 渲染进程可以安全地 import type。
 import type { BakaEvent, TicketStatus } from "@bakacoding/types";
 
@@ -8,6 +8,12 @@ export const IPC_CHANNELS = {
   snapshot: "bakacoding:snapshot",
   /** 主进程 → 渲染进程：增量更新。 */
   update: "bakacoding:update",
+  /** invoke：后端状态（live / readonly）。 */
+  backendStatus: "bakacoding:backend:status",
+  /** invoke：渲染进程就绪，主进程回放缓冲的 supervisor 通知。 */
+  supervisorReady: "bakacoding:supervisor:ready",
+  /** 主进程 → 渲染进程：主管 1:1 通知。 */
+  supervisorNotify: "bakacoding:supervisor:notify",
 } as const;
 
 /** 界面关心的事件类型；其余事件主进程不下发。 */
@@ -58,12 +64,42 @@ export interface DesktopUpdate {
   last_seq: number;
 }
 
-/** preload 通过 contextBridge 暴露在 window.bakacoding 上的只读 API。 */
+/** 与主进程 BackendStatus 同形（不引入 storage 类型，health 用宽松对象）。 */
+export interface DesktopBackendStatus {
+  mode: "live" | "readonly";
+  reason?: string;
+  takeOver?: {
+    enqueued: number;
+    adopted: number;
+    escalated: number;
+    failed: number;
+    held: number;
+    skipped_invalid: number;
+  };
+  storage?: {
+    ok: boolean;
+    lease_lost: boolean;
+    closed: boolean;
+    ingest_failures: number;
+  };
+}
+
+export interface SupervisorNotifyMessage {
+  text: string;
+  project_id?: string;
+  requirement_id?: string;
+}
+
+/** preload 通过 contextBridge 暴露在 window.bakacoding 上的 API。 */
 export interface BakaDesktopApi {
   readonly platform: string;
   getSnapshot(): Promise<DesktopSnapshot>;
   /** 订阅增量更新，返回取消订阅函数。 */
   onUpdate(listener: (update: DesktopUpdate) => void): () => void;
+  getBackendStatus(): Promise<DesktopBackendStatus>;
+  /** 告诉主进程渲染已就绪；返回回放的通知列表。 */
+  markSupervisorReady(): Promise<SupervisorNotifyMessage[]>;
+  onSupervisorNotify(listener: (msg: SupervisorNotifyMessage) => void): () => void;
 }
 
 declare global {

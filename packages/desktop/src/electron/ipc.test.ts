@@ -59,11 +59,19 @@ describe("preload 暴露的只读 API", () => {
     return ipc;
   }
 
-  it("只有 platform / getSnapshot / onUpdate 三个成员，且不可改", () => {
+  it("暴露只读与后端状态相关成员，且不可改", () => {
     const api = createDesktopApi(fakeIpc(), "linux");
-    expect(Object.keys(api).sort()).toEqual(["getSnapshot", "onUpdate", "platform"]);
+    expect(Object.keys(api).sort()).toEqual([
+      "getBackendStatus",
+      "getSnapshot",
+      "markSupervisorReady",
+      "onSupervisorNotify",
+      "onUpdate",
+      "platform",
+    ]);
     expect(Object.isFrozen(api)).toBe(true);
     expect(typeof api.getSnapshot).toBe("function");
+    expect(typeof api.getBackendStatus).toBe("function");
   });
 
   it("getSnapshot 走快照通道；onUpdate 收更新，取消后不再收到", async () => {

@@ -300,7 +300,7 @@ graph BT
     - `pendingHighRisk() → PendingHighRisk[]`，每项 `{ ticket_id, project_id, pr_id, pr_url?, reasons, files, files_more, held_at }`（`files` 每项 `{ path, old_path? }`，T-065；通知文案里改名写成「新路径（原 旧路径）」）：等用户裁决的高风险单（T-042 主管待办、T-062 界面用）。**同步、只读内存**，不调 GitHub / 6 / 9；理由和文件是扣住时（重启后是 N4 补判时）那份 diff 算的。放行、拒绝、本单上报或 2 里已到终态时去掉。只在进程内。
     - 上报处理收到 `high_risk_rejected`：不重拆、交用户，通知按 `high_risk_close.state` 写「已关闭」/「没有要关的 PR」/「关 PR 还没成功，会自动重试」。
     - `backpressurePaused({ reasons, pending_prs: { total, limit, high_risk_held } })`（组合根接 9 的 `onBackpressurePaused`，Q-7）：通知用户已暂停派新单和原因，写明待合并 PR 数；原因含 `pending_pr_limit` 或 `high_risk_held > 0` 时写明「其中 N 张是等你裁决的高风险 PR」。
-    - **v1（T-062 之前）在哪里操作**：12 的主进程还没调 `assemble`，桌面端只读，1:1 也没接，所以界面上**没有**放行 / 拒绝的入口；只能由调用方（以后是 12 的主进程，现在是测试或开发脚本）调 `App.supervisor.decideHighRisk(...)`：T-063 接上 `assemble` 之后、T-062 之前，也只能在代码里调 `decideHighRisk`。没人裁决的高风险 PR 一直扣着，不会合入（安全的默认）。T-062（界面与诊断）加放行 / 拒绝的 IPC 和按钮，调 `decideHighRisk`；「待裁决」状态取 9 的 `snapshot().held_high_risk` 或 10 的 `pendingHighRisk()`。GitHub 上手动合并 / 关闭被扣的 PR 要等 9 的 `sync()` 才生效，v1 没有定时 `sync()`。
+    - **v1（T-062 之前）在哪里操作**：T-063 起 12 的主进程已调 `assemble`；T-062 之前界面上**还没有**放行 / 拒绝的入口，只能由调用方（测试、开发脚本或以后的 IPC）调 `App.supervisor.decideHighRisk(...)`。没人裁决的高风险 PR 一直扣着，不会合入（安全的默认）。T-062（界面与诊断）加放行 / 拒绝的 IPC 和按钮，调 `decideHighRisk`；「待裁决」状态取 9 的 `snapshot().held_high_risk` 或 10 的 `pendingHighRisk()`。GitHub 上手动合并 / 关闭被扣的 PR 要等 9 的 `sync()` 才生效，v1 没有定时 `sync()`。
 - **依赖**：1、2、3（提示词模板）、4（只用 `isUnsafeGlob`）、6（CI 结果）、8、9。
 - **对应章节**：PD §3、§4、§8、§9、§10、§16。
 - **配置字段**：`roles.supervisor`、`pipeline.resplit_limit`、`pipeline.main_merge`、`pipeline.supervisor_backlog_limit`。
@@ -322,17 +322,21 @@ graph BT
 ### 12. 桌面界面
 - **职责**：Electron + React 三栏对话界面；导入项目时调用 3 的导入接口，展示 2 建好的群：主管 1:1 对话（唯一可发消息处，含设置入口和导出入口）；项目群（展示 2 中的群消息，按需求分话题、只读、Flash 调用默认折叠）；右侧边栏（编码池状态一行、Git 区、PR 列表、导出入口）；极简视觉规则。选型：electron-vite-react 壳子模板、shadcn/ui 组件、lucide 图标。
 - **对外接口（草案）**：只消费各模块接口和事件；用户输入只发往模块 10；订阅 `escalated`（`reason: resplit_limit`），提示「需要人工介入」。
-- **依赖**：3（项目导入）及各模块的接口；接口定下来后可以先做壳子。
+- **主进程后端（T-063）**：`startBackend`——仓库路径 `--repo` > `BAKACODING_REPO` > cwd；库默认 `<repo>/.bakacoding/bakacoding.db`；配置 `--config` > `BAKACODING_CONFIG` > `<repo>/config/models.json`。启动：`requestSingleInstanceLock` → `acquireWriterLock` → `openStorage`（唯一写连接）→ `getConfig` → `createDefaultDeps` → `assemble`（含一次 `takeOver`）。失败（缺 `DEEPSEEK_API_KEY`、坏配置、锁被占、`StorageLeaseError`）退回只读，`backend:status` 的 `reason` 只写变量名 / 错误名、不含密钥值；只读端仍用 `openStorageReadonly`。关机：`app.stop()` → `dispose()` → 关库 → 释放锁。`supervisor:notify` 在渲染就绪前缓冲最多 200 条（满则丢最旧并 warn），就绪后回放一次再清空。
+- **依赖**：3（项目导入）、`@bakacoding/app`（组合根）及各模块的接口。
 - **对应章节**：PD §15、§16。
 - **配置字段**：设计中没有专用字段；设置入口编辑模块 3 的配置。
 
 ## 组合根
 
-### `@bakacoding/app`（T-041a、T-041b、T-041c）
-- **定位**：不是功能模块。在编排层之上、12 之下；12 的主进程以后调用它（接线另开单）。功能模块都不依赖它。
-- **对外接口**：`assemble(deps: AppDeps) → Promise<App>`，`App = { bus, supervisor, scheduler, subAgent, pr, takeOver: TakeOverReport, stop() }`。
+### `@bakacoding/app`（T-041a、T-041b、T-041c、T-063）
+- **定位**：不是功能模块。在编排层之上、12 之下；12 的主进程经 `createDefaultDeps` + `assemble` 调用它（T-063）。功能模块都不依赖它。
+- **对外接口**：
+  - `assemble(deps: AppDeps) → Promise<App>`，`App = { bus, supervisor, scheduler, subAgent, pr, takeOver: TakeOverReport, stop() }`。
+  - `createDefaultDeps(config, storage, opts) → Promise<DefaultDepsHandle>`（T-063）：按**仓库**组装默认 `AppDeps`（只建对象，不 `takeOver`、不派单）。`opts`：`repoRoot`、`notifyUser`，可选 `pricingPath`（默认 `<repoRoot>/config/pricing.json`）、`env`、`logger`、`onError`。返回 `{ deps, dispose, registry, reviewPr, bus }`。缺 `DEEPSEEK_API_KEY` 抛 `ConfigError`（信息不含值）；缺 `GITHUB_TOKEN` 时 6 走本地模式、不抛。`dispose()` 取消 `storage.attach` 与 `budget.attach`。
+  - `acquireWriterLock(dbPath) → { release() } | { heldBy: pid }`（T-063）：锁文件 `<库所在目录>/writer.lock`，`wx` 创建，JSON 含 `pid` / `hostname` / `started_at` / `token`。同机陈旧锁（`kill(pid,0)` 失败且非 EPERM）可接管一次；不同主机名绝不接管；`release()` 仅当 token 一致时删除。
   - `AppDeps`：`config`（3 的 `getConfig()` 结果）、`storage`（2 的写入连接，组合根负责 `attach`，关库归调用方）、`call`（1）、`promptTemplate`（3）、`coder`（5 的 `runTicket`）、`review`（7）、`budget`（3 的 `budgetState`）、`createPr({ eventContext, publish, store }) → PrProvider`（6，通常包一层 `createPrProvider`；`store` 即 2 的 `prStore()`）、`worktrees` / `worktreeRoot`（4）、`targetHead()`、`notifyUser`；可选 `listFiles`、`architectureConstraints`、`bus`、`scheduler`（9 的 `target` / `clock` / `target_dirty_retry_ms` / `exclusive_zones` / `dispatch_poll_ms`）、`scopeTimeoutMs`、`onError`、`logger`、`newId`。
-- **一条总线**：只建（或用传进来的）一条 `EventBus`（新建时 `initialSeq = storage.nextSeq()`）。8 的 `publish`、8 的 `scopeRequests.bus`（4 的越界写申请经它到 8、8 的批复经它回 4）、8 的 `attach`（`interface_changed`）、9 的 `bus`、10 的 `publish` / `subscribe`、6 的 `publish`、2 的 `attach` 全是它。1 的 `call_completed` 和 3 的台账 `budget.attach` 由调用方用 `App.bus`（或传进来的 `bus`）接，组合根不重复 attach。
+- **一条总线**：只建（或用传进来的）一条 `EventBus`（新建时 `initialSeq = storage.nextSeq()`）。8 的 `publish`、8 的 `scopeRequests.bus`（4 的越界写申请经它到 8、8 的批复经它回 4）、8 的 `attach`（`interface_changed`）、9 的 `bus`、10 的 `publish` / `subscribe`、6 的 `publish`、2 的 `attach` 全是它。`createDefaultDeps` 在 `assemble` 之前对同一条总线做 `storage.attach` 与 `budget.attach`（1 的 `publish` 也接这条）；`assemble` 仍会再 `storage.attach` 一次（落库按 `event_id` 幂等）。
 - **接线**：8 的 `loadTicket` = 10 的 `loadTicket`；8 的 `submit` / `scheduler.extendScope` = 9 的；10 的 `enqueue` = 9 的；6 的实例只建一个，8 和 9（`createPr`）共用，6 的 `eventContext` 转调 9 的；8 的 `permissions` / `resubmitHistory` / `grantedScopes` / `prRecords` 接 2（`storageTicketPermissions`、`eventLogResubmitHistory`、`eventLogGrantedScopes`、`prStore().get`）；TicketStatus 写回 2（读回整行只换 `status`，不带 `fields`）。9 的 `subAgent.handle` / `resume` 只拿到 `SchedulerTicket`，组合根用 10 的 `loadTicket` 补全（`resume` 交 `{ ticket_id }` 由 8 自己补全）。5 的 `PermissionRegistry` 由调用方建 5 时注入（`CoderPoolDeps.registry`），不经过组合根。
 - **重启不重复开 PR**（PD §12）：9 派单时组合根查 2 的 PR 记录（`kind: ticket`、本单号、状态 `open` / `conflict` 里 `created_ts` 最新的一条），有就带 `HandleOptions.pr_id` 和记录里的 `worktree`（路径、分支）交给 8；记录里的 worktree 已不存在时直接抛错（9 报 `escalated(internal_error, dispatch_error: …)`），不另建 r0、不开新 PR。
 - **重启接管已在合并队列的单**：10 的 `takeOver` 调组合根注入的 `adopt`：查 2 里本单当前的 PR 记录（规则同上），转调 9 的 `adopt({ pr_id, head_sha, worktree_path, base_commit: base_sha, round（从路径 -r<n> 解析）, high_risk（需求单 kind: dependency 时）})`；没有记录或 worktree 不在了就抛错（记进 `TakeOverReport.failed`），不派单、不开新 PR。
@@ -344,7 +348,7 @@ graph BT
 - **启动顺序**：建总线、2 `attach` → 建 6 → 建 10、8、9 → 9 `start()` → 8 `attach` → 10 `start()` → 10 `takeOver()`。`stop()` 按相反顺序退订并停 9，不关存储。
 - **高风险闸门**（T-041c）：建 9 时固定传 `holdHighRisk: true`，`AppDeps.scheduler` 关不掉（Q-3）；默认关闭只适用于单独使用 9。9 的 `onHighRiskHeld` 接 10 的 `highRiskHeld`，`onBackpressurePaused` 接 10 的 `backpressurePaused`；10 的 `highRisk` 接 9 的 `checkHighRisk` / `releaseHighRisk` / `rejectHighRisk`。9 扣住时组合根先补 PR 链接（2 的 PR 记录 `remote.url`）和 diff 文件（重启接回的用 N4 补判时那份，否则现取一次；取不到给 null）再交 10。
 - **重启补判高风险**（T-041c，N4）：`adopt` 前除了需求单 `kind: dependency`，还按 6 的 `diff(pr_id)` 用 8 的 `isHighRiskDiffFile` 补判（`judgeHighRiskOnTakeover`，包内导出）；8 按 diff 判出的高风险不落库，不补判的话重启后会不经扣留直接合并。`diff` 出错按高风险处理（宁可错扣，不可漏扣）。`judgeHighRiskOnTakeover` 返回 `{ high_risk, files }`（取不到 diff 时 `files: null`），组合根把 `files` 留给扣住时用。
-- **v1 限制**：一次组装对应一个仓库（9 只有一个合入目标、一个 `targetHead()`，10 的 `targetHead(project_id)` 也用它）。
+- **v1 限制**：一次组装对应一个**仓库**（不是按项目；`projects` 表没有仓库路径，一个库只对应一个仓库）。9 只有一个合入目标、一个 `targetHead()`，10 的 `targetHead(project_id)` 也用它。
 
 ## 事件清单
 

@@ -7,3 +7,8 @@
 - T-041b：10 的 `closeTicketPr` 接 `closeTicketPrs`（先 9 的 `sync()`，再按 2 的 PR 记录判断 / 关闭）、`lastEscalation` 接 `lastEscalationFrom`（事件日志）、`replaceDependency` 接 9 的；`enqueue` / `adopt` 前把事件日志里 `extendScope` 批准过的范围并回 `write_scope`。
 - T-041c：9 的高风险闸门固定打开（`AppDeps` 关不掉），9 ↔ 10 接放行 / 拒绝、扣住通知、反压暂停通知；重启接管 `adopt` 前按 6 的 diff 补判高风险（`judgeHighRiskOnTakeover`，diff 出错按高风险）。
 - 已知缺口：12 的主进程还没接，T-062 之前放行 / 拒绝只能调 `App.supervisor.decideHighRisk`。
+
+## T-063
+
+- `createDefaultDeps(config, storage, opts)`：按仓库建好默认 `AppDeps`（总线、预算、网关、worktree、编码池、评审池占位 PR、`createPr`）。只建对象；调用方再 `assemble`。
+- `acquireWriterLock(dbPath)`：`<库目录>/writer.lock`，见 modules.md「组合根」。

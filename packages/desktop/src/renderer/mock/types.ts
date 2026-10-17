@@ -42,7 +42,7 @@ export interface GitStatus {
   current_branch: string;
   integration_branch: string;
   integration_ahead_of_main: number;
-  main_merge: "user" | "auto";
+  main_merge: "user" | "supervisor";
 }
 
 /** escalated 事件在界面上的提示：需要人工介入。 */

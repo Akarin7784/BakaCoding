@@ -1,10 +1,10 @@
-// Electron 主进程：开一个窗口，跟随系统深浅色；用 openStorageReadonly 只读打开模块 2 的库，经 IPC 推给渲染进程。
+// Electron 主进程：单实例 + 写入锁组装组合根；失败则只读打开库。
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, ipcMain, nativeTheme } from "electron";
-import { resolveDbPath } from "./config.js";
-import { serveReader } from "./ipc.js";
+import { resolveRepoDbPath, resolveRepoPath, startBackend } from "./backend.js";
+import { serveBackend, serveReader } from "./ipc.js";
 import { openEventReader } from "./reader.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -39,21 +39,51 @@ function createWindow(): void {
   else void win.loadFile(path.join(here, "../dist-renderer/index.html"));
 }
 
-void app.whenReady().then(() => {
-  const reader = openEventReader({
-    path: resolveDbPath(process.argv, process.env, process.cwd()),
-    nativeBinding: electronSqliteBinding(),
+// 单实例：第二个进程直接退出（写入锁是第二道闸）
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (win) {
+      if (win.isMinimized()) win.restore();
+      win.focus();
+    }
   });
-  const stop = serveReader(ipcMain, reader, () => win?.webContents ?? null);
-  app.on("will-quit", () => {
-    stop();
-    reader.close();
+
+  void app.whenReady().then(async () => {
+    const binding = electronSqliteBinding();
+    const repoRoot = resolveRepoPath(process.argv, process.env, process.cwd());
+    const dbPath = resolveRepoDbPath(process.argv, process.env, repoRoot);
+
+    const backend = await startBackend({
+      argv: process.argv,
+      env: process.env,
+      cwd: process.cwd(),
+      ...(binding !== undefined && { nativeBinding: binding }),
+    });
+
+    // 只读端始终开；live 时写连接在 backend 里，只读连接仍用于界面轮询
+    const reader = openEventReader({
+      path: dbPath,
+      ...(binding !== undefined && { nativeBinding: binding }),
+    });
+    const sink = () => win?.webContents ?? null;
+    const stopReader = serveReader(ipcMain, reader, sink);
+    const stopBackendIpc = serveBackend(ipcMain, backend, sink);
+
+    app.on("will-quit", () => {
+      stopReader();
+      stopBackendIpc();
+      reader.close();
+      void backend.stop();
+    });
+    createWindow();
   });
-  createWindow();
-});
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
-});
-app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow();
-});
+  app.on("window-all-closed", () => {
+    if (process.platform !== "darwin") app.quit();
+  });
+  app.on("activate", () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  });
+}
