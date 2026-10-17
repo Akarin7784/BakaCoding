@@ -53,7 +53,7 @@ export type MaybePromise<T> = T | Promise<T>;
 export interface AppDeps {
   /** 3 的 getConfig() 结果 */
   config: Config;
-  /** 2 的写入连接（openStorage）。组合根会 `attach` 到总线落库，调用方不要再 attach；关库归调用方 */
+  /** 2 的写入连接（openStorage）。组合根会 `attach` 到总线落库；`createDefaultDeps` / 桌面主进程可在 assemble 之前先 attach（落库按 `event_id` 幂等，重复 attach 无妨）；关库归调用方 */
   storage: Storage;
   /** 1 的 call（10 用） */
   call: ModelGateway["call"];
