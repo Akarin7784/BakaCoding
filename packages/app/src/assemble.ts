@@ -126,8 +126,11 @@ export interface App {
   pr: PrProvider;
   /** 启动时重启接管的结果（10 的 takeOver） */
   takeOver: TakeOverReport;
-  /** 停 9、退订 8 / 10 / 2 的订阅；不关存储 */
-  stop(): void;
+  /**
+   * 停 9、退订 8 / 10 / 2 的订阅；不关存储。退订和 9 的 stop 同步生效；返回的 Promise（T-096）等 9 的
+   * `stop()` 收尾（在途派单、复投 / 重审、合并循环、sync）后 resolve，之后再关库、放写锁。从不 reject。
+   */
+  stop(): Promise<void>;
 }
 
 /**
@@ -645,6 +648,8 @@ export async function assemble(deps: AppDeps): Promise<App> {
           onError(err, "stop");
         }
       }
+      // T-096：9 的 stop() 已在上面同步调过；再调一次拿同一个 Promise，等在途工作收尾
+      return scheduler.stop().catch((err) => onError(err, "stop"));
     },
   };
 }
