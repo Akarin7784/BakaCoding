@@ -1,7 +1,7 @@
 // 用真实的 4（worktree + 文件工具）、5（编码池）、6（本地 PR）、7（评审池）、2（SQLite 存储）跑通 8；
 // 只把模块 1（模型调用）和模块 9（submit）换成替身。
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile, mkdir, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -25,6 +25,7 @@ import {
   type SubAgentDeps,
   type SubAgentPublish,
   type SubAgentTicket,
+  type StoredPrRecord,
 } from "./index.js";
 
 const run = promisify(execFile);
@@ -331,5 +332,136 @@ describe("评审复投计数跨重启（2 的事件日志）", () => {
       review: 2,
       conflict: 0,
     });
+  });
+});
+
+describe("T-039：worktree 根目录的软链接逃逸、重启后从 2 读当前 PR 重审", () => {
+  const ticket: SubAgentTicket = {
+    ticket_id: "T-3",
+    project_id: "P-1",
+    requirement_id: "R-1",
+    trace_id: "tr-3",
+    span_id: "sp-3",
+    parent_span_id: null,
+    ticket_text: "改点什么",
+    base_commit: "c".repeat(40),
+    permission_list: [{ glob: "src/**", level: "rw" }],
+  };
+  const make = (wtRoot: string, over: Partial<SubAgentDeps> = {}) => {
+    const statuses: TicketStatus[] = [];
+    const runTicket = vi.fn(async () => ({
+      status: "done" as const,
+      summary: "",
+      changed_files: [],
+    }));
+    const review = vi.fn(async () => ({ verdict: "pass" as const, reasons: [], reviewer: "r-1" }));
+    const agent = createSubAgent({
+      getConfig: () => ({
+        roles: { coder: { effort: "low", resubmit_effort: ["low", "high", "high"] } },
+        pipeline: { resubmit_limits: { review: 2 } },
+      }),
+      coder: { runTicket },
+      review,
+      pr: {
+        open: async () => "pr-x",
+        commitWorktree: async () => "d".repeat(40),
+        diff: async () => ({ base_sha: "a".repeat(40), head_sha: "b".repeat(40), files: [] }),
+      },
+      budgetState: () => ({ daily_exhausted: false }),
+      rounds: { save: (r) => storage.savePrRecord(r) },
+      tickets: { setStatus: (_id, s) => void statuses.push(s) },
+      resubmitHistory: eventLogResubmitHistory(storage),
+      worktreeRoot: wtRoot,
+      submit: vi.fn(),
+      publish: ingest,
+      loadTicket: (id) => (id === ticket.ticket_id ? ticket : undefined),
+      ...over,
+    });
+    return { agent, statuses, runTicket, review };
+  };
+
+  it("根目录里指向根目录外的软链接：handle / resume / resubmitConflict / reReview 都拒绝，不调编码池、不写状态", async () => {
+    const wtRoot = join(repo, ".bakacoding", "worktrees");
+    const outside = join(root, "outside");
+    await mkdir(wtRoot, { recursive: true });
+    await mkdir(outside, { recursive: true });
+    const link = join(wtRoot, "T-3-r0");
+    await symlink(outside, link);
+    // 根目录内指向根目录内的软链接是允许的（对照）
+    await mkdir(join(wtRoot, "real-T-3-r1"));
+    await symlink(join(wtRoot, "real-T-3-r1"), join(wtRoot, "T-3-r1"));
+
+    await storage.prStore<StoredPrRecord>().put({
+      pr_id: "pr-link",
+      kind: "ticket",
+      ticket_id: "T-3",
+      worktree_path: link,
+      branch: "bakacoding/T-3-r0",
+      base_sha: "a".repeat(40),
+      status: "open",
+    });
+    const t = make(wtRoot, { prRecords: storage.prStore<StoredPrRecord>() });
+    await expect(t.agent.handle(ticket, { worktree: { path: link, branch: "b" } })).rejects.toThrow(
+      /worktree 根目录/,
+    );
+    await expect(
+      t.agent.handle(ticket, { worktree: { path: join(link, "sub"), branch: "b" } }),
+    ).rejects.toThrow(/worktree 根目录/);
+    await expect(
+      t.agent.resume(ticket, {
+        ticket_id: "T-3",
+        worktree_path: link,
+        branch: "b",
+        base_commit: ticket.base_commit,
+        worktree_round: 0,
+        pr_id: null,
+        resubmit_counts: { review: 0, conflict: 0 },
+        phase: "coding",
+        is_resubmit: false,
+      }),
+    ).rejects.toThrow(/worktree 根目录/);
+    await expect(
+      t.agent.resubmitConflict({
+        ticket,
+        round: 1,
+        worktree_path: link,
+        branch: "b",
+        base_commit: "a".repeat(40),
+        conflicted_files: [],
+        previous_pr_id: "pr-old",
+        resubmit_counts: { review: 0, conflict: 1 },
+      }),
+    ).rejects.toThrow(/worktree 根目录/);
+    await expect(t.agent.reReview({ ticket, pr_id: "pr-link", merged_since: [] })).rejects.toThrow(
+      /worktree 根目录/,
+    );
+    expect(t.runTicket).not.toHaveBeenCalled();
+    expect(t.review).not.toHaveBeenCalled();
+    expect(t.statuses).toEqual([]);
+
+    // 对照：根目录内的软链接照常可用
+    const ok = await t.agent.handle(ticket, {
+      worktree: { path: join(wtRoot, "T-3-r1"), branch: "b" },
+    });
+    expect(ok.kind).toBe("merge_queued");
+  });
+
+  it("重启后新的 8 只凭 2 的 PR 记录重审（真 SQLite）", async () => {
+    const wtRoot = join(repo, ".bakacoding", "worktrees");
+    await storage.prStore<StoredPrRecord>().put({
+      pr_id: "pr-7",
+      kind: "ticket",
+      ticket_id: "T-3",
+      worktree_path: join(wtRoot, "T-3-r1"),
+      branch: "bakacoding/T-3-r1",
+      base_sha: "a".repeat(40),
+      status: "open",
+    });
+    const t = make(wtRoot, { prRecords: storage.prStore<StoredPrRecord>() });
+    const out = await t.agent.reReview({ ticket, pr_id: "pr-7", merged_since: [] });
+    expect(out).toEqual({ pr_id: "pr-7", review_resubmits: 0 });
+    expect(t.review).toHaveBeenCalledTimes(1);
+    expect(t.runTicket).not.toHaveBeenCalled();
+    expect(t.statuses).toEqual([]);
   });
 });

@@ -135,9 +135,26 @@ export interface SubAgentDeps {
    * 9 传的是分支名时 submit 的 base_commit 会认不出，建议注入或让 9 直接传 sha。
    */
   resolveBase?: (worktree_path: string) => MaybePromise<string>;
+  /**
+   * 2 的 PR 记录（`storage.prStore()` 的 `get`，结构同 6 的 `PrRecord`）。`reReview` 以它为准确认 9 给的 PR
+   * 就是本单当前 PR（`kind: ticket`、单号一致、状态 open / conflict），并从中取 worktree、分支和基线，
+   * 所以重启后（本进程没跑过这张单）也能重审（T-039）。不给就只认本进程跑过的单（T-037 行为）。
+   */
+  prRecords?: { get(pr_id: string): MaybePromise<StoredPrRecord | undefined> };
   /** 9 冲突复投 / 重审 / 续跑传入的 ticket 只有 SchedulerTicket 字段，用它补全；不给就查本进程登记过的单 */
   loadTicket?: (ticket_id: string) => MaybePromise<SubAgentTicket | undefined>;
   logger?: { warn(message: string): void };
+}
+
+/** 8 从 2 读的 PR 记录字段（6 的 `TicketPrRecord` 的子集；集成记录没有 ticket_id / worktree_path）。 */
+export interface StoredPrRecord {
+  pr_id: string;
+  kind: string;
+  ticket_id?: string;
+  worktree_path?: string;
+  branch: string;
+  base_sha: string;
+  status: string;
 }
 
 /** 当日预算用完时的续跑凭据：9 第二天原样交回 `resume`。 */
@@ -198,6 +215,17 @@ export interface HandleOptions {
   pr_id?: string;
   /** 给定 worktree 的轮次 n；不给就从路径末尾 `-r<n>` 解析，解析不出按 0 */
   worktree_round?: number;
+  /**
+   * 取消（T-039，9 的 stop() 用）：原样传给 5 的 runTicket 和 7 的 review。中止后 8 抛 `signal.reason`
+   * （没有则抛名为 AbortError 的错误），不上报、不写状态、不计复投，单子停在原状态等重新派。
+   */
+  signal?: AbortSignal;
+}
+
+/** resume 的选项（T-039）。 */
+export interface ResumeOptions {
+  /** 同 HandleOptions.signal */
+  signal?: AbortSignal;
 }
 
 // ---- 与 T-035（模块 9，尚未合入）对齐的入口：同形的结构类型，8 不依赖 9 的包 ----
@@ -249,6 +277,7 @@ export interface SubAgent {
   resume(
     ticket: SubAgentTicket | { ticket_id: string },
     token: ResumeToken,
+    options?: ResumeOptions,
   ): Promise<SubAgentOutcome>;
   /** 9 的冲突复投入口：新 worktree、新 PR，冲突文件作 feedback；冲突计数由 9 给 */
   resubmitConflict(req: ConflictResubmitRequest): Promise<SchedulerFacingOutcome>;
