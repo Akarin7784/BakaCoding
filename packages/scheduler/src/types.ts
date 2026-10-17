@@ -356,6 +356,8 @@ export interface QueueEntryView {
 }
 
 export interface Scheduler {
+  /** 合入目标分支（`deps.target`，默认 INTEGRATION_BRANCH），只读（T-094：组合根重启补清理用） */
+  readonly target: string;
   /** 启动：建 6（注入 eventContext），订阅 review_backlog / supervisor_backlog（T-038 起不再订阅 write_scope_requested） */
   start(): Promise<void>;
   /** 停止：停合并循环、取消等待中的定时器、停止派单，并中止交给 8 的 handle / resume（signal，T-039） */

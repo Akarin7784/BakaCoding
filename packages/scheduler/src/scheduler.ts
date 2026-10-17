@@ -1622,6 +1622,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   const syncImpl = doSync;
 
   return {
+    target,
     async start() {
       startHead = await deps.targetHead();
       pr = await deps.createPr({ eventContext });

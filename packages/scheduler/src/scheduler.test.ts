@@ -3190,3 +3190,28 @@ describe("T-094：合入后清理 worktree / 分支", () => {
     expect(h.statuses.length).toBe(statusesBefore);
   });
 });
+
+describe("T-094：清理的错误回调", () => {
+  it("onError 自己抛错时不产生未处理的 rejection；实例暴露只读 target", async () => {
+    const h = harness();
+    const unhandled: unknown[] = [];
+    const onUnhandled = (r: unknown) => void unhandled.push(r);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      h.deps.onError = () => {
+        throw new Error("onError 自己坏了");
+      };
+      h.deps.worktrees.cleanupMerged = () => Promise.reject(new Error("清理失败"));
+      const s = await started(h);
+      expect(s.target).toBe("bakacoding/integration");
+      await s.enqueue(ticket("T-1"));
+      await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/wt/T-1-r0" });
+      await s.idle();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(s.status("T-1")).toBe("merged");
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+});
