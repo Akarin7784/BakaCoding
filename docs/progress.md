@@ -84,6 +84,7 @@ flowchart BT
 | T-029 | 模块 5 Flash 编码池：`createCoderPool` / `runTicket`（返回 `done` / `gave_up` / `turn_limit` / `budget_exceeded`，不返回补丁）、逐字节固定的公共前缀、删 `slots()`；模块 3 配置加 `pipeline.max_turns`（默认 40）；1、3、4 未合入部分先注入；含模块 7 顺手改动：signal、json 代码块优先（#27 评审意见） | 5 | 执行层开发 | 已合入 | #30 | `09cf7fe` |
 | T-030 | 模块 7 评审池：`review` / `backlog`、CI 失败直接判不过、主管兼任、复投粘性与限流跳过、输出解析重试、`review_backlog` 事件；评审结论类型进 `@bakacoding/types` | 7 | 执行层开发 | 已合入 | #27、跟进 #28 | `be1fa6f`、`a44d985` |
 | T-032 | 模块 5/7 收尾：编码池 feedback 闭合标签转义；公共前缀按内容哈希失效；结束回复解析不了先要求重回一轮，仍不行返回 `gave_up` | 5 | 执行层开发 | 已合入 | #31 | `34df5fc` |
+| T-043 | 不可信文本包装与转义：评审池的需求单 / 摘要 / 架构约束 / diff 与编码池 feedback 统一包进带 nonce 的 `untrusted` 区块；转义前做 NFKC、忽略零宽字符和软连字符；共用函数放 `@bakacoding/types`；nonce 不进编码池公共前缀 | 5、7 | 执行层开发 | 待评审 | PR 待开 | — |
 
 8、9、10（编排层开发）的第二批需求单还没拆。
 

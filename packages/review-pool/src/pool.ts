@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import {
   ReviewBacklogSchema,
   ReviewResultSchema,
@@ -70,6 +71,8 @@ export function createReviewPool(deps: ReviewPoolDeps): ReviewPool {
   const assignments: AssignmentStore = deps.assignments ?? new InMemoryAssignmentStore();
   const logger = deps.logger ?? console;
   const pollMs = deps.pollIntervalMs ?? 1000;
+  // 本池的不可信区块标签 nonce：创建时随机生成，池内不变；只出现在拼入的输入部分
+  const nonce = randomBytes(8).toString("hex");
   const inflight = new Map<string, number>();
   const waiters: Waiter[] = [];
   let pending = 0;
@@ -256,7 +259,7 @@ export function createReviewPool(deps: ReviewPoolDeps): ReviewPool {
     }
 
     const diff = await deps.pr.diff(input.pr_id);
-    const prompt = buildPrompt(await deps.promptTemplate("reviewer"), input, diff);
+    const prompt = buildPrompt(await deps.promptTemplate("reviewer"), input, diff, nonce);
 
     const { signal } = input;
     let held: Member | undefined = await acquire(picker(input.ticket, input.ctx), signal);
