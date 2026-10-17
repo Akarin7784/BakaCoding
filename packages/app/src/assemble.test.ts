@@ -1223,6 +1223,122 @@ describe("T-064 closeTicketPrs 只关指定 PR + bakacoding 重试", () => {
     );
     expect(close).toHaveBeenCalledOnce();
   });
+
+  it("E2E B3/N5：模拟 6 的 close——先标本地 closed 再 PATCH 失败；重试 closeTicketPrs 再调 close 返回 closed", async () => {
+    // 6（github.ts）：先 store.put(closed_by:bakacoding)，再 PATCH；失败时本地已是 closed、远程仍 open。
+    const { storage } = setup();
+    const store = storage.prStore<TicketPrRecord>();
+    await store.put(
+      prRec({
+        pr_id: "P-gh",
+        ticket_id: "T",
+        status: "open",
+        // 有 remote 才走 PATCH；这里用形状标记「像 GitHub 记录」
+      }),
+    );
+    let patchOk = false;
+    let patchAttempts = 0;
+    const close = vi.fn(async (pr_id: string, reason: string) => {
+      const rec = (await store.get(pr_id))!;
+      if (rec.status === "merged") throw new Error("已合并");
+      if (rec.status === "closed" && rec.closed_by !== "bakacoding") return;
+      if (rec.status !== "closed") {
+        await store.put({
+          ...rec,
+          status: "closed",
+          closed_by: "bakacoding",
+          close_reason: reason,
+          updated_ts: "2026-10-17T12:00:00Z",
+        });
+      }
+      // 模拟 PATCH
+      patchAttempts++;
+      if (!patchOk) throw new Error("PATCH /pulls/1 → 500");
+      // 成功：远程已关，本地已是 closed
+    });
+
+    // 第一次：open → 标 closed → PATCH 失败，closeTicketPrs 把错抛出
+    await expect(
+      closeTicketPrs({ sync: async () => {}, store, pr: { close } }, "T", "拒绝", "P-gh"),
+    ).rejects.toThrow(/500/);
+    expect(patchAttempts).toBe(1);
+    expect(await store.get("P-gh")).toMatchObject({
+      status: "closed",
+      closed_by: "bakacoding",
+    });
+    // 若没有 bakacoding 重试，下面会返回 none（反向检查）
+    patchOk = true;
+    expect(
+      await closeTicketPrs({ sync: async () => {}, store, pr: { close } }, "T", "拒绝重试", "P-gh"),
+    ).toBe("closed");
+    expect(patchAttempts).toBe(2);
+    expect(close).toHaveBeenCalledTimes(2);
+
+    // 不传 pr_id 的路径：同一状态下也会重试
+    await store.put(
+      prRec({
+        pr_id: "P-gh2",
+        ticket_id: "U",
+        status: "closed",
+        closed_by: "bakacoding",
+        close_reason: "上次",
+      }),
+    );
+    patchAttempts = 0;
+    patchOk = true;
+    expect(
+      await closeTicketPrs({ sync: async () => {}, store, pr: { close } }, "U", "重拆重试"),
+    ).toBe("closed");
+    expect(patchAttempts).toBe(1);
+  });
+
+  it("E2E B3 反向：无 bakacoding 重试时同状态只能得到 none（对照现行 closeTicketPrs）", async () => {
+    // 若 N5 规则 5 被删，本地已 closed_by bakacoding 时会走 none，远程永远关不上。
+    // 这里用「不含 bakacoding 分支」的对照实现证明：新 E2E 依赖的正是那条重试。
+    const { storage } = setup();
+    const store = storage.prStore<TicketPrRecord>();
+    await store.put(
+      prRec({
+        pr_id: "P1",
+        ticket_id: "T",
+        status: "closed",
+        closed_by: "bakacoding",
+        close_reason: "上次 PATCH 失败",
+      }),
+    );
+    const close = vi.fn(async () => {});
+    async function closeTicketPrsNoBakacodingRetry(
+      ticket_id: string,
+      reason: string,
+      only?: string,
+    ): Promise<"closed" | "none" | "merged"> {
+      if (only !== undefined) {
+        const rec = await store.get(only);
+        if (!rec || rec.kind !== "ticket" || rec.ticket_id !== ticket_id) return "none";
+        if (rec.status === "merged") return "merged";
+        if (rec.status === "open" || rec.status === "conflict") {
+          await close(rec.pr_id, reason);
+          return "closed";
+        }
+        return "none"; // ← 缺 bakacoding 重试
+      }
+      const mine = (await store.list()).filter(
+        (r): r is TicketPrRecord => r.kind === "ticket" && r.ticket_id === ticket_id,
+      );
+      if (mine.some((r) => r.status === "merged")) return "merged";
+      const open = mine.filter((r) => r.status === "open" || r.status === "conflict");
+      if (open.length === 0) return "none";
+      for (const r of open) await close(r.pr_id, reason);
+      return "closed";
+    }
+    expect(await closeTicketPrsNoBakacodingRetry("T", "r", "P1")).toBe("none");
+    expect(close).not.toHaveBeenCalled();
+    // 现行实现必须再调 close → closed
+    expect(await closeTicketPrs({ sync: async () => {}, store, pr: { close } }, "T", "r", "P1")).toBe(
+      "closed",
+    );
+    expect(close).toHaveBeenCalledOnce();
+  });
 });
 
 describe("T-064 B2：adopt 发现已合入的 PR", () => {
