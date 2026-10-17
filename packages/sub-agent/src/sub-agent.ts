@@ -800,12 +800,12 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
       const summary = lateNotes.length
         ? `${baseSummary}\n\n${notesSection(lateNotes)}`
         : baseSummary;
-      // 本轮 diff 在评审前取一次（评审不改代码，评审后写轮次记录沿用同一份）
+      // 本轮 diff 在评审前取一次，绑定当时的 head（diff.head_sha）；评审不改代码，评审后写轮次记录沿用同一份
       s.stage = "diff";
       const diff = await deps.pr.diff(pr_id);
       // 依赖类单标高风险（T-038）：主管标了 kind: "dependency"，或 diff 改了依赖清单 / 锁文件；
       // T-041c 起改名的文件也算（isHighRiskDiffFile，T-065 收窄）
-      const high_risk = s.ticket.kind === "dependency" || diff.files.some(isHighRiskDiffFile);
+      let high_risk = s.ticket.kind === "dependency" || diff.files.some(isHighRiskDiffFile);
       let result: ReviewResult;
       s.stage = "permissions";
       const permission_list = await permissionsFor(s.ticket);
@@ -860,6 +860,9 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
           );
           continue;
         }
+        // 交给 9 之前终判高风险（T-041c）：PR 的 head 已不是评审前那次 diff 的 head，按新 diff 重判；
+        // 取不到 diff（不知道合进去的是什么）一律按高风险
+        if (!high_risk) high_risk = await headStillJudged(s.ticket, pr_id, diff.head_sha);
         remember(s);
         if (s.submit) {
           // 先写 merge_queued 再交给 9：交出去之后的状态归 9，8 不再写
@@ -887,6 +890,31 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
       if (s.counts.review >= limit) return escalate(s, "review_limit");
       await countResubmit(s, reasonsToFeedback(result.reasons), "评审不过");
     }
+  }
+
+  /**
+   * 评审通过、交给 9 之前确认 PR 的 head 还是评审前取 diff 时的那个（T-041c）。
+   * 返回终判的 high_risk：head 没变沿用评审前的判定（false）；变了按新 diff 重判；重新取 diff 失败按高风险。
+   */
+  async function headStillJudged(
+    ticket: SubAgentTicket,
+    pr_id: string,
+    reviewed_head: string,
+  ): Promise<boolean> {
+    let latest: Awaited<ReturnType<typeof deps.pr.diff>>;
+    try {
+      latest = await deps.pr.diff(pr_id);
+    } catch (e) {
+      logger.warn(
+        `[bakacoding/sub-agent] ${ticket.ticket_id} 交出前重新取 PR ${pr_id} 的 diff 失败，按高风险处理：${String(e)}`,
+      );
+      return true;
+    }
+    if (latest.head_sha === reviewed_head) return false;
+    logger.warn(
+      `[bakacoding/sub-agent] ${ticket.ticket_id} 的 PR ${pr_id} 在评审期间 head 变了（${reviewed_head} → ${latest.head_sha}），按新 diff 重判高风险`,
+    );
+    return ticket.kind === "dependency" || latest.files.some(isHighRiskDiffFile);
   }
 
   /** handle 模式：未分类的异常也上报，不让单子卡在 coding；其他模式交给 9 处理。 */
