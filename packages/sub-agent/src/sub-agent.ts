@@ -8,6 +8,7 @@ import {
   DEPENDENCY_MANIFEST_GLOBS,
   type BakaEvent,
   type CallCtx,
+  type DiffFile,
   type Effort,
   type EventOf,
   type PermissionList,
@@ -52,14 +53,64 @@ const MAX_NOTE_SUMMARY = 2000;
  */
 const SCOPE_REQUEST_WILDCARD = /[*?[\]{}()!+@]/;
 
-/** 是否落在依赖清单 / 锁文件上（`DEPENDENCY_MANIFEST_GLOBS`，匹配规则同模块 4）。 */
-function isDependencyFile(path: string): boolean {
-  return (
-    permissionFor(
-      DEPENDENCY_MANIFEST_GLOBS.map((glob) => ({ glob, level: "rw" as const })),
-      path,
-    ) === "rw"
-  );
+/** 依赖清单 / 锁文件的文件名模式：`DEPENDENCY_MANIFEST_GLOBS` 里不带目录的那些（`package.json`、`*.lock` 等）。 */
+const DEPENDENCY_BASENAME_RULES = DEPENDENCY_MANIFEST_GLOBS.filter((g) => !g.includes("/")).map(
+  (glob) => ({ glob, level: "rw" as const }),
+);
+
+/**
+ * 是否是依赖清单 / 锁文件（T-041c 起导出，组合根重启补判用）：一律按文件名（basename）匹配
+ * `DEPENDENCY_MANIFEST_GLOBS` 的文件名模式，所以任意子目录里的 `package.json`、`pnpm-lock.yaml` 等都算；
+ * `docs/package.json.md` 这类只是名字像的不算。匹配规则同模块 4。
+ */
+export function isDependencyFile(path: string): boolean {
+  const name = path.split("/").filter(Boolean).at(-1);
+  if (!name) return false;
+  return permissionFor(DEPENDENCY_BASENAME_RULES, name) === "rw";
+}
+
+/**
+ * diff 里的一个文件算不算高风险（T-041c）：落在依赖清单 / 锁文件上，或是改名（`renamed`）。
+ * 改名一律算：6 的 DiffFile 只有新路径，把 `package.json` 改名走的 diff 看不出旧路径是依赖文件。
+ * T-065 给 DiffFile 加 `old_path` 后，改名兜底收窄成只看新旧路径是不是依赖文件——只改这一处。
+ * 8 评审前判高风险、组合根重启接管时补判（N4）都用它。
+ */
+export function isHighRiskDiffFile(file: Pick<DiffFile, "path" | "status">): boolean {
+  return file.status === "renamed" || isDependencyFile(file.path);
+}
+
+/**
+ * 高风险的理由（T-041c，`pendingHighRisk` / T-062 界面用）：
+ * - `dependency_kind`：主管把单标成依赖类（`kind: "dependency"`）；
+ * - `dependency_file`：diff 改了依赖清单 / 锁文件（含删除的；改名的一律算，见 `isHighRiskDiffFile`）；
+ * - `diff_unavailable`：取不到 diff（重启补判或扣住时取 diff 出错），按高风险处理；
+ * - `unverified`：9 标了高风险，但现在的 diff 看不出依赖改动（例如 8 交出前重取 diff 失败）。
+ */
+export type HighRiskReason =
+  "dependency_kind" | "dependency_file" | "diff_unavailable" | "unverified";
+
+/** `highRiskEvidence` 最多列出的文件数，其余计入 `files_more`。 */
+export const HIGH_RISK_FILES_MAX = 20;
+
+/**
+ * 整理一张高风险单的理由和命中的文件（T-041c）：纯函数，不取 diff。`files` 传 null 表示取不到 diff。
+ * 命中的文件按 diff 的顺序最多列 `HIGH_RISK_FILES_MAX` 个，其余只计数。
+ */
+export function highRiskEvidence(input: {
+  kind?: string | undefined;
+  files: readonly Pick<DiffFile, "path" | "status">[] | null;
+}): { reasons: HighRiskReason[]; files: string[]; files_more: number } {
+  const reasons: HighRiskReason[] = [];
+  if (input.kind === "dependency") reasons.push("dependency_kind");
+  const hit = input.files ? input.files.filter(isHighRiskDiffFile).map((f) => f.path) : [];
+  if (hit.length) reasons.push("dependency_file");
+  if (input.files === null) reasons.push("diff_unavailable");
+  else if (!reasons.length) reasons.push("unverified");
+  return {
+    reasons,
+    files: hit.slice(0, HIGH_RISK_FILES_MAX),
+    files_more: Math.max(0, hit.length - HIGH_RISK_FILES_MAX),
+  };
 }
 
 /** 清单里最后一条匹配 path 的条目是不是显式 deny（未匹配不算显式）。 */
@@ -783,9 +834,12 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
       const summary = lateNotes.length
         ? `${baseSummary}\n\n${notesSection(lateNotes)}`
         : baseSummary;
-      // 依赖类单标高风险（T-038）：主管标了 kind: "dependency"，或 diff 改了依赖清单 / 锁文件
-      const high_risk =
-        s.ticket.kind === "dependency" || s.last.changed_files.some(isDependencyFile);
+      // 本轮 diff 在评审前取一次，绑定当时的 head（diff.head_sha）；评审不改代码，评审后写轮次记录沿用同一份
+      s.stage = "diff";
+      const diff = await deps.pr.diff(pr_id);
+      // 依赖类单标高风险（T-038）：主管标了 kind: "dependency"，或 diff 改了依赖清单 / 锁文件；
+      // T-041c 起改名的文件也算（isHighRiskDiffFile，T-065 收窄）
+      let high_risk = s.ticket.kind === "dependency" || diff.files.some(isHighRiskDiffFile);
       let result: ReviewResult;
       s.stage = "permissions";
       const permission_list = await permissionsFor(s.ticket);
@@ -810,8 +864,6 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
         throw e;
       }
       throwIfAborted(s.signal);
-      s.stage = "diff";
-      const diff = await deps.pr.diff(pr_id);
       s.stage = "round_save";
       const round = await nextRound(s.ticket.ticket_id);
       await deps.rounds.save({
@@ -842,6 +894,9 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
           );
           continue;
         }
+        // 交给 9 之前终判高风险（T-041c）：PR 的 head 已不是评审前那次 diff 的 head，按新 diff 重判；
+        // 取不到 diff（不知道合进去的是什么）一律按高风险
+        if (!high_risk) high_risk = await headStillJudged(s.ticket, pr_id, diff.head_sha);
         remember(s);
         if (s.submit) {
           // 先写 merge_queued 再交给 9：交出去之后的状态归 9，8 不再写
@@ -869,6 +924,31 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
       if (s.counts.review >= limit) return escalate(s, "review_limit");
       await countResubmit(s, reasonsToFeedback(result.reasons), "评审不过");
     }
+  }
+
+  /**
+   * 评审通过、交给 9 之前确认 PR 的 head 还是评审前取 diff 时的那个（T-041c）。
+   * 返回终判的 high_risk：head 没变沿用评审前的判定（false）；变了按新 diff 重判；重新取 diff 失败按高风险。
+   */
+  async function headStillJudged(
+    ticket: SubAgentTicket,
+    pr_id: string,
+    reviewed_head: string,
+  ): Promise<boolean> {
+    let latest: Awaited<ReturnType<typeof deps.pr.diff>>;
+    try {
+      latest = await deps.pr.diff(pr_id);
+    } catch (e) {
+      logger.warn(
+        `[bakacoding/sub-agent] ${ticket.ticket_id} 交出前重新取 PR ${pr_id} 的 diff 失败，按高风险处理：${String(e)}`,
+      );
+      return true;
+    }
+    if (latest.head_sha === reviewed_head) return false;
+    logger.warn(
+      `[bakacoding/sub-agent] ${ticket.ticket_id} 的 PR ${pr_id} 在评审期间 head 变了（${reviewed_head} → ${latest.head_sha}），按新 diff 重判高风险`,
+    );
+    return ticket.kind === "dependency" || latest.files.some(isHighRiskDiffFile);
   }
 
   /** handle 模式：未分类的异常也上报，不让单子卡在 coding；其他模式交给 9 处理。 */

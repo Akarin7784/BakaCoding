@@ -227,6 +227,31 @@ export interface SchedulerDeps {
    * 轮询只用来接住预算重置、进入闲时、反压恢复这类没有事件的变化。只在注入了 8 的 handle 时启用。
    */
   dispatch_poll_ms?: number;
+  /**
+   * 高风险闸门（T-041c，提案 R1）：true 时 high_risk 的单在合并队列里扣着，等 `releaseHighRisk` 放行或
+   * `rejectHighRisk` 拒绝；单子停在 merge_queued、留在队里，不挡后面不相干的单。默认 false：只打标、照常合并
+   * （只适用于单独使用 9；组合根固定打开）。
+   */
+  holdHighRisk?: boolean;
+  /**
+   * 闸门扣住一张单时调用（T-041c，N2）：同一 PR 只调一次；放行后冲突复投换了新 PR 会再调（cause: resubmit），
+   * 重启接管接回的单第一次扣住时 cause 为 adopt。抛错只调 onError。
+   */
+  onHighRiskHeld?: (info: HighRiskHeldInfo) => void;
+  /**
+   * 反压从未暂停变成暂停时调用一次（T-041c）：state.pending_prs.high_risk_held 是其中被高风险闸门扣着、
+   * 等用户裁决的 PR 数。在派单时检测（派单轮询、入队、合并等都会触发）。抛错只调 onError。
+   */
+  onBackpressurePaused?: (state: BackpressureState) => void;
+}
+
+/** 高风险闸门扣住一张单时的通知（T-041c）。 */
+export interface HighRiskHeldInfo {
+  ticket_id: string;
+  pr_id: string;
+  requirement_id: string;
+  /** submit：评审通过刚交进来；adopt：重启接管接回（之前的放行不保存）；resubmit：放行后冲突复投换了新 PR */
+  cause: "submit" | "adopt" | "resubmit";
 }
 
 export type BackpressureReason =
@@ -247,7 +272,14 @@ export interface BackpressureState {
   review_backlog: { pending: number; capacity: number };
   supervisor_backlog: { pending: number; capacity: number } | null;
   /** 排队中（merge_queued）+ 评审中（review_backlog.pending）的 PR 数，超过 limit 暂停派单 */
-  pending_prs: { merge_queued: number; in_review: number; total: number; limit: number };
+  pending_prs: {
+    merge_queued: number;
+    in_review: number;
+    total: number;
+    limit: number;
+    /** merge_queued 里被高风险闸门扣着、等用户裁决的 PR 数（T-041c；闸门关时恒为 0） */
+    high_risk_held: number;
+  };
   daily_budget_exhausted: boolean;
 }
 
@@ -267,8 +299,10 @@ export interface QueueEntryView {
   dependency: DependencyState;
   /** 因当日预算用完放回 pending、等预算重置后续跑 */
   budget_paused: boolean;
-  /** 8 在 submit 时标的高风险（依赖类单，T-038）；只打标，9 照常合并 */
+  /** 8 在 submit 时标的高风险（依赖类单，T-038）；闸门打开时扣留（T-041c） */
   high_risk: boolean;
+  /** 被高风险闸门扣着、等用户放行或拒绝（T-041c，N6）：闸门开、高风险、merge_queued、当前 PR 没放行 */
+  held_high_risk: boolean;
 }
 
 export interface Scheduler {
@@ -364,6 +398,24 @@ export interface Scheduler {
   /** 反压信号（T-039 派单只读它，不重复实现） */
   backpressureState(): Promise<BackpressureState>;
   /** 依赖状态：全部合入 ready；有依赖没合入 waiting；有依赖（含间接）已上报 held */
+  /**
+   * 确认这张单的 `pr_id` 正被高风险闸门扣着、现在能裁决（T-041c）：不改任何状态，不能裁决时抛
+   * `HighRiskDecisionError`（码：not_found / terminal / gate_off / not_high_risk / not_held / stale_pr /
+   * merge_in_progress）。10 在拒绝前关 PR 之前先调它。
+   */
+  checkHighRisk(ticket_id: string, pr_id: string): void;
+  /**
+   * 放行被高风险闸门扣着的单（T-041c，提案 R1 / N1）：记下「当前 pr_id 已放行」并触发合并循环，返回 released；
+   * 同一 PR 已放行过返回 already。按 pr_id 绑定：传入的不是当前 PR 抛 `stale_pr`；其余不能放行的情况抛
+   * `HighRiskDecisionError`（码同 `checkHighRisk`，正在合并除外）。之后冲突复投换了新 PR 会重新扣。放行只在进程内，重启后重新扣。
+   */
+  releaseHighRisk(ticket_id: string, pr_id: string): "released" | "already";
+  /**
+   * 拒绝高风险单（T-041c，提案 R1 / N1）：先同 `checkHighRisk` 校验（`pr_id` 必须是当前被扣的 PR），
+   * 再发 escalated(high_risk_rejected, detail)，状态 escalated、放锁、清 9 自建的 worktree，单子不再进合并队列。
+   * 9 不关 PR：关 PR 由 10 在调它之前经 041b 的 `closeTicketPr` 做（N5）。
+   */
+  rejectHighRisk(ticket_id: string, pr_id: string, detail: string): Promise<void>;
   dependencyState(ticket_id: string): DependencyState;
   status(ticket_id: string): TicketStatus | undefined;
   snapshot(): QueueEntryView[];

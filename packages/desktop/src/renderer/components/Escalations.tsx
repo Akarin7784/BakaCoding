@@ -11,6 +11,7 @@ export const ESCALATION_REASON: Record<EscalationView["reason"], string> = {
   budget_exceeded: "本单预算用完",
   internal_error: "内部错误",
   merged_but: "合并后续步骤失败",
+  high_risk_rejected: "用户拒绝了高风险 PR",
 };
 
 /** 合并队列给不认识的 PR 上报时，requirement_id 填 `unattributed:<pr_id>`（T-035）。 */

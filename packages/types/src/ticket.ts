@@ -32,10 +32,11 @@ export const TERMINAL_TICKET_STATUSES = [
  * 并标为高风险；9 的默认独占区域也以它开头。匹配规则同模块 4（minimatch，`dot: true`）。
  */
 export const DEPENDENCY_MANIFEST_GLOBS: readonly string[] = Object.freeze([
-  // 依赖清单
+  // 依赖清单（T-041c：每个文件名都同时匹配仓库根目录和任意子目录）
   "package.json",
   "**/package.json",
   "pnpm-workspace.yaml",
+  "**/pnpm-workspace.yaml",
   "requirements*.txt",
   "**/requirements*.txt",
   "pyproject.toml",
@@ -45,16 +46,19 @@ export const DEPENDENCY_MANIFEST_GLOBS: readonly string[] = Object.freeze([
   "Cargo.toml",
   "**/Cargo.toml",
   "Gemfile",
+  "**/Gemfile",
   "pom.xml",
   "**/pom.xml",
   "build.gradle*",
   "**/build.gradle*",
   // 锁文件
   "pnpm-lock.yaml",
+  "**/pnpm-lock.yaml",
   "package-lock.json",
   "**/package-lock.json",
   "yarn.lock",
   "**/yarn.lock",
+  "*.lock",
   "**/*.lock",
   "go.sum",
   "**/go.sum",

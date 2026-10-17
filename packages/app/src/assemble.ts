@@ -24,12 +24,14 @@ import {
   type SchedulerDeps,
   type SchedulerTicket,
   type SubAgentCallOptions,
+  type HighRiskHeldInfo,
 } from "@bakacoding/scheduler";
 import type { Storage } from "@bakacoding/storage";
 import {
   createSubAgent,
   eventLogGrantedScopes,
   eventLogResubmitHistory,
+  isHighRiskDiffFile,
   storageTicketPermissions,
   type HandleOptions,
   type ResumeToken,
@@ -42,7 +44,7 @@ import {
   type SupervisorDeps,
   type TakeOverReport,
 } from "@bakacoding/supervisor";
-import type { EventOf, ReviewResult, TicketStatus } from "@bakacoding/types";
+import type { DiffFile, EventOf, ReviewResult, TicketStatus } from "@bakacoding/types";
 import { isUnsafeGlob, type ScopeBus } from "@bakacoding/workspace";
 
 export type MaybePromise<T> = T | Promise<T>;
@@ -200,6 +202,26 @@ export async function closeTicketPrs(
   return "closed";
 }
 
+/**
+ * 重启接管时补判高风险（T-041c，N4）：8 按 diff 判出的高风险重启后就丢了（只有 kind: dependency 存在 2 里），
+ * 接回前按 6 的 diff 重新判，规则同 8（`isHighRiskDiffFile`：依赖清单 / 锁文件，含删除的；改名一律算）。
+ * diff 出错按高风险处理：宁可错扣，不可漏扣。同时返回取到的 diff 文件（取不到为 null），
+ * 组合根留着给 10 的 `pendingHighRisk()` 算理由和文件，不再取第二次。
+ */
+export async function judgeHighRiskOnTakeover(
+  pr: Pick<PrProvider, "diff">,
+  pr_id: string,
+  warn: (msg: string, detail?: unknown) => void = () => {},
+): Promise<{ high_risk: boolean; files: DiffFile[] | null }> {
+  try {
+    const files = (await pr.diff(pr_id)).files;
+    return { high_risk: files.some(isHighRiskDiffFile), files };
+  } catch (err) {
+    warn(`重启接管：取 PR ${pr_id} 的 diff 失败，按高风险处理`, err);
+    return { high_risk: true, files: null };
+  }
+}
+
 export async function assemble(deps: AppDeps): Promise<App> {
   const logger = deps.logger ?? {
     warn: (m: string, d?: unknown) => console.warn(`[app] ${m}`, d ?? ""),
@@ -236,6 +258,11 @@ export async function assemble(deps: AppDeps): Promise<App> {
       closeTicketPrs({ sync: () => scheduler.sync(), store, pr }, ticket_id, reason),
     lastEscalation: lastEscalationFrom(storage),
     replaceDependency: (old_id, ids) => scheduler.replaceDependency(old_id, ids),
+    highRisk: {
+      check: (id, pr_id) => scheduler.checkHighRisk(id, pr_id),
+      release: (id, pr_id) => scheduler.releaseHighRisk(id, pr_id),
+      reject: (id, pr_id, detail) => scheduler.rejectHighRisk(id, pr_id, detail),
+    },
     publish,
     subscribe: (type, handler) => bus.subscribe(type, handler),
     targetHead: () => deps.targetHead(),
@@ -334,8 +361,42 @@ export async function assemble(deps: AppDeps): Promise<App> {
       worktree_path: rec.worktree_path,
       base_commit: rec.base_sha,
       ...(m ? { round: Number(m[1]) } : {}),
-      ...(kind === "dependency" ? { high_risk: true } : {}),
+      ...((await judgeOnTakeover(rec.pr_id)) || kind === "dependency" ? { high_risk: true } : {}),
     });
+  }
+
+  /** N4 补判时取到的 diff 文件（pr_id → 文件，取不到为 null）：扣住时给 10 用，用完即删 */
+  const takeoverDiff = new Map<string, DiffFile[] | null>();
+  async function judgeOnTakeover(pr_id: string): Promise<boolean> {
+    const j = await judgeHighRiskOnTakeover(pr, pr_id, (m, d) => logger.warn(m, d));
+    takeoverDiff.set(pr_id, j.files);
+    return j.high_risk;
+  }
+
+  /**
+   * 9 扣住高风险单（T-041c）：补上 PR 链接（2 的 PR 记录）和 diff 文件再交给 10。diff 用 N4 补判时那份，
+   * 没有就现取一次（取不到为 null，10 记 diff_unavailable）。10 的 `pendingHighRisk()` 只读这里给的内存数据。
+   */
+  async function highRiskHeld(info: HighRiskHeldInfo): Promise<void> {
+    let diff_files: DiffFile[] | null;
+    if (takeoverDiff.has(info.pr_id)) {
+      diff_files = takeoverDiff.get(info.pr_id) ?? null;
+      takeoverDiff.delete(info.pr_id);
+    } else {
+      try {
+        diff_files = (await pr.diff(info.pr_id)).files;
+      } catch (err) {
+        logger.warn(`高风险单 ${info.ticket_id}：取 PR ${info.pr_id} 的 diff 失败`, err);
+        diff_files = null;
+      }
+    }
+    let pr_url: string | undefined;
+    try {
+      pr_url = (await store.get(info.pr_id))?.remote?.url;
+    } catch (err) {
+      logger.warn(`高风险单 ${info.ticket_id}：读 PR 记录 ${info.pr_id} 失败`, err);
+    }
+    await supervisor.highRiskHeld({ ...info, diff_files, ...(pr_url ? { pr_url } : {}) });
   }
 
   // ---- 9 ----
@@ -362,7 +423,12 @@ export async function assemble(deps: AppDeps): Promise<App> {
     },
     onError: (err, ticket_id) => onError(err, `scheduler(${ticket_id})`),
     ...(deps.newId ? { newId: deps.newId } : {}),
-    // TODO(T-041c)：9 加了高风险闸门后，在这里打开（holdHighRisk: true）。默认关闭只适用于单独使用 9 的场景。
+    // 高风险闸门（T-041c）：组合根固定打开，AppDeps 关不掉（Q-3）；默认关闭只适用于单独使用 9
+    holdHighRisk: true,
+    onHighRiskHeld: (info) =>
+      void highRiskHeld(info).catch((err) => onError(err, `supervisor(${info.ticket_id})`)),
+    onBackpressurePaused: (state) =>
+      void supervisor.backpressurePaused(state).catch((err) => onError(err, "supervisor")),
   });
 
   ready = true;
