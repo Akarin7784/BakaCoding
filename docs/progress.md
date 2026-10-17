@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`e35e38e` · main 上测试：12 个测试文件、121 个测试全部通过 · 更新日期：2026-10-17（UTC+8）
+> 上次更新时 main：`95cd3f3` · main 上测试：13 个测试文件、142 个测试全部通过 · 更新日期：2026-10-17（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -37,14 +37,14 @@ flowchart BT
   classDef doing fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef done fill:#dcfce7,stroke:#16a34a,color:#14532d
 
-  class M0,M11,M12,T done
-  class M2,M3,M4,M6 doing
+  class M0,M2,M11,M12,T done
+  class M3,M4,M6 doing
   class M1,M5,M7,M8,M9,M10 todo
 ```
 
 图例：绿色 = 已完成，黄色 = 进行中，灰色 = 未开始。
 
-- 0 事件总线：T-003 已合入。T-005 还会给总线加 `initialSeq` 和订阅队列上限，这两项记在 T-005（模块 2）名下。
+- 0 事件总线：T-003 已合入。总线的 `initialSeq` 和订阅队列上限随 T-005（模块 2）在 #19 合入，记在 T-005 名下。
 - 共享类型包不算 13 个功能模块之一，单列出来。
 - 8、9、10（编排层）的第二批需求单还没拆，所以显示未开始。
 
@@ -58,7 +58,7 @@ flowchart BT
 | T-002 | 读配置与读密钥接口（getConfig / validate / getSecret），补齐示例配置 | 3 | 基础层开发 | 已合入 | #5 | `adf612a` |
 | T-003 | 事件总线 publish / subscribe | 0 | 基础层开发 | 已合入 | #13 | `ea51630` |
 | T-004 | 模型接入层 call / capabilities / rateLimitState | 1 | 基础层开发 | 未开始 | — | — |
-| T-005 | SQLite（WAL）与事件落库；另含总线 `initialSeq`、订阅队列上限、`DiagnosticsSource` 移入 types、modules.md 公共字段措辞 | 2 | 基础层开发 | 待评审 | #19 | — |
+| T-005 | SQLite（WAL）与事件落库；另含总线 `initialSeq`、订阅队列上限、`DiagnosticsSource` 移入 types、modules.md 公共字段措辞 | 2 | 基础层开发 | 已合入 | #19 | `95cd3f3` |
 | T-006 | 预算台账 recordCost / budgetState | 3 | 基础层开发 | 未开始 | — | — |
 | T-007 | 脱敏函数 redact（light / full） | 3 | 基础层开发 | 已合入 | #6 | `4f20ce0` |
 | T-008 | 项目导入与提示词模板 importProject / promptTemplate | 3 | 基础层开发 | 未开始 | — | — |
