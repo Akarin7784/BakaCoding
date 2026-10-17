@@ -421,6 +421,65 @@ describe("组合根：重启接管", () => {
     expect(again.failed).toEqual([]);
   });
 
+  it("接管重试：第一次 adopt 失败、enqueue 的单已派单持锁，再 takeOver 时写入范围重叠的单进 failed、不叠锁", async () => {
+    const { storage, worktreeRoot } = setup();
+    // A 在合并队列里，但第一次接管时 2 里还没有它的 PR 记录：adopt 失败
+    saveTicket(storage, "req-1-1", "merge_queued", fields({ write_scope: ["lib/a/**"] }));
+    // B 编码中、范围与 A 重叠：enqueue 回 9，派单后持锁
+    saveTicket(storage, "req-1-2", "coding", fields({ write_scope: ["lib/a/x.ts"] }));
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const runTicket = vi.fn(async () => {
+      await gate;
+      return { status: "done" as const, summary: "写好了", changed_files: ["lib/a/x.ts"] };
+    });
+    const { pr, calls } = fakePr();
+    const { app } = await start({ storage, worktreeRoot, pr, runTicket });
+    expect(app.takeOver.failed.map((f) => f.ticket_id)).toEqual(["req-1-1"]);
+    expect(app.takeOver.enqueued).toEqual(["req-1-2"]);
+    await vi.waitFor(() => expect(runTicket).toHaveBeenCalledTimes(1), { timeout: 5000 });
+    expect(
+      app.scheduler.snapshot().find((v) => v.ticket_id === "req-1-2")!.locked_scope,
+    ).not.toBeNull();
+
+    // 补上 A 的 PR 记录后重试接管：A 与持锁的 B 重叠，进 failed，9 不登记 A
+    const path = join(worktreeRoot, "req-1-1-r0");
+    mkdirSync(path, { recursive: true });
+    await storage.prStore<TicketPrRecord>().put({
+      kind: "ticket",
+      pr_id: "local-A",
+      ticket_id: "req-1-1",
+      worktree_path: path,
+      branch: "bakacoding/req-1-1-r0",
+      base_branch: "bakacoding/integration",
+      base_sha: HEAD,
+      head_sha: "d".repeat(40),
+      status: "open",
+      created_ts: "2026-10-17T08:00:01Z",
+      updated_ts: "2026-10-17T08:00:01Z",
+    });
+    const again = await app.supervisor.takeOver();
+    expect(again.adopted).toEqual([]);
+    expect(again.failed).toEqual([
+      { ticket_id: "req-1-1", error: expect.stringMatching(/在途单 req-1-2 重叠/) },
+    ]);
+    expect(app.scheduler.status("req-1-1")).toBeUndefined();
+    expect(
+      app.scheduler
+        .snapshot()
+        .filter((v) => v.locked_scope !== null)
+        .map((v) => v.ticket_id),
+    ).toEqual(["req-1-2"]);
+    expect(statusOf(storage, "req-1-1")).toBe("merge_queued");
+
+    release();
+    await vi.waitFor(() => expect(statusOf(storage, "req-1-2")).toBe("merged"), {
+      timeout: 5000,
+    });
+    await app.scheduler.idle();
+    expect(calls.merge).not.toContain("local-A");
+  });
+
   it("沿用已开的 PR 时 worktree 不在了：不另开 PR，交 9 上报", async () => {
     const { storage, worktreeRoot } = setup();
     saveTicket(storage, "req-1-1", "coding", fields());

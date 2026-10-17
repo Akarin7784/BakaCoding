@@ -135,8 +135,9 @@ flowchart BT
 - 模块 9（T-046）：没补发成功的 `interface_changed` 待补发列表只在进程内，重启即丢。
 - 组合根（T-041a）：重启时 `escalated` 的单只列出，补跑上报处理在 T-041b；高风险闸门的打开在 T-041c。
 - 组合根（T-041a）：重启接管时依赖里已上报（`escalated`）或没接回（`fields_invalid`、接管失败）的单，9 不认识，依赖它的单会一直 `waiting`（不是 `held`）。
-- 模块 9（T-041a）：`adopt` 接回的单评审复投数从 0 记起（9 只用它报上报的 `resubmit_counts`，8 的复投上限按事件日志算），冲突复投数按 worktree 轮次估。
-- 组合根（T-041a）：`fields_invalid` 的「只通知一次」只在同一进程内去重；每次重启都会再发一条 `ticket_warning(fields_invalid)`。
+- 模块 9（T-041a）：`adopt` 接回的单复投数是估的：评审复投数从 0 记起（9 只用它报上报的 `resubmit_counts`，8 的复投上限按事件日志算），冲突复投数按 worktree 轮次估。
+- 模块 9（T-041a → T-041b）：`adopt` 只按单的原 `write_scope` 加锁；重启前经 `extendScope` 扩出的范围不恢复。
+- 组合根（T-041a）：`fields_invalid` 的「只通知一次」只在同一进程内去重；每次重启都会再发一条 `ticket_warning(fields_invalid)`，跨重启去重由桌面端做（T-062，按单号 + 警告码去重）。
 - 组合根（T-041a）：一次组装对应一个仓库；12 的主进程还没接 `assemble`（另开单）。
 - 组合根（T-041a）：派单查当前 PR 用 2 的 `prStore().list()` 全量过滤，PR 记录多时偏慢（v1 可接受）。
 - 已解决（T-053）：中途写入范围申请里的路径曾按 glob 原样批准，文件名本身带通配符（如 `docs/**`）会批成整个目录可写；现在申请路径带通配字符一律拒绝。

@@ -2251,6 +2251,95 @@ describe("T-041a 重启接管 adopt", () => {
     expect(s.status("A")).toBe("merged");
   });
 
+  it("已有持锁单时，写入范围重叠的 adopt 抛错（写明冲突单号），不登记、不写状态、不入队", async () => {
+    const h = harness();
+    const d = withHandle(h);
+    const s = await started(h);
+    await s.enqueue(ticket("X", { write_scope: ["src/**"] }));
+    await settle(s);
+    expect(d.handled).toEqual(["X"]);
+    const before = h.statuses.length;
+    await expect(
+      s.adopt(ticket("Y", { write_scope: ["src/a.ts"] }), {
+        pr_id: "pr-Y",
+        head_sha: SHA("b"),
+        worktree_path: wt("Y"),
+        base_commit: h.head.sha,
+      }),
+    ).rejects.toThrow(/在途单 X 重叠/);
+    expect(s.status("Y")).toBeUndefined();
+    expect(s.snapshot().map((v) => v.ticket_id)).toEqual(["X"]);
+    expect(h.statuses.slice(before)).toEqual([]);
+    await settle(s);
+    expect(h.calls.filter((c) => c.startsWith("merge:"))).toEqual([]);
+    // 失败不留痕：之后不重叠时可以正常接回
+    await pass(s, d, "X");
+    expect(
+      await s.adopt(ticket("Y", { write_scope: ["src/a.ts"] }), {
+        pr_id: "pr-Y",
+        head_sha: SHA("b"),
+        worktree_path: wt("Y"),
+        base_commit: h.head.sha,
+      }),
+    ).toBe("adopted");
+  });
+
+  it("两张写入范围重叠的单先后 adopt：第二张抛错，只有第一张持锁", async () => {
+    const h = harness();
+    const s = await started(h);
+    // 依赖没登记：A 留在队里持锁不出队
+    expect(
+      await s.adopt(ticket("A", { write_scope: ["src/**"], depends_on: ["Z"] }), {
+        pr_id: "pr-A",
+        head_sha: SHA("b"),
+        worktree_path: wt("A"),
+      }),
+    ).toBe("adopted");
+    await expect(
+      s.adopt(ticket("B", { write_scope: ["src/a.ts"] }), {
+        pr_id: "pr-B",
+        head_sha: SHA("b"),
+        worktree_path: wt("B"),
+      }),
+    ).rejects.toThrow(/在途单 A 重叠/);
+    expect(s.status("B")).toBeUndefined();
+    expect(h.statuses).toEqual([["A", "merge_queued"]]);
+    expect(
+      s
+        .snapshot()
+        .filter((v) => v.locked_scope !== null)
+        .map((v) => v.ticket_id),
+    ).toEqual(["A"]);
+  });
+
+  it("独占区域正被另一张单占着：碰独占区域的 adopt 抛错并说明是独占区域", async () => {
+    const h = harness();
+    const s = await started(h);
+    await s.adopt(ticket("A", { write_scope: ["pnpm-lock.yaml"], depends_on: ["Z"] }), {
+      pr_id: "pr-A",
+      head_sha: SHA("b"),
+      worktree_path: wt("A"),
+    });
+    // 文件不同、不重叠，但都在独占区域
+    await expect(
+      s.adopt(ticket("B", { write_scope: ["packages/x/package.json"] }), {
+        pr_id: "pr-B",
+        head_sha: SHA("b"),
+        worktree_path: wt("B"),
+      }),
+    ).rejects.toThrow(/独占区域.*A/);
+    expect(s.status("B")).toBeUndefined();
+    expect(h.statuses).toEqual([["A", "merge_queued"]]);
+    // 普通单不受影响
+    expect(
+      await s.adopt(ticket("C", { write_scope: ["src/c/**"], depends_on: ["Z"] }), {
+        pr_id: "pr-C",
+        head_sha: SHA("b"),
+        worktree_path: wt("C"),
+      }),
+    ).toBe("adopted");
+  });
+
   it("冲突（conflict 重启后的路径）：照常冲突复投，冲突计数取 round", async () => {
     const h = harness();
     h.merges.set("pr-A", [conflict(["a.ts"])]);

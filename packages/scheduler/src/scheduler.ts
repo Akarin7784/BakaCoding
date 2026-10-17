@@ -1334,6 +1334,15 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         );
       }
       const e = newEntry(ticket);
+      // 写入范围锁先加：和别的持锁单重叠、或碰独占区域而另一张独占单正持锁，就抛错，什么都不写、不入队
+      // （重启接管的重试、或两张重叠的单先后 adopt，都不能叠锁）
+      const lock = tryLock(e, scopeOf(ticket));
+      if (!lock.ok)
+        throw new Error(
+          lock.exclusive
+            ? `adopt ${ticket.ticket_id}：写入范围碰到独占区域，独占区域正被 ${lock.with.join("、")} 占用，不能接回 PR ${pr_id}`
+            : `adopt ${ticket.ticket_id}：写入范围与在途单 ${lock.with.join("、")} 重叠，不能接回 PR ${pr_id}`,
+        );
       // 不派单：PR 已经开出并评审过；从不交给 8 的 handle
       e.dispatched = true;
       e.pr_id = pr_id;
@@ -1349,8 +1358,6 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       const loc = locateBase(e.base_commit);
       e.base_unknown = loc.unknown;
       if (!loc.unknown) e.base_seq = loc.seq;
-      // 重启前它就持着写入范围锁：直接占上（不检查重叠），之后的单照常和它互斥
-      e.lock_scope = scopeOf(ticket);
       entries.set(ticket.ticket_id, e);
       prToTicket.set(pr_id, ticket.ticket_id);
       await setStatus(e, "merge_queued");

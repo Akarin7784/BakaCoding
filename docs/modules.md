@@ -220,7 +220,7 @@ graph BT
     - `pr_id`、`head_sha`、`worktree_path` 任一为空就抛错、不登记（蓝色大肥鱼：只收已有 PR id 和 head 的单）。
     - 幂等：同一单已用同一个 PR 接回（还没到终态、不是 `pending`）再调返回 `"already"`，什么都不改；已用别的 PR 登记、`enqueue` 过或已到终态时抛错。
     - 基线取 `base_commit`（组合根传 PR 记录的 `base_sha`）；重启后合并日志定不了它，合并前和 `targetHead()` 比，相同直接合，不同保守重审（同 `submit` 的 base_unknown）。冲突复投数默认取 `round`（worktree 轮次 n，同 8 的做法），评审复投数默认 0（8 的事件日志另有）。
-    - 写入范围锁直接占上，不检查重叠（重启前它就持着锁）。组合根先 `adopt` 再 `enqueue` 其余单，让它们先占锁。
+    - 写入范围锁按原 `write_scope` 加，规则同派单（`tryLock`）：与其他持锁单可能重叠、或碰独占区域而另一张独占单正持锁，就抛错（写明冲突的单号、是否因独占区域），不登记、不入队、不写状态，10 记进 `TakeOverReport.failed`。重启前经 `extendScope` 扩出的范围不恢复（T-041b）。10 先 `adopt` 再 `enqueue` 其余单，让它们先占锁。
   - 不认识的 PR 的事件上下文：默认 `requirement_id` / `trace_id` 为 `unattributed:<pr_id>`、`span_id` 新生成、`parent_span_id: null`，可用 `unknownEventContext` 注入替换。v1 采用 `unattributed:<pr_id>`，不改共享 schema（设计负责人已定）。说明：裁决要的「`project_id` 取自 PR 记录、`ticket_id` 为 null」现有类型表达不了——6 的 `EventContext` 只有 `requirement_id` 和三个 trace 字段，没有 `project_id` / `ticket_id`；`ticket_id` 由 6 按 PR 记录自己填（集成记录为 null）；`PrRecord` 没有 `project_id`；`escalated` 的 `requirement_id` 必须非空。要按裁决落地需改 `@bakacoding/pr` 的 `EventContext` / `PrRecord` 或 `@bakacoding/types` 的事件公共字段，T-035 没改。
   - 出队：先来先合，取第一张依赖全部 `merged` 的单；依赖没合入（或未登记、成环）的跳过不出队（`waiting`）；任一依赖（含间接依赖）已 `escalated` 则挂起（`held`），不出队、不发事件。合入目标默认 `INTEGRATION_BRANCH`。
   - 基线前进：本单基线是本会话内某次合并的 sha 时，从它之后算；是 `start()` 时读到的目标分支 HEAD 时，本会话的合并都算；之后有合并，且合并的单是本单依赖、或改了本单接口声明里的文件 / 符号 → 状态 `re_reviewing`，交 8 的 `reReview` 重审，不计复投，通过后回到队首；不涉及就直接合，`base_changed` 记 true。合并日志定不了基线时（重启后、基线不是本会话见过的提交、`base_commit` 和 `diff` 都拿不到），合并前读 `targetHead()` 比对：相同就直接合；不同（或基线未知）就保守地重审（`reReview` 带 `base_unknown: true`、`target_head`，`merged_since` 为空），绝不因为记录缺失跳过重审。

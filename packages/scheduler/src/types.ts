@@ -313,7 +313,9 @@ export interface Scheduler {
    *   是 pending（enqueue 过）或已到终态时抛错。
    * - 基线：`base_commit` 一般是 PR 记录的 `base_sha`；重启后合并日志定不了它，合并前和目标分支 HEAD 比，
    *   不同就保守重审（同 submit 的 base_unknown）。冲突复投数默认取 `round`（worktree 的轮次 n）。
-   * - 写入范围锁直接占上（重启前它就持着锁，不检查重叠）。
+   * - 写入范围锁按原 `write_scope` 加（没写按整个仓库），规则同派单：与其他持锁单可能重叠，或碰独占区域而
+   *   另一张独占单正持锁，就抛错（错误里写明和哪些单冲突、是否因独占区域），不登记、不入队、不写状态。
+   *   重启前经 extendScope 扩出的范围不恢复。
    */
   adopt(
     ticket: SchedulerTicket,
