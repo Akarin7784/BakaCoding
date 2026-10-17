@@ -219,15 +219,58 @@ export class StorageSeqConflictError extends Error {
 /** 模块 6 允许的 PR 记录类型。 */
 export const PR_RECORD_KINDS = ["ticket", "integration"] as const;
 
-const CREDENTIAL_URL = /^[a-z][a-z0-9+.-]*:\/\/[^/\s@]+@/i;
+/** 带 scheme 的 URL（`https://`、`ssh://` 等）；只有这种才检查凭据，SSH 简写 `git@host:o/r.git` 和路径不算。 */
+const SCHEME_URL = /^[a-z][a-z0-9+.-]*:\/\//i;
+/** 解析失败时的保守兜底（T-058 之前的规则）：`scheme://` 后面紧跟 `xxx@` 就当带凭据。 */
+const LEGACY_CREDENTIAL_URL = /^[a-z][a-z0-9+.-]*:\/\/[^/\s@]+@/i;
+/** 只有用户名、没有密码时，用户名本身像 token 也算凭据（如 `https://ghp_xxx@github.com`）。 */
+const TOKEN_LIKE_USER =
+  /^(gh[pousr]_|github_pat_|glpat-|xox[abposr]-|sk-|x-access-token$|oauth2$)/i;
+/** 查询参数名像凭据（值非空时整条拒写）。 */
+const CREDENTIAL_QUERY_KEY =
+  /^(access[_-]?token|token|private[_-]?token|auth[_-]?token|id[_-]?token|refresh[_-]?token|api[_-]?key|apikey|key|secret|client[_-]?secret|password|passwd|pwd|auth|sig|signature|x-amz-signature|x-amz-credential|x-amz-security-token|x-goog-signature|x-goog-credential)$/i;
+
+/**
+ * T-058：判断一个字符串是不是「带凭据的 URL」。
+ * - 只看带 scheme 的 URL；SSH 简写（`git@github.com:o/r.git`）和含 @ 的本地路径都不算。
+ * - userinfo 里有密码（`user:token@`，任何 scheme）算。
+ * - 只有用户名时：http(s) 的用户名像 token（`ghp_…`、`github_pat_…`、`glpat-…`、`x-access-token` 等）算；
+ *   `https://user@`、`ssh://git@` 这类普通用户名放行。
+ * - 查询参数里有 `token` / `access_token` / `api_key` / `sig` 等且值非空算。
+ * - 解析不了的按旧规则保守判断。
+ */
+function isCredentialUrl(v: string): boolean {
+  if (!SCHEME_URL.test(v)) return false;
+  let u: URL;
+  try {
+    u = new URL(v);
+  } catch {
+    return LEGACY_CREDENTIAL_URL.test(v);
+  }
+  if (u.password !== "") return true;
+  const web = u.protocol === "http:" || u.protocol === "https:";
+  if (u.username !== "") {
+    let user = u.username;
+    try {
+      user = decodeURIComponent(user);
+    } catch {
+      /* 保持原样 */
+    }
+    if (web && TOKEN_LIKE_USER.test(user)) return true;
+  }
+  for (const [k, val] of u.searchParams) {
+    if (val !== "" && CREDENTIAL_QUERY_KEY.test(k)) return true;
+  }
+  return false;
+}
 
 function isStructuralPrField(k: string): boolean {
   return PR_STRUCTURAL_FIELDS.has(k) || k.endsWith("_ts") || k.endsWith("_at");
 }
 
-/** 返回第一个「带凭据的 URL」所在路径；SSH 地址（git@host:o/r.git）和含 @ 的路径不算。 */
+/** 返回第一个「带凭据的 URL」所在路径（规则见 `isCredentialUrl`）。 */
 function findCredentialUrl(v: unknown, path: string): string | undefined {
-  if (typeof v === "string") return CREDENTIAL_URL.test(v) ? path : undefined;
+  if (typeof v === "string") return isCredentialUrl(v) ? path : undefined;
   if (Array.isArray(v)) {
     for (let i = 0; i < v.length; i++) {
       const r = findCredentialUrl(v[i], `${path}[${i}]`);
@@ -862,7 +905,7 @@ function open(options: StorageOptions, ro: boolean): Storage {
       );
     }
     // 结构字段（分支、sha、路径、remote、时间等）既不检查也不改写，6 靠它们做 merge / diff / sync；
-    // 唯一例外：URL 里带凭据（https://token@... / https://user:pass@...）时整条拒写。
+    // 唯一例外：URL 里带凭据（user:pass@、像 token 的用户名、查询参数里的 token 等，见 isCredentialUrl）时整条拒写。
     // 其余字段视为自由文本做轻脱敏（现在还没有，以后加 title、body 时生效）。
     const stored: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(record)) {
