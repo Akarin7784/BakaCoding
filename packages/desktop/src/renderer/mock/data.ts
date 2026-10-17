@@ -1,12 +1,17 @@
 // 假数据：仅用于 T-013 壳子展示，接入模块 2/3/9/10 后替换。
 import type { FlashCallSummary, ProjectView, SupervisorMessage } from "./types";
 
-const common = (n: number, ticket?: string) => ({
+// 事件公共字段，形状同 @bakacoding/types 的 EventCommon。
+// project_created 没有所属需求，但 schema 要求 requirement_id 非空，假数据里先填占位值。
+const common = (n: number, requirement_id: string, ticket: string | null = null) => ({
   event_id: `evt-${n}`,
-  trace_id: "trace-req-1",
-  span_id: `span-${n}`,
-  ...(ticket ? { ticket_id: ticket } : {}),
+  seq: n,
   ts: `2026-10-17T0${Math.min(n, 9)}:00:00Z`,
+  requirement_id,
+  ticket_id: ticket,
+  trace_id: `trace-${requirement_id}`,
+  span_id: `span-${n}`,
+  parent_span_id: null,
 });
 
 export const supervisorMessages: SupervisorMessage[] = [
@@ -52,7 +57,7 @@ export const flashCalls: Record<string, FlashCallSummary> = {
 export const projects: ProjectView[] = [
   {
     project: {
-      ...common(1),
+      ...common(1, "req-none"),
       type: "project_created",
       payload: {
         project_id: "p-todo",
@@ -67,11 +72,10 @@ export const projects: ProjectView[] = [
     ],
     messages: [
       {
-        ...common(2, "T-1"),
+        ...common(2, "req-1", "T-1"),
         type: "group_message",
         payload: {
           project_id: "p-todo",
-          requirement_id: "req-1",
           sender: "supervisor",
           kind: "dispatch",
           content: "T-1：给 Todo 加 due_date 字段，写入范围 src/model/**。",
@@ -79,11 +83,10 @@ export const projects: ProjectView[] = [
         },
       },
       {
-        ...common(3, "T-1"),
+        ...common(3, "req-1", "T-1"),
         type: "group_message",
         payload: {
           project_id: "p-todo",
-          requirement_id: "req-1",
           sender: "sub_agent",
           kind: "report",
           content: "T-1 已提交 PR #12。",
@@ -91,11 +94,10 @@ export const projects: ProjectView[] = [
         },
       },
       {
-        ...common(4, "T-1"),
+        ...common(4, "req-1", "T-1"),
         type: "group_message",
         payload: {
           project_id: "p-todo",
-          requirement_id: "req-1",
           sender: "sub_agent",
           kind: "review_verdict",
           content: "评审通过，进入合并队列。",
@@ -103,11 +105,10 @@ export const projects: ProjectView[] = [
         },
       },
       {
-        ...common(5, "T-2"),
+        ...common(5, "req-2", "T-2"),
         type: "group_message",
         payload: {
           project_id: "p-todo",
-          requirement_id: "req-2",
           sender: "supervisor",
           kind: "dispatch",
           content: "T-2：列表按 due_date 排序，写入范围 src/list/**。",
@@ -115,11 +116,10 @@ export const projects: ProjectView[] = [
         },
       },
       {
-        ...common(6, "T-2"),
+        ...common(6, "req-2", "T-2"),
         type: "group_message",
         payload: {
           project_id: "p-todo",
-          requirement_id: "req-2",
           sender: "sub_agent",
           kind: "resubmit",
           content: "评审未过（空值处理），第 1 次复投。",
@@ -155,7 +155,7 @@ export const projects: ProjectView[] = [
   },
   {
     project: {
-      ...common(7),
+      ...common(7, "req-none"),
       type: "project_created",
       payload: {
         project_id: "p-blog",

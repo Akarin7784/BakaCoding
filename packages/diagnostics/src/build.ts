@@ -121,14 +121,22 @@ function computeStats(tickets: TicketRecord[]): DiagStats {
   return stats;
 }
 
+/** 完整仓库里默认排除的 .env 类文件：任何一段路径是 `.env` 或 `.env.*`。 */
+export function isEnvFile(path: string): boolean {
+  return path.split(/[\\/]/).some((seg) => /^\.env(?:\..+)?$/.test(seg));
+}
+
 class RawFiles {
   readonly files: RawFile[] = [];
   private readonly used = new Set<string>(Object.values(PACKAGE_FILES));
   constructor(private readonly r: FullRedactor) {}
 
-  /** 整条路径（含单号）先脱敏再规整为安全的 zip 内路径；内容也做完整脱敏。返回 zip 内路径。 */
-  add(prefix: string, rel: string, content: string): string {
-    const base = safeZipPath(this.r.text(`${prefix}/${rel}`));
+  /**
+   * 每一段（固定前缀、单号、相对路径）各自先脱敏再规整，拼成安全的 zip 内路径；内容也做完整脱敏。
+   * 返回的就是写进 zip 的条目名，调用方原样保存，不再二次脱敏。
+   */
+  add(parts: string[], content: string): string {
+    const base = parts.map((p) => safeZipPath(this.r.text(p))).join("/");
     let name = base;
     for (let i = 2; this.used.has(name); i++) name = `${base}~${i}`;
     this.used.add(name);
@@ -162,7 +170,7 @@ export async function buildPackage(opts: ExportOptions, deps: ExportDeps): Promi
     const rounds = [...t.rounds]
       .sort((a, b) => a.round - b.round)
       .map((rd) => {
-        const diff_file = raw.add(`raw/${tid}`, `r${rd.round}.diff`, diffToUnified(rd.diff));
+        const diff_file = raw.add(["raw", tid, `r${rd.round}.diff`], diffToUnified(rd.diff));
         // tickets.jsonl 里只留 diff 元数据，patch 正文在 diff_file。
         const diff: Diff = {
           ...rd.diff,
@@ -171,7 +179,7 @@ export async function buildPackage(opts: ExportOptions, deps: ExportDeps): Promi
         return { ...rd, diff, diff_file };
       });
     const context_files = t.context_snippets.map((f) =>
-      raw.add(`raw/${tid}/context`, f.path, f.content),
+      raw.add(["raw", tid, "context", f.path], f.content),
     );
     const evalTask = deps.eval_tasks?.[tid];
     const ticket: DiagTicket = {
@@ -188,7 +196,7 @@ export async function buildPackage(opts: ExportOptions, deps: ExportDeps): Promi
       resubmit_count: Math.max(0, rounds.length - 1),
       merge: t.merge,
       ci_checks: t.ci_checks,
-      context_files,
+      context_files: [],
       cost: costs.get(tid) ?? {
         ticket_id: tid,
         total_micro_usd: 0,
@@ -198,19 +206,31 @@ export async function buildPackage(opts: ExportOptions, deps: ExportDeps): Promi
       marked_for_eval_set: t.marked_for_eval_set,
       eval_task: evalTask,
     };
-    return r.deep(ticket);
+    // 先脱敏其余字段，再放回 zip 条目路径：diff_file / context_files 必须与写进 zip 的条目名逐字一致。
+    const out = r.deep({ ...ticket, rounds: rounds.map((rd) => ({ ...rd, diff_file: "" })) });
+    out.rounds.forEach((rd, i) => (rd.diff_file = rounds[i]!.diff_file));
+    out.context_files = context_files;
+    return out;
   });
 
+  let excluded_env_files = 0;
   if (include_full_repo) {
     if (!deps.source.repoFiles)
       throw new Error("include_full_repo 为 true，但数据源没有 repoFiles");
-    for (const f of await deps.source.repoFiles(project_id)) raw.add("repo", f.path, f.content);
+    for (const f of await deps.source.repoFiles(project_id)) {
+      // .env 类文件整个不进包，而不是打包后再脱敏。
+      if (isEnvFile(f.path)) {
+        excluded_env_files += 1;
+        continue;
+      }
+      raw.add(["repo", f.path], f.content);
+    }
   }
 
   const redactedEvents = events.map((e) => r.deep(e));
   const redactedCosts = [...costs.values()].map((c) => r.deep(c));
   const created_at = (deps.now?.() ?? new Date()).toISOString();
-  const manifest: DiagManifest = r.deep({
+  const manifestBody = r.deep({
     schema: DIAG_SCHEMA,
     project_id,
     repo: deps.repo,
@@ -218,9 +238,14 @@ export async function buildPackage(opts: ExportOptions, deps: ExportDeps): Promi
     include_full_repo,
     created_at,
     redaction: "full" as const,
-    files: [...Object.values(PACKAGE_FILES), ...raw.files.map((f) => f.path)],
+    excluded_env_files,
     stats: computeStats(records),
   });
+  // files 列表同样是写进 zip 的条目名，不再二次脱敏。
+  const manifest: DiagManifest = {
+    ...manifestBody,
+    files: [...Object.values(PACKAGE_FILES), ...raw.files.map((f) => f.path)],
+  };
 
   return {
     manifest,

@@ -8,6 +8,7 @@ import {
   DIAG_SCHEMA,
   buildPackage,
   exportPackage,
+  isEnvFile,
   readPackage,
   readZip,
   toSweBenchJsonl,
@@ -398,7 +399,7 @@ describe("导出范围与内容", () => {
     ]);
   });
 
-  it("勾选 include_full_repo 才带 repo/ 下的完整仓库", async () => {
+  it("勾选 include_full_repo 才带 repo/ 下的完整仓库（.env 默认排除）", async () => {
     const pkg = await buildPackage(
       { project_id: PROJECT, scope: { kind: "ticket", ticket_id: "T-1" }, include_full_repo: true },
       deps,
@@ -406,7 +407,6 @@ describe("导出范围与内容", () => {
     expect(source.repoFiles).toHaveBeenCalledWith(PROJECT);
     expect(pkg.raw_files.filter((f) => f.path.startsWith("repo/")).map((f) => f.path)).toEqual([
       "repo/src/index.ts",
-      "repo/.env",
     ]);
   });
 
@@ -601,5 +601,88 @@ describe("zip 读写", () => {
     const p = join(dir, "x.zip");
     await import("node:fs/promises").then((fs) => fs.writeFile(p, zip));
     await expect(readPackage(p)).rejects.toThrow(/schema/);
+  });
+});
+
+describe("T-019：完整仓库默认排除 .env 文件", () => {
+  it("任何一段路径是 .env 或 .env.* 的文件根本不进包", async () => {
+    const files: RawFile[] = [
+      { path: "src/index.ts", content: "export {};\n" },
+      { path: ".env", content: `GITHUB_TOKEN=${FAKE.gh}\n` },
+      { path: "apps/web/.env.local", content: "PLAIN=1\n" },
+      { path: "config/.env.production/notes.txt", content: "in env dir\n" },
+      { path: ".env/inner.txt", content: "x\n" },
+      { path: "docs/.environment.md", content: "kept\n" },
+      { path: "src/env.ts", content: "kept\n" },
+      { path: "src/.envrc", content: "kept\n" },
+    ];
+    source.repoFiles = vi.fn(async () => files);
+    const zip_path = await exportPackage(
+      { project_id: PROJECT, scope: { kind: "ticket", ticket_id: "T-2" }, include_full_repo: true },
+      deps,
+    );
+    const names = readZip(await readFile(zip_path)).map((e) => e.name);
+    expect(names.filter((n) => n.startsWith("repo/")).sort()).toEqual(
+      [
+        "repo/docs/.environment.md",
+        "repo/src/env.ts",
+        "repo/src/.envrc",
+        "repo/src/index.ts",
+      ].sort(),
+    );
+    const pkg = await readPackage(zip_path);
+    expect(pkg.manifest.excluded_env_files).toBe(4);
+    // 被排除的文件不是"打包后再脱敏"：脱敏报告与只给保留文件时完全一样。
+    source.repoFiles = vi.fn(async () => files.filter((f) => !isEnvFile(f.path)));
+    const baseline = await buildPackage(
+      { project_id: PROJECT, scope: { kind: "ticket", ticket_id: "T-2" }, include_full_repo: true },
+      deps,
+    );
+    expect(pkg.redaction_report).toEqual(baseline.redaction_report);
+    expect(baseline.manifest.excluded_env_files).toBe(0);
+  });
+});
+
+describe("T-019：diff_file 就是写进 zip 的条目路径", () => {
+  it("单号和路径会触发脱敏时，tickets.jsonl 里的 diff_file / context_files 仍与 zip 条目逐字一致", async () => {
+    const base = makeTickets()[1]!;
+    const tricky: TicketRecord = {
+      ...base,
+      ticket_id: "TOKEN=T-7",
+      context_snippets: [
+        { path: `/home/${FAKE.homeUser}/proj/API_KEY=abc.ts`, content: "ctx\n" },
+        { path: "srv.corp/a.ts", content: "ctx\n" },
+      ],
+      rounds: [base.rounds[0]!, { ...base.rounds[0]!, round: 2 }],
+    };
+    source.queryTickets = async () => [tricky];
+    const evalDeps: ExportDeps = {
+      ...deps,
+      eval_tasks: { "TOKEN=T-7": { test_names: ["t"], run_command: "pytest" } },
+    };
+    const zip_path = await exportPackage(
+      { project_id: PROJECT, scope: { kind: "requirement", requirement_id: "R-2" } },
+      evalDeps,
+    );
+    const entries = readZip(await readFile(zip_path));
+    const names = new Set(entries.map((e) => e.name));
+    const ticketsJsonl = entries.find((e) => e.name === "tickets.jsonl")!.data.toString("utf8");
+    const t = JSON.parse(ticketsJsonl.trim()) as {
+      ticket_id: string;
+      rounds: { diff_file: string }[];
+      context_files: string[];
+    };
+    expect(t.ticket_id).not.toContain("T-7");
+    const diffFiles = t.rounds.map((r) => r.diff_file);
+    expect(diffFiles).toHaveLength(2);
+    expect(new Set(diffFiles).size).toBe(2);
+    for (const f of [...diffFiles, ...t.context_files]) {
+      expect(names.has(f)).toBe(true);
+      expect(f).not.toContain("[REDACTED");
+    }
+    const pkg = await readPackage(zip_path);
+    expect([...pkg.manifest.files].sort()).toEqual([...names].sort());
+    const inst = JSON.parse(toSweBenchJsonl(pkg).trim());
+    expect(inst.patch).toContain("diff --git a/README.md b/README.md");
   });
 });

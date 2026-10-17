@@ -173,6 +173,9 @@ export interface DiagManifest {
   include_full_repo: boolean;
   created_at: string;
   redaction: "full";
+  /** 勾选完整仓库时按默认规则排除的 .env 类文件个数（只记个数，不记路径）。 */
+  excluded_env_files: number;
+  /** zip 内全部条目名，与实际条目逐字一致。 */
   files: string[];
   stats: DiagStats;
 }
