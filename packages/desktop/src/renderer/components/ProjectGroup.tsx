@@ -2,20 +2,8 @@ import { ChevronDown, ChevronRight, PanelRight } from "lucide-react";
 import { AgentIcon } from "./AgentIcon";
 import { Button } from "./ui/button";
 import { EscalationItem, TicketWarningList } from "./Escalations";
-import type {
-  FlashCallSummary,
-  GroupMessageEvent,
-  GroupMessageKind,
-  ProjectView,
-} from "../mock/types";
-
-const KIND_LABEL: Record<GroupMessageKind, string> = {
-  dispatch: "派单",
-  report: "回报",
-  review_verdict: "评审结论",
-  resubmit: "复投记录",
-  escalation: "上报",
-};
+import { GROUP_MESSAGE_KIND_LABEL } from "../lib/copy";
+import type { FlashCallSummary, GroupMessageEvent, ProjectView } from "../mock/types";
 
 function FlashCalls({ ids, calls }: { ids: string[]; calls: Record<string, FlashCallSummary> }) {
   if (ids.length === 0) return null;
@@ -46,7 +34,7 @@ function Message({ m, calls }: { m: GroupMessageEvent; calls: Record<string, Fla
       <div className="min-w-0">
         <div className="text-xs text-muted-foreground">
           {m.payload.sender === "supervisor" ? "主管" : `副 Agent ${m.ticket_id ?? ""}`} ·{" "}
-          {KIND_LABEL[m.payload.kind]}
+          {GROUP_MESSAGE_KIND_LABEL[m.payload.kind]}
         </div>
         <p>{m.payload.content}</p>
         <FlashCalls ids={m.payload.flash_calls} calls={calls} />
@@ -80,7 +68,7 @@ export function ProjectGroup({
           </span>
         )}
         <Button
-          variant="ghost"
+          variant="secondary"
           size="icon"
           aria-label={sidebarOpen ? "关闭侧边栏" : "打开侧边栏"}
           aria-pressed={sidebarOpen}

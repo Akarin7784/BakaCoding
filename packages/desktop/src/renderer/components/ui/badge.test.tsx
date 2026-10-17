@@ -3,25 +3,43 @@ import { EventSchema, TICKET_STATUSES } from "@bakacoding/types";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { projects } from "../../mock/data";
+import { STATUS_ICON } from "../StatusIcon";
 import { STATUS_LABEL, StatusBadge } from "./badge";
 
 afterEach(cleanup);
 
 describe("状态徽标（TicketStatus）", () => {
-  it("强调色只用于编码中、复投、冲突、已合并，其余中性", () => {
-    const accent = new Set(["coding", "resubmitting", "conflict", "merged"]);
+  it("每个状态的色调与 StatusIcon 一致（§5.2）：运行中 accent，冲突 / 上报 danger，已合入前景色，其余中性", () => {
+    const expected = {
+      pending: "muted",
+      coding: "accent",
+      in_review: "accent",
+      re_reviewing: "accent",
+      resubmitting: "accent",
+      merge_queued: "muted",
+      conflict: "danger",
+      merged: "foreground",
+      escalated: "danger",
+    } as const;
     for (const s of TICKET_STATUSES) {
       render(<StatusBadge status={s} />);
       const el = screen.getByText(STATUS_LABEL[s]);
       expect(el.getAttribute("data-status")).toBe(s);
-      expect(el.getAttribute("data-accent")).toBe(String(accent.has(s)));
+      expect(el.getAttribute("data-tone")).toBe(expected[s]);
+      expect(el.getAttribute("data-tone")).toBe(STATUS_ICON[s].tone);
       cleanup();
     }
   });
 
-  it("escalated 显示为需要人工介入", () => {
+  it("escalated 显示为需要人工介入，用 danger", () => {
     render(<StatusBadge status="escalated" />);
-    expect(screen.getByText("需要人工介入").getAttribute("data-accent")).toBe("false");
+    expect(screen.getByText("需要人工介入").getAttribute("data-tone")).toBe("danger");
+  });
+
+  it("徽标里的图标只作装饰，不重复朗读", () => {
+    render(<StatusBadge status="merged" />);
+    expect(screen.queryByRole("img")).toBeNull();
+    expect(screen.getByText("已合入").querySelector("svg")).toBeTruthy();
   });
 });
 

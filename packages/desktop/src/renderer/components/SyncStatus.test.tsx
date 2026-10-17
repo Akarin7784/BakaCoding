@@ -65,6 +65,9 @@ describe("SyncStatus（T-067）", () => {
     );
     expect(screen.getByTestId("sync-status-label").textContent).toBe("限流退避中");
     expect(screen.getByTestId("sync-hint").textContent).toBe("触发限流，将在 2 分钟后重试");
+    // UI-01：告警用 danger 红，不用强调蓝
+    expect(screen.getByTestId("sync-hint").className).toContain("text-danger");
+    expect(screen.getByTestId("sync-status-label").className).toContain("text-danger");
   });
 
   it("只读：同步状态不可用 + 原因", () => {

@@ -45,8 +45,8 @@ describe("桌面界面壳子", () => {
     expect(screen.getByRole("complementary", { name: "侧边栏" })).toBeTruthy();
     expect(screen.getByTestId("pool-status").textContent).toContain("并发 1/4");
     expect(screen.getByRole("button", { name: /合入 main/ })).toBeTruthy();
-    const badge = screen.getByText("复投");
-    expect(badge.getAttribute("data-accent")).toBe("true");
+    const badge = screen.getByText("重写");
+    expect(badge.getAttribute("data-tone")).toBe("accent");
     expect(screen.getByText("×1")).toBeTruthy();
   });
 

@@ -100,7 +100,7 @@ export function App(props: AppProps) {
           data-testid="action-notice"
           className={
             actions.notice.tone === "error"
-              ? "border-b border-border px-4 py-1 text-xs text-accent break-all"
+              ? "border-b border-border px-4 py-1 text-xs text-danger break-all"
               : "border-b border-border px-4 py-1 text-xs text-muted-foreground break-all"
           }
         >

@@ -24,7 +24,7 @@ export function ConversationList({
   return (
     <nav
       aria-label="对话列表"
-      className="flex w-56 shrink-0 flex-col gap-1 border-r border-border p-2"
+      className="flex w-56 shrink-0 flex-col gap-1 border-r border-border bg-sidebar p-2"
     >
       <button
         className={cn(item, selection.kind === "supervisor" && "bg-muted")}

@@ -1,38 +1,25 @@
-// 状态徽标：强调色只用在这里（编码中、复投、冲突、已合并），其余状态用中性色。
+// 状态徽标：图标 + 文案。颜色、图标按 StatusIcon（§5.2），文案取自文案表（§5.6）。
 import type { TicketStatus } from "@bakacoding/types";
+import { TICKET_STATUS_LABEL } from "../../lib/copy";
 import { cn } from "../../lib/utils";
+import { STATUS_ICON, STATUS_TONE_CLASS, StatusIcon } from "../StatusIcon";
 
-export const ACCENT_STATUSES: ReadonlySet<TicketStatus> = new Set<TicketStatus>([
-  "coding",
-  "resubmitting",
-  "conflict",
-  "merged",
-]);
-
-export const STATUS_LABEL: Record<TicketStatus, string> = {
-  pending: "排队",
-  coding: "编码中",
-  in_review: "评审中",
-  resubmitting: "复投",
-  merge_queued: "等待合并",
-  conflict: "冲突",
-  re_reviewing: "重新评审",
-  merged: "已合并",
-  escalated: "需要人工介入",
-};
+/** 兼容旧引用：状态文案以 lib/copy.ts 为准。 */
+export const STATUS_LABEL = TICKET_STATUS_LABEL;
 
 export function StatusBadge({ status }: { status: TicketStatus }) {
-  const accent = ACCENT_STATUSES.has(status);
+  const tone = STATUS_ICON[status].tone;
   return (
     <span
       data-status={status}
-      data-accent={accent}
+      data-tone={tone}
       className={cn(
-        "inline-flex items-center rounded border px-1.5 py-0.5 text-xs transition-colors duration-300",
-        accent ? "border-accent text-accent" : "border-border text-muted-foreground",
+        "inline-flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-xs transition-colors duration-200",
+        STATUS_TONE_CLASS[tone],
       )}
     >
-      {STATUS_LABEL[status]}
+      <StatusIcon status={status} decorative className="[&_svg]:size-3" />
+      {TICKET_STATUS_LABEL[status]}
     </span>
   );
 }
