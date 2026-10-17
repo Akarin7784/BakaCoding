@@ -37,8 +37,8 @@ flowchart BT
   classDef doing fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef done fill:#dcfce7,stroke:#16a34a,color:#14532d
 
-  class M0,M2,M6,M11,M12,T done
-  class M3,M4 doing
+  class M0,M2,M6,M12,T done
+  class M3,M4,M11 doing
   class M1,M5,M7,M8,M9,M10 todo
 ```
 
@@ -77,6 +77,7 @@ flowchart BT
 | T-021 | 诊断包 .env 规则收紧，schema 升到 v1.1；界面假数据 `req-none` 换成 null | 11、12 | 界面与诊断开发 | 已合入 | #16 | `e35e38e` |
 | T-022 | 存储层跟进：毫秒时间列、`events.seq` 唯一、落库失败可见、IMMEDIATE 事务、prStore 脱敏与 kind 校验、需求归属不被群消息覆盖、limit 校验 | 2 | 基础层开发 | 已合入 | #20 | `1a11948` |
 | T-023 | 桌面界面读取真实事件：主进程只读打开存储，IPC 推快照与增量，preload 只读 API | 12 | 界面与诊断开发 | 已合入 | #22 | `c5efa90` |
+| T-024 | 诊断包接存储：`storage.diagnosticsSource()` 作为模块 11 数据源的集成测试与数据缺口说明 | 11 | 界面与诊断开发 | 待评审 | #24 | — |
 
 8、9、10（编排层开发）的第二批需求单还没拆。
 
