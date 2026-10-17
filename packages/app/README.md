@@ -12,3 +12,7 @@
 
 - `createDefaultDeps(config, storage, opts)`：按仓库建好默认 `AppDeps`（总线、预算、网关、worktree、编码池、评审池占位 PR、`createPr`）。只建对象；调用方再 `assemble`。
 - `acquireWriterLock(dbPath)`：`<库目录>/writer.lock`，见 modules.md「组合根」。
+
+## T-084
+
+- `RepoNotReadyError`：`createDefaultDeps` 最先查仓库，集成分支和 `main` 都没有时抛出，`code` 为 `no_commits`（一次提交都没有）或 `no_main`（带当前分支名 `current`，分离 HEAD 时缺省）；`message` 是中文原因、不含路径。`targetHead()` 不再退回检出的 HEAD。见 modules.md「组合根」。

@@ -9,6 +9,8 @@ export {
   type CreateDefaultDepsOpts,
   type DefaultDepsHandle,
 } from "./create-default-deps.js";
+// T-084：仓库没有提交 / 没有 main 时 createDefaultDeps 抛它；code 与模块 4 checkRepo() 一致
+export { RepoNotReadyError, type RepoNotReadyCode } from "./repo-not-ready.js";
 export {
   acquireWriterLock,
   WRITER_LOCK_FILENAME,
@@ -39,3 +41,13 @@ export {
   type InitialCommitFiles,
   type ExcludedReason,
 } from "@bakacoding/workspace";
+// T-087：设置页保存模型配置（desktop 不直接依赖 3）
+export {
+  findSecretLikeValues,
+  formatConfigIssue,
+  validate as validateConfig,
+  writeConfig,
+  WRITABLE_CONFIG_FILE,
+  type WriteConfigOptions,
+  type WriteConfigResult,
+} from "@bakacoding/config-budget";
