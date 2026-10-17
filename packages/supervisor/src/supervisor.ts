@@ -2099,7 +2099,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         `审查的是 ${lastOkReview.head_sha.slice(0, 7)}，请求的是 ${opts.head_sha.slice(0, 7)}，请重审`,
       );
 
-    // 合前重取 head（缩小窗口；真正 expected_head 入 6 等 T-066）
+    // 合前重取 head（缩小窗口）；随后 merge 传 expected_head（T-066）
     let headNow: string;
     try {
       headNow = (await pr.diff(lastOkReview.pr_id)).head_sha;
@@ -2140,7 +2140,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       }
     }
 
-    // 尝试带 expected_head（T-066）；未合入时 6 只收两个参数
+    // T-066：merge 第三参 expected_head，防合入窗口内 head 被顶掉
     let mergeResult: Awaited<ReturnType<NonNullable<typeof deps.pr>["merge"]>>;
     try {
       const merge = pr.merge as (
