@@ -2,7 +2,8 @@ import { randomBytes } from "node:crypto";
 import { mkdir, open, rename, unlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { ConfigSchema, SECRET_NAMES } from "./config.js";
-import { formatConfigIssue } from "./safe-error.js";
+import { PricingSchema } from "./pricing.js";
+import { formatConfigIssue, schemaIssues } from "./safe-error.js";
 import { redact } from "./redact.js";
 
 export type WriteConfigResult = { ok: true } | { ok: false; errors: string[] };
@@ -16,8 +17,10 @@ export interface WriteConfigOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
-/** 只允许写 models.json；pricing.json 等其它文件不可写。 */
+/** writeConfig 只允许写 models.json；pricing.json 走 writePricing，其它文件都不可写。 */
 export const WRITABLE_CONFIG_FILE = "models.json" as const;
+/** writePricing 只允许写 pricing.json（T-114）。 */
+export const WRITABLE_PRICING_FILE = "pricing.json" as const;
 
 const RENAME_RETRIES = 5;
 const RENAME_RETRY_MS = 50;
@@ -83,23 +86,49 @@ export async function writeConfig(
   }
   const parsed = ConfigSchema.safeParse(config);
   const errors = parsed.success ? [] : parsed.error.issues.map(formatConfigIssue);
-  const secretErrors = findSecretLikeValues(config, opts.env);
-  if (errors.length > 0 || secretErrors.length > 0) {
+  return validatedWrite(path, WRITABLE_CONFIG_FILE, config, errors, opts);
+}
+
+/**
+ * T-114：校验后原子写入价格表 pricing.json，写法与 writeConfig 相同（同目录临时文件 → fsync → rename，
+ * 2 空格缩进、末尾换行，写调用方给的原始对象）。先过 PricingSchema，再查像密钥的值；
+ * 失败时原文件不变，错误信息不含文件路径和配置值。
+ */
+export async function writePricing(
+  path: string,
+  pricing: unknown,
+  opts: WriteConfigOptions = {},
+): Promise<WriteConfigResult> {
+  if (basename(path) !== WRITABLE_PRICING_FILE) {
+    return { ok: false, errors: [`(file): 只能写 ${WRITABLE_PRICING_FILE}`] };
+  }
+  const parsed = PricingSchema.safeParse(pricing);
+  const errors = parsed.success ? [] : schemaIssues(parsed.error.issues);
+  return validatedWrite(path, WRITABLE_PRICING_FILE, pricing, errors, opts);
+}
+
+/** schema 错误和像密钥的值都没有时才写；错误统一再脱敏一次。 */
+async function validatedWrite(
+  path: string,
+  file: string,
+  value: unknown,
+  schemaErrors: string[],
+  opts: WriteConfigOptions,
+): Promise<WriteConfigResult> {
+  const secretErrors = findSecretLikeValues(value, opts.env);
+  if (schemaErrors.length > 0 || secretErrors.length > 0) {
     const secrets = envSecrets(opts.env ?? process.env);
     return {
       ok: false,
-      errors: [...errors.map((e) => sanitizeMessage(e, secrets)), ...secretErrors],
+      errors: [...schemaErrors.map((e) => sanitizeMessage(e, secrets)), ...secretErrors],
     };
   }
-  const text = `${JSON.stringify(config, null, 2)}\n`;
+  const text = `${JSON.stringify(value, null, 2)}\n`;
   const dir = dirname(path);
-  const tmp = join(
-    dir,
-    `.${WRITABLE_CONFIG_FILE}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`,
-  );
+  const tmp = join(dir, `.${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`);
   try {
     await mkdir(dir, { recursive: true });
-    // 新文件按 0600 建，rename 后原 models.json 的权限会被它覆盖（不保留原权限）。
+    // 新文件按 0600 建，rename 后原文件的权限会被它覆盖（不保留原权限）。
     const fh = await open(tmp, "wx", 0o600);
     try {
       await fh.writeFile(text, "utf8");

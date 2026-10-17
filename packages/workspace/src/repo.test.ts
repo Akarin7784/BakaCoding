@@ -90,10 +90,20 @@ describe("checkRepo", () => {
     expect(r.items[0]).toMatchObject({ ok: false, code: "not_git" });
   });
 
-  it("外层仓库的子目录不算仓库", async () => {
+  it("外层仓库的子目录报 nested_repo（T-114），其余各项不通过，不含外层路径", async () => {
     execFileSync("git", ["init", "-q"], { cwd: base });
     const r = await checkRepo(dir);
-    expect(r.items[0]).toMatchObject({ ok: false, code: "not_git" });
+    expect(r.items.map((i) => [i.id, i.ok, i.code])).toEqual([
+      ["git", false, "nested_repo"],
+      ["commit", false, "no_commits"],
+      ["main", false, "no_main"],
+      ["ignored", false, "not_ignored"],
+    ]);
+    expect(r.items[0]!.detail).toBe(
+      "这个文件夹在另一个 Git 仓库里面。请导入上层仓库的根目录，或把文件夹移到仓库外再初始化",
+    );
+    expect(JSON.stringify(r)).not.toContain(base);
+    expect(r.current_branch).toBeNull();
   });
 
   it("空仓库 master：报 no_commits 和 no_main，带 current，detail 不含路径", async () => {
@@ -456,17 +466,11 @@ describe("git 环境变量隔离（gitEnv）", () => {
 });
 
 describe("边界情况", () => {
-  it("在外层仓库的子目录里 initRepo：建一个嵌套仓库，外层不动", async () => {
+  it("dir 自己已有嵌套仓库（外层里早就建好的）：仍算仓库根，不报 nested_repo", async () => {
     execFileSync("git", ["init", "-q", "-b", "main"], { cwd: base });
-    await initRepo(dir);
-    expect(existsSync(join(dir, ".git"))).toBe(true);
+    git("init", "-q", "-b", "main");
     expect((await checkRepo(dir)).items[0]).toEqual({ id: "git", ok: true });
-    expect(
-      execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: dir, encoding: "utf8" }).trim(),
-    ).toBe(dir);
-    expect(() =>
-      execFileSync("git", ["rev-parse", "--verify", "-q", "HEAD"], { cwd: base, stdio: "ignore" }),
-    ).toThrow();
+    expect(await code(initRepo(dir))).toBe("repo_exists");
   });
 
   it.skipIf(process.platform === "win32")("符号链接只提交链接本身，不提交目标内容", async () => {
@@ -491,5 +495,98 @@ describe("边界情况", () => {
     expect(main.detail).not.toContain(long);
     const shown = /当前是 (.*)）/.exec(main.detail ?? "")![1]!;
     expect(shown.length).toBeLessThanOrEqual(100);
+  });
+});
+
+describe("嵌套仓库（T-114）", () => {
+  const NESTED =
+    "这个文件夹在另一个 Git 仓库里面。请导入上层仓库的根目录，或把文件夹移到仓库外再初始化";
+  const outerHead = () =>
+    execFileSync("git", ["status", "--porcelain", "--ignored"], { cwd: base, encoding: "utf8" });
+
+  it("外层仓库的子目录：initRepo 抛 nested_repo，不建 .git、不写 exclude，外层不动", async () => {
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: base });
+    const outerExclude = join(base, ".git", "info", "exclude");
+    const excludeBefore = readFileSync(outerExclude, "utf8");
+    const statusBefore = outerHead();
+    let err: unknown;
+    try {
+      await initRepo(dir, { identity: { name: "Eva", email: "eva@example.com" } });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(RepoFixError);
+    expect((err as RepoFixError).code).toBe("nested_repo");
+    expect((err as RepoFixError).message).toBe(NESTED);
+    expect((err as RepoFixError).message).not.toContain(base);
+    expect(existsSync(join(dir, ".git"))).toBe(false);
+    expect(readFileSync(outerExclude, "utf8")).toBe(excludeBefore);
+    expect(outerHead()).toBe(statusBefore);
+    expect(() =>
+      execFileSync("git", ["config", "--local", "user.name"], { cwd: base, stdio: "ignore" }),
+    ).toThrow();
+  });
+
+  it("dir 还不存在、上级在外层仓库里：initRepo 抛 nested_repo，不建目录；checkRepo 也报 nested_repo", async () => {
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: base });
+    const target = join(dir, "a", "b");
+    expect(await code(initRepo(target))).toBe("nested_repo");
+    expect(existsSync(join(dir, "a"))).toBe(false);
+    expect((await checkRepo(target)).items[0]).toMatchObject({ ok: false, code: "nested_repo" });
+  });
+
+  it("多层子目录也算嵌套", async () => {
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: base });
+    const deep = join(dir, "x", "y");
+    mkdirSync(deep, { recursive: true });
+    expect((await checkRepo(deep)).items[0]).toMatchObject({ code: "nested_repo" });
+    expect(await code(initRepo(deep))).toBe("nested_repo");
+  });
+
+  it.each([
+    ["空的 .git 目录", () => mkdirSync(join(base, ".git"))],
+    ["指向不存在位置的 .git 文件", () => writeFileSync(join(base, ".git"), "gitdir: ./nowhere\n")],
+  ])("rev-parse 失败时逐层 lstat 找 .git：上级有%s 也算嵌套", async (_n, make) => {
+    make();
+    expect(() =>
+      execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: dir, stdio: "ignore" }),
+    ).toThrow();
+    expect((await checkRepo(dir)).items[0]).toMatchObject({ ok: false, code: "nested_repo" });
+    expect(await code(initRepo(dir))).toBe("nested_repo");
+    expect(existsSync(join(dir, ".git"))).toBe(false);
+  });
+
+  it("嵌套目录上的提交类修复抛 nested_repo 而不是 not_git", async () => {
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: base });
+    expect(await code(listInitialCommitFiles(dir))).toBe("nested_repo");
+    expect(await code(initialCommit(dir, { empty: true }))).toBe("nested_repo");
+    expect(await code(createMainBranch(dir))).toBe("nested_repo");
+  });
+
+  it("不是仓库的普通目录：行为不变（not_git，可以 init）", async () => {
+    expect((await checkRepo(dir)).items[0]).toMatchObject({ code: "not_git" });
+    expect(await code(listInitialCommitFiles(dir))).toBe("not_git");
+    await initRepo(dir);
+    expect((await checkRepo(dir)).items[0]).toEqual({ id: "git", ok: true });
+  });
+
+  it("仓库根：行为不变（git 项通过，再 init 报 repo_exists）", async () => {
+    git("init", "-q", "-b", "main");
+    expect((await checkRepo(dir)).items[0]).toEqual({ id: "git", ok: true });
+    expect(await code(initRepo(dir))).toBe("repo_exists");
+  });
+
+  it("设了 GIT_DIR / GIT_CEILING_DIRECTORIES 不影响判断（gitEnv 剔掉 GIT_*）", async () => {
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: base });
+    process.env.GIT_DIR = join(base, ".git");
+    process.env.GIT_CEILING_DIRECTORIES = base;
+    try {
+      expect((await checkRepo(dir)).items[0]).toMatchObject({ code: "nested_repo" });
+      expect(await code(initRepo(dir))).toBe("nested_repo");
+    } finally {
+      delete process.env.GIT_DIR;
+      delete process.env.GIT_CEILING_DIRECTORIES;
+    }
+    expect(existsSync(join(dir, ".git"))).toBe(false);
   });
 });

@@ -1,8 +1,8 @@
 // 仓库检查与修复组（T-086）：准备页逐项检查 + 一键修复。界面只调用，所有写操作都由用户先确认。
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, realpath, rm, stat } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, realpath, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { isProtectedPath } from "./guard.js";
 import { ensureBakacodingIgnored, isBakacodingIgnored } from "./worktree.js";
 import { gitEnv, REPO_GIT_TIMEOUT_MS } from "./git-env.js";
@@ -14,7 +14,7 @@ export const MAIN_BRANCH = "main";
 export const INITIAL_COMMIT_MESSAGE = "初始提交（BakaCoding）";
 
 export type RepoCheckId = "git" | "commit" | "main" | "ignored";
-export type RepoCheckCode = "not_git" | "no_commits" | "no_main" | "not_ignored";
+export type RepoCheckCode = "not_git" | "nested_repo" | "no_commits" | "no_main" | "not_ignored";
 
 export interface RepoCheckItem {
   id: RepoCheckId;
@@ -37,6 +37,7 @@ export interface RepoCheck {
 
 export type RepoFixCode =
   | "not_git"
+  | "nested_repo"
   | "repo_exists"
   | "no_commits"
   | "has_commits"
@@ -49,6 +50,8 @@ export type RepoFixCode =
 
 const MESSAGES: Record<RepoFixCode, string> = {
   not_git: "这个文件夹还不是 Git 仓库",
+  nested_repo:
+    "这个文件夹在另一个 Git 仓库里面。请导入上层仓库的根目录，或把文件夹移到仓库外再初始化",
   repo_exists: "这个文件夹已经是 Git 仓库",
   no_commits: "仓库还没有任何提交",
   has_commits: "仓库已经有提交，不能再做首次提交",
@@ -151,13 +154,45 @@ const BRANCH_DETAIL_MAX = 100;
 const shortBranch = (b: string) =>
   b.length > BRANCH_DETAIL_MAX ? `${b.slice(0, BRANCH_DETAIL_MAX - 1)}…` : b;
 
-/** dir 自己就是仓库根（不是外层仓库的子目录）时返回真实路径，否则 null。 */
-async function ownRepoRoot(dir: string, o: GitOpts): Promise<string | null> {
-  if (!(await isDir(dir))) return null;
-  const top = await gitTry(dir, "rev-parse", ["rev-parse", "--show-toplevel"], o);
-  if (top === null) return null;
-  const [a, b] = await Promise.all([realpath(dir), realpath(top)]);
-  return a === b ? b : null;
+/**
+ * dir 和 Git 仓库的关系（T-114）：
+ * - `root`：dir 自己就是仓库根，带真实路径；
+ * - `nested`：dir 在另一个仓库里面（是它的子目录，或 dir 还不存在但最近的已有上级在仓库里）；
+ * - `none`：不在任何仓库里。
+ * 先看 `rev-parse --show-toplevel`；它失败时（不是仓库、或 git 因所有权等原因拒绝）再从上级目录
+ * 往上逐层 lstat 找 `.git`（目录或文件都算），找到就当 nested。外层仓库的路径不对外返回。
+ */
+type RepoStatus = { kind: "root"; root: string } | { kind: "nested" } | { kind: "none" };
+
+async function repoStatus(dir: string, o: GitOpts): Promise<RepoStatus> {
+  let probe = dir;
+  while (!(await isDir(probe))) {
+    const up = dirname(probe);
+    if (up === probe) return { kind: "none" };
+    probe = up;
+  }
+  const exists = probe === dir;
+  const top = await gitTry(probe, "rev-parse", ["rev-parse", "--show-toplevel"], o);
+  if (top !== null) {
+    if (!exists) return { kind: "nested" };
+    const [a, b] = await Promise.all([realpath(dir), realpath(top)]);
+    return a === b ? { kind: "root", root: b } : { kind: "nested" };
+  }
+  // dir 存在时它自己的 .git 不算（rev-parse 失败时按原来的“不是仓库”处理），从上级开始找。
+  const real = await realpath(probe);
+  return (await hasGitAbove(exists ? dirname(real) : real)) ? { kind: "nested" } : { kind: "none" };
+}
+
+async function hasGitAbove(start: string): Promise<boolean> {
+  for (let d = start; ; d = dirname(d)) {
+    try {
+      await lstat(join(d, ".git"));
+      return true;
+    } catch {
+      // 没有就继续往上
+    }
+    if (dirname(d) === d) return false;
+  }
 }
 
 const hasCommit = async (root: string, o: GitOpts) =>
@@ -176,15 +211,17 @@ const configured = async (root: string, key: string, o: GitOpts) =>
 
 /**
  * 逐项检查 dir（T-086）：是 Git 仓库（dir 本身是仓库根）、至少一次提交、有 main 分支、`.bakacoding/` 已忽略。
+ * dir 在另一个仓库里面时 git 项记 nested_repo（T-114），detail 不含外层仓库路径。
  * 只读，不改任何文件；git 调用都带超时。前一项不通过时后面各项一律记不通过。
  */
 export async function checkRepo(dir: string, options?: RepoOptions): Promise<RepoCheck> {
   const o = opts(options);
-  const root = await ownRepoRoot(resolve(dir), o);
-  if (root === null) {
+  const status = await repoStatus(resolve(dir), o);
+  if (status.kind !== "root") {
+    const git: RepoCheckCode = status.kind === "nested" ? "nested_repo" : "not_git";
     return {
       items: [
-        { id: "git", ok: false, code: "not_git", detail: MESSAGES.not_git },
+        { id: "git", ok: false, code: git, detail: MESSAGES[git] },
         { id: "commit", ok: false, code: "no_commits", detail: MESSAGES.no_commits },
         { id: "main", ok: false, code: "no_main", detail: "没找到 main 分支" },
         { id: "ignored", ok: false, code: "not_ignored", detail: ".bakacoding/ 还没加入忽略" },
@@ -193,6 +230,7 @@ export async function checkRepo(dir: string, options?: RepoOptions): Promise<Rep
       identity: { name: false, email: false },
     };
   }
+  const root = status.root;
   const [commit, main, branch, ignored, name, email] = await Promise.all([
     hasCommit(root, o),
     hasMain(root, o),
@@ -256,7 +294,8 @@ async function writeIdentity(root: string, id: GitIdentity, o: GitOpts): Promise
 
 /**
  * 初始化 Git（T-086）：dir 不存在就新建，执行 `git init`，HEAD 指向 main；给了 identity 只写本仓库 `.git/config`，只写给了的那几项（T-108）；
- * 然后把 `/.bakacoding/` 写进 `.git/info/exclude`。dir 已经是仓库根时抛 repo_exists，什么都不改。
+ * 然后把 `/.bakacoding/` 写进 `.git/info/exclude`。dir 已经是仓库根时抛 repo_exists；dir 在另一个仓库里面时
+ * 抛 nested_repo（T-114，不建目录、不 init、不写忽略）。这两种情况都什么都不改。
  */
 export async function initRepo(
   dir: string,
@@ -275,7 +314,9 @@ async function initRepoLocked(
   init: { identity?: GitIdentity },
   o: GitOpts,
 ): Promise<void> {
-  if (await ownRepoRoot(abs, o)) throw new RepoFixError("repo_exists");
+  const status = await repoStatus(abs, o);
+  if (status.kind === "root") throw new RepoFixError("repo_exists");
+  if (status.kind === "nested") throw new RepoFixError("nested_repo");
   await mkdir(abs, { recursive: true });
   // 不依赖 git 2.28 的 `-b`：先 init，再把未出生的 HEAD 指到 main。
   await gitOk(abs, "init", ["init", "-q"], o);
@@ -299,9 +340,10 @@ function classify(rel: string): ExcludedReason | null {
 }
 
 async function requireRoot(dir: string, o: GitOpts): Promise<string> {
-  const root = await ownRepoRoot(resolve(dir), o);
-  if (root === null) throw new RepoFixError("not_git");
-  return root;
+  const status = await repoStatus(resolve(dir), o);
+  if (status.kind === "nested") throw new RepoFixError("nested_repo");
+  if (status.kind === "none") throw new RepoFixError("not_git");
+  return status.root;
 }
 
 async function listFiles(root: string, o: GitOpts): Promise<InitialCommitFiles> {
