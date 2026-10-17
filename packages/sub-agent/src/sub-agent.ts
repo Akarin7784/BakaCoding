@@ -46,6 +46,12 @@ const MAX_INTERFACE_NOTES = 20;
 /** 每条接口变更说明里合并说明（summary）的最大长度 */
 const MAX_NOTE_SUMMARY = 2000;
 
+/**
+ * 越界写申请里不接受的通配 / glob 语法字符（T-053）：模块 4 申请的是具体文件路径，8 把它原样当 glob 批进权限清单，
+ * 字面名带这些字符（如 `docs/**`、`**`）会被批成一片范围，所以一律拒绝。
+ */
+const SCOPE_REQUEST_WILDCARD = /[*?[\]{}()!+@]/;
+
 /** 是否落在依赖清单 / 锁文件上（`DEPENDENCY_MANIFEST_GLOBS`，匹配规则同模块 4）。 */
 function isDependencyFile(path: string): boolean {
   return (
@@ -454,6 +460,7 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
 
   /**
    * 审批本单的越界写申请（T-038，8 是唯一答复方）：
+   * 0. 有任一条带通配字符（`* ? [ ] { } ( ) ! + @`，T-053）→ 拒绝，不交 9、不写回；
    * 1. 有不安全的路径（`isUnsafeGlob`）→ 拒绝，不交 9、不写回；
    * 2. 被本单权限清单显式 deny 的 → 拒绝；
    * 3. 全部落在「写入范围 ∪ 已批准范围」里 → 直接批；否则把范围外的部分交 `deps.scheduler.extendScope`，成功才批。
@@ -480,6 +487,10 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
       });
     };
     try {
+      // 最先检查（T-053）：申请的应是具体路径，任一条带通配字符整条拒绝，不交 9、不写回
+      const wild = requested.filter((g) => SCOPE_REQUEST_WILDCARD.test(g));
+      if (wild.length > 0)
+        return await deny(`申请的是具体路径，不接受通配字符：${wild.join(", ")}`);
       const unsafe = requested.filter(isUnsafeGlob);
       if (requested.length === 0 || unsafe.length > 0)
         return await deny(

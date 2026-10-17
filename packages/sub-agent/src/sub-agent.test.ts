@@ -19,7 +19,7 @@ import {
   memoryTicketPermissions,
 } from "./index.js";
 import type { EventOf, PermissionList } from "@bakacoding/types";
-import { requestWriteScope, type ScopeBus } from "@bakacoding/workspace";
+import { permissionFor, requestWriteScope, type ScopeBus } from "@bakacoding/workspace";
 import { recordGrantedScope } from "./internal.js";
 
 const DIFF: Diff = {
@@ -1614,7 +1614,7 @@ describe("T-038 越界写审批（8 是 write_scope_requested 唯一答复方）
       for (const [i, scope] of [
         ["src/../x"],
         ["/etc/passwd"],
-        ["src/a.ts", "src/../../**"],
+        ["src/a.ts", "src/../../x"],
       ].entries())
         await sr.bus.publish({
           type: "write_scope_requested",
@@ -1643,6 +1643,117 @@ describe("T-038 越界写审批（8 是 write_scope_requested 唯一答复方）
       { glob: "**", level: "ro" },
       { glob: "src/**", level: "rw" },
     ]);
+  });
+
+  it("T-053：申请字面名 docs/** 被拒（不调 extendScope、不发 granted、不写回），之后 docs/a.md 仍不可写", async () => {
+    const c = askingCoder([["docs/**"]]);
+    const extendScope = vi.fn(async () => ({ ok: true as const }));
+    const t = setup({
+      reviews: [FAIL(), PASS()],
+      scope: {},
+      over: {
+        coder: { runTicket: c.runTicket },
+        scheduler: { extendScope },
+        logger: { warn: () => undefined },
+      },
+    });
+    await t.agent.handle(SCOPED);
+    expect(c.decisions).toEqual([
+      { granted: false, reason: "申请的是具体路径，不接受通配字符：docs/**" },
+    ]);
+    expect(extendScope).not.toHaveBeenCalled();
+    expect(t.events.some((e) => e.type === "write_scope_granted")).toBe(false);
+    // 复投那一轮编码池拿到的清单、需求单记录里的清单：docs/a.md 都不可写
+    expect(permissionFor(c.inputs[1]!.permission_list, "docs/a.md")).not.toBe("rw");
+    const list = await recordGrantedScope(t.agent, { ticket_id: "T-1" }, []);
+    expect(list).toEqual([
+      { glob: "**", level: "ro" },
+      { glob: "src/**", level: "rw" },
+    ]);
+    expect(permissionFor(list, "docs/a.md")).not.toBe("rw");
+  });
+
+  it("T-053：申请 ** 被拒，不调 extendScope、不发 granted", async () => {
+    const c = askingCoder([["**"]]);
+    const extendScope = vi.fn(async () => ({ ok: true as const }));
+    const t = setup({
+      reviews: [PASS()],
+      scope: {},
+      over: {
+        coder: { runTicket: c.runTicket },
+        scheduler: { extendScope },
+        logger: { warn: () => undefined },
+      },
+    });
+    await t.agent.handle(SCOPED);
+    expect(c.decisions).toEqual([
+      { granted: false, reason: "申请的是具体路径，不接受通配字符：**" },
+    ]);
+    expect(extendScope).not.toHaveBeenCalled();
+    expect(t.events.some((e) => e.type === "write_scope_granted")).toBe(false);
+  });
+
+  it("T-053：一条申请里混了一个带通配符的路径（其余是范围内的具体路径）整条拒；各类通配字符都拒", async () => {
+    const asks = [
+      ["src/ok.ts", "docs/*.md"],
+      ...[
+        "src/a?.ts",
+        "src/[id]/p.tsx",
+        "src/{a,b}.ts",
+        "src/@(a).ts",
+        "src/+(a).ts",
+        "src/!a.ts",
+        "src/(g)/p.ts",
+      ].map((p) => [p]),
+    ];
+    const c = askingCoder(asks);
+    const extendScope = vi.fn(async () => ({ ok: true as const }));
+    const t = setup({
+      reviews: [PASS()],
+      scope: {},
+      over: {
+        coder: { runTicket: c.runTicket },
+        scheduler: { extendScope },
+        logger: { warn: () => undefined },
+      },
+    });
+    await t.agent.handle(SCOPED);
+    expect(c.decisions[0]).toEqual({
+      granted: false,
+      reason: "申请的是具体路径，不接受通配字符：docs/*.md",
+    });
+    expect(c.decisions).toHaveLength(asks.length);
+    for (const [i, d] of c.decisions.entries())
+      expect(d, asks[i]!.join(",")).toMatchObject({
+        granted: false,
+        reason: expect.stringMatching(/^申请的是具体路径，不接受通配字符：/),
+      });
+    expect(extendScope).not.toHaveBeenCalled();
+    expect(t.events.some((e) => e.type === "write_scope_granted")).toBe(false);
+    const list = await recordGrantedScope(t.agent, { ticket_id: "T-1" }, []);
+    expect(list.some((e) => e.glob === "src/ok.ts")).toBe(false);
+  });
+
+  it("T-053 回归：普通具体路径照常批（范围内直接批，范围外经 extendScope）", async () => {
+    const c = askingCoder([["src/new.ts"], ["docs/a.md"]]);
+    const extendScope = vi.fn(async () => ({ ok: true as const }));
+    const t = setup({
+      reviews: [PASS()],
+      scope: {},
+      over: {
+        coder: { runTicket: c.runTicket },
+        scheduler: { extendScope },
+        logger: { warn: () => undefined },
+      },
+    });
+    await t.agent.handle(SCOPED);
+    expect(c.decisions).toEqual([
+      { granted: true, granted_scope: ["src/new.ts"] },
+      { granted: true, granted_scope: ["docs/a.md"] },
+    ]);
+    expect(extendScope.mock.calls).toEqual([["T-1", ["docs/a.md"]]]);
+    const list = await recordGrantedScope(t.agent, { ticket_id: "T-1" }, []);
+    expect(permissionFor(list, "docs/a.md")).toBe("rw");
   });
 
   it("权限清单显式 deny 的路径拒绝（即便在写入范围内）；没接 9 时范围外一律拒", async () => {
