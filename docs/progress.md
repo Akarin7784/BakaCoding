@@ -168,6 +168,7 @@ flowchart BT
 | T-111 | 模块 1：`testConnection` 补测试（T-089 评审跟进）：请求途中取消抛 AbortError、记一条 `ABORTED` 台账并释放预占；401 报错带密钥时台账事件里没有密钥；429 记入全局退避状态；modules.md §1 写明测试连接遇到 429 会触发全局退避。只加测试和文档，不改行为。main `6b11d11`，测试 112 个文件 / 2057 个；跟进 #141（`5906e4c`）：modules.md §1 改为 429 只记入共享退避状态、不阻塞后续请求，补「退避期内再测照常发出」测试，main `5906e4c`，测试 112 个文件 / 2058 个 | 1 | 基础层开发 | 已合入 | #139、#141 | `6b11d11`、`5906e4c` |
 | T-112 | 模块 9：9 调 6 的 `merge` / `sync` / `close` / `diff` 传 signal（T-102b #136 评审跟进；目前在途的 GitHub `merge` 最坏 150 秒、`sync` 为记录数 × 30 秒，见 modules.md §9「收尾要多久」） | 9 | 编排层开发 | 待接口方案 | — | — |
 | T-109 | 界面：`App.status.test` 重新连接失败用例偶发超时（flaky），定位并修稳；preview.1 之后处理（UI-03a #130 评审跟进） | 12 | 界面与诊断开发 | 待开发（preview.1 之后） | — | — |
+| T-110 | 模块 6：远程 git 超时（`REMOTE_GIT_TIMEOUT_MS` 120s）+ git 接 signal（远程 / 本地只读立刻 kill，写命令只在执行前检查，只读加 `--no-optional-locks`）；`GitTimeoutError`；close 回查不吞取消；收回 `mergeCommitContaining` 公开导出 | 6 | 执行层开发 | 待评审 #145 | — | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
