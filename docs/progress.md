@@ -96,7 +96,7 @@ flowchart BT
 | T-041 | 模块 10 上报处理（重拆最多 2 次，`budget_exceeded` 直接交用户）与高风险 PR 裁决 | 10 | 编排层开发 | 未开始 | — | — |
 | T-042 | 模块 10 集成分支审查与合入 main、主管待办指标 | 10 | 编排层开发 | 未开始 | — | — |
 | T-043 | 不可信文本包装与转义：评审池的需求单 / 摘要 / 架构约束 / diff 与编码池 feedback 统一包进带 nonce 的 `untrusted` 区块；转义前做 NFKC、忽略零宽字符和软连字符；共用函数放 `@bakacoding/types`；nonce 不进编码池公共前缀 | 5、7 | 执行层开发 | 已合入 | #35 | `876cac0` |
-| T-044 | 模块 5/7 把 `signal` 透传给模型调用 | 5、7 | 执行层开发 | 未开始 | — | — |
+| T-044 | 模块 5/7 把 `signal` 透传给模型调用（`runTicket` 加可选 `signal`，调模型前、工具调用前检查取消）；编码池工具轮把上一轮的 `reasoning`（含 `signature`）原样放进 assistant 消息回传 | 5、7 | 执行层开发 | 待评审 | — | — |
 | T-045 | 模块 7 `storageRoundSource` 改用 `listPrRounds(ticket_id)` | 7 | 执行层开发 | 未开始 | — | — |
 | T-047 | 模块 6 GitHub 实现：`open` 只建本地记录（不推不开 PR），远程 PR 在第一次 `commitWorktree` 后开；`commitWorktree` 只推本单分支并开 / 复用 PR，失败保留本地提交、下次补做；没有提交的记录不开 PR（不 422）；`checks` 用 push 之后的 head sha | 6 | 执行层开发 | 已合入 | #42 | `1d0c4a9` |
 | T-049 | 桌面界面：找不到项目的 `escalated`（含合并队列的 `unattributed:<pr_id>`）进侧栏「未归属」，显示 PR 号、原因、说明；`merged_but:` 标「代码已进集成分支」 | 12 | 界面与诊断开发 | 已合入 | #41 | `865dd48` |

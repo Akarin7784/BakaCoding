@@ -22,3 +22,12 @@
 
 - `feedback` 先按码点截断到 `maxFeedbackChars`（默认 20000），再用 `@bakacoding/types` 的 `wrapUntrusted` 转义并包进 `<untrusted-<nonce> kind="feedback">` 区块。转义会把 `<` 换成 `&lt;`，所以结果可能略超 20000 字符上限。
 - nonce 在 `createCoderPool` 时随机生成，同一池内不变，只出现在需求单之后（区块前就地说明标签名），不进公共前缀；前缀里只用通用说法描述「不可信区块」，所以不同 nonce 下前缀逐字节相同。
+
+## 取消与思考回传（T-044）
+
+- 模型调用用模块 1 的 `chat()`：`deps.chat` 可以直接传 `gateway.chat`（`ModelChat` 是它的子集）。
+- `runTicket({ …, signal? })`：`signal` 原样传给每次 `chat()`，没传就不带这个字段。进入时、每次调模型前、每个工具调用前、返回 `turn_limit` 前都检查；已中止时抛 `signal.reason`（没有则抛名为 `AbortError` 的错误），不返回部分结果。
+  - 请求发出前取消：模块 1 不发请求、不发 `call_completed`；发出后取消：模块 1 中止请求，`call_completed.error.code = ABORTED`，它抛的 `AbortError` 由 5 改抛 `signal.reason`。
+  - 模型取消后才返回的那一轮整轮丢弃，不执行它的工具调用。已开始的工具调用不打断，跑完后不再执行同一轮剩下的工具。
+- 思考内容：每轮 `chat()` 返回的 `reasoning`（`{ text, signature? }[]`）原样放进这一轮的 assistant 消息（含 `signature`，不改写、不截断），之后的请求带着全部历史，由模块 1 按协议回传（DeepSeek 带 tools 时必须回传，否则 400）。那一轮没有思考内容（缺省或空数组）就不带 `reasoning` 字段。
+- 思考和 signal 都不进 `system` / `tools`，公共前缀和它的快照不变。

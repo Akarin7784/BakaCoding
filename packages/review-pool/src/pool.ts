@@ -228,14 +228,17 @@ export function createReviewPool(deps: ReviewPoolDeps): ReviewPool {
 
   async function runModel(member: Member, input: ReviewInput, prompt: string) {
     const ctx: CallCtx = { ...input.ctx, role: "reviewer" };
-    const { output } = await deps.call(
-      "reviewer",
-      member.provider,
-      member.model,
-      member.effort,
-      prompt,
-      ctx,
-    );
+    const { signal } = input;
+    const args = ["reviewer", member.provider, member.model, member.effort, prompt, ctx] as const;
+    let output: string;
+    try {
+      // signal 原样传给 1（T-044）；没给就不传第 7 个参数
+      ({ output } = await (signal ? deps.call(...args, { signal }) : deps.call(...args)));
+    } catch (e) {
+      // 调用中途取消：1 抛 AbortError；统一改抛 signal.reason
+      throwIfAborted(signal);
+      throw e;
+    }
     return parseModelOutput(output);
   }
 
@@ -265,7 +268,7 @@ export function createReviewPool(deps: ReviewPoolDeps): ReviewPool {
     let held: Member | undefined = await acquire(picker(input.ticket, input.ctx), signal);
     try {
       let member: Member = held;
-      // 调模型期间不打断（1 的 call() 没有 signal 参数）；返回后已中止就丢弃结果、不写分配记录
+      // signal 传给 1 的 call()；1 没理会、取消后才返回时同样丢弃结果、不写分配记录
       let out = await runModel(member, input, prompt);
       throwIfAborted(signal);
       if (!out) {

@@ -76,7 +76,9 @@ function fakeTools(over: Partial<FileTools> = {}): FileTools {
 function script(replies: Array<ChatResponse | Error>) {
   const requests: ChatRequest[] = [];
   const chat = vi.fn(async (req: ChatRequest) => {
-    requests.push(structuredClone(req) as ChatRequest);
+    // AbortSignal 不能 structuredClone：深拷贝其余字段，signal 保留原对象
+    const { signal, ...rest } = req;
+    requests.push({ ...(structuredClone(rest) as ChatRequest), ...(signal ? { signal } : {}) });
     const r = replies.shift();
     if (!r) throw new Error("脚本用完");
     if (r instanceof Error) throw r;
