@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`b4a3745` · main 上测试：72 个测试文件、1547 个测试全部通过 · 更新日期：2026-10-18（UTC+8）
+> 上次更新时 main：`de3782b` · main 上测试：73 个测试文件、1560 个测试全部通过 · 更新日期：2026-10-18（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -130,7 +130,7 @@ flowchart BT
 | T-073 | 模块 12 打包：Windows x64 免安装 zip（electron-builder，`package:win` / `package:linux`），版本 1.0.0-preview；`electron` 固定 43.8.0（ABI 148），better-sqlite3 用 12.12.0 官方 electron-v148 预编译包，原生模块 asarUnpack | 12 | 界面与诊断开发 | 已合入 | #80 | `46d7a2d` |
 | T-074 | 模块 12：修 IPC handler 参数下标（Electron 第一个参数是 event），high-risk:decide 拿错参数；测试 fake ipc 先传 event，锁住所有带参数的通道 | 12 | 界面与诊断开发 | 已合入 | #81 | `d996617` |
 | T-075 | 桌面 exe 图标（`packages/desktop/build/icon.ico`，16–256 多尺寸，极简机器人） | 12 | 界面与诊断开发 | 已合入 | #83 | `f072c29` |
-| T-076 | 模块 6：本地模式合入默认集成分支前，分支不存在就从基线分支（baseBranch，默认 main；与 openIntegration / GitHub 模式同一约定，不取工作树 HEAD）建出 `bakacoding/integration`，修新仓库第一张单 `merge_error` 进人工介入；`ensureBranch` 幂等、并发安全（update-ref 空旧值，失败重读），本地 `merge` 同实例串行；新增 4/6/9 真实 git 的派单到合入测试；顺带补已知缺口 2 的测试 | 6 | 执行层开发 | 待评审 | #86 | — |
+| T-076 | 模块 6：本地模式合入默认集成分支前，分支不存在就从基线分支（baseBranch，默认 main；与 openIntegration / GitHub 模式同一约定，不取工作树 HEAD）建出 `bakacoding/integration`，修新仓库第一张单 `merge_error` 进人工介入；`ensureBranch` 幂等、并发安全（update-ref 空旧值，失败重读），本地 `merge` 同实例串行；新增 4/6/9 真实 git 的派单到合入测试；顺带补已知缺口 2 的测试 | 6 | 执行层开发 | 已合入 | #86 | `de3782b` |
 | T-077 | 模块 12 界面小修：报错前缀只出现一次、不露出 `Error：`（主进程 `errorDetail`、界面 `failureText`，兼容 Electron remote method 包装）；只读时导出先拒绝、不弹保存框；设置页标题和项目群 / 未归属的「只读」标签只在后端只读时显示 | 12 | 界面与诊断开发 | 已合入 | #84 | `b4a3745` |
 | T-078 | 模块 4：`.git/info/exclude` 改为排除整个 `/.bakacoding/`（数据库等运行文件不再出现在 git status）；旧版只写了 `/.bakacoding/worktrees/` 的仓库补一行、旧行保留；已有等价规则不重复写 | 4 | 基础层开发 | 待评审 | — | — |
 
