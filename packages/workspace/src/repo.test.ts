@@ -365,8 +365,9 @@ describe("git 环境变量隔离（gitEnv）", () => {
     expect(git("ls-tree", "-r", "--name-only", "HEAD")).toBe("README.md");
   });
 
-  it("设了 GIT_AUTHOR_* / GIT_COMMITTER_* 也照样报 no_identity", async () => {
+  it("设了 GIT_AUTHOR_* / GIT_COMMITTER_*：提交作者和提交者仍取自仓库配置", async () => {
     git("init", "-q", "-b", "main");
+    ident();
     const keys = [
       "GIT_AUTHOR_NAME",
       "GIT_AUTHOR_EMAIL",
@@ -375,11 +376,13 @@ describe("git 环境变量隔离（gitEnv）", () => {
     ];
     for (const k of keys) process.env[k] = k.endsWith("EMAIL") ? "env@example.com" : "env";
     try {
-      expect(await code(initialCommit(dir, { empty: true }))).toBe("no_identity");
-      expect((await checkRepo(dir)).identity).toEqual({ name: false, email: false });
+      await initialCommit(dir, { empty: true });
     } finally {
       for (const k of keys) delete process.env[k];
     }
+    expect(git("log", "-1", "--format=%an <%ae>|%cn <%ce>")).toBe(
+      "t <t@example.com>|t <t@example.com>",
+    );
   });
 });
 
