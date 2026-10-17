@@ -9,6 +9,7 @@ import {
   type DesktopUpdate,
 } from "../shared/api.js";
 import type { BackendHandle } from "./backend.js";
+import * as ipcModule from "./ipc.js";
 import {
   serveBackend,
   serveHighRisk,
@@ -80,6 +81,33 @@ function fakeBackend(over: Partial<BackendHandle> = {}): BackendHandle {
       throw new Error(`fakeBackend 没实现 ${String(k)}`);
     },
   });
+}
+
+type ChannelKey = keyof typeof IPC_CHANNELS;
+
+/** 只由主进程 send、渲染进程 on 订阅的通道；其余 IPC_CHANNELS 都是 invoke 通道（T-074）。 */
+const PUSH_ONLY: readonly string[] = [
+  IPC_CHANNELS.update,
+  IPC_CHANNELS.supervisorNotify,
+  IPC_CHANNELS.highRiskPendingUpdate,
+  IPC_CHANNELS.syncStateUpdate,
+];
+const INVOKE_CHANNELS = Object.values(IPC_CHANNELS)
+  .filter((c) => !PUSH_ONLY.includes(c))
+  .sort();
+
+/** 和 main.ts 一样把 ipc.ts 的每个 serve* 都接上；键名必须和 ipc.ts 导出的 serve* 一致。 */
+const SERVE: Record<string, (ipc: IpcMainLike, backend: BackendHandle) => () => void> = {
+  serveReader: (ipc) =>
+    serveReader(ipc, { snapshot: () => snap, poll: () => null, close: () => {} }, () => null, 1000),
+  serveBackend: (ipc, backend) => serveBackend(ipc, backend, () => null),
+  serveHighRisk: (ipc, backend) => serveHighRisk(ipc, backend, () => null),
+  serveSyncState: (ipc, backend) => serveSyncState(ipc, backend, () => null, 1000),
+  serveSupervisorChat: (ipc, backend) => serveSupervisorChat(ipc, backend),
+};
+function wireAll(ipc: IpcMainLike, backend: BackendHandle): Array<() => void> {
+  vi.useFakeTimers();
+  return Object.values(SERVE).map((serve) => serve(ipc, backend));
 }
 
 describe("主进程 IPC", () => {
@@ -165,18 +193,11 @@ describe("handler 参数：第一个是 event，渲染进程参数从第二个�
     expect(invoke(IPC_CHANNELS.highRiskPending)).toEqual([]);
   });
 
-  it("preload → 主进程整条链路：每个 invoke 通道都按真实 Electron 形状往返，参数一一对应", async () => {
+  it("preload → 主进程整条链路：IPC_CHANNELS 里每个 invoke 通道都按真实 Electron 形状往返，参数一一对应", async () => {
     vi.useFakeTimers();
     const { ipc, handlers, invoke } = fakeIpcMain();
     const backend = fakeBackend();
-    const reader: EventReader = { snapshot: () => snap, poll: () => null, close: () => {} };
-    const stops = [
-      serveReader(ipc, reader, () => null, 1000),
-      serveBackend(ipc, backend, () => null),
-      serveHighRisk(ipc, backend, () => null),
-      serveSyncState(ipc, backend, () => null, 1000),
-      serveSupervisorChat(ipc, backend),
-    ];
+    const stops = wireAll(ipc, backend);
     // 渲染进程一侧：ipcRenderer.invoke(channel, ...args) → 主进程 handler(event, ...args)
     const seen = new Set<string>();
     const bridge: IpcRendererLike = {
@@ -197,14 +218,54 @@ describe("handler 参数：第一个是 event，渲染进程参数从第二个�
     await api.getSyncState();
     await api.supervisorChat({ text: "hi", project_id: "p-2" });
     expect(backend.supervisorChat).toHaveBeenCalledWith({ text: "hi", project_id: "p-2" });
-    // 新增通道时这里会失败：要么在上面补一条往返，要么说明它不带参数
-    expect([...handlers.keys()].sort()).toEqual([...seen].sort());
-    for (const s of stops) s();
+    // 以 IPC_CHANNELS 为准：新增 invoke 通道而这里没往返、或主进程没注册，都会失败
+    expect([...seen].sort()).toEqual(INVOKE_CHANNELS);
+    expect([...handlers.keys()].sort()).toEqual(INVOKE_CHANNELS);
+    for (const stop of stops) stop();
     expect(handlers.size).toBe(0);
   });
 
-  it("ipc.ts 里的 handler 不从 args[0] 取渲染进程参数（args[0] 是 event）", () => {
+  it("PUSH_ONLY 正好是主进程 send、preload 用 on 订阅的通道，且没有 handler", () => {
+    const ipcSrc = readFileSync(path.join(here, "ipc.ts"), "utf8");
+    const preloadSrc = readFileSync(path.join(here, "preload-api.ts"), "utf8");
+    const keysOf = (src: string, re: RegExp) =>
+      [...new Set([...src.matchAll(re)].map((m) => IPC_CHANNELS[m[1] as ChannelKey]))].sort();
+    const push = [...PUSH_ONLY].sort();
+    expect(keysOf(ipcSrc, /\.send\(\s*IPC_CHANNELS\.(\w+)/g)).toEqual(push);
+    expect(keysOf(preloadSrc, /ipc\.on\(\s*IPC_CHANNELS\.(\w+)/g)).toEqual(push);
+    const { ipc, handlers } = fakeIpcMain();
+    wireAll(ipc, fakeBackend());
+    for (const c of PUSH_ONLY) expect(handlers.has(c), c).toBe(false);
+  });
+
+  it("ipc.ts 导出的每个 serve* 都在本测试 wireAll 和 main.ts 里接上", () => {
+    const exported = Object.keys(ipcModule)
+      .filter((k) => /^serve[A-Z]/.test(k))
+      .sort();
+    expect(exported.length).toBeGreaterThan(0);
+    expect(Object.keys(SERVE).sort()).toEqual(exported);
+    const mainSrc = readFileSync(path.join(here, "main.ts"), "utf8");
+    for (const name of exported) {
+      expect(mainSrc, name).toMatch(new RegExp(`\\b${name}\\(\\s*ipcMain\\b`));
+    }
+  });
+
+  it("ipc.ts 里每个 handle 的 listener 要么不带参数，要么是 (...args) 且不从 args[0] 取参数", () => {
     const src = readFileSync(path.join(here, "ipc.ts"), "utf8");
+    const total = src.match(/\bipc\.handle\(/g)?.length ?? 0;
+    const listeners = [
+      ...src.matchAll(/\bipc\.handle\(\s*IPC_CHANNELS\.(\w+),\s*(?:async\s*)?\(([^)]*)\)\s*=>/g),
+    ];
+    // 每个 handle 都必须是能识别的箭头函数（写成 function / 变量引用的也要被发现）
+    expect(listeners.length).toBe(total);
+    expect(total).toBe(INVOKE_CHANNELS.length);
+    for (const [, channel, params] of listeners) {
+      const p = params!.trim();
+      // (_e, x) => / (x) => 这类写法会把 event 当成渲染进程参数，一律不允许
+      expect(p === "" || /^\.\.\.args(\s*:\s*unknown\[\])?$/.test(p), `${channel}: (${p})`).toBe(
+        true,
+      );
+    }
     expect(src).not.toMatch(/\bargs\[0\]/);
   });
 });
