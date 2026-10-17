@@ -110,16 +110,23 @@ export function EscalationItem({ e }: { e: EscalationView }) {
 export function UnattributedPanel({
   escalations,
   warnings = [],
+  readonly = false,
 }: {
   escalations: EscalationView[];
   /** 找不到所属项目的 ticket_warning（T-050）。 */
   warnings?: TicketWarningView[];
+  /** 后端只读时显示「只读」标签（T-077） */
+  readonly?: boolean;
 }) {
   return (
     <section aria-label="未归属" className="flex min-w-0 flex-1 flex-col">
       <header className="flex items-center gap-2 border-b border-border px-4 py-2">
         <span className="flex-1 text-sm font-medium">未归属</span>
-        <span className="text-xs text-muted-foreground">只读</span>
+        {readonly && (
+          <span className="text-xs text-muted-foreground" data-testid="readonly-tag">
+            只读
+          </span>
+        )}
       </header>
       <p className="px-4 pt-2 text-xs text-muted-foreground">
         这些上报找不到所属项目（比如集成 PR、重启后不认识的 PR），在这里集中显示。

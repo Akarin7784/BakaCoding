@@ -1,6 +1,7 @@
 // T-072：导入项目 / 导出诊断包 / 只读设置的界面状态。
 import { useState } from "react";
 import type { BakaDesktopApi, DesktopSettings } from "../../shared/api.js";
+import { failureText, stripErrorNoise } from "../../shared/error-text.js";
 
 export interface ProjectActions {
   busy: "import" | "export" | null;
@@ -50,7 +51,10 @@ export function useProjectActions(
           reload();
         } else if (!r.canceled) {
           const missing = r.missing?.length ? `缺少：${r.missing.join("、")}。` : "";
-          setNotice({ tone: "error", text: `导入失败：${missing}${r.reason ?? ""}` });
+          setNotice({
+            tone: "error",
+            text: failureText("导入失败", `${missing}${stripErrorNoise(r.reason ?? "")}`),
+          });
         }
       } catch {
         setNotice({ tone: "error", text: `导入失败：${IPC_FAILED}` });
@@ -65,7 +69,7 @@ export function useProjectActions(
       try {
         const r = await api.exportDiagnostics();
         if (r.ok) setNotice({ tone: "ok", text: `诊断包已导出：${r.path}` });
-        else if (!r.canceled) setNotice({ tone: "error", text: `导出失败：${r.reason}` });
+        else if (!r.canceled) setNotice({ tone: "error", text: failureText("导出失败", r.reason) });
       } catch {
         setNotice({ tone: "error", text: `导出失败：${IPC_FAILED}` });
       } finally {

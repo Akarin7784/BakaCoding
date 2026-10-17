@@ -2,7 +2,7 @@
 import type { Project } from "@bakacoding/config-budget";
 import type { PendingHighRisk } from "@bakacoding/supervisor";
 import type { BackendHandle, NotifyMessage } from "./backend.js";
-import { sanitizeErrorName, sanitizeSyncErrorMessage, unavailableSyncState } from "./sync-state.js";
+import { errorDetail, sanitizeSyncErrorMessage, unavailableSyncState } from "./sync-state.js";
 
 export type SwitchResult =
   | { ok: true; project: Project }
@@ -48,9 +48,7 @@ export class BackendSwitcher implements BackendHandle {
       const handle = await this.start(repo);
       return { handle, why: handle.status().reason ?? "未知原因" };
     } catch (e) {
-      const name = sanitizeErrorName(e instanceof Error ? e.name : "Error");
-      const msg = e instanceof Error ? e.message : String(e);
-      return { handle: null, why: sanitizeSyncErrorMessage(`${name}：${msg}`, this.env, 500) };
+      return { handle: null, why: sanitizeSyncErrorMessage(errorDetail(e), this.env, 500) };
     }
   }
 
@@ -111,8 +109,7 @@ export class BackendSwitcher implements BackendHandle {
         return { ok: true, project };
       } catch (e) {
         this.restoreReady(wasReady);
-        const name = sanitizeErrorName(e instanceof Error ? e.name : "Error");
-        const msg = e instanceof Error ? `${name}：${e.message}` : String(e);
+        const msg = errorDetail(e);
         return {
           ok: false,
           switched: true,

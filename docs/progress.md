@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`4bb0a33` · main 上测试：68 个测试文件、1532 个测试全部通过 · 更新日期：2026-10-18（UTC+8）
+> 上次更新时 main：`b4a3745` · main 上测试：72 个测试文件、1547 个测试全部通过 · 更新日期：2026-10-18（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -131,6 +131,7 @@ flowchart BT
 | T-074 | 模块 12：修 IPC handler 参数下标（Electron 第一个参数是 event），high-risk:decide 拿错参数；测试 fake ipc 先传 event，锁住所有带参数的通道 | 12 | 界面与诊断开发 | 已合入 | #81 | `d996617` |
 | T-075 | 桌面 exe 图标（`packages/desktop/build/icon.ico`，16–256 多尺寸，极简机器人） | 12 | 界面与诊断开发 | 已合入 | #83 | `f072c29` |
 | T-076 | 模块 6：本地模式合入默认集成分支前，分支不存在就从基线分支（baseBranch，默认 main；与 openIntegration / GitHub 模式同一约定，不取工作树 HEAD）建出 `bakacoding/integration`，修新仓库第一张单 `merge_error` 进人工介入；`ensureBranch` 幂等、并发安全（update-ref 空旧值，失败重读），本地 `merge` 同实例串行；新增 4/6/9 真实 git 的派单到合入测试；顺带补已知缺口 2 的测试 | 6 | 执行层开发 | 待评审 | #86 | — |
+| T-077 | 模块 12 界面小修：报错前缀只出现一次、不露出 `Error：`（主进程 `errorDetail`、界面 `failureText`，兼容 Electron remote method 包装）；只读时导出先拒绝、不弹保存框；设置页标题和项目群 / 未归属的「只读」标签只在后端只读时显示 | 12 | 界面与诊断开发 | 已合入 | #84 | `b4a3745` |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
