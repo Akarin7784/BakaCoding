@@ -125,6 +125,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   let stopped = false;
   /** 正在 step 里处理的单（出错时上报它） */
   let current: Entry | undefined;
+  /** current 的合并已经成功（之后的收尾出错时 detail 用 merged_but） */
+  let currentMerged = false;
   const sleepers = new Set<() => void>();
   const timers = new Set<ReturnType<typeof setTimeout>>();
   /** start() 时目标分支的 HEAD：合并日志第 0 条之前的基线 */
@@ -590,6 +592,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     if (!(!res.merged && !res.conflict && res.reason === "target_dirty")) e.target_dirty_streak = 0;
 
     if (res.merged) {
+      currentMerged = true;
       await onMerged(e, pr_id, res.sha);
     } else if (res.conflict) {
       record(e, pr_id, { ...flags(e), conflict: true, merged: false });
@@ -631,13 +634,15 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         pumpAgain = false;
         for (;;) {
           current = undefined;
+          currentMerged = false;
           let more: boolean;
           try {
             more = await step();
           } catch (err) {
             // 出错的单上报 github_manual，队列继续
             const e = current as Entry | undefined;
-            if (e) await escalateOnError(e, "merge_error", err);
+            // 已经合入、收尾（发 interface_changed 等）失败：detail 用 merged_but，提醒主管代码已在集成分支上
+            if (e) await escalateOnError(e, currentMerged ? "merged_but" : "merge_error", err);
             else onError(err, "(queue)");
             more = !stopped;
           }

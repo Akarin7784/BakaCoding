@@ -540,7 +540,7 @@ describe("模块 9 合并队列（T-035）", () => {
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
-  it("R1a. 合并成功后的收尾（发 interface_changed）抛错：该单上报 github_manual，队列继续，无未处理 rejection", async () => {
+  it("R1a. 合并成功后的收尾（发 interface_changed）抛错：该单上报 github_manual（merged_but），队列继续，无未处理 rejection", async () => {
     const h = harness();
     const pub = h.deps.bus.publish;
     let failed = false;
@@ -558,7 +558,7 @@ describe("模块 9 合并队列（T-035）", () => {
     await s.submit({ ticket_id: "T-2", pr_id: "pr-2", worktree_path: "/2" });
     await s.idle();
     expect(escalations(h).map((e) => [e.ticket_id, e.payload])).toEqual([
-      ["T-1", { reason: "github_manual", detail: "merge_error: bus down" }],
+      ["T-1", { reason: "github_manual", detail: "merged_but: bus down" }],
     ]);
     expect(s.status("T-1")).toBe("escalated");
     expect(s.status("T-2")).toBe("merged");
@@ -742,7 +742,10 @@ describe("模块 9 合并队列（T-035）", () => {
     expect(s.status("T-1")).toBe("pending");
     expect(escalations(h)).toEqual([]);
     expect(s.budgetPaused()).toEqual(["T-1"]);
+    // finishSubAgent 收到 requeue_budget：不清 pr_id、不标 merge_queued、不入队
     expect(s.snapshot()[0]).toMatchObject({
+      pr_id: "pr-1",
+      status: "pending",
       budget_paused: true,
       round: 1,
       resubmit_counts: { review: 0, conflict: 1 },
