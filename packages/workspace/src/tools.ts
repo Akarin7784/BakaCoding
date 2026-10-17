@@ -22,6 +22,9 @@ import {
   type ScopeRequestOptions,
 } from "./permissions.js";
 
+/** 越界写申请不接受的通配字符（与 8 的 T-053 同一字符集）。 */
+const SCOPE_WILDCARD = /[*?[\]{}()!+@]/;
+
 /** 与 5 的 `ToolResult` 同形：失败带 FS_* 错误码，原样交还模型。 */
 export type ToolResult =
   { ok: true; output: string } | { ok: false; code: string; message: string };
@@ -467,8 +470,18 @@ export function createTools(opts: CreateToolsOptions): FileTools {
       )
         throw err;
     }
+    // T-054（纵深防御，字符集同 8 的 T-053）：申请的是具体路径，路径带通配字符时不发申请，直接拒绝，
+    // 否则字面名为 `docs/**` 或 `**` 的文件批下来会变成整个目录甚至整个仓库可写
+    const candidates = [...new Set([target.display, target.realRel])];
+    const wild = candidates.find((g) => SCOPE_WILDCARD.test(g));
+    if (wild !== undefined) {
+      throw new FsToolError(
+        `writing "${target.display}" needs a wider write scope, but "${wild}" contains wildcard characters (* ? [ ] { } ( ) ! + @); scope requests only accept concrete paths`,
+        "FS_PERMISSION_DENIED",
+      );
+    }
     // 目标路径已规范化，一般都安全；文件名本身带 `..` 等不合规时不发申请，直接拒绝
-    const scope = [...new Set([target.display, target.realRel])].filter((g) => !isUnsafeGlob(g));
+    const scope = candidates.filter((g) => !isUnsafeGlob(g));
     if (scope.length === 0) {
       throw new FsToolError(
         `writing "${target.display}" needs a wider write scope, but the path cannot be expressed as a safe scope`,
