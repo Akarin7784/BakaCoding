@@ -2187,7 +2187,7 @@ describe("T-102b 冲突复投 / 重审的取消信号", () => {
       o?.signal?.addEventListener("abort", () => reject(o.signal!.reason));
     });
 
-  it("C3. 重审收到的就是 9 交给 handle 的那个 signal；stop() 中止它，不上报、不改状态", async () => {
+  it("重审收到的就是 9 交给 handle 的那个 signal；stop() 中止它，不上报、不改状态", async () => {
     const h = harness();
     const d = withHandle(h);
     h.reReview.mockImplementationOnce(untilAborted);
@@ -2220,7 +2220,7 @@ describe("T-102b 冲突复投 / 重审的取消信号", () => {
     expect(h.errors.map((e) => (e as Error).name)).toContain("AbortError");
   });
 
-  it("C4. 冲突复投收到 9 的 signal；stop() 中止它，不上报、不改状态，新 worktree 留给下次启动的 takeOver", async () => {
+  it("冲突复投收到 9 的 signal；stop() 中止它，不上报、不改状态，新 worktree 留给下次启动的 takeOver", async () => {
     const h = harness();
     h.resubmit.mockImplementationOnce(untilAborted);
     const s = await started(h);
