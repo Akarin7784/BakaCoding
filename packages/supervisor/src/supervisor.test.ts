@@ -1,3 +1,5 @@
+import { GithubRateLimitError } from "@bakacoding/pr";
+import { HighRiskDecisionError } from "@bakacoding/scheduler";
 import type { StoredTicket } from "@bakacoding/storage";
 import { EventSchema, type CallCtx, type EventOf } from "@bakacoding/types";
 import { describe, expect, it, vi } from "vitest";
@@ -5,6 +7,7 @@ import {
   createSupervisor,
   SPLIT_MAX_ATTEMPTS,
   validateWriteScope,
+  type HighRiskHeldInput,
   type SupervisorDeps,
 } from "./index.js";
 
@@ -47,6 +50,7 @@ function setup(
   const published: Published[] = [];
   const notified: { text: string; project_id?: string }[] = [];
   let handler: ((e: EventOf<"project_created">) => void | Promise<void>) | undefined;
+  let escalatedHandler: ((e: EventOf<"escalated">) => void | Promise<void>) | undefined;
   let id = 0;
   const deps: SupervisorDeps = {
     call: vi.fn(async (_role, _p, _m, effort, prompt, ctx) => {
@@ -66,6 +70,7 @@ function setup(
     }),
     getConfig: () => ({
       roles: { supervisor: { provider: "deepseek", model: "deepseek-flash", effort: "max" } },
+      pipeline: { resplit_limit: 2 },
     }),
     promptTemplate: async (role) => {
       expect(role).toBe("supervisor");
@@ -121,8 +126,14 @@ function setup(
       published.push(e);
     },
     subscribe: (type, h) => {
+      if (type === "escalated") {
+        escalatedHandler = h as typeof escalatedHandler;
+        return () => {
+          escalatedHandler = undefined;
+        };
+      }
       expect(type).toBe("project_created");
-      handler = h;
+      handler = h as typeof handler;
       return () => {
         handler = undefined;
       };
@@ -150,6 +161,8 @@ function setup(
     published,
     notified,
     fire: (e: EventOf<"project_created">) => handler?.(e),
+    fireEscalated: (e: EventOf<"escalated">) => escalatedHandler?.(e),
+    hasEscalatedHandler: () => escalatedHandler !== undefined,
     hasHandler: () => handler !== undefined,
   };
 }
@@ -324,6 +337,8 @@ describe("split", () => {
       kind: null,
       origin: "split",
       trace: { trace_id: b!.trace_id, span_id: b!.span_id, parent_span_id: b!.parent_span_id },
+      // T-041b：需求原文随每张单落库
+      requirement_text: "加功能 B，依赖 A",
     });
     expect(t.rows.get(a!.ticket_id)!.fields).toMatchObject({ kind: "dependency" });
     // 入队：依赖在前
@@ -964,5 +979,863 @@ describe("chat", () => {
     const r = await t.sup.chat({ text: "加个登录页" });
     expect(r.kind).toBe("ask_project");
     expect(r.text).toContain("先在界面上导入项目");
+  });
+});
+
+// ---------------- T-041b ----------------
+
+describe("T-041b 写入范围首尾空白", () => {
+  const WS = [" /**", "   ", "\tlib/**", "lib/** ", "\u3000lib/**", " **", "lib/**\n"];
+  it("validateWriteScope：首尾空白一律 write_scope_unsafe（split / manual 都是），中间空格照常合法", () => {
+    for (const s of WS)
+      for (const origin of ["split", "manual", "test"] as const) {
+        const r = validateWriteScope([s], { origin });
+        expect(r.ok, JSON.stringify([s, origin])).toBe(false);
+        if (!r.ok) expect(r.errors.map((e) => e.code)).toEqual(["write_scope_unsafe"]);
+      }
+    expect(validateWriteScope(["docs/my dir/**"], { origin: "split" })).toEqual({
+      ok: true,
+      scope: ["docs/my dir/**"],
+      defaulted: false,
+    });
+  });
+  it("零宽空格 U+200B、U+FEFF 在首尾也算空白（\\s 不含 U+200B）；中间的照常按字面", () => {
+    expect(/\s/u.test("\u200B")).toBe(false);
+    for (const s of ["\u200Blib/**", "lib/**\u200B", "\uFEFFlib/**", "lib/**\uFEFF", "\u200B"])
+      for (const origin of ["split", "manual"] as const) {
+        const r = validateWriteScope([s], { origin });
+        expect(r.ok, JSON.stringify([s, origin])).toBe(false);
+        if (!r.ok) expect(r.errors.map((e) => e.code)).toEqual(["write_scope_unsafe"]);
+      }
+    // 手动单的 "\u200B**" 也不按整仓兜底
+    expect(validateWriteScope(["\u200B**"], { origin: "manual" }).ok).toBe(false);
+    expect(validateWriteScope(["lib/a\u200Bb/**"], { origin: "split" }).ok).toBe(true);
+  });
+  it("split：一条空白条目整批退回重拆", async () => {
+    const t = setup({
+      outputs: [
+        splitOut([ticketJson(), ticketJson({ key: "t2", write_scope: ["lib/b/** "] })]),
+        splitOut([ticketJson()]),
+      ],
+    });
+    const r = await t.sup.split({ project_id: "demo-1234", text: "x" });
+    expect(r.attempts).toBe(2);
+    expect(t.prompts[1]).toMatch(/write_scope_unsafe.*lib\/b\/\*\* /);
+  });
+  it('手动单：空白条目直接报错、无副作用（含 " **"，不再按整仓兜底）；不给 write_scope 仍默认 ** 并警告', async () => {
+    const t = setup();
+    for (const s of WS)
+      await expect(
+        t.sup.createManualTicket({
+          project_id: "demo-1234",
+          ticket_text: "x",
+          origin: "manual",
+          write_scope: [s],
+        }),
+      ).rejects.toThrow(/write_scope_unsafe/);
+    expect(t.rows.size).toBe(0);
+    expect(t.published).toEqual([]);
+    const tk = await t.sup.createManualTicket({
+      project_id: "demo-1234",
+      ticket_text: "x",
+      origin: "manual",
+    });
+    expect(tk.write_scope).toEqual(["**"]);
+    const tk2 = await t.sup.createManualTicket({
+      project_id: "demo-1234",
+      ticket_text: "x",
+      origin: "manual",
+      write_scope: ["*/x/**"],
+    });
+    expect(tk2.write_scope).toEqual(["**"]);
+    expect(
+      t.published.filter((e) => e.type === "ticket_warning").map((e) => e.payload.code),
+    ).toEqual(["write_scope_defaulted", "write_scope_defaulted"]);
+  });
+  it("loadTicket 复查：库里存了空白条目按 fields_invalid", async () => {
+    const t = setup({ outputs: [splitOut([ticketJson()])] });
+    const r = await t.sup.split({ project_id: "demo-1234", text: "x" });
+    const id = r.tickets[0]!.ticket_id;
+    const row = t.rows.get(id)!;
+    t.rows.set(id, { ...row, fields: { ...row.fields, write_scope: [" lib/a/**"] } });
+    expect(await t.sup.loadTicket(id)).toBeUndefined();
+    expect(t.published.at(-1)).toMatchObject({
+      type: "ticket_warning",
+      payload: { code: "fields_invalid" },
+    });
+  });
+});
+
+describe("T-041b 需求原文", () => {
+  it("超过 20000 码点截断存进 fields，每批只发一条 requirement_truncated（挂在第一张单上）", async () => {
+    const t = setup({
+      outputs: [splitOut([ticketJson(), ticketJson({ key: "t2", write_scope: ["lib/b/**"] })])],
+    });
+    const text = "😀".repeat(20001);
+    const r = await t.sup.split({ project_id: "demo-1234", text });
+    for (const tk of r.tickets) {
+      const f = t.rows.get(tk.ticket_id)!.fields as { requirement_text: string };
+      expect(Array.from(f.requirement_text)).toHaveLength(20000);
+    }
+    const tw = t.published.filter((e) => e.type === "ticket_warning");
+    expect(tw).toHaveLength(1);
+    expect(tw[0]).toMatchObject({
+      ticket_id: r.tickets[0]!.ticket_id,
+      payload: { code: "requirement_truncated" },
+    });
+    expect(EventSchema.parse({ ...tw[0], seq: 1 })).toBeTruthy();
+    expect(tw[0]!.payload.detail).toContain(r.tickets[1]!.ticket_id);
+    // 正好 20000 码点不截断、不警告（#65 评审：用 U+FFFF 以上的字符，UTF-16 是 40000 个单元，按单元计数会误截）
+    const t2 = setup({ outputs: [splitOut([ticketJson()])] });
+    const exact = "😀".repeat(20000);
+    const r2 = await t2.sup.split({ project_id: "demo-1234", text: exact });
+    expect(
+      (t2.rows.get(r2.tickets[0]!.ticket_id)!.fields as { requirement_text: string })
+        .requirement_text,
+    ).toBe(exact);
+    expect(t2.published.filter((e) => e.type === "ticket_warning")).toEqual([]);
+  });
+  it("20001 个 U+FFFF 以上的字符：按码点截成正好 20000 个（不切半个代理对），发 requirement_truncated 报原长 20001", async () => {
+    const t = setup({ outputs: [splitOut([ticketJson()])] });
+    const r = await t.sup.split({ project_id: "demo-1234", text: "𠀀".repeat(20001) });
+    const stored = (t.rows.get(r.tickets[0]!.ticket_id)!.fields as { requirement_text: string })
+      .requirement_text;
+    expect(stored).toBe("𠀀".repeat(20000));
+    expect(Array.from(stored)).toHaveLength(20000);
+    expect(stored.length).toBe(40000);
+    const tw = t.published.filter((e) => e.type === "ticket_warning");
+    expect(tw).toHaveLength(1);
+    expect(tw[0]).toMatchObject({
+      ticket_id: r.tickets[0]!.ticket_id,
+      payload: { code: "requirement_truncated" },
+    });
+    expect(tw[0]!.payload.detail).toContain("需求原文 20001 字符");
+  });
+  it("手动单的需求原文是 ticket_text", async () => {
+    const t = setup();
+    const tk = await t.sup.createManualTicket({
+      project_id: "demo-1234",
+      ticket_text: "手动做 X",
+      origin: "manual",
+      write_scope: ["lib/x/**"],
+    });
+    expect(t.rows.get(tk.ticket_id)!.fields).toMatchObject({ requirement_text: "手动做 X" });
+  });
+});
+
+type Harness41b = ReturnType<typeof setup> & {
+  closes: string[];
+  replaced: [string, string[]][];
+  timers: { fn: () => void; ms: number }[];
+  closeResult: () => "closed" | "none" | "merged";
+};
+
+/** 先拆一张单（req-1-1，依赖无）和一张下游单（req-1-2 依赖 req-1-1），再按需开主管。 */
+async function escalationSetup(
+  outputs: string[] = [],
+  opts: { close?: (id: string) => "closed" | "none" | "merged" } = {},
+): Promise<Harness41b> {
+  const t = setup({
+    outputs: [
+      splitOut([
+        ticketJson(),
+        ticketJson({ key: "t2", write_scope: ["lib/b/**"], depends_on: ["t1"] }),
+      ]),
+      ...outputs,
+    ],
+  });
+  await t.sup.split({
+    project_id: "demo-1234",
+    text: "原需求：做 A 和 B",
+    requirement_id: "req-1",
+  });
+  const h = t as Harness41b;
+  h.closes = [];
+  h.replaced = [];
+  h.timers = [];
+  h.closeResult = () => "closed";
+  t.deps.closeTicketPr = (id) => {
+    h.closes.push(id);
+    return (opts.close ?? (() => h.closeResult()))(id);
+  };
+  t.deps.replaceDependency = (old, ids) => {
+    h.replaced.push([old, [...ids]]);
+    return ["req-1-2"];
+  };
+  t.deps.timers = {
+    setTimeout: (fn, ms) => {
+      h.timers.push({ fn, ms });
+      return h.timers.length;
+    },
+    clearTimeout: () => {},
+  };
+  h.sup = createSupervisor(t.deps);
+  h.sup.start();
+  return h;
+}
+
+function esc(
+  ticket_id: string | null,
+  reason: EventOf<"escalated">["payload"]["reason"],
+  detail?: string,
+): EventOf<"escalated"> {
+  return {
+    type: "escalated",
+    event_id: `ev-${ticket_id}-${reason}`,
+    seq: 1,
+    ts: "2026-10-17T10:00:00.000Z",
+    trace_id: "tr",
+    span_id: "sp",
+    parent_span_id: null,
+    requirement_id: "req-1",
+    ticket_id,
+    payload: { reason, ...(detail ? { detail } : {}) },
+  };
+}
+
+const markers = (t: ReturnType<typeof setup>, id: string) =>
+  t.rows.get(id)!.fields as Record<string, unknown>;
+
+describe("T-041b 上报处理", () => {
+  it("start 同时订阅 project_created 和 escalated，退订两个都退", async () => {
+    const t = setup();
+    const off = t.sup.start();
+    expect(t.hasHandler() && t.hasEscalatedHandler()).toBe(true);
+    off();
+    expect(t.hasHandler() || t.hasEscalatedHandler()).toBe(false);
+  });
+
+  it("review_limit：先写 escalation_handled、关旧 PR（写 pr_close_done），再重拆失败单；新单继承依赖、resplit_of 指向旧单，下游单在 9 和 2 里换依赖", async () => {
+    const t = await escalationSetup([
+      splitOut([ticketJson({ key: "n1", write_scope: ["lib/a/x/**"], depends_on: ["req-1-1"] })]),
+    ]);
+    // 重拆调模型时，标记必须已落库
+    const call = t.deps.call;
+    let seenAtCall: Record<string, unknown> | undefined;
+    t.deps.call = async (...args) => {
+      seenAtCall = structuredClone(markers(t, "req-1-1"));
+      return call(...args);
+    };
+    t.sup = createSupervisor(t.deps);
+    t.sup.start();
+    await t.fireEscalated(esc("req-1-1", "review_limit", "评审三次不过：缺测试"));
+    expect(seenAtCall).toMatchObject({
+      escalation_handled: { action: "resplit", reason: "review_limit" },
+      pr_close_done: { result: "closed" },
+    });
+    expect(t.closes).toEqual(["req-1-1"]);
+    // 提示词带原需求、失败单原文和反馈（都按不可信区块包装）
+    const p = t.prompts.at(-1)!;
+    expect(p).toMatch(/kind="original_requirement"[\s\S]*原需求：做 A 和 B/);
+    expect(p).toMatch(/kind="escalation_feedback"[\s\S]*req-1-1：review_limit：评审三次不过/);
+    const nf = t.rows.get("req-1-3")!.fields as Record<string, unknown>;
+    expect(nf).toMatchObject({
+      resplit: 1,
+      resplit_of: ["req-1-1"],
+      requirement_text: "原需求：做 A 和 B",
+      depends_on: [],
+    });
+    expect(t.enqueued.at(-1)).toMatchObject({ ticket_id: "req-1-3", depends_on: [] });
+    expect(t.replaced).toEqual([["req-1-1", ["req-1-3"]]]);
+    expect(t.rows.get("req-1-2")!.fields).toMatchObject({ depends_on: ["req-1-3"] });
+    expect(t.notified.at(-1)!.text).toMatch(/req-1-1.*已重拆成 req-1-3/);
+  });
+
+  it("budget_exceeded / internal_error / github_manual：不重拆、交用户，交用户之前已写 escalation_handled", async () => {
+    for (const reason of ["budget_exceeded", "internal_error", "github_manual"] as const) {
+      const t = await escalationSetup();
+      let atNotify: unknown;
+      t.deps.notifyUser = (m) => {
+        atNotify = markers(t, "req-1-1").escalation_handled;
+        t.notified.push(m);
+      };
+      t.sup = createSupervisor(t.deps);
+      t.sup.start();
+      await t.fireEscalated(esc("req-1-1", reason, "d"));
+      expect(atNotify, reason).toMatchObject({ action: "notify_user", reason });
+      expect(t.closes).toEqual([]);
+      expect(t.deps.call).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("merged_but：只通知，不关 PR（6 的 close 对已合入的 PR 会抛错）、不重拆、不写标记；之后真上报照常重拆", async () => {
+    const t = await escalationSetup([splitOut([ticketJson({ key: "n1" })])]);
+    await t.fireEscalated(esc("req-1-1", "merged_but", "merged_but: diff 失败"));
+    expect(t.closes).toEqual([]);
+    expect(markers(t, "req-1-1").escalation_handled).toBeUndefined();
+    expect(t.notified.at(-1)!.text).toMatch(/已合入集成分支.*不重拆/);
+    await t.fireEscalated(esc("req-1-1", "scope_lock_failed"));
+    expect(markers(t, "req-1-1").escalation_handled).toBeUndefined();
+    await t.fireEscalated(esc("req-1-1", "coder_failed"));
+    expect(t.closes).toEqual(["req-1-1"]);
+    expect(t.rows.has("req-1-3")).toBe(true);
+  });
+
+  it("同一单收到两次上报只重拆一次；resplit_limit 自己发的忽略；github_manual 没单号只通知", async () => {
+    const t = await escalationSetup([splitOut([ticketJson({ key: "n1" })])]);
+    await t.fireEscalated(esc("req-1-1", "review_limit"));
+    await t.fireEscalated(esc("req-1-1", "conflict_limit"));
+    expect(t.closes).toEqual(["req-1-1"]);
+    expect(t.deps.call).toHaveBeenCalledTimes(2);
+    expect(t.notified.at(-1)!.text).toMatch(/之前已经处理过/);
+    const n = t.notified.length;
+    await t.fireEscalated(esc("req-1-1", "resplit_limit"));
+    expect(t.notified).toHaveLength(n);
+    await t.fireEscalated(esc(null, "github_manual", "PR #12 被手动关闭"));
+    expect(t.notified.at(-1)!.text).toMatch(/PR #12/);
+  });
+
+  it("已重拆次数 ≥ 上限（默认 2）时不再重拆：第 3 次发 escalated(resplit_limit) 并交用户", async () => {
+    const t = await escalationSetup([
+      splitOut([ticketJson({ key: "n1" })]),
+      splitOut([ticketJson({ key: "n2" })]),
+    ]);
+    await t.fireEscalated(esc("req-1-1", "review_limit")); // → req-1-3（resplit 1）
+    await t.fireEscalated(esc("req-1-3", "review_limit")); // → req-1-4（resplit 2）
+    expect(t.rows.get("req-1-4")!.fields).toMatchObject({ resplit: 2, resplit_of: ["req-1-3"] });
+    await t.fireEscalated(esc("req-1-4", "coder_failed"));
+    expect(t.rows.has("req-1-5")).toBe(false);
+    expect(markers(t, "req-1-4").escalation_handled).toMatchObject({ action: "resplit_limit" });
+    const e = t.published.filter((x) => x.type === "escalated");
+    expect(e).toHaveLength(1);
+    expect(EventSchema.parse({ ...e[0], seq: 1 })).toMatchObject({
+      ticket_id: "req-1-4",
+      payload: { reason: "resplit_limit" },
+    });
+    expect(t.notified.at(-1)!.text).toMatch(/重拆次数已到上限/);
+  });
+
+  it("旧 PR 其实已合入（closeTicketPr 返回 merged）：不重拆，交用户", async () => {
+    const t = await escalationSetup([], { close: () => "merged" });
+    await t.fireEscalated(esc("req-1-1", "review_limit"));
+    expect(markers(t, "req-1-1")).toMatchObject({ pr_close_done: { result: "merged" } });
+    expect(t.rows.has("req-1-3")).toBe(false);
+    expect(t.notified.at(-1)!.text).toMatch(/已经合入，不重拆/);
+  });
+
+  it("关旧 PR 失败：发一次 pr_close_failed，不建新单；按 30s / 2min / 10min 重试，成功后才重拆", async () => {
+    let fails = 2;
+    const t = await escalationSetup([splitOut([ticketJson({ key: "n1" })])], {
+      close: () => {
+        if (fails-- > 0) throw new Error("sync 失败：网络");
+        return "closed";
+      },
+    });
+    await t.fireEscalated(esc("req-1-1", "review_limit"));
+    expect(t.rows.has("req-1-3")).toBe(false);
+    expect(markers(t, "req-1-1").pr_close_done).toBeUndefined();
+    const tw = t.published.filter((e) => e.type === "ticket_warning");
+    expect(tw.map((e) => e.payload.code)).toEqual(["pr_close_failed"]);
+    expect(EventSchema.parse({ ...tw[0], seq: 1 })).toBeTruthy();
+    expect(t.timers.map((x) => x.ms)).toEqual([30_000]);
+    t.timers[0]!.fn();
+    await vi.waitFor(() => expect(t.timers.map((x) => x.ms)).toEqual([30_000, 120_000]));
+    expect(t.rows.has("req-1-3")).toBe(false);
+    t.timers[1]!.fn();
+    await vi.waitFor(() => expect(t.rows.has("req-1-3")).toBe(true));
+    expect(t.published.filter((e) => e.type === "ticket_warning")).toHaveLength(1);
+  });
+
+  it("关旧 PR 重试 3 次仍失败：交用户，单子停在这一步，不建新单", async () => {
+    const t = await escalationSetup([], {
+      close: () => {
+        throw new Error("挂了");
+      },
+    });
+    await t.fireEscalated(esc("req-1-1", "review_limit"));
+    for (let i = 0; i < 3; i++) {
+      t.timers[i]!.fn();
+      await vi.waitFor(() => expect(t.closes).toHaveLength(i + 2));
+    }
+    await vi.waitFor(() => expect(t.notified.at(-1)!.text).toMatch(/重试 3 次仍失败/));
+    expect(t.timers.map((x) => x.ms)).toEqual([30_000, 120_000, 600_000]);
+    expect(t.rows.has("req-1-3")).toBe(false);
+  });
+
+  it("旧单没有需求原文：只交用户；拆单失败：记 error 并交用户", async () => {
+    const t = await escalationSetup(["不是 JSON", "不是 JSON", "不是 JSON"]);
+    const row = t.rows.get("req-1-2")!;
+    const f = { ...(row.fields as Record<string, unknown>) };
+    delete f.requirement_text;
+    t.rows.set("req-1-2", { ...row, fields: f as typeof row.fields });
+    await t.fireEscalated(esc("req-1-2", "review_limit"));
+    expect(t.closes).toEqual([]);
+    expect(t.notified.at(-1)!.text).toMatch(/旧单.*不能自动重拆/);
+    await t.fireEscalated(esc("req-1-1", "review_limit"));
+    expect(markers(t, "req-1-1").escalation_handled).toMatchObject({
+      action: "resplit",
+      error: expect.stringMatching(/拆单 3 次都没有通过校验/),
+    });
+    expect(t.notified.at(-1)!.text).toMatch(/重拆失败/);
+  });
+});
+
+describe("T-041b 重启接管补跑", () => {
+  const base = {
+    project_id: "demo-1234",
+    requirement_id: "req-1",
+    created_at: "2026-10-01T00:00:00.000Z",
+    base_commit: "abc1234",
+    permission_list: [],
+    context_snippets: [],
+  };
+  const f = (over: Record<string, unknown> = {}) => ({
+    write_scope: ["lib/a/**"],
+    interfaces: [],
+    depends_on: [],
+    priority: "normal",
+    kind: null,
+    origin: "split",
+    trace: { trace_id: "tr", span_id: "sp", parent_span_id: "root" },
+    requirement_text: "原需求",
+    ...over,
+  });
+  const row = (id: string, status: Row["status"], fields: Record<string, unknown> | null) =>
+    ({ ...base, ticket_id: id, ticket_text: `做 ${id}`, status, fields }) as Row;
+
+  function withDeps(t: ReturnType<typeof setup>, last?: (id: string) => EventOf<"escalated">) {
+    const closes: string[] = [];
+    t.deps.closeTicketPr = (id) => {
+      closes.push(id);
+      return "closed";
+    };
+    if (last) t.deps.lastEscalation = last;
+    const sup = createSupervisor(t.deps);
+    return { sup, closes };
+  }
+
+  it("没有 escalation_handled 的已上报单：按 lastEscalation 补跑（重拆），下游单依赖换成新单再 enqueue", async () => {
+    const t = setup({
+      rows: [
+        row("req-1-1", "escalated", f()),
+        row("req-1-2", "pending", f({ write_scope: ["lib/b/**"], depends_on: ["req-1-1"] })),
+      ],
+      outputs: [splitOut([ticketJson({ key: "n1" })])],
+    });
+    const { sup, closes } = withDeps(t, (id) => esc(id, "review_limit"));
+    const r = await sup.takeOver();
+    expect(closes).toEqual(["req-1-1"]);
+    expect(r.escalated).toEqual(["req-1-1"]);
+    expect(r.escalations).toEqual([{ ticket_id: "req-1-1", action: "resplit" }]);
+    expect(r.held).toEqual([]);
+    expect(r.enqueued).toEqual(["req-1-2"]);
+    expect(t.enqueued.find((e) => e.ticket_id === "req-1-2")).toMatchObject({
+      depends_on: ["req-1-3"],
+    });
+    expect(t.rows.get("req-1-2")!.fields).toMatchObject({ depends_on: ["req-1-3"] });
+    // 再接管一次不补跑
+    expect((await sup.takeOver()).escalations).toEqual([]);
+  });
+
+  it("已标记重拆、没有 pr_close_done：从关旧 PR 这一步接着做", async () => {
+    const t = setup({
+      rows: [
+        row(
+          "req-1-1",
+          "escalated",
+          f({
+            escalation_handled: { action: "resplit", at: "t", reason: "coder_failed" },
+          }),
+        ),
+      ],
+      outputs: [splitOut([ticketJson({ key: "n1" })])],
+    });
+    const { sup, closes } = withDeps(t);
+    const r = await sup.takeOver();
+    expect(closes).toEqual(["req-1-1"]);
+    expect(r.escalations).toEqual([{ ticket_id: "req-1-1", action: "resplit" }]);
+    expect(t.rows.get("req-1-2")!.fields).toMatchObject({ resplit_of: ["req-1-1"] });
+  });
+
+  it("Q-D：旧 PR 已关、新单没落库（中途崩溃）：只通知，不自动再拆；已处理完的不动", async () => {
+    const t = setup({
+      rows: [
+        row(
+          "req-1-1",
+          "escalated",
+          f({
+            escalation_handled: { action: "resplit", at: "t", reason: "coder_failed" },
+            pr_close_done: { at: "t", result: "closed" },
+          }),
+        ),
+        row(
+          "req-1-2",
+          "escalated",
+          f({
+            escalation_handled: { action: "notify_user", at: "t", reason: "budget_exceeded" },
+          }),
+        ),
+      ],
+    });
+    const { sup, closes } = withDeps(t, (id) => esc(id, "review_limit"));
+    const r = await sup.takeOver();
+    expect(closes).toEqual([]);
+    expect(t.deps.call).not.toHaveBeenCalled();
+    expect(r.escalations).toEqual([{ ticket_id: "req-1-1", action: "notify_user" }]);
+    expect(t.notified.map((n) => n.text)).toEqual([expect.stringMatching(/重拆到一半中断了/)]);
+  });
+
+  it("每次最多补跑 5 张，其余进 held 并通知一次；依赖已上报（未被取代）或 fields_invalid 的单进 held、不接回、只通知一次", async () => {
+    const rows = [1, 2, 3, 4, 5, 6, 7].map((i) => row(`req-1-${i}`, "escalated", f()));
+    rows.push(row("req-1-8", "pending", null));
+    rows.push(row("req-1-9", "pending", f({ write_scope: ["lib/c/**"], depends_on: ["req-1-1"] })));
+    rows.push(
+      row("req-1-10", "merge_queued", f({ write_scope: ["lib/d/**"], depends_on: ["req-1-8"] })),
+    );
+    rows.push(
+      row("req-1-11", "pending", f({ write_scope: ["lib/e/**"], depends_on: ["req-1-10"] })),
+    );
+    const t = setup({ rows });
+    t.deps.adopt = vi.fn();
+    const { sup } = withDeps(t, (id) => esc(id, "budget_exceeded"));
+    const r = await sup.takeOver();
+    expect(r.escalations.map((e) => e.ticket_id)).toEqual([
+      "req-1-1",
+      "req-1-2",
+      "req-1-3",
+      "req-1-4",
+      "req-1-5",
+    ]);
+    expect(r.held).toEqual([
+      { ticket_id: "req-1-6", blocked_by: [] },
+      { ticket_id: "req-1-7", blocked_by: [] },
+      { ticket_id: "req-1-10", blocked_by: ["req-1-8"] },
+      { ticket_id: "req-1-11", blocked_by: ["req-1-10"] },
+      { ticket_id: "req-1-9", blocked_by: ["req-1-1"] },
+    ]);
+    expect(r.skipped_invalid).toEqual(["req-1-8"]);
+    expect(r.enqueued).toEqual([]);
+    expect(r.adopted).toEqual([]);
+    expect(t.deps.adopt).not.toHaveBeenCalled();
+    const heldTexts = t.notified.filter((n) => /没有接回|排在后面/.test(n.text));
+    expect(heldTexts).toHaveLength(5);
+    // 第二次：剩下两张补跑；held 的下游单不再重复通知
+    const n = t.notified.length;
+    const r2 = await sup.takeOver();
+    expect(r2.escalations.map((e) => e.ticket_id)).toEqual(["req-1-6", "req-1-7"]);
+    // req-1-1 已处理（只通知、没被取代），下游照旧挂起；req-1-8 仍是 fields_invalid
+    expect(r2.held.map((h) => h.ticket_id)).toEqual(["req-1-10", "req-1-11", "req-1-9"]);
+    expect(t.notified.slice(n).filter((x) => /没有接回|排在后面/.test(x.text))).toEqual([]);
+  });
+});
+
+describe("T-041c 高风险 PR 裁决", () => {
+  async function hrSetup() {
+    const t = await escalationSetup();
+    const calls: string[] = [];
+    let fail: Error | undefined;
+    /** 9 那边当前被扣的 PR（假的 9：按 pr_id 校验） */
+    const current = new Map<string, string>();
+    const check9 = (id: string, pr: string) => {
+      if (fail) throw fail;
+      const cur = current.get(id);
+      if (cur !== undefined && cur !== pr)
+        throw new HighRiskDecisionError("stale_pr", id, `单 ${id} 的 PR 已更新`);
+    };
+    t.deps.highRisk = {
+      check: (id, pr) => {
+        calls.push(`check:${id}:${pr}`);
+        check9(id, pr);
+      },
+      release: (id, pr) => {
+        calls.push(`release:${id}:${pr}`);
+        check9(id, pr);
+        return "released";
+      },
+      reject: (id, pr, detail) => {
+        calls.push(`reject:${id}:${pr}:${detail}`);
+        check9(id, pr);
+      },
+    };
+    const inner = t.deps.closeTicketPr!;
+    t.deps.closeTicketPr = (id, reason) => {
+      calls.push(`close:${id}`);
+      return inner(id, reason);
+    };
+    t.sup = createSupervisor(t.deps);
+    t.sup.start();
+    return { t, calls, current, failWith: (e: Error | undefined) => (fail = e) };
+  }
+  const held = (
+    ticket_id: string,
+    pr_id: string,
+    cause: "submit" | "adopt" | "resubmit",
+    extra: Partial<HighRiskHeldInput> = {},
+  ): HighRiskHeldInput => ({
+    ticket_id,
+    pr_id,
+    requirement_id: "req-1",
+    cause,
+    diff_files: [{ path: "apps/web/package.json", status: "modified" }],
+    ...extra,
+  });
+  const codeOf = async (p: Promise<unknown>): Promise<string> => {
+    try {
+      await p;
+    } catch (e) {
+      expect(e).toBeInstanceOf(HighRiskDecisionError);
+      return (e as HighRiskDecisionError).code;
+    }
+    return "none";
+  };
+
+  it("highRiskHeld：按 cause 写不同的通知（重启后写明放行不保存、要再放行；换新 PR 写明要重新裁决），同一 PR 只通知一次；记进 pendingHighRisk", async () => {
+    const { t } = await hrSetup();
+    const before = t.notified.length;
+    await t.sup.highRiskHeld(held("req-1-1", "pr-1", "submit"));
+    await t.sup.highRiskHeld(held("req-1-1", "pr-1", "submit"));
+    expect(t.notified.length - before).toBe(1);
+    expect(t.notified.at(-1)!.text).toMatch(
+      /req-1-1 的 PR pr-1 属于高风险 PR（改动了依赖清单.*涉及文件：apps\/web\/package.json。等你放行或拒绝.*不会合入/,
+    );
+    expect(t.notified.at(-1)!.project_id).toBe("demo-1234");
+    await t.sup.highRiskHeld(held("req-1-1", "pr-2", "resubmit"));
+    expect(t.notified.at(-1)!.text).toMatch(/换了新 PR pr-2.*重新扣/);
+    await t.sup.highRiskHeld(held("req-1-2", "pr-3", "adopt", { diff_files: null }));
+    expect(t.notified.at(-1)!.text).toMatch(/重启后.*pr-3.*放行不跨重启保存.*再放行一次/);
+    expect(t.sup.pendingHighRisk().map((p) => [p.ticket_id, p.pr_id])).toEqual([
+      ["req-1-1", "pr-2"],
+      ["req-1-2", "pr-3"],
+    ]);
+    // 已到终态的单自动去掉
+    t.rows.get("req-1-2")!.status = "merged";
+    expect(t.sup.pendingHighRisk().map((p) => p.ticket_id)).toEqual(["req-1-1"]);
+  });
+
+  it("pendingHighRisk：每张单带项目、PR、链接、理由、命中文件（≤20，其余计 files_more）和扣住时间", async () => {
+    const { t } = await hrSetup();
+    const files = Array.from({ length: 22 }, (_, i) => ({
+      path: `p${i}/package.json`,
+      status: "modified" as const,
+    }));
+    await t.sup.highRiskHeld(
+      held("req-1-1", "pr-1", "submit", {
+        pr_url: "https://github.com/o/r/pull/1",
+        diff_files: [{ path: "src/a.ts", status: "modified" }, ...files],
+      }),
+    );
+    await t.sup.highRiskHeld(held("req-1-2", "pr-2", "adopt", { diff_files: null }));
+    const list = t.sup.pendingHighRisk();
+    expect(list[0]).toEqual({
+      ticket_id: "req-1-1",
+      project_id: "demo-1234",
+      pr_id: "pr-1",
+      pr_url: "https://github.com/o/r/pull/1",
+      reasons: ["dependency_file"],
+      files: files.slice(0, 20).map((f) => ({ path: f.path })),
+      files_more: 2,
+      held_at: expect.stringMatching(/^\d{4}-\d\d-\d\dT/),
+    });
+    expect(list[1]).toMatchObject({ reasons: ["diff_unavailable"], files: [], files_more: 0 });
+    expect(list[1]).not.toHaveProperty("pr_url");
+  });
+
+  it("pendingHighRisk（T-065）：package.json 改名成 x.json，命中文件带结构化的 old_path；通知里写明原路径", async () => {
+    const { t } = await hrSetup();
+    await t.sup.highRiskHeld(
+      held("req-1-1", "pr-1", "submit", {
+        diff_files: [
+          { path: "x.json", old_path: "package.json", status: "renamed" },
+          { path: "src/b.ts", old_path: "src/a.ts", status: "renamed" },
+        ],
+      }),
+    );
+    const [p] = t.sup.pendingHighRisk();
+    expect(p).toMatchObject({
+      reasons: ["dependency_file"],
+      files: [{ path: "x.json", old_path: "package.json" }],
+      files_more: 0,
+    });
+    expect(t.notified.at(-1)!.text).toMatch(/涉及文件：x\.json（原 package\.json）。/);
+    // 返回的是拷贝：改了不影响下次
+    p!.files[0]!.old_path = "改坏";
+    expect(t.sup.pendingHighRisk()[0]!.files[0]!.old_path).toBe("package.json");
+  });
+
+  it("pendingHighRisk 同步、只读内存：PR / 9 的任何调用都抛错时照样同步返回（不是 Promise）", async () => {
+    const { t } = await hrSetup();
+    await t.sup.highRiskHeld(held("req-1-1", "pr-1", "submit"));
+    const boom = () => {
+      throw new Error("不许调 GitHub / 6 / 9");
+    };
+    t.deps.closeTicketPr = boom;
+    t.deps.highRisk = { check: boom, release: boom, reject: boom };
+    t.deps.targetHead = boom;
+    t.deps.call.mockImplementation(boom);
+    const r = t.sup.pendingHighRisk();
+    expect(r).not.toBeInstanceOf(Promise);
+    expect(Array.isArray(r)).toBe(true);
+    expect(r.map((p) => p.pr_id)).toEqual(["pr-1"]);
+  });
+
+  it("decideHighRisk：放行转调 9 的 release（按 pr_id），成功后移出待裁决；不调模型", async () => {
+    const { t, calls } = await hrSetup();
+    await t.sup.highRiskHeld(held("req-1-1", "pr-1", "submit"));
+    expect(await t.sup.decideHighRisk("req-1-1", "pr-1", "release")).toEqual({
+      decision: "release",
+      result: "released",
+    });
+    expect(calls).toEqual(["release:req-1-1:pr-1"]);
+    expect(t.sup.pendingHighRisk()).toEqual([]);
+    expect(t.deps.call).toHaveBeenCalledTimes(1);
+  });
+
+  it("decideHighRisk：pr_id 不是当前 PR 抛 stale_pr（10 记着的、9 校验的都算），不放行不拒绝；没接 9 抛 unavailable", async () => {
+    const { t, calls, current } = await hrSetup();
+    await t.sup.highRiskHeld(held("req-1-1", "pr-2", "resubmit"));
+    expect(await codeOf(t.sup.decideHighRisk("req-1-1", "pr-1", "release"))).toBe("stale_pr");
+    expect(await codeOf(t.sup.decideHighRisk("req-1-1", "pr-1", "reject"))).toBe("stale_pr");
+    expect(calls).toEqual([]);
+    expect(t.sup.pendingHighRisk()).toHaveLength(1);
+    // 10 没记着（如进程刚起），9 校验出不是当前 PR
+    current.set("req-1-2", "pr-9");
+    expect(await codeOf(t.sup.decideHighRisk("req-1-2", "pr-3", "reject"))).toBe("stale_pr");
+    expect(calls).toEqual(["check:req-1-2:pr-3"]);
+    expect(t.closes).toEqual([]);
+    delete t.deps.highRisk;
+    const bare = createSupervisor(t.deps);
+    expect(await codeOf(bare.decideHighRisk("req-1-1", "pr-2", "release"))).toBe("unavailable");
+  });
+
+  it("decideHighRisk 拒绝（N5）：先经 9 校验，再走 closeTicketPr 关 PR，记 high_risk_close，最后让 9 上报", async () => {
+    const { t, calls } = await hrSetup();
+    await t.sup.highRiskHeld(held("req-1-1", "pr-1", "submit"));
+    expect(await t.sup.decideHighRisk("req-1-1", "pr-1", "reject", "  不要这个依赖 ")).toEqual({
+      decision: "reject",
+      pr_close: "closed",
+    });
+    expect(calls).toEqual([
+      "check:req-1-1:pr-1",
+      "close:req-1-1",
+      "reject:req-1-1:pr-1:不要这个依赖",
+    ]);
+    expect(markers(t, "req-1-1").high_risk_close).toMatchObject({ pr_id: "pr-1", state: "closed" });
+    expect(t.sup.pendingHighRisk()).toEqual([]);
+    expect(t.timers).toEqual([]);
+  });
+
+  it("check 之后、reject 之前 PR 换了：9 的 reject 抛 stale_pr，10 发 high_risk_reject_not_applied、通知「PR 已关、裁决未生效」，错误照抛", async () => {
+    const { t, calls, current } = await hrSetup();
+    await t.sup.highRiskHeld(held("req-1-1", "pr-1", "submit"));
+    current.set("req-1-1", "pr-1");
+    // 关 PR 的这段时间里 9 那边换成了新 PR
+    t.closeResult = () => {
+      current.set("req-1-1", "pr-2");
+      return "closed";
+    };
+    const err = await t.sup.decideHighRisk("req-1-1", "pr-1", "reject", "不要").catch((e) => e);
+    expect(err).toBeInstanceOf(HighRiskDecisionError);
+    expect((err as HighRiskDecisionError).code).toBe("stale_pr");
+    expect(calls).toEqual(["check:req-1-1:pr-1", "close:req-1-1", "reject:req-1-1:pr-1:不要"]);
+    const warn = t.published.filter(
+      (e) => e.type === "ticket_warning" && e.payload.code === "high_risk_reject_not_applied",
+    );
+    expect(warn).toHaveLength(1);
+    expect(warn[0]).toMatchObject({ ticket_id: "req-1-1" });
+    expect(String((warn[0]!.payload as { detail: string }).detail)).toMatch(
+      /PR pr-1 已关、裁决未生效（stale_pr）/,
+    );
+    expect(t.notified.at(-1)!.text).toMatch(/PR pr-1 已关、裁决未生效.*换了新的.*重新查看/);
+    // 没生效：不重试关 PR，待裁决清单里还在
+    expect(t.timers).toEqual([]);
+    expect(t.sup.pendingHighRisk().map((p) => p.ticket_id)).toEqual(["req-1-1"]);
+  });
+
+  it("decideHighRisk 拒绝时 PR 其实已合入：抛 already_merged，不让 9 上报（保留的规则）", async () => {
+    const { t, calls } = await hrSetup();
+    t.closeResult = () => "merged";
+    await t.sup.highRiskHeld(held("req-1-1", "pr-1", "submit"));
+    expect(await codeOf(t.sup.decideHighRisk("req-1-1", "pr-1", "reject"))).toBe("already_merged");
+    expect(calls).toEqual(["check:req-1-1:pr-1", "close:req-1-1"]);
+    expect(markers(t, "req-1-1").high_risk_close).toBeUndefined();
+  });
+
+  it("decideHighRisk 拒绝时关 PR 被限流：照样让 9 上报，记 unconfirmed，发 pr_close_failed，按 30s / 2m / 10m 重试，用完通知用户", async () => {
+    const { t, calls } = await hrSetup();
+    await t.sup.highRiskHeld(held("req-1-1", "pr-1", "submit"));
+    const rl = new GithubRateLimitError(429, "pulls.update", 60_000);
+    t.closeResult = () => {
+      throw rl;
+    };
+    expect(await t.sup.decideHighRisk("req-1-1", "pr-1", "reject", "不要")).toEqual({
+      decision: "reject",
+      pr_close: "unconfirmed",
+    });
+    expect(calls).toEqual(["check:req-1-1:pr-1", "close:req-1-1", "reject:req-1-1:pr-1:不要"]);
+    expect(markers(t, "req-1-1").high_risk_close).toMatchObject({
+      pr_id: "pr-1",
+      state: "unconfirmed",
+    });
+    expect(
+      t.published.filter(
+        (e) => e.type === "ticket_warning" && e.payload.code === "pr_close_failed",
+      ),
+    ).toHaveLength(1);
+    expect(t.timers.map((x) => x.ms)).toEqual([30_000]);
+    // 9 发的 escalated(high_risk_rejected)：通知写明 PR 还没关成、会重试
+    await t.fireEscalated(esc("req-1-1", "high_risk_rejected", "不要"));
+    expect(t.notified.at(-1)!.text).toMatch(/不会再合入.*关 PR 还没成功.*自动重试/);
+    t.timers[0]!.fn();
+    await vi.waitFor(() => expect(t.timers.map((x) => x.ms)).toEqual([30_000, 120_000]));
+    t.timers[1]!.fn();
+    await vi.waitFor(() => expect(t.timers).toHaveLength(3));
+    t.timers[2]!.fn();
+    await vi.waitFor(() => expect(t.notified.at(-1)!.text).toMatch(/重试 3 次仍失败.*手动关掉/));
+    expect(t.closes).toHaveLength(4);
+    // 只发一次 pr_close_failed；单子只拒绝一次
+    expect(calls.filter((c) => c.startsWith("reject:"))).toHaveLength(1);
+    expect(markers(t, "req-1-1").high_risk_close?.state).toBe("unconfirmed");
+  });
+
+  it("拒绝后重试关 PR 成功：high_risk_close 改成 closed", async () => {
+    const { t } = await hrSetup();
+    await t.sup.highRiskHeld(held("req-1-1", "pr-1", "submit"));
+    let n = 0;
+    t.closeResult = () => {
+      if (++n === 1) throw new Error("GitHub 不可用");
+      return "closed";
+    };
+    await t.sup.decideHighRisk("req-1-1", "pr-1", "reject");
+    expect(markers(t, "req-1-1").high_risk_close?.state).toBe("unconfirmed");
+    t.timers[0]!.fn();
+    await vi.waitFor(() => expect(markers(t, "req-1-1").high_risk_close?.state).toBe("closed"));
+    expect(t.timers).toHaveLength(1);
+  });
+
+  it("escalated(high_risk_rejected)：不重拆、不关 PR，写 escalation_handled 交用户，移出待裁决", async () => {
+    const { t } = await hrSetup();
+    await t.sup.highRiskHeld(held("req-1-1", "pr-1", "submit"));
+    await t.fireEscalated(esc("req-1-1", "high_risk_rejected", "不要这个依赖"));
+    expect(t.closes).toEqual([]);
+    expect(t.deps.call).toHaveBeenCalledTimes(1);
+    expect(markers(t, "req-1-1").escalation_handled).toMatchObject({
+      action: "notify_user",
+      reason: "high_risk_rejected",
+    });
+    expect(t.notified.at(-1)!.text).toMatch(/高风险 PR 被拒绝.*不重拆/);
+    expect(t.sup.pendingHighRisk()).toEqual([]);
+  });
+
+  it("backpressurePaused：通知写明暂停原因、待合并 PR 数和其中等裁决的高风险 PR 数", async () => {
+    const { t } = await hrSetup();
+    await t.sup.backpressurePaused({
+      reasons: ["pending_pr_limit"],
+      pending_prs: { total: 5, limit: 4, high_risk_held: 3 },
+    });
+    expect(t.notified.at(-1)!.text).toBe(
+      "已暂停派新单：待合并 PR 超过上限。待合并的 PR 共 5 张（上限 4），其中 3 张是等你裁决的高风险 PR（放行或拒绝后会腾出名额）。在途的单照常编码、合并，恢复后自动继续派单。",
+    );
+    await t.sup.backpressurePaused({
+      reasons: ["pending_pr_limit"],
+      pending_prs: { total: 5, limit: 4, high_risk_held: 0 },
+    });
+    expect(t.notified.at(-1)!.text).toMatch(/其中 0 张是等你裁决的高风险 PR。/);
+    await t.sup.backpressurePaused({
+      reasons: ["daily_budget"],
+      pending_prs: { total: 1, limit: 4, high_risk_held: 0 },
+    });
+    expect(t.notified.at(-1)!.text).toMatch(
+      /^已暂停派新单：当日预算用完。待合并的 PR 共 1 张（上限 4）。/,
+    );
   });
 });

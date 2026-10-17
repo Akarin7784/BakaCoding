@@ -15,6 +15,9 @@ import {
   createScheduler,
   type ConflictResubmitRequest,
   type DispatchOutcome,
+  HighRiskDecisionError,
+  type HighRiskHeldInfo,
+  isStalePrError,
   type ReReviewRequest,
   type Scheduler,
   DEFAULT_EXCLUSIVE_ZONES,
@@ -1263,7 +1266,13 @@ describe("模块 9 合并队列（T-035）", () => {
     expect((await s.backpressureState()).paused).toBe(false);
     h.emit("review_backlog", { pending: 1, capacity: 4 });
     const st = await s.backpressureState();
-    expect(st.pending_prs).toEqual({ merge_queued: 2, in_review: 1, total: 3, limit: 2 });
+    expect(st.pending_prs).toEqual({
+      merge_queued: 2,
+      in_review: 1,
+      total: 3,
+      limit: 2,
+      high_risk_held: 0,
+    });
     expect(st.paused).toBe(true);
     expect(st.reasons).toEqual(["pending_pr_limit"]);
   });
@@ -2358,5 +2367,423 @@ describe("T-041a 重启接管 adopt", () => {
       previous_pr_id: "pr-A",
       resubmit_counts: { conflict: 2 },
     });
+  });
+});
+
+describe("T-041b adopt 写状态失败回滚", () => {
+  const wt = (id: string) => `/wt/${id}-r0`;
+  it("写 merge_queued 抛错：adopt 原样抛错，不留登记、PR 映射和锁，不入队；之后同一 PR 能重新接回", async () => {
+    const h = harness();
+    const s = await started(h);
+    const set = h.deps.tickets.setStatus;
+    let fail = true;
+    h.deps.tickets.setStatus = (t, st) => {
+      if (fail && t === "A") throw new Error("写库失败");
+      return set(t, st);
+    };
+    const input = { pr_id: "pr-A", head_sha: SHA("b"), worktree_path: wt("A") };
+    await expect(
+      s.adopt(ticket("A", { write_scope: ["src/**"], depends_on: ["Z"] }), input),
+    ).rejects.toThrow(/写库失败/);
+    expect(s.status("A")).toBeUndefined();
+    expect(s.snapshot()).toEqual([]);
+    // PR 映射撤掉：按 pr_id 查回到不认识的最小上下文
+    expect(s.eventContext({ pr_id: "pr-A", ticket_id: null }).requirement_id).toBe(
+      "unattributed:pr-A",
+    );
+    // 锁已放掉：写入范围重叠的另一张单能接回
+    expect(
+      await s.adopt(ticket("B", { write_scope: ["src/b.ts"], depends_on: ["Z"] }), {
+        pr_id: "pr-B",
+        head_sha: SHA("b"),
+        worktree_path: wt("B"),
+      }),
+    ).toBe("adopted");
+    expect(s.lock("B", ["src/**"])).toBe("ok");
+    await s.idle();
+    expect(h.calls.filter((c) => c === "merge:pr-A:bakacoding/integration")).toEqual([]);
+    // 修好后同一 PR 重试（B 合不了：依赖 Z 没登记、一直持锁，所以换一张不重叠的范围）
+    fail = false;
+    expect(await s.adopt(ticket("A", { write_scope: ["lib/**"], depends_on: ["Z"] }), input)).toBe(
+      "adopted",
+    );
+    expect(s.status("A")).toBe("merge_queued");
+  });
+
+  it("#65 评审：回滚撤掉 PR 映射——同一张单之后换新 PR 接回，旧 pr_id 不再映射到这张单", async () => {
+    const h = harness();
+    const s = await started(h);
+    const set = h.deps.tickets.setStatus;
+    let fail = true;
+    h.deps.tickets.setStatus = (t, st) => {
+      if (fail && t === "A") throw new Error("写库失败");
+      return set(t, st);
+    };
+    await expect(
+      s.adopt(ticket("A", { write_scope: ["src/**"], depends_on: ["Z"] }), {
+        pr_id: "pr-A-old",
+        head_sha: SHA("b"),
+        worktree_path: wt("A"),
+      }),
+    ).rejects.toThrow(/写库失败/);
+    fail = false;
+    expect(
+      await s.adopt(ticket("A", { write_scope: ["src/**"], depends_on: ["Z"] }), {
+        pr_id: "pr-A-new",
+        head_sha: SHA("c"),
+        worktree_path: wt("A"),
+      }),
+    ).toBe("adopted");
+    // 新 PR 照常映射到 A
+    expect(s.eventContext({ pr_id: "pr-A-new", ticket_id: null })).toMatchObject({
+      requirement_id: "req-1",
+      span_id: "span-A",
+    });
+    // 旧 PR 的映射已撤掉：A 重新登记后也查不回 A（映射残留的话这里会拿到 A 的上下文）
+    expect(s.eventContext({ pr_id: "pr-A-old", ticket_id: null })).toMatchObject({
+      requirement_id: "unattributed:pr-A-old",
+      trace_id: "unattributed:pr-A-old",
+    });
+  });
+});
+
+describe("T-041b replaceDependency", () => {
+  it("依赖已上报单的下游单 held → 换成新单后 waiting，新单合入后 ready 并合入；终态单不改；返回被改的单号", async () => {
+    const h = harness();
+    const d = withHandle(h, { max: 4 });
+    const s = await started(h);
+    await s.enqueue(ticket("X", { write_scope: ["x/**"] }));
+    await s.enqueue(ticket("D", { write_scope: ["d/**"], depends_on: ["X", "Y"] }));
+    await s.enqueue(ticket("Y", { write_scope: ["y/**"] }));
+    await settle(s);
+    expect(d.handled.sort()).toEqual(["X", "Y"]);
+    await pass(s, d, "Y");
+    // X 上报：D 挂起
+    d.pending.get("X")!.resolve({ kind: "escalated", pr_id: null });
+    await settle(s);
+    expect(s.status("X")).toBe("escalated");
+    expect(s.dependencyState("D")).toBe("held");
+
+    await s.enqueue(ticket("X2", { write_scope: ["x/**"] }));
+    expect(s.replaceDependency("X", ["X2", "X2", "D"])).toEqual(["D"]);
+    expect(s.dependencyState("D")).toBe("waiting");
+    // 对同一个旧单号再换一次：没有单再依赖它
+    expect(s.replaceDependency("X", ["X2"])).toEqual([]);
+    await settle(s);
+    expect(d.handled).toContain("X2");
+    await pass(s, d, "X2");
+    expect(d.handled).toContain("D");
+    await pass(s, d, "D");
+    expect(s.status("D")).toBe("merged");
+    // 终态的单不改依赖
+    expect(s.replaceDependency("Y", ["Q"])).toEqual([]);
+  });
+});
+
+describe("T-041c 高风险闸门", () => {
+  /** 打开闸门、记录 onHighRiskHeld；close 可按 PR 注入错误 */
+  function gated(over: Parameters<typeof harness>[0] = {}) {
+    const h = harness(over);
+    const held: HighRiskHeldInfo[] = [];
+    const closeFails = new Map<string, Error>();
+    h.deps.holdHighRisk = true;
+    h.deps.onHighRiskHeld = (i) => void held.push(i);
+    const orig = h.deps.createPr;
+    h.deps.createPr = async (o) => {
+      const p = await orig(o);
+      return {
+        ...p,
+        close: async (pr_id: string, reason: string) => {
+          h.calls.push(`close:${pr_id}:${reason}`);
+          const err = closeFails.get(pr_id);
+          if (err) throw err;
+        },
+      };
+    };
+    return { h, held, closeFails };
+  }
+  const view = (s: Scheduler, id: string) => s.snapshot().find((v) => v.ticket_id === id)!;
+  const mergesOf = (h: Harness) => h.calls.filter((c) => c.startsWith("merge:"));
+  /** 抛的 HighRiskDecisionError 的码（没抛返回 "none"） */
+  const codeOf = (fn: () => unknown): string => {
+    try {
+      fn();
+    } catch (e) {
+      expect(e).toBeInstanceOf(HighRiskDecisionError);
+      return (e as HighRiskDecisionError).code;
+    }
+    return "none";
+  };
+  const codeOfAsync = async (p: Promise<unknown>): Promise<string> => {
+    try {
+      await p;
+    } catch (e) {
+      expect(e).toBeInstanceOf(HighRiskDecisionError);
+      return (e as HighRiskDecisionError).code;
+    }
+    return "none";
+  };
+
+  it("闸门关（默认）：高风险单照常合并，held_high_risk 恒为 false，不调 onHighRiskHeld，high_risk_held 为 0", async () => {
+    const h = harness();
+    const held: HighRiskHeldInfo[] = [];
+    h.deps.onHighRiskHeld = (i) => void held.push(i);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", high_risk: true });
+    expect(view(s, "T-1").held_high_risk).toBe(false);
+    await s.idle();
+    expect(s.status("T-1")).toBe("merged");
+    expect(held).toEqual([]);
+    expect((await s.backpressureState()).pending_prs.high_risk_held).toBe(0);
+    expect(codeOf(() => s.releaseHighRisk("T-1", "pr-1"))).toBe("terminal");
+  });
+
+  it("闸门开：高风险单扣在队里不合并，后面不相干的单照常合并；同一 PR 只通知一次", async () => {
+    const { h, held } = gated();
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { write_scope: ["package.json"] }));
+    await s.enqueue(ticket("T-2", { write_scope: ["src/**"] }));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", high_risk: true });
+    await s.submit({ ticket_id: "T-2", pr_id: "pr-2", worktree_path: "/2" });
+    await s.idle();
+    expect(s.status("T-1")).toBe("merge_queued");
+    expect(s.status("T-2")).toBe("merged");
+    expect(mergesOf(h)).toEqual(["merge:pr-2:bakacoding/integration"]);
+    expect(view(s, "T-1")).toMatchObject({ held_high_risk: true, high_risk: true });
+    expect(view(s, "T-2").held_high_risk).toBe(false);
+    expect(held).toEqual([
+      { ticket_id: "T-1", pr_id: "pr-1", requirement_id: "req-1", cause: "submit" },
+    ]);
+    // 再触发几轮合并循环也不重复通知
+    await s.sync();
+    await s.idle();
+    expect(held).toHaveLength(1);
+    expect((await s.backpressureState()).pending_prs).toMatchObject({
+      merge_queued: 1,
+      high_risk_held: 1,
+    });
+  });
+
+  it("放行：合入；同一 PR 再放行返回 already；没登记 / 不是高风险 / 闸门没开 / 终态都抛错", async () => {
+    const { h } = gated();
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.enqueue(ticket("T-2"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", high_risk: true });
+    await s.submit({ ticket_id: "T-2", pr_id: "pr-2", worktree_path: "/2" });
+    await s.idle();
+    expect(codeOf(() => s.releaseHighRisk("X", "pr-1"))).toBe("not_found");
+    expect(codeOf(() => s.releaseHighRisk("T-2", "pr-2"))).toBe("terminal");
+    // 按 pr_id 绑定：不是当前被扣的 PR 抛 stale_pr，不放行
+    const stale = (() => {
+      try {
+        return s.releaseHighRisk("T-1", "pr-old");
+      } catch (e) {
+        return e;
+      }
+    })();
+    expect(isStalePrError(stale)).toBe(true);
+    expect(view(s, "T-1").held_high_risk).toBe(true);
+    expect(s.releaseHighRisk("T-1", "pr-1")).toBe("released");
+    expect(s.releaseHighRisk("T-1", "pr-1")).toBe("already");
+    await s.idle();
+    expect(s.status("T-1")).toBe("merged");
+    expect(codeOf(() => s.releaseHighRisk("T-1", "pr-1"))).toBe("terminal");
+
+    const h2 = harness();
+    const s2 = await started(h2);
+    await s2.enqueue(ticket("T-1"));
+    expect(codeOf(() => s2.releaseHighRisk("T-1", "pr-1"))).toBe("gate_off");
+    const { h: h3 } = gated();
+    const s3 = await started(h3);
+    await s3.enqueue(ticket("T-1"));
+    expect(codeOf(() => s3.releaseHighRisk("T-1", "pr-1"))).toBe("not_high_risk");
+  });
+
+  it("放行后冲突复投换了新 PR：重新扣（cause: resubmit），再放行才合入", async () => {
+    const { h, held } = gated();
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    h.merges.set("pr-1", [conflict(["a.ts"])]);
+    await s.submit({
+      ticket_id: "T-1",
+      pr_id: "pr-1",
+      worktree_path: "/wt/T-1-r0",
+      high_risk: true,
+    });
+    await s.idle();
+    expect(s.releaseHighRisk("T-1", "pr-1")).toBe("released");
+    await s.idle();
+    expect(h.resubmit).toHaveBeenCalledTimes(1);
+    expect(s.status("T-1")).toBe("merge_queued");
+    expect(view(s, "T-1")).toMatchObject({ pr_id: "pr-100", held_high_risk: true });
+    expect(held.map((i) => [i.pr_id, i.cause])).toEqual([
+      ["pr-1", "submit"],
+      ["pr-100", "resubmit"],
+    ]);
+    expect(mergesOf(h)).toEqual(["merge:pr-1:bakacoding/integration"]);
+    // 旧 PR 的放行不算数：按旧 pr_id 再放行抛 stale_pr
+    expect(codeOf(() => s.releaseHighRisk("T-1", "pr-1"))).toBe("stale_pr");
+    expect(s.releaseHighRisk("T-1", "pr-100")).toBe("released");
+    await s.idle();
+    expect(s.status("T-1")).toBe("merged");
+  });
+
+  it("拒绝：9 不关 PR（10 关），发 escalated(high_risk_rejected)；状态 escalated、放锁、下游 held", async () => {
+    const { h } = gated();
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { write_scope: ["package.json"] }));
+    await s.enqueue(ticket("T-2", { depends_on: ["T-1"], write_scope: ["src/**"] }));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", high_risk: true });
+    await s.idle();
+    await s.rejectHighRisk("T-1", "pr-1", "不需要这个依赖");
+    expect(h.calls.filter((c) => c.startsWith("close:"))).toEqual([]);
+    expect(escalations(h)).toEqual([
+      expect.objectContaining({
+        ticket_id: "T-1",
+        payload: expect.objectContaining({
+          reason: "high_risk_rejected",
+          detail: "不需要这个依赖",
+        }),
+      }),
+    ]);
+    expect(s.status("T-1")).toBe("escalated");
+    expect(h.statuses).toContainEqual(["T-1", "escalated"]);
+    expect(view(s, "T-1")).toMatchObject({ locked_scope: null, held_high_risk: false });
+    expect(s.dependencyState("T-2")).toBe("held");
+    expect(await codeOfAsync(s.rejectHighRisk("T-1", "pr-1", "x"))).toBe("terminal");
+    expect(await codeOfAsync(s.rejectHighRisk("T-2", "pr-2", "x"))).toBe("not_high_risk");
+
+    const h2 = harness();
+    const s2 = await started(h2);
+    await s2.enqueue(ticket("T-1"));
+    h2.merges.set("pr-1", [new Error("先别合")]);
+    await s2.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", high_risk: true });
+    await s2.idle();
+    // 闸门关时单子会照常合并（这里合并出错已上报），拒绝已终态的单抛错
+    expect(await codeOfAsync(s2.rejectHighRisk("T-1", "pr-1", "x"))).toBe("terminal");
+  });
+
+  it("拒绝的错误都带码：stale_pr / not_held（已放行）/ merge_in_progress；checkHighRisk 只校验不改状态", async () => {
+    const { h } = gated();
+    let unblock!: () => void;
+    const gate = new Promise<void>((r) => (unblock = r));
+    let entered = false;
+    const inner = h.deps.createPr;
+    h.deps.createPr = async (o) => {
+      const p = await inner(o);
+      return {
+        ...p,
+        merge: async (pr_id: string, target: string) => {
+          if (pr_id === "pr-2") {
+            entered = true;
+            await gate;
+          }
+          return p.merge(pr_id, target);
+        },
+      };
+    };
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.enqueue(ticket("T-2"));
+    await s.enqueue(ticket("T-3"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", high_risk: true });
+    await s.submit({ ticket_id: "T-2", pr_id: "pr-2", worktree_path: "/2", high_risk: true });
+    await s.idle();
+    expect(await codeOfAsync(s.rejectHighRisk("T-1", "pr-old", "不要"))).toBe("stale_pr");
+    expect(codeOf(() => s.checkHighRisk("T-1", "pr-old"))).toBe("stale_pr");
+    expect(codeOf(() => s.checkHighRisk("T-1", "pr-1"))).toBe("none");
+    expect(codeOf(() => s.checkHighRisk("T-3", "pr-3"))).toBe("not_high_risk");
+    expect(codeOf(() => s.checkHighRisk("T-9", "pr-9"))).toBe("not_found");
+    expect(s.status("T-1")).toBe("merge_queued");
+    expect(view(s, "T-1").held_high_risk).toBe(true);
+    expect(escalations(h)).toEqual([]);
+
+    // 放行后正在合并：合并卡住期间拒绝抛 merge_in_progress（合并中的那张也不能再拒绝）
+    expect(s.releaseHighRisk("T-2", "pr-2")).toBe("released");
+    await vi.waitFor(() => expect(entered).toBe(true));
+    expect(await codeOfAsync(s.rejectHighRisk("T-2", "pr-2", "不要"))).toBe("merge_in_progress");
+    unblock();
+    await s.idle();
+    expect(s.status("T-2")).toBe("merged");
+    expect(await codeOfAsync(s.rejectHighRisk("T-2", "pr-2", "不要"))).toBe("terminal");
+    expect(escalations(h)).toEqual([]);
+  });
+
+  it("adopt 带 high_risk、闸门开：接回后照样扣着，cause 为 adopt", async () => {
+    const { h, held } = gated();
+    const s = await started(h);
+    expect(
+      await s.adopt(ticket("A", { write_scope: ["package.json"] }), {
+        pr_id: "pr-A",
+        head_sha: SHA("b"),
+        worktree_path: "/wt/A-r0",
+        base_commit: SHA("a"),
+        high_risk: true,
+      }),
+    ).toBe("adopted");
+    await s.idle();
+    expect(s.status("A")).toBe("merge_queued");
+    expect(mergesOf(h)).toEqual([]);
+    // 扣着期间写入范围锁仍占着（v1 已知缺口：独占区域会挡住别的依赖类单）
+    expect(view(s, "A").locked_scope).toEqual(["package.json"]);
+    await expect(
+      s.adopt(ticket("B", { write_scope: ["package.json"] }), {
+        pr_id: "pr-B",
+        head_sha: SHA("b"),
+        worktree_path: "/wt/B-r0",
+      }),
+    ).rejects.toThrow(/独占区域|重叠/);
+    expect(held).toEqual([
+      { ticket_id: "A", pr_id: "pr-A", requirement_id: "req-1", cause: "adopt" },
+    ]);
+    expect(s.releaseHighRisk("A", "pr-A")).toBe("released");
+    await s.idle();
+    expect(s.status("A")).toBe("merged");
+  });
+
+  it("反压暂停时 onBackpressurePaused 调一次，pending_prs.high_risk_held 是被扣着等裁决的 PR 数", async () => {
+    const { h } = gated({ pending_pr_limit: 1 });
+    const paused: number[] = [];
+    h.deps.onBackpressurePaused = (st) => void paused.push(st.pending_prs.high_risk_held);
+    const d = withHandle(h, { max: 4 });
+    const s = await started(h);
+    for (const id of ["T-1", "T-2", "T-3"])
+      await s.enqueue(ticket(id, { write_scope: [`src/${id}/**`] }));
+    await settle(s);
+    expect(d.handled).toEqual(["T-1", "T-2", "T-3"]);
+    for (const id of ["T-1", "T-2"]) {
+      await s.submit({
+        ticket_id: id,
+        pr_id: `pr-${id}`,
+        worktree_path: `/wt/${id}-r0`,
+        high_risk: true,
+      });
+      d.pending.get(id)!.resolve({ kind: "merge_queued", pr_id: `pr-${id}` });
+    }
+    await s.enqueue(ticket("T-4", { write_scope: ["src/T-4/**"] }));
+    await settle(s);
+    const st = await s.backpressureState();
+    expect(st.paused).toBe(true);
+    expect(st.reasons).toContain("pending_pr_limit");
+    expect(st.pending_prs).toMatchObject({ merge_queued: 2, high_risk_held: 2 });
+    expect(d.handled).not.toContain("T-4");
+    expect(paused).toEqual([2]);
+    // 一直暂停着不重复调：多轮派单 / 合并循环 / 再查反压都不再调
+    for (let i = 0; i < 5; i++) {
+      await s.sync();
+      await settle(s);
+      await s.backpressureState();
+    }
+    await s.enqueue(ticket("T-5", { write_scope: ["src/T-5/**"] }));
+    await settle(s);
+    expect(paused).toEqual([2]);
+    // 放行两张、合入后恢复；恢复时不调（只在「未暂停 → 暂停」时调）
+    s.releaseHighRisk("T-1", "pr-T-1");
+    s.releaseHighRisk("T-2", "pr-T-2");
+    await settle(s);
+    expect((await s.backpressureState()).paused).toBe(false);
+    expect(paused).toEqual([2]);
   });
 });

@@ -4,6 +4,12 @@ export const MODULE_NAME = "@bakacoding/scheduler" as const;
 
 export * from "./types.js";
 export {
+  HighRiskDecisionError,
+  HIGH_RISK_DECISION_ERROR_CODES,
+  isStalePrError,
+  type HighRiskDecisionErrorCode,
+} from "./high-risk-error.js";
+export {
   BackpressureController,
   type BacklogInput,
   type BackpressureDecision,
