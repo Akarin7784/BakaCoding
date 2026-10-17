@@ -92,6 +92,14 @@ class FakeGithub {
       const b = body as { head: string; base: string };
       if (!(await remoteHas(`refs/heads/${b.base}`)) || !(await remoteHas(`refs/heads/${b.head}`)))
         return json({ message: "Validation Failed" }, 422);
+      // 同真 GitHub：head 比 base 没有新提交时不能开 PR
+      const ahead = await git(bare, [
+        "rev-list",
+        "--count",
+        `refs/heads/${b.base}..refs/heads/${b.head}`,
+      ]);
+      if (Number(ahead.stdout.trim()) === 0)
+        return json({ message: `No commits between ${b.base} and ${b.head}` }, 422);
       const p = {
         number: this.pulls.length + 1,
         head: b.head,
@@ -166,6 +174,31 @@ async function ticketBranch(ticket: string, file = `${ticket}.txt`, content = `$
   return { wt, branch };
 }
 
+/** 本地集成分支比 main 多一个提交（让 openIntegration 能开出远程 PR）。 */
+async function integrationAhead() {
+  const wt = join(root, "wt-integration");
+  await git(repo, ["branch", INTEGRATION_BRANCH, "main"]);
+  await git(repo, ["worktree", "add", "-q", wt, INTEGRATION_BRANCH]);
+  await writeFile(join(wt, "integration.txt"), "i\n");
+  await commitAll(wt, "integration");
+}
+
+/** 按 8 的真实顺序：建 worktree → open（还没有提交）→ 写文件 → commitWorktree（push 并开 PR）。 */
+async function ticketPr(
+  ticket: string,
+  opts: { file?: string; content?: string; from?: string } = {},
+) {
+  const branch = `feat/${ticket}`;
+  const wt = join(root, `wt-${ticket}`);
+  await git(repo, ["worktree", "add", "-q", "-b", branch, wt, opts.from ?? INTEGRATION_BRANCH]);
+  const id = await pr.open(ticket, wt, branch);
+  await writeFile(join(wt, opts.file ?? `${ticket}.txt`), opts.content ?? `${ticket}\n`);
+  const sha = await pr.commitWorktree(ticket, wt);
+  return { wt, branch, id, sha };
+}
+const pullOf = (branch: string) => gh.pulls.find((p) => p.head === branch);
+const posts = () => gh.calls.filter((c) => c.method === "POST" && c.path === "/pulls");
+
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "bc-pr-gh-test-"));
   repo = join(root, "repo");
@@ -238,41 +271,99 @@ describe("createPrProvider 选择", () => {
   });
 });
 
-describe("open", () => {
-  it("远程没有集成分支：本地也没有时从 main 建出并先推上去，再推工作分支、开 PR（base=集成分支）", async () => {
+describe("open（远程 PR 在第一次 commitWorktree 之后才有）", () => {
+  it("open 只建本地记录并确保远程有集成分支：不推工作分支、不调 POST /pulls", async () => {
     expect(await remoteHas(`refs/heads/${INTEGRATION_BRANCH}`)).toBe(false);
-    // 工作分支从 main 拉（本地此时还没有集成分支）
+    // 工作分支从 main 拉（本地此时还没有集成分支），还没有任何提交
     const wt = join(root, "wt-T-1");
     await git(repo, ["worktree", "add", "-q", "-b", "feat/T-1", wt, "main"]);
-    await writeFile(join(wt, "T-1.txt"), "x\n");
-    await commitAll(wt, "T-1");
     const id = await pr.open("T-1", wt, "feat/T-1");
 
     expect(await rev(repo, INTEGRATION_BRANCH)).toBe(await rev(repo, "main"));
     expect(await remoteHas(`refs/heads/${INTEGRATION_BRANCH}`)).toBe(true);
-    expect(await rev(bare, "refs/heads/feat/T-1")).toBe(await rev(wt, "HEAD"));
-    const post = gh.calls.find((c) => c.method === "POST")!;
-    expect(post.body).toMatchObject({ head: "feat/T-1", base: INTEGRATION_BRANCH });
-    expect(post.auth).toBe(`Bearer ${TOKEN}`);
+    expect(await remoteHas("refs/heads/feat/T-1")).toBe(false);
+    expect(gh.calls).toEqual([]);
+    const rec = await store.get(id);
+    expect(rec).toMatchObject({ kind: "ticket", status: "open" });
+    expect(rec?.remote).toBeUndefined();
+  });
+
+  it("第一次 commitWorktree：只推本单分支、开 PR（base=集成分支）；再次 commitWorktree 复用 PR、推新提交", async () => {
+    await pr.openIntegration();
+    const { wt, branch, id, sha } = await ticketPr("T-2");
+    expect(sha).toBe(await rev(wt, "HEAD"));
+    expect(await rev(bare, `refs/heads/${branch}`)).toBe(sha);
+    expect(posts()).toHaveLength(1);
+    expect(posts()[0]!.body).toMatchObject({ head: branch, base: INTEGRATION_BRANCH });
+    expect(posts()[0]!.auth).toBe(`Bearer ${TOKEN}`);
     expect(await store.get(id)).toMatchObject({
-      kind: "ticket",
       status: "open",
       remote: { number: 1, url: "https://github.com/acme/widget/pull/1" },
     });
-    // 推送集成分支发生在开 PR 之前（假 GitHub 在 base 不存在时返回 422）
+
+    // 复投：原地再提交一次
+    await writeFile(join(wt, "T-2b.txt"), "again\n");
+    const sha2 = await pr.commitWorktree("T-2", wt);
+    expect(sha2).not.toBe(sha);
+    expect(await rev(bare, `refs/heads/${branch}`)).toBe(sha2);
+    expect(posts()).toHaveLength(1);
+    expect(gh.pulls).toHaveLength(1);
+    expect((await store.get(id))?.remote?.number).toBe(1);
   });
 
-  it("远程已有集成分支：不重复推；openIntegration 开 base=main 的 PR 且幂等", async () => {
+  it("push 的 refspec 只有本单分支：不碰集成分支和 main", async () => {
+    await pr.openIntegration();
+    const { wt } = await ticketPr("T-3");
+    const intBefore = await rev(bare, `refs/heads/${INTEGRATION_BRANCH}`);
+    const mainBefore = await rev(bare, "refs/heads/main");
+    // 本地集成分支和 main 都往前走了，但 commitWorktree 不应把它们推上去
+    await writeFile(join(repo, "local-main.txt"), "m\n");
+    await commitAll(repo, "local main");
+    await git(repo, ["branch", "-f", INTEGRATION_BRANCH, "main"]);
+    const pushes: string[][] = [];
+    const real = await import("./git.js");
+    const spy = vi.spyOn(real, "git");
+    await writeFile(join(wt, "T-3b.txt"), "b\n");
+    await pr.commitWorktree("T-3", wt);
+    for (const c of spy.mock.calls) if (c[1][0] === "push") pushes.push([...c[1]]);
+    spy.mockRestore();
+    expect(await rev(bare, `refs/heads/${INTEGRATION_BRANCH}`)).toBe(intBefore);
+    expect(await rev(bare, "refs/heads/main")).toBe(mainBefore);
+    expect(await rev(bare, "refs/heads/feat/T-3")).toBe(await rev(wt, "HEAD"));
+    expect(pushes.length).toBeGreaterThan(0);
+    for (const args of pushes) {
+      expect(args.filter((a) => a.startsWith("refs/"))).toEqual([
+        "refs/heads/feat/T-3:refs/heads/feat/T-3",
+      ]);
+      expect(args.some((a) => a.startsWith("--force") || a.startsWith("+"))).toBe(false);
+    }
+  });
+
+  it("openIntegration：集成分支比 main 没有新提交时只推分支、不开 PR；有提交时开 base=main 的 PR 且幂等", async () => {
     const iid = await pr.openIntegration();
     expect(await remoteHas(`refs/heads/${INTEGRATION_BRANCH}`)).toBe(true);
-    expect(gh.pulls[0]).toMatchObject({ head: INTEGRATION_BRANCH, base: "main" });
-    expect((await store.get(iid))?.remote?.number).toBe(1);
-    expect(await pr.openIntegration()).toBe(iid);
-    expect(gh.pulls).toHaveLength(1);
+    expect(posts()).toHaveLength(0);
+    expect((await store.get(iid))?.remote).toBeUndefined();
 
-    const { wt, branch } = await ticketBranch("T-2");
-    await pr.open("T-2", wt, branch);
-    expect(gh.pulls[1]).toMatchObject({ head: branch, base: INTEGRATION_BRANCH });
+    await rm(root, { recursive: true, force: true });
+    root = await mkdtemp(join(tmpdir(), "bc-pr-gh-test-"));
+    repo = join(root, "repo");
+    bare = join(root, "origin.git");
+    await git(root, ["init", "-q", "--bare", "-b", "main", bare]);
+    await git(root, ["init", "-q", "-b", "main", repo]);
+    await writeFile(join(repo, "a.txt"), "1\n");
+    await commitAll(repo, "init");
+    await git(repo, ["remote", "add", "origin", bare]);
+    await git(repo, ["push", "-q", "origin", "main"]);
+    store = new InMemoryPrStore();
+    pr = provider();
+    await integrationAhead();
+    const iid2 = await pr.openIntegration();
+    expect(gh.pulls.at(-1)).toMatchObject({ head: INTEGRATION_BRANCH, base: "main" });
+    expect((await store.get(iid2))?.remote).toBeDefined();
+    const n = gh.pulls.length;
+    expect(await pr.openIntegration()).toBe(iid2);
+    expect(gh.pulls).toHaveLength(n);
   });
 });
 
@@ -284,7 +375,7 @@ describe("merge", () => {
     const head = await rev(wt, "HEAD");
     const r = await pr.merge(id, INTEGRATION_BRANCH);
     const put = gh.calls.find((c) => c.method === "PUT")!;
-    expect(put.path).toBe("/pulls/2/merge");
+    expect(put.path).toBe("/pulls/1/merge");
     expect(put.body).toEqual({ sha: head, merge_method: "merge" });
     const remoteInt = await rev(bare, `refs/heads/${INTEGRATION_BRANCH}`);
     expect(r).toEqual({ merged: true, sha: remoteInt, fast_forward: false });
@@ -333,6 +424,7 @@ describe("merge", () => {
 
 describe("checks", () => {
   it("check-runs 映射为 CheckResult，按当前 head 查询", async () => {
+    await integrationAhead();
     const iid = await pr.openIntegration();
     gh.checkRuns = [
       { name: "build", status: "completed", conclusion: "success", html_url: "https://x/1" },
@@ -354,6 +446,7 @@ describe("checks", () => {
 
 describe("sync", () => {
   it("用户在 GitHub 手动合并：同步为 merged，记差异日志，不上报", async () => {
+    await integrationAhead();
     const iid = await pr.openIntegration();
     gh.pulls[0]!.state = "closed";
     gh.pulls[0]!.merged = true;
@@ -370,8 +463,7 @@ describe("sync", () => {
   });
 
   it("用户在 GitHub 手动关闭未合并：同步为 closed，发 escalated(github_manual)", async () => {
-    const { wt, branch } = await ticketBranch2("T-8");
-    const id = await pr.open("T-8", wt, branch);
+    const { branch, id } = await ticketPr("T-8", { from: "main" });
     gh.pulls.find((p) => p.head === branch)!.state = "closed";
     expect(await pr.sync()).toEqual([{ pr_id: id, from: "open", to: "closed" }]);
     expect((await store.get(id))?.status).toBe("closed");
@@ -390,22 +482,13 @@ describe("sync", () => {
   });
 });
 
-/** 不预先建集成分支：由 open 负责。 */
-async function ticketBranch2(ticket: string) {
-  const branch = `feat/${ticket}`;
-  const wt = join(root, `wt-${ticket}`);
-  await git(repo, ["worktree", "add", "-q", "-b", branch, wt, "main"]);
-  await writeFile(join(wt, `${ticket}.txt`), "x\n");
-  await commitAll(wt, ticket);
-  return { wt, branch };
-}
-
 describe("鉴权失败与 token 不泄露", () => {
   it("401：发 escalated(github_manual)，detail 带状态和接口名，抛 GithubAuthError，不退回本地", async () => {
     gh.override = (method, path) =>
       method === "GET" && path === "/pulls"
         ? new Response(JSON.stringify({ message: `Bad credentials ${TOKEN}` }), { status: 401 })
         : undefined;
+    await integrationAhead();
     const err = await pr.openIntegration().catch((e: unknown) => e);
     expect(err).toBeInstanceOf(GithubAuthError);
     expect(events).toHaveLength(1);
@@ -423,6 +506,7 @@ describe("鉴权失败与 token 不泄露", () => {
       method === "POST" && path === "/pulls"
         ? new Response(JSON.stringify({ message: `boom ${TOKEN}` }), { status: 500 })
         : undefined;
+    await integrationAhead();
     const e1 = await pr.openIntegration().catch((e: unknown) => e as Error);
     seen.push(String(e1), e1 instanceof Error ? (e1.stack ?? "") : "");
     // 网络错误里带 token
@@ -478,8 +562,7 @@ vi.setConfig({ testTimeout: 20_000 });
 describe("merge 前推送：只推本单分支，不强推", () => {
   it("远程分支已分叉：发 escalated(github_manual)，抛 GithubBranchDivergedError，不调合并接口", async () => {
     await pr.openIntegration();
-    const { wt, branch } = await ticketBranch("T-20");
-    const id = await pr.open("T-20", wt, branch);
+    const { wt, branch, id } = await ticketPr("T-20");
     // 有人直接往远程工作分支推了别的提交
     const remoteHead = await rev(bare, `refs/heads/${branch}`);
     const tree = await rev(bare, `${remoteHead}^{tree}`);
@@ -530,6 +613,7 @@ describe("限流", () => {
   const NOW = new Date("2026-10-17T06:00:00.000Z");
   it("403 + x-ratelimit-remaining: 0：抛可重试的 GithubRateLimitError（按 reset 算等待），不重试不上报", async () => {
     const p = provider({ now: () => NOW });
+    await integrationAhead();
     const reset = Math.floor(NOW.getTime() / 1000) + 30;
     gh.override = () =>
       new Response("{}", {
@@ -545,6 +629,7 @@ describe("限流", () => {
     expect(events).toEqual([]);
   });
   it("retry-after 优先；没有可用头时用默认值", async () => {
+    await integrationAhead();
     gh.override = () => new Response("{}", { status: 403, headers: { "retry-after": "7" } });
     const e1 = (await pr.openIntegration().catch((e: unknown) => e)) as GithubRateLimitError;
     expect(e1.retry_after_ms).toBe(7_000);
@@ -555,6 +640,7 @@ describe("限流", () => {
     expect(events).toEqual([]);
   });
   it("不是限流的 403（remaining 非 0、无 retry-after）：按鉴权失败上报", async () => {
+    await integrationAhead();
     gh.override = () =>
       new Response("{}", { status: 403, headers: { "x-ratelimit-remaining": "4999" } });
     const err = await pr.openIntegration().catch((e: unknown) => e);
@@ -565,27 +651,52 @@ describe("限流", () => {
   });
 });
 
-describe("merge 补开中途失败的 PR", () => {
-  it("open 时 push 失败：merge 补推、补开 PR、写回 remote 后合并", async () => {
+describe("push / 开 PR 失败后补做", () => {
+  it("commitWorktree 时 push 失败：本地提交保留、抛错；下一次 commitWorktree 补推并开 PR", async () => {
     await pr.openIntegration();
-    const { wt, branch } = await ticketBranch("T-22");
+    const branch = "feat/T-22";
+    const wt = join(root, "wt-T-22");
+    await git(repo, ["worktree", "add", "-q", "-b", branch, wt, INTEGRATION_BRANCH]);
+    const id = await pr.open("T-22", wt, branch);
+    await writeFile(join(wt, "T-22.txt"), "x\n");
     await git(repo, ["remote", "set-url", "origin", join(root, "nope.git")]);
-    await expect(pr.open("T-22", wt, branch)).rejects.toThrow();
+    await expect(pr.commitWorktree("T-22", wt)).rejects.toThrow();
     await git(repo, ["remote", "set-url", "origin", bare]);
-    const id = (await store.list()).find((r) => r.kind === "ticket")!.pr_id;
+    const first = await rev(wt, "HEAD");
+    expect((await git(wt, ["log", "-1", "--format=%s"])).stdout).toContain("T-22");
+    expect(await remoteHas(`refs/heads/${branch}`)).toBe(false);
     expect((await store.get(id))?.remote).toBeUndefined();
 
-    expect(await pr.merge(id, INTEGRATION_BRANCH)).toMatchObject({ merged: true });
-    expect(gh.pulls.filter((p) => p.head === branch)).toHaveLength(1);
-    expect((await store.get(id))?.remote?.number).toBe(gh.pulls.at(-1)!.number);
+    await writeFile(join(wt, "T-22b.txt"), "y\n");
+    const second = await pr.commitWorktree("T-22", wt);
+    expect((await git(wt, ["rev-parse", `${second}^`])).stdout.trim()).toBe(first);
+    expect(await rev(bare, `refs/heads/${branch}`)).toBe(second);
+    expect((await store.get(id))?.remote?.number).toBe(pullOf(branch)!.number);
   });
 
-  it("开 PR 失败（GitHub 其实已建好）：补开时复用同名 PR，重复补开不开第二个", async () => {
+  it("commitWorktree 时 push 失败：merge 时补推、补开 PR 后合并", async () => {
     await pr.openIntegration();
-    const { wt, branch } = await ticketBranch("T-23");
-    let posts = 0;
+    const branch = "feat/T-25";
+    const wt = join(root, "wt-T-25");
+    await git(repo, ["worktree", "add", "-q", "-b", branch, wt, INTEGRATION_BRANCH]);
+    const id = await pr.open("T-25", wt, branch);
+    await writeFile(join(wt, "T-25.txt"), "x\n");
+    await git(repo, ["remote", "set-url", "origin", join(root, "nope.git")]);
+    await expect(pr.commitWorktree("T-25", wt)).rejects.toThrow();
+    await git(repo, ["remote", "set-url", "origin", bare]);
+    expect(await pr.merge(id, INTEGRATION_BRANCH)).toMatchObject({ merged: true });
+    expect(gh.pulls.filter((p) => p.head === branch)).toHaveLength(1);
+  });
+
+  it("开 PR 失败（GitHub 其实已建好）：本地提交和远程分支都在；补开时复用同名 PR，不开第二个", async () => {
+    await pr.openIntegration();
+    const branch = "feat/T-23";
+    const wt = join(root, "wt-T-23");
+    await git(repo, ["worktree", "add", "-q", "-b", branch, wt, INTEGRATION_BRANCH]);
+    const id = await pr.open("T-23", wt, branch);
+    let n = 0;
     gh.override = (method, path) => {
-      if (method === "POST" && path === "/pulls" && posts++ === 0) {
+      if (method === "POST" && path === "/pulls" && n++ === 0) {
         // GitHub 建好了 PR，但客户端拿到的是 502
         gh.pulls.push({
           number: gh.pulls.length + 1,
@@ -598,26 +709,27 @@ describe("merge 补开中途失败的 PR", () => {
         return new Response("{}", { status: 502 });
       }
       // 第一次补开后的合并也失败一次，逼出第二次补开路径
-      if (method === "PUT" && path.endsWith("/merge") && posts === 1) {
-        posts++;
+      if (method === "PUT" && path.endsWith("/merge") && n === 1) {
+        n++;
         return new Response(JSON.stringify({ message: "boom" }), { status: 500 });
       }
       return undefined;
     };
-    await expect(pr.open("T-23", wt, branch)).rejects.toThrow(/502/);
-    const id = (await store.list()).find((r) => r.kind === "ticket")!.pr_id;
+    await writeFile(join(wt, "T-23.txt"), "x\n");
+    await expect(pr.commitWorktree("T-23", wt)).rejects.toThrow(/502/);
+    expect(await rev(bare, `refs/heads/${branch}`)).toBe(await rev(wt, "HEAD"));
     await expect(pr.merge(id, INTEGRATION_BRANCH)).rejects.toThrow(/500/);
     expect(await pr.merge(id, INTEGRATION_BRANCH)).toMatchObject({ merged: true });
     expect(gh.pulls.filter((p) => p.head === branch)).toHaveLength(1);
-    const posts23 = gh.calls.filter(
-      (c) => c.method === "POST" && (c.body as { head?: string })?.head === branch,
-    );
-    expect(posts23).toHaveLength(1);
+    expect(posts().filter((c) => (c.body as { head?: string }).head === branch)).toHaveLength(1);
   });
 
-  it("开 PR 失败（GitHub 没建）：补开新建一个 PR", async () => {
+  it("开 PR 失败（GitHub 没建）：下一次 commitWorktree 补开新建一个 PR", async () => {
     await pr.openIntegration();
-    const { wt, branch } = await ticketBranch("T-24");
+    const branch = "feat/T-24";
+    const wt = join(root, "wt-T-24");
+    await git(repo, ["worktree", "add", "-q", "-b", branch, wt, INTEGRATION_BRANCH]);
+    const id = await pr.open("T-24", wt, branch);
     let failed = false;
     gh.override = (method, path) => {
       if (method === "POST" && path === "/pulls" && !failed) {
@@ -626,18 +738,71 @@ describe("merge 补开中途失败的 PR", () => {
       }
       return undefined;
     };
-    await expect(pr.open("T-24", wt, branch)).rejects.toThrow();
-    const id = (await store.list()).find((r) => r.kind === "ticket")!.pr_id;
-    expect(await pr.merge(id, INTEGRATION_BRANCH)).toMatchObject({ merged: true });
+    await writeFile(join(wt, "T-24.txt"), "x\n");
+    await expect(pr.commitWorktree("T-24", wt)).rejects.toThrow(/500/);
+    await writeFile(join(wt, "T-24b.txt"), "y\n");
+    await pr.commitWorktree("T-24", wt);
     expect(gh.pulls.filter((p) => p.head === branch)).toHaveLength(1);
+    expect((await store.get(id))?.remote?.number).toBe(pullOf(branch)!.number);
+    expect(await pr.merge(id, INTEGRATION_BRANCH)).toMatchObject({ merged: true });
+  });
+
+  it("还没有任何提交的记录：merge / checks 不开 PR、不会 422，merge 报清楚的错", async () => {
+    const iid = await pr.openIntegration();
+    const branch = "feat/T-26";
+    const wt = join(root, "wt-T-26");
+    await git(repo, ["worktree", "add", "-q", "-b", branch, wt, INTEGRATION_BRANCH]);
+    const id = await pr.open("T-26", wt, branch);
+    await expect(pr.merge(id, INTEGRATION_BRANCH)).rejects.toThrow(/没有新提交/);
+    await expect(pr.merge(iid, "main")).rejects.toThrow(/没有新提交/);
+    expect(await pr.checks(id)).toEqual([]);
+    expect(posts()).toEqual([]);
+    expect(await remoteHas(`refs/heads/${branch}`)).toBe(false);
+    expect(gh.calls.some((c) => c.method === "PUT")).toBe(false);
+  });
+});
+
+describe("评审读 CI 用 push 之后的 head sha", () => {
+  it("commitWorktree 推上去的提交就是 checks 查询的 sha；复投后查新 sha", async () => {
+    await pr.openIntegration();
+    const { wt, id, sha, branch } = await ticketPr("T-27");
+    await pr.checks(id);
+    expect(gh.calls.at(-1)!.path).toBe(`/commits/${sha}/check-runs?per_page=100`);
+    expect(await rev(bare, `refs/heads/${branch}`)).toBe(sha);
+
+    await writeFile(join(wt, "T-27b.txt"), "b\n");
+    const sha2 = await pr.commitWorktree("T-27", wt);
+    await pr.checks(id);
+    expect(gh.calls.at(-1)!.path).toBe(`/commits/${sha2}/check-runs?per_page=100`);
+  });
+
+  it("上次 push 失败、远程落后：checks 先补推本单分支（并补开 PR）再按新 sha 查；补推失败就抛错，不拿远程没有的 sha 去查", async () => {
+    await pr.openIntegration();
+    const branch = "feat/T-28";
+    const wt = join(root, "wt-T-28");
+    await git(repo, ["worktree", "add", "-q", "-b", branch, wt, INTEGRATION_BRANCH]);
+    const id = await pr.open("T-28", wt, branch);
+    await writeFile(join(wt, "T-28.txt"), "x\n");
+    await git(repo, ["remote", "set-url", "origin", join(root, "nope.git")]);
+    await expect(pr.commitWorktree("T-28", wt)).rejects.toThrow();
+    const local = await rev(wt, "HEAD");
+    // 远程还连不上：checks 抛错，不发 check-runs 请求
+    await expect(pr.checks(id)).rejects.toThrow();
+    expect(gh.calls.some((c) => c.path.includes("/check-runs"))).toBe(false);
+
+    await git(repo, ["remote", "set-url", "origin", bare]);
+    await pr.checks(id);
+    expect(await rev(bare, `refs/heads/${branch}`)).toBe(local);
+    expect(gh.calls.at(-1)!.path).toBe(`/commits/${local}/check-runs?per_page=100`);
+    expect((await store.get(id))?.remote).toBeDefined();
   });
 });
 
 describe("close（GitHub）", () => {
   it("有 remote：PATCH state=closed 关远程 PR，本地写 closed_by，不上报；sync 不当成用户关闭", async () => {
+    await integrationAhead();
     const iid = await pr.openIntegration();
-    const { wt, branch } = await ticketBranch("T-30");
-    const id = await pr.open("T-30", wt, branch);
+    const { id } = await ticketPr("T-30");
     await pr.close(id, "需求取消");
     const patch = gh.calls.find((c) => c.method === "PATCH")!;
     expect(patch.path).toBe("/pulls/2");
@@ -657,8 +822,7 @@ describe("close（GitHub）", () => {
   });
 
   it("sync 请求期间 close() 已把记录关掉：不上报", async () => {
-    const { wt, branch } = await ticketBranch2("T-31");
-    const id = await pr.open("T-31", wt, branch);
+    const { branch, id } = await ticketPr("T-31", { from: "main" });
     const real = gh.fetch;
     const p = provider({
       fetch: async (input, init) => {
@@ -678,8 +842,7 @@ describe("close（GitHub）", () => {
   });
 
   it("重复 close 幂等；远程关闭失败后重试会再 PATCH；用户关的不再 PATCH", async () => {
-    const { wt, branch } = await ticketBranch2("T-32");
-    const id = await pr.open("T-32", wt, branch);
+    const { branch, id } = await ticketPr("T-32", { from: "main" });
     let fail = true;
     gh.override = (method) =>
       method === "PATCH" && fail ? new Response("{}", { status: 500 }) : undefined;
@@ -691,8 +854,8 @@ describe("close（GitHub）", () => {
     expect(events).toEqual([]);
 
     // 用户在 GitHub 手动关的记录：close 幂等、不发请求
-    const other = await ticketBranch2("T-33");
-    const id2 = await pr.open("T-33", other.wt, other.branch);
+    const other = await ticketPr("T-33", { from: "main" });
+    const id2 = other.id;
     gh.pulls.find((q) => q.head === other.branch)!.state = "closed";
     await pr.sync();
     const n = gh.calls.length;
@@ -702,9 +865,9 @@ describe("close（GitHub）", () => {
   });
 
   it("没有 remote 的记录只改本地；已 merged 抛错；限流照旧抛 GithubRateLimitError", async () => {
+    await integrationAhead();
     const iid = await pr.openIntegration();
-    const { wt, branch } = await ticketBranch("T-34");
-    const id = await pr.open("T-34", wt, branch);
+    const { id } = await ticketPr("T-34");
     await pr.merge(id, INTEGRATION_BRANCH);
     await expect(pr.close(id, "x")).rejects.toThrow(/已合并/);
 
@@ -717,8 +880,7 @@ describe("close（GitHub）", () => {
     expect(gh.calls.length).toBe(n);
     expect((await store.get(iid))?.status).toBe("closed");
 
-    const c = await ticketBranch2("T-35");
-    const id3 = await pr.open("T-35", c.wt, c.branch);
+    const { id: id3 } = await ticketPr("T-35", { from: "main" });
     gh.override = () => new Response("{}", { status: 403, headers: { "retry-after": "3" } });
     const err = (await pr.close(id3, "r").catch((e: unknown) => e)) as GithubRateLimitError;
     expect(err).toBeInstanceOf(GithubRateLimitError);
@@ -726,11 +888,8 @@ describe("close（GitHub）", () => {
     expect(events).toEqual([]);
   });
 
-  it("commitWorktree 交给内部本地实现", async () => {
-    const { wt, branch } = await ticketBranch2("T-36");
-    await pr.open("T-36", wt, branch);
-    await writeFile(join(wt, "more.txt"), "m\n");
-    const sha = await pr.commitWorktree("T-36", wt);
+  it("commitWorktree 本地提交交给内部本地实现，返回新 sha", async () => {
+    const { wt, sha } = await ticketPr("T-36", { from: "main" });
     expect(sha).toBe(await rev(wt, "HEAD"));
   });
 });

@@ -97,8 +97,9 @@ flowchart BT
 | T-043 | 不可信文本包装与转义：评审池的需求单 / 摘要 / 架构约束 / diff 与编码池 feedback 统一包进带 nonce 的 `untrusted` 区块；转义前做 NFKC、忽略零宽字符和软连字符；共用函数放 `@bakacoding/types`；nonce 不进编码池公共前缀 | 5、7 | 执行层开发 | 已合入 | #35 | `876cac0` |
 | T-044 | 模块 5/7 把 `signal` 透传给模型调用 | 5、7 | 执行层开发 | 未开始 | — | — |
 | T-045 | 模块 7 `storageRoundSource` 改用 `listPrRounds(ticket_id)` | 7 | 执行层开发 | 未开始 | — | — |
+| T-047 | 模块 6 GitHub 实现：`open` 只建本地记录（不推不开 PR），远程 PR 在第一次 `commitWorktree` 后开；`commitWorktree` 只推本单分支并开 / 复用 PR，失败保留本地提交、下次补做；没有提交的记录不开 PR（不 422）；`checks` 用 push 之后的 head sha | 6 | 执行层开发 | 待评审 | — | — |
 
-编排层第二批需求单为 T-035～T-042；T-044、T-045 是执行层跟进单。
+编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单。
 
 ### 不对应需求单的 PR
 
