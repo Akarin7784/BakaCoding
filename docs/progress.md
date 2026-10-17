@@ -37,8 +37,8 @@ flowchart BT
   classDef doing fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef done fill:#dcfce7,stroke:#16a34a,color:#14532d
 
-  class M0,M2,M5,M6,M7,M11,M12,T done
-  class M1,M3,M4,M8,M9 doing
+  class M0,M2,M11,M12,T done
+  class M1,M3,M4,M5,M6,M7,M8,M9 doing
   class M10 todo
 ```
 
@@ -46,6 +46,7 @@ flowchart BT
 
 - 0 事件总线：T-003 已合入。总线的 `initialSeq` 和订阅队列上限随 T-005（模块 2）在 #19 合入，记在 T-005 名下。
 - 共享类型包不算 13 个功能模块之一，单列出来。
+- 5、6、7（执行层）：T-034 / T-043 已合入，T-047 待评审，后续还有 T-044、T-045，算进行中。
 - 8、9、10（编排层）的第二批需求单已拆（T-035～T-042）：8、9 有单在开发，算进行中；10 的单还没开工，算未开始。
 
 ## 需求单
