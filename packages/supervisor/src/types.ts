@@ -160,7 +160,9 @@ export interface SupervisorDeps {
    * 组合根注入：按单号查 2 的 PR 记录，转调 9 的 `adopt`（带 pr_id / head / worktree）；查不到 PR 等情况抛错。
    * 不注入时这些单只列进 `TakeOverReport.awaiting_adopt`（单独使用 10 的场景）。
    */
-  adopt?: (ticket: SchedulerTicket & { kind?: "dependency" }) => unknown;
+  adopt?: (
+    ticket: SchedulerTicket & { kind?: "dependency" },
+  ) => MaybePromise<"adopted" | "already" | "merged" | void>;
   /**
    * 0：发 group_message、ticket_warning，以及 T-041b 起的 escalated（只发 `resplit_limit`，提案 S3）。
    * 10 自己填 event_id、ts。
@@ -180,7 +182,12 @@ export interface SupervisorDeps {
    * 抛错（同步或关闭失败）时 10 不重拆，发 `ticket_warning(pr_close_failed)` 并重试。
    * 不注入时 10 不关 PR，按 `"none"` 处理并记 warn（单独使用 10 的场景）。
    */
-  closeTicketPr?: (ticket_id: string, reason: string) => MaybePromise<"closed" | "none" | "merged">;
+  closeTicketPr?: (
+    ticket_id: string,
+    reason: string,
+    /** T-064 N5：只关这一个 PR；不传则关本单所有 open/conflict（041b 重拆） */
+    pr_id?: string,
+  ) => MaybePromise<"closed" | "none" | "merged">;
   /**
    * 可选（T-041b，N5）：本单最后一条需要处理的 `escalated`（跳过 `scope_lock_failed`、`merged_but`、
    * `resplit_limit`），重启补跑上报处理时用来取原因。组合根用 2 的 `queryEvents` 实现。
@@ -340,8 +347,8 @@ export interface Supervisor {
    */
   highRiskHeld(info: HighRiskHeldInput): Promise<void>;
   /**
-   * 等用户裁决的高风险单（T-041c，N3；T-042 主管待办、T-062 界面用）：同步、只读内存，不调 GitHub / 6。
-   * 理由和文件是扣住时（重启后是 N4 补判时）的 diff 算的。已到终态的单自动去掉。
+   * 等用户裁决的高风险单（T-041c，N3；T-042 主管待办、T-062 界面用）：同步；清单在进程内存里，
+   * 但会读 2 的 `getTicket` 去掉已到终态的单（不调 GitHub / 6）。理由和文件是扣住时（重启后是 N4 补判时）的 diff 算的。
    */
   pendingHighRisk(): PendingHighRisk[];
   /**
