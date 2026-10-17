@@ -107,7 +107,7 @@ importers:
         version: 6.1.2(vite@8.3.4(@types/node@24.19.2)(jiti@2.7.0))
       electron:
         specifier: ^44.8.0
-        version: 44.8.0
+        version: 44.9.0
       tailwindcss:
         specifier: ^4.3.3
         version: 4.3.3
@@ -150,15 +150,13 @@ importers:
 
   packages/pr:
     dependencies:
-      '@bakacoding/config-budget':
-        specifier: workspace:*
-        version: link:../config-budget
-      '@bakacoding/storage':
-        specifier: workspace:*
-        version: link:../storage
       '@bakacoding/types':
         specifier: workspace:*
         version: link:../types
+    devDependencies:
+      '@types/node':
+        specifier: ^20.19.43
+        version: 20.19.43
 
   packages/review-pool:
     dependencies:
@@ -864,8 +862,8 @@ packages:
     resolution: {integrity: sha512-KIN/nDJBQRcXw0MLVhZE9iQHmG68qAVIBg9CqmUYjmQIhgij9U5MFvrqkUL5FbtyyzZuOeOt0zdeRe4UY7ct+A==}
     engines: {node: '>= 0.4'}
 
-  electron@44.8.0:
-    resolution: {integrity: sha512-Yn2tJ335l8MGRJj86vaAYq1MOidtiw9eXdmHX6p3ecHQWwucsMMBxDzqUrYnXEHyqdc/IhOh2KGHzmizJvzd3Q==}
+  electron@44.9.0:
+    resolution: {integrity: sha512-boP8zA5OIoMGYe3uWP4IqB1VJNoEzdHYgcBaVYnd1DBv5TogwXkbM4yJGSfNmYCzalVQ5J3TAIbaKOY+ILTnyg==}
     engines: {node: '>= 22.12.0'}
     hasBin: true
 
@@ -2217,7 +2215,7 @@ snapshots:
       es-errors: 1.3.0
       gopd: 1.2.0
 
-  electron@44.8.0:
+  electron@44.9.0:
     dependencies:
       '@electron-internal/extract-zip': 1.0.5
       '@electron/get': 5.1.0
