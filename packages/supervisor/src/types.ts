@@ -2,8 +2,8 @@ import type { Config } from "@bakacoding/config-budget";
 import type { ModelGateway } from "@bakacoding/model-gateway";
 import type { SchedulerTicket } from "@bakacoding/scheduler";
 import type { Storage } from "@bakacoding/storage";
-import type { SubAgentTicket } from "@bakacoding/sub-agent";
-import type { ESCALATION_REASONS, EventOf } from "@bakacoding/types";
+import type { HighRiskReason, SubAgentTicket } from "@bakacoding/sub-agent";
+import type { DiffFile, ESCALATION_REASONS, EventOf } from "@bakacoding/types";
 
 export type MaybePromise<T> = T | Promise<T>;
 
@@ -204,12 +204,13 @@ export interface SupervisorDeps {
     clearTimeout: (handle: unknown) => void;
   };
   /**
-   * 可选（T-041c，提案 S5）：9 的高风险闸门。`release` 接 9 的 `releaseHighRisk`，`reject` 接 `rejectHighRisk`；
-   * `decideHighRisk` 转调它们。不注入时 `decideHighRisk` 返回 `{ ok: false }`（单独使用 10 的场景）。
+   * 可选（T-041c，提案 S5）：9 的高风险闸门，组合根接 9 的 `checkHighRisk` / `releaseHighRisk` / `rejectHighRisk`。
+   * 都按 pr_id 绑定，不能裁决时抛 9 的 `HighRiskDecisionError`（带码）。不注入时 `decideHighRisk` 抛 `unavailable`。
    */
   highRisk?: {
-    release(ticket_id: string): MaybePromise<"released" | "already">;
-    reject(ticket_id: string, detail: string): MaybePromise<void>;
+    check(ticket_id: string, pr_id: string): MaybePromise<void>;
+    release(ticket_id: string, pr_id: string): MaybePromise<"released" | "already">;
+    reject(ticket_id: string, pr_id: string, detail: string): MaybePromise<void>;
   };
   /** 集成分支 HEAD，作为新单基线 */
   targetHead: (project_id: string) => MaybePromise<string>;
@@ -257,14 +258,46 @@ export interface TakeOverReport {
   failed: { ticket_id: string; error: string }[];
 }
 
-/** 9 扣住高风险单时的通知（T-041c，N3；同 9 的 `HighRiskHeldInfo`，10 不依赖 9 的类型）。 */
+/** 9 扣住高风险单时的通知（T-041c，N3；9 的 `HighRiskHeldInfo` 加上组合根补的 PR 链接和 diff）。 */
 export interface HighRiskHeldInput {
   ticket_id: string;
   pr_id: string;
   requirement_id: string;
   /** submit：评审通过刚交进合并队列；adopt：重启接管接回（放行不保存）；resubmit：放行后冲突复投换了新 PR */
   cause: "submit" | "adopt" | "resubmit";
+  /** PR 链接（组合根从 2 的 PR 记录取；本地 git 没有链接时不填） */
+  pr_url?: string;
+  /**
+   * 扣住时这个 PR 的 diff 文件（组合根取；重启接回时用 N4 补判取的那份）。null：取不到 diff；不填按 null。
+   * 10 用它算 `pendingHighRisk()` 的理由和文件，存在内存里。
+   */
+  diff_files?: readonly { path: string; status: DiffFile["status"] }[] | null;
 }
+
+/** 一张等用户裁决的高风险单（T-041c，`pendingHighRisk()`，T-062 界面用）。 */
+export interface PendingHighRisk {
+  ticket_id: string;
+  project_id: string;
+  pr_id: string;
+  pr_url?: string;
+  /** 理由（8 的 `HighRiskReason`）：dependency_kind / dependency_file（含改名兜底）/ diff_unavailable / unverified */
+  reasons: HighRiskReason[];
+  /** 命中的文件（依赖清单 / 锁文件，或改名的），最多 20 个 */
+  files: string[];
+  /** 没列出的命中文件数 */
+  files_more: number;
+  /** 本进程扣住（收到 highRiskHeld）的时间，ISO 8601 */
+  held_at: string;
+}
+
+/** `decideHighRisk` 成功的结果（T-041c）。 */
+export type HighRiskDecisionResult =
+  | { decision: "release"; result: "released" | "already" }
+  | {
+      decision: "reject";
+      /** 关 PR 的结果：closed / none（没有要关的 PR）/ unconfirmed（关失败，已上报，进程内重试） */
+      pr_close: "closed" | "none" | "unconfirmed";
+    };
 
 /** 反压暂停时 9 给的状态（T-041c，取 9 的 `BackpressureState` 里用得到的字段）。 */
 export interface BackpressurePausedInput {
@@ -287,25 +320,33 @@ export interface Supervisor {
    */
   takeOver(): Promise<TakeOverReport>;
   /**
-   * 高风险 PR 裁决（T-041c，提案 S7、Q4 b）：只由用户做，不调模型。转调 `deps.highRisk`；
-   * 出错（没注入、单不在等裁决、PR 已合入等）返回 `{ ok: false, error }`，不抛。
-   * 拒绝时 9 关 PR 并发 `escalated(high_risk_rejected)`，10 按上报处理（不重拆，交用户）。
+   * 高风险 PR 裁决（T-041c，提案 S7、Q4 b）：只由用户做，不调模型。按 pr_id 绑定：传入的不是当前被扣的 PR
+   * 抛 `stale_pr`（界面提示「PR 已更新，请重新查看」）。不能裁决时抛 9 的 `HighRiskDecisionError`（带码，
+   * 见 `HIGH_RISK_DECISION_ERROR_CODES`）。同一进程内的裁决串行执行。
+   * 拒绝（N5）：先经 9 校验，再走 041b 的 `closeTicketPr`（先 sync、kind: "ticket"）关 PR——PR 已合入抛
+   * `already_merged`、不上报；关 PR 失败（如限流）照样拒绝：记 `high_risk_close.state = unconfirmed`（本地 PR 记录
+   * 不标关闭）、发 `ticket_warning(pr_close_failed)`、按 30 秒 / 2 分钟 / 10 分钟重试关 PR，仍失败通知用户。
+   * 之后 9 发 `escalated(high_risk_rejected)`，单子不再进合并队列，10 按上报处理（不重拆，交用户）。
    */
   decideHighRisk(
     ticket_id: string,
+    pr_id: string,
     decision: "release" | "reject",
     detail?: string,
-  ): Promise<{ ok: true } | { ok: false; error: string }>;
+  ): Promise<HighRiskDecisionResult>;
   /**
-   * 9 扣住高风险单（T-041c，N3）：组合根接 9 的 `onHighRiskHeld`。通知用户（同一 PR 在本进程只通知一次；
-   * 重启后重新扣住、放行后换了新 PR 都会写明），记进待裁决清单。
+   * 9 扣住高风险单（T-041c，N3）：组合根接 9 的 `onHighRiskHeld`（补上 PR 链接和 diff）。通知用户（同一 PR 在本进程
+   * 只通知一次；重启后重新扣住、放行后换了新 PR 都会写明），记进待裁决清单。
    */
   highRiskHeld(info: HighRiskHeldInput): Promise<void>;
-  /** 等用户裁决的高风险单（T-041c，N3；T-042 主管待办、T-062 界面用）。已到终态的单自动去掉。 */
-  pendingHighRisk(): { ticket_id: string; pr_id: string }[];
   /**
-   * 反压暂停派单（T-041c，Q-7）：组合根接 9 的 `onBackpressurePaused`。通知用户暂停原因，
-   * 并写明待合并 PR 里有几张是被高风险闸门扣着、等用户裁决的。
+   * 等用户裁决的高风险单（T-041c，N3；T-042 主管待办、T-062 界面用）：同步、只读内存，不调 GitHub / 6。
+   * 理由和文件是扣住时（重启后是 N4 补判时）的 diff 算的。已到终态的单自动去掉。
+   */
+  pendingHighRisk(): PendingHighRisk[];
+  /**
+   * 反压暂停派单（T-041c，Q-7）：组合根接 9 的 `onBackpressurePaused`（9 只在「未暂停 → 暂停」时调一次）。
+   * 通知用户暂停原因，并写明待合并 PR 里有几张是被高风险闸门扣着、等用户裁决的。
    */
   backpressurePaused(state: BackpressurePausedInput): Promise<void>;
 }

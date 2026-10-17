@@ -55,6 +55,18 @@ export const MarkersSchema = z.object({
   pr_close_done: z
     .object({ at: z.string(), result: z.enum(["closed", "none", "merged"]) })
     .optional(),
+  /**
+   * 拒绝高风险 PR 时关 PR 的结果（T-041c，N5）：closed 已关；none 没有要关的 PR；merged 其实已合入（不拒绝，
+   * 只在重试时可能写）；unconfirmed 关 PR 失败（如限流），本地 PR 记录不标关闭，进程内按 30 秒 / 2 分钟 / 10 分钟重试。
+   */
+  high_risk_close: z
+    .object({
+      at: z.string(),
+      pr_id: z.string(),
+      state: z.enum(["closed", "none", "merged", "unconfirmed"]),
+      error: z.string().optional(),
+    })
+    .optional(),
 });
 export type Markers = z.infer<typeof MarkersSchema>;
 
@@ -66,6 +78,8 @@ export function readMarkers(fields: TicketFields | null): Markers {
   if (h.success && h.data) out.escalation_handled = h.data;
   const c = MarkersSchema.shape.pr_close_done.safeParse(raw.pr_close_done);
   if (c.success && c.data) out.pr_close_done = c.data;
+  const hr = MarkersSchema.shape.high_risk_close.safeParse(raw.high_risk_close);
+  if (hr.success && hr.data) out.high_risk_close = hr.data;
   return out;
 }
 

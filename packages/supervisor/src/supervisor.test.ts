@@ -1,3 +1,5 @@
+import { GithubRateLimitError } from "@bakacoding/pr";
+import { HighRiskDecisionError } from "@bakacoding/scheduler";
 import type { StoredTicket } from "@bakacoding/storage";
 import { EventSchema, type CallCtx, type EventOf } from "@bakacoding/types";
 import { describe, expect, it, vi } from "vitest";
@@ -5,6 +7,7 @@ import {
   createSupervisor,
   SPLIT_MAX_ATTEMPTS,
   validateWriteScope,
+  type HighRiskHeldInput,
   type SupervisorDeps,
 } from "./index.js";
 
@@ -1521,27 +1524,60 @@ describe("T-041c 高风险 PR 裁决", () => {
     const t = await escalationSetup();
     const calls: string[] = [];
     let fail: Error | undefined;
+    /** 9 那边当前被扣的 PR（假的 9：按 pr_id 校验） */
+    const current = new Map<string, string>();
+    const check9 = (id: string, pr: string) => {
+      if (fail) throw fail;
+      const cur = current.get(id);
+      if (cur !== undefined && cur !== pr)
+        throw new HighRiskDecisionError("stale_pr", id, `单 ${id} 的 PR 已更新`);
+    };
     t.deps.highRisk = {
-      release: (id) => {
-        calls.push(`release:${id}`);
-        if (fail) throw fail;
+      check: (id, pr) => {
+        calls.push(`check:${id}:${pr}`);
+        check9(id, pr);
+      },
+      release: (id, pr) => {
+        calls.push(`release:${id}:${pr}`);
+        check9(id, pr);
         return "released";
       },
-      reject: (id, detail) => {
-        calls.push(`reject:${id}:${detail}`);
-        if (fail) throw fail;
+      reject: (id, pr, detail) => {
+        calls.push(`reject:${id}:${pr}:${detail}`);
+        check9(id, pr);
       },
+    };
+    const inner = t.deps.closeTicketPr!;
+    t.deps.closeTicketPr = (id, reason) => {
+      calls.push(`close:${id}`);
+      return inner(id, reason);
     };
     t.sup = createSupervisor(t.deps);
     t.sup.start();
-    return { t, calls, failWith: (e: Error | undefined) => (fail = e) };
+    return { t, calls, current, failWith: (e: Error | undefined) => (fail = e) };
   }
-  const held = (ticket_id: string, pr_id: string, cause: "submit" | "adopt" | "resubmit") => ({
+  const held = (
+    ticket_id: string,
+    pr_id: string,
+    cause: "submit" | "adopt" | "resubmit",
+    extra: Partial<HighRiskHeldInput> = {},
+  ): HighRiskHeldInput => ({
     ticket_id,
     pr_id,
     requirement_id: "req-1",
     cause,
+    diff_files: [{ path: "apps/web/package.json", status: "modified" }],
+    ...extra,
   });
+  const codeOf = async (p: Promise<unknown>): Promise<string> => {
+    try {
+      await p;
+    } catch (e) {
+      expect(e).toBeInstanceOf(HighRiskDecisionError);
+      return (e as HighRiskDecisionError).code;
+    }
+    return "none";
+  };
 
   it("highRiskHeld：按 cause 写不同的通知（重启后写明放行不保存、要再放行；换新 PR 写明要重新裁决），同一 PR 只通知一次；记进 pendingHighRisk", async () => {
     const { t } = await hrSetup();
@@ -1550,47 +1586,171 @@ describe("T-041c 高风险 PR 裁决", () => {
     await t.sup.highRiskHeld(held("req-1-1", "pr-1", "submit"));
     expect(t.notified.length - before).toBe(1);
     expect(t.notified.at(-1)!.text).toMatch(
-      /req-1-1 的 PR pr-1 改动了依赖清单.*等你放行或拒绝.*不会合入/,
+      /req-1-1 的 PR pr-1 属于高风险 PR（改动了依赖清单.*涉及文件：apps\/web\/package.json。等你放行或拒绝.*不会合入/,
     );
     expect(t.notified.at(-1)!.project_id).toBe("demo-1234");
     await t.sup.highRiskHeld(held("req-1-1", "pr-2", "resubmit"));
     expect(t.notified.at(-1)!.text).toMatch(/换了新 PR pr-2.*重新扣/);
-    await t.sup.highRiskHeld(held("req-1-2", "pr-3", "adopt"));
+    await t.sup.highRiskHeld(held("req-1-2", "pr-3", "adopt", { diff_files: null }));
     expect(t.notified.at(-1)!.text).toMatch(/重启后.*pr-3.*放行不跨重启保存.*再放行一次/);
-    expect(t.sup.pendingHighRisk()).toEqual([
-      { ticket_id: "req-1-1", pr_id: "pr-2" },
-      { ticket_id: "req-1-2", pr_id: "pr-3" },
+    expect(t.sup.pendingHighRisk().map((p) => [p.ticket_id, p.pr_id])).toEqual([
+      ["req-1-1", "pr-2"],
+      ["req-1-2", "pr-3"],
     ]);
     // 已到终态的单自动去掉
     t.rows.get("req-1-2")!.status = "merged";
-    expect(t.sup.pendingHighRisk()).toEqual([{ ticket_id: "req-1-1", pr_id: "pr-2" }]);
+    expect(t.sup.pendingHighRisk().map((p) => p.ticket_id)).toEqual(["req-1-1"]);
   });
 
-  it("decideHighRisk：转调 9 的 release / reject，成功后移出待裁决；出错返回 ok: false 不抛；没注入 highRisk 返回 ok: false", async () => {
-    const { t, calls, failWith } = await hrSetup();
+  it("pendingHighRisk：每张单带项目、PR、链接、理由、命中文件（≤20，其余计 files_more）和扣住时间", async () => {
+    const { t } = await hrSetup();
+    const files = Array.from({ length: 22 }, (_, i) => ({
+      path: `p${i}/package.json`,
+      status: "modified" as const,
+    }));
+    await t.sup.highRiskHeld(
+      held("req-1-1", "pr-1", "submit", {
+        pr_url: "https://github.com/o/r/pull/1",
+        diff_files: [{ path: "src/a.ts", status: "modified" }, ...files],
+      }),
+    );
+    await t.sup.highRiskHeld(held("req-1-2", "pr-2", "adopt", { diff_files: null }));
+    const list = t.sup.pendingHighRisk();
+    expect(list[0]).toEqual({
+      ticket_id: "req-1-1",
+      project_id: "demo-1234",
+      pr_id: "pr-1",
+      pr_url: "https://github.com/o/r/pull/1",
+      reasons: ["dependency_file"],
+      files: files.slice(0, 20).map((f) => f.path),
+      files_more: 2,
+      held_at: expect.stringMatching(/^\d{4}-\d\d-\d\dT/),
+    });
+    expect(list[1]).toMatchObject({ reasons: ["diff_unavailable"], files: [], files_more: 0 });
+    expect(list[1]).not.toHaveProperty("pr_url");
+  });
+
+  it("pendingHighRisk 同步、只读内存：PR / 9 的任何调用都抛错时照样同步返回（不是 Promise）", async () => {
+    const { t } = await hrSetup();
     await t.sup.highRiskHeld(held("req-1-1", "pr-1", "submit"));
-    await t.sup.highRiskHeld(held("req-1-2", "pr-2", "submit"));
-    expect(await t.sup.decideHighRisk("req-1-1", "release")).toEqual({ ok: true });
-    expect(await t.sup.decideHighRisk("req-1-2", "reject", "  不要这个依赖 ")).toEqual({
-      ok: true,
+    const boom = () => {
+      throw new Error("不许调 GitHub / 6 / 9");
+    };
+    t.deps.closeTicketPr = boom;
+    t.deps.highRisk = { check: boom, release: boom, reject: boom };
+    t.deps.targetHead = boom;
+    t.deps.call.mockImplementation(boom);
+    const r = t.sup.pendingHighRisk();
+    expect(r).not.toBeInstanceOf(Promise);
+    expect(Array.isArray(r)).toBe(true);
+    expect(r.map((p) => p.pr_id)).toEqual(["pr-1"]);
+  });
+
+  it("decideHighRisk：放行转调 9 的 release（按 pr_id），成功后移出待裁决；不调模型", async () => {
+    const { t, calls } = await hrSetup();
+    await t.sup.highRiskHeld(held("req-1-1", "pr-1", "submit"));
+    expect(await t.sup.decideHighRisk("req-1-1", "pr-1", "release")).toEqual({
+      decision: "release",
+      result: "released",
     });
-    expect(await t.sup.decideHighRisk("req-1-2", "reject")).toEqual({ ok: true });
-    expect(calls).toEqual([
-      "release:req-1-1",
-      "reject:req-1-2:不要这个依赖",
-      "reject:req-1-2:用户拒绝",
-    ]);
+    expect(calls).toEqual(["release:req-1-1:pr-1"]);
     expect(t.sup.pendingHighRisk()).toEqual([]);
-    failWith(new Error("单 X 不在合并队列里等裁决"));
-    expect(await t.sup.decideHighRisk("req-1-1", "release")).toEqual({
-      ok: false,
-      error: "单 X 不在合并队列里等裁决",
-    });
-    // 不调模型
     expect(t.deps.call).toHaveBeenCalledTimes(1);
+  });
+
+  it("decideHighRisk：pr_id 不是当前 PR 抛 stale_pr（10 记着的、9 校验的都算），不放行不拒绝；没接 9 抛 unavailable", async () => {
+    const { t, calls, current } = await hrSetup();
+    await t.sup.highRiskHeld(held("req-1-1", "pr-2", "resubmit"));
+    expect(await codeOf(t.sup.decideHighRisk("req-1-1", "pr-1", "release"))).toBe("stale_pr");
+    expect(await codeOf(t.sup.decideHighRisk("req-1-1", "pr-1", "reject"))).toBe("stale_pr");
+    expect(calls).toEqual([]);
+    expect(t.sup.pendingHighRisk()).toHaveLength(1);
+    // 10 没记着（如进程刚起），9 校验出不是当前 PR
+    current.set("req-1-2", "pr-9");
+    expect(await codeOf(t.sup.decideHighRisk("req-1-2", "pr-3", "reject"))).toBe("stale_pr");
+    expect(calls).toEqual(["check:req-1-2:pr-3"]);
+    expect(t.closes).toEqual([]);
     delete t.deps.highRisk;
     const bare = createSupervisor(t.deps);
-    expect(await bare.decideHighRisk("req-1-1", "release")).toMatchObject({ ok: false });
+    expect(await codeOf(bare.decideHighRisk("req-1-1", "pr-2", "release"))).toBe("unavailable");
+  });
+
+  it("decideHighRisk 拒绝（N5）：先经 9 校验，再走 closeTicketPr 关 PR，记 high_risk_close，最后让 9 上报", async () => {
+    const { t, calls } = await hrSetup();
+    await t.sup.highRiskHeld(held("req-1-1", "pr-1", "submit"));
+    expect(await t.sup.decideHighRisk("req-1-1", "pr-1", "reject", "  不要这个依赖 ")).toEqual({
+      decision: "reject",
+      pr_close: "closed",
+    });
+    expect(calls).toEqual([
+      "check:req-1-1:pr-1",
+      "close:req-1-1",
+      "reject:req-1-1:pr-1:不要这个依赖",
+    ]);
+    expect(markers(t, "req-1-1").high_risk_close).toMatchObject({ pr_id: "pr-1", state: "closed" });
+    expect(t.sup.pendingHighRisk()).toEqual([]);
+    expect(t.timers).toEqual([]);
+  });
+
+  it("decideHighRisk 拒绝时 PR 其实已合入：抛 already_merged，不让 9 上报（保留的规则）", async () => {
+    const { t, calls } = await hrSetup();
+    t.closeResult = () => "merged";
+    await t.sup.highRiskHeld(held("req-1-1", "pr-1", "submit"));
+    expect(await codeOf(t.sup.decideHighRisk("req-1-1", "pr-1", "reject"))).toBe("already_merged");
+    expect(calls).toEqual(["check:req-1-1:pr-1", "close:req-1-1"]);
+    expect(markers(t, "req-1-1").high_risk_close).toBeUndefined();
+  });
+
+  it("decideHighRisk 拒绝时关 PR 被限流：照样让 9 上报，记 unconfirmed，发 pr_close_failed，按 30s / 2m / 10m 重试，用完通知用户", async () => {
+    const { t, calls } = await hrSetup();
+    await t.sup.highRiskHeld(held("req-1-1", "pr-1", "submit"));
+    const rl = new GithubRateLimitError(429, "pulls.update", 60_000);
+    t.closeResult = () => {
+      throw rl;
+    };
+    expect(await t.sup.decideHighRisk("req-1-1", "pr-1", "reject", "不要")).toEqual({
+      decision: "reject",
+      pr_close: "unconfirmed",
+    });
+    expect(calls).toEqual(["check:req-1-1:pr-1", "close:req-1-1", "reject:req-1-1:pr-1:不要"]);
+    expect(markers(t, "req-1-1").high_risk_close).toMatchObject({
+      pr_id: "pr-1",
+      state: "unconfirmed",
+    });
+    expect(
+      t.published.filter(
+        (e) => e.type === "ticket_warning" && e.payload.code === "pr_close_failed",
+      ),
+    ).toHaveLength(1);
+    expect(t.timers.map((x) => x.ms)).toEqual([30_000]);
+    // 9 发的 escalated(high_risk_rejected)：通知写明 PR 还没关成、会重试
+    await t.fireEscalated(esc("req-1-1", "high_risk_rejected", "不要"));
+    expect(t.notified.at(-1)!.text).toMatch(/不会再合入.*关 PR 还没成功.*自动重试/);
+    t.timers[0]!.fn();
+    await vi.waitFor(() => expect(t.timers.map((x) => x.ms)).toEqual([30_000, 120_000]));
+    t.timers[1]!.fn();
+    await vi.waitFor(() => expect(t.timers).toHaveLength(3));
+    t.timers[2]!.fn();
+    await vi.waitFor(() => expect(t.notified.at(-1)!.text).toMatch(/重试 3 次仍失败.*手动关掉/));
+    expect(t.closes).toHaveLength(4);
+    // 只发一次 pr_close_failed；单子只拒绝一次
+    expect(calls.filter((c) => c.startsWith("reject:"))).toHaveLength(1);
+    expect(markers(t, "req-1-1").high_risk_close?.state).toBe("unconfirmed");
+  });
+
+  it("拒绝后重试关 PR 成功：high_risk_close 改成 closed", async () => {
+    const { t } = await hrSetup();
+    await t.sup.highRiskHeld(held("req-1-1", "pr-1", "submit"));
+    let n = 0;
+    t.closeResult = () => {
+      if (++n === 1) throw new Error("GitHub 不可用");
+      return "closed";
+    };
+    await t.sup.decideHighRisk("req-1-1", "pr-1", "reject");
+    expect(markers(t, "req-1-1").high_risk_close?.state).toBe("unconfirmed");
+    t.timers[0]!.fn();
+    await vi.waitFor(() => expect(markers(t, "req-1-1").high_risk_close?.state).toBe("closed"));
+    expect(t.timers).toHaveLength(1);
   });
 
   it("escalated(high_risk_rejected)：不重拆、不关 PR，写 escalation_handled 交用户，移出待裁决", async () => {
