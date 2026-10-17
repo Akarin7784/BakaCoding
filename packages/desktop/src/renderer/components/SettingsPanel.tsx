@@ -14,10 +14,13 @@ export function SettingsPanel({
   settings,
   error,
   onBack,
+  embedded = false,
 }: {
   settings: DesktopSettings | null;
   error?: string | null;
   onBack: () => void;
+  /** UI-02：放在设置弹层里时不画「返回」，关闭由弹层负责 */
+  embedded?: boolean;
 }) {
   const secrets = settings?.env.filter((e) => !e.name.startsWith("BAKACODING_")) ?? [];
   const others = settings?.env.filter((e) => e.name.startsWith("BAKACODING_")) ?? [];
@@ -32,10 +35,12 @@ export function SettingsPanel({
   return (
     <section aria-label="设置" className="flex min-w-0 flex-1 flex-col">
       <header className="flex items-center gap-2 border-b border-border px-4 py-2">
-        <Button variant="secondary" size="sm" aria-label="返回" onClick={onBack}>
-          <ArrowLeft strokeWidth={1.5} />
-          返回
-        </Button>
+        {!embedded && (
+          <Button variant="secondary" size="sm" aria-label="返回" onClick={onBack}>
+            <ArrowLeft strokeWidth={1.5} />
+            返回
+          </Button>
+        )}
         <span className="text-sm font-medium" data-testid="settings-title">
           {settings?.mode === "readonly" ? "设置（只读）" : "设置"}
         </span>

@@ -18,6 +18,7 @@ import {
   serveReader,
   serveSupervisorChat,
   serveSyncState,
+  serveWindowTheme,
   type IpcMainLike,
 } from "./ipc.js";
 import type { ProjectSettingsDeps } from "./project-settings-ipc.js";
@@ -119,6 +120,8 @@ const SERVE: Record<string, (ipc: IpcMainLike, backend: BackendHandle) => () => 
   serveHighRisk: (ipc, backend) => serveHighRisk(ipc, backend, () => null),
   serveSyncState: (ipc, backend) => serveSyncState(ipc, backend, () => null, 1000),
   serveSupervisorChat: (ipc, backend) => serveSupervisorChat(ipc, backend),
+  serveWindowTheme: (ipc) =>
+    serveWindowTheme(ipc, { setThemeSource: (s) => s === "dark", applyTitleBar: () => {} }),
   serveBackendReload: (ipc, backend) =>
     serveBackendReload(ipc, backend as unknown as Parameters<typeof serveBackendReload>[1]),
   serveProjectSettings: (ipc, backend) =>
@@ -253,6 +256,8 @@ describe("handler 参数：第一个是 event，渲染进程参数从第二个�
       reason: "已取消",
     });
     await expect(api.getSettings()).resolves.toMatchObject({ repo: "/repo", mode: "local" });
+    // UI-02：主题同步
+    await expect(api.setWindowTheme!("dark")).resolves.toEqual({ ok: true, dark: true });
     // T-093：重载 / 重新连接（无参数）
     await expect(api.reloadBackend()).resolves.toEqual({
       state: "queued",
@@ -390,6 +395,7 @@ describe("preload 暴露的只读 API", () => {
       "platform",
       "reconnectBackend",
       "reloadBackend",
+      "setWindowTheme",
       "supervisorChat",
     ]);
     expect(Object.isFrozen(api)).toBe(true);

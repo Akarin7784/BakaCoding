@@ -12,7 +12,7 @@ describe("桌面界面壳子", () => {
     render(<App />);
     expect(screen.getByRole("navigation", { name: "对话列表" })).toBeTruthy();
     expect(screen.getByRole("region", { name: "主管对话" })).toBeTruthy();
-    expect(screen.queryByRole("complementary", { name: "侧边栏" })).toBeNull();
+    expect(screen.queryByRole("complementary", { name: "右面板" })).toBeNull();
     expect(screen.getByRole("button", { name: "设置" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "导出诊断包" })).toBeTruthy();
   });
@@ -20,9 +20,9 @@ describe("桌面界面壳子", () => {
   it("主管 1:1 可以输入并发送", () => {
     render(<App />);
     const box = screen.getByRole("textbox", { name: "发给主管" });
-    fireEvent.change(box, { target: { value: "新需求" } });
+    fireEvent.change(box, { target: { value: "加个导出按钮" } });
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
-    expect(screen.getByText("新需求")).toBeTruthy();
+    expect(screen.getByText("加个导出按钮")).toBeTruthy();
   });
 
   it("项目群只读：群里没有输入框（下方是主管对话，T-072），话题可折叠，Flash 调用默认折叠", () => {
@@ -41,8 +41,8 @@ describe("桌面界面壳子", () => {
   it("打开右侧边栏后三栏齐全：编码池状态、Git 区、PR 列表", () => {
     render(<App />);
     openProject();
-    fireEvent.click(screen.getByRole("button", { name: "打开侧边栏" }));
-    expect(screen.getByRole("complementary", { name: "侧边栏" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
+    expect(screen.getByRole("complementary", { name: "右面板" })).toBeTruthy();
     expect(screen.getByTestId("pool-status").textContent).toContain("并发 1/4");
     expect(screen.getByRole("button", { name: /合入 main/ })).toBeTruthy();
     const badge = screen.getByText("重写");

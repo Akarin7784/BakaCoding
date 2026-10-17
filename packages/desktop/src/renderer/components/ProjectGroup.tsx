@@ -1,6 +1,7 @@
 import { ChevronDown, ChevronRight, PanelRight } from "lucide-react";
 import { AgentIcon } from "./AgentIcon";
 import { Button } from "./ui/button";
+import { CONTENT_COLUMN } from "../lib/layout";
 import { EscalationItem, TicketWarningList } from "./Escalations";
 import { GROUP_MESSAGE_KIND_LABEL } from "../lib/copy";
 import type { FlashCallSummary, GroupMessageEvent, ProjectView } from "../mock/types";
@@ -47,36 +48,44 @@ function Message({ m, calls }: { m: GroupMessageEvent; calls: Record<string, Fla
 export function ProjectGroup({
   view,
   calls,
-  sidebarOpen,
+  sidebarOpen = false,
   onToggleSidebar,
   readonly = false,
+  showHeader = true,
 }: {
   view: ProjectView;
   calls: Record<string, FlashCallSummary>;
-  sidebarOpen: boolean;
-  onToggleSidebar: () => void;
+  sidebarOpen?: boolean;
+  /** 没给就不画面板开关（UI-02 起开关在外层标题栏） */
+  onToggleSidebar?: () => void;
+  /** UI-02：放进新布局时标题、只读标签在外层标题栏里 */
+  showHeader?: boolean;
   /** 后端只读时显示「只读」标签（T-077） */
   readonly?: boolean;
 }) {
   return (
     <section aria-label="项目群" className="flex min-w-0 flex-1 flex-col">
-      <header className="flex items-center gap-2 border-b border-border px-4 py-2">
-        <span className="flex-1 text-sm font-medium"># {view.project.payload.name}</span>
-        {readonly && (
-          <span className="text-xs text-muted-foreground" data-testid="readonly-tag">
-            只读
-          </span>
-        )}
-        <Button
-          variant="secondary"
-          size="icon"
-          aria-label={sidebarOpen ? "关闭侧边栏" : "打开侧边栏"}
-          aria-pressed={sidebarOpen}
-          onClick={onToggleSidebar}
-        >
-          <PanelRight strokeWidth={1.5} />
-        </Button>
-      </header>
+      {showHeader && (
+        <header className="flex items-center gap-2 border-b border-border px-4 py-2">
+          <span className="flex-1 text-sm font-medium"># {view.project.payload.name}</span>
+          {readonly && (
+            <span className="text-xs text-muted-foreground" data-testid="readonly-tag">
+              只读
+            </span>
+          )}
+          {onToggleSidebar && (
+            <Button
+              variant="secondary"
+              size="icon"
+              aria-label={sidebarOpen ? "关闭侧边栏" : "打开侧边栏"}
+              aria-pressed={sidebarOpen}
+              onClick={onToggleSidebar}
+            >
+              <PanelRight strokeWidth={1.5} />
+            </Button>
+          )}
+        </header>
+      )}
       {view.escalations.length > 0 && (
         <ul
           role="alert"
@@ -90,30 +99,32 @@ export function ProjectGroup({
       )}
       <TicketWarningList warnings={view.warnings} />
       <div className="flex-1 overflow-y-auto px-4 py-2">
-        {view.requirements.length === 0 && (
-          <p className="py-8 text-center text-sm text-muted-foreground">还没有需求</p>
-        )}
-        {view.requirements.map((r) => (
-          <details
-            key={r.requirement_id}
-            id={`topic-${r.requirement_id}`}
-            open
-            className="group border-b border-border py-2"
-          >
-            <summary className="flex cursor-pointer select-none items-center gap-1 text-sm font-medium [&::-webkit-details-marker]:hidden">
-              <ChevronRight size={14} className="group-open:hidden" aria-hidden />
-              <ChevronDown size={14} className="hidden group-open:inline" aria-hidden />
-              {r.title}
-            </summary>
-            <div className="mt-2 space-y-3 pl-5">
-              {view.messages
-                .filter((m) => m.requirement_id === r.requirement_id)
-                .map((m) => (
-                  <Message key={m.event_id} m={m} calls={calls} />
-                ))}
-            </div>
-          </details>
-        ))}
+        <div className={CONTENT_COLUMN}>
+          {view.requirements.length === 0 && (
+            <p className="py-8 text-center text-sm text-muted-foreground">还没有需求</p>
+          )}
+          {view.requirements.map((r) => (
+            <details
+              key={r.requirement_id}
+              id={`topic-${r.requirement_id}`}
+              open
+              className="group border-b border-border py-2"
+            >
+              <summary className="flex cursor-pointer select-none items-center gap-1 text-sm font-medium [&::-webkit-details-marker]:hidden">
+                <ChevronRight size={14} className="group-open:hidden" aria-hidden />
+                <ChevronDown size={14} className="hidden group-open:inline" aria-hidden />
+                {r.title}
+              </summary>
+              <div className="mt-2 space-y-3 pl-5">
+                {view.messages
+                  .filter((m) => m.requirement_id === r.requirement_id)
+                  .map((m) => (
+                    <Message key={m.event_id} m={m} calls={calls} />
+                  ))}
+              </div>
+            </details>
+          ))}
+        </div>
       </div>
     </section>
   );
