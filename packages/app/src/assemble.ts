@@ -30,6 +30,7 @@ import {
   createSubAgent,
   eventLogGrantedScopes,
   eventLogResubmitHistory,
+  isHighRiskDiffFile,
   storageTicketPermissions,
   type HandleOptions,
   type ResumeToken,
@@ -200,6 +201,24 @@ export async function closeTicketPrs(
   return "closed";
 }
 
+/**
+ * 重启接管时补判高风险（T-041c，N4）：8 按 diff 判出的高风险重启后就丢了（只有 kind: dependency 存在 2 里），
+ * 接回前按 6 的 diff 重新判，规则同 8（`isHighRiskDiffFile`：依赖清单 / 锁文件，含删除的；改名一律算）。
+ * diff 出错按高风险处理：宁可错扣，不可漏扣。
+ */
+export async function judgeHighRiskOnTakeover(
+  pr: Pick<PrProvider, "diff">,
+  pr_id: string,
+  warn: (msg: string, detail?: unknown) => void = () => {},
+): Promise<boolean> {
+  try {
+    return (await pr.diff(pr_id)).files.some(isHighRiskDiffFile);
+  } catch (err) {
+    warn(`重启接管：取 PR ${pr_id} 的 diff 失败，按高风险处理`, err);
+    return true;
+  }
+}
+
 export async function assemble(deps: AppDeps): Promise<App> {
   const logger = deps.logger ?? {
     warn: (m: string, d?: unknown) => console.warn(`[app] ${m}`, d ?? ""),
@@ -236,6 +255,10 @@ export async function assemble(deps: AppDeps): Promise<App> {
       closeTicketPrs({ sync: () => scheduler.sync(), store, pr }, ticket_id, reason),
     lastEscalation: lastEscalationFrom(storage),
     replaceDependency: (old_id, ids) => scheduler.replaceDependency(old_id, ids),
+    highRisk: {
+      release: (id) => scheduler.releaseHighRisk(id),
+      reject: (id, detail) => scheduler.rejectHighRisk(id, detail),
+    },
     publish,
     subscribe: (type, handler) => bus.subscribe(type, handler),
     targetHead: () => deps.targetHead(),
@@ -334,7 +357,10 @@ export async function assemble(deps: AppDeps): Promise<App> {
       worktree_path: rec.worktree_path,
       base_commit: rec.base_sha,
       ...(m ? { round: Number(m[1]) } : {}),
-      ...(kind === "dependency" ? { high_risk: true } : {}),
+      ...(kind === "dependency" ||
+      (await judgeHighRiskOnTakeover(pr, rec.pr_id, (m, d) => logger.warn(m, d)))
+        ? { high_risk: true }
+        : {}),
     });
   }
 
@@ -362,7 +388,14 @@ export async function assemble(deps: AppDeps): Promise<App> {
     },
     onError: (err, ticket_id) => onError(err, `scheduler(${ticket_id})`),
     ...(deps.newId ? { newId: deps.newId } : {}),
-    // TODO(T-041c)：9 加了高风险闸门后，在这里打开（holdHighRisk: true）。默认关闭只适用于单独使用 9 的场景。
+    // 高风险闸门（T-041c）：组合根固定打开，AppDeps 关不掉（Q-3）；默认关闭只适用于单独使用 9
+    holdHighRisk: true,
+    onHighRiskHeld: (info) =>
+      void supervisor
+        .highRiskHeld(info)
+        .catch((err) => onError(err, `supervisor(${info.ticket_id})`)),
+    onBackpressurePaused: (state) =>
+      void supervisor.backpressurePaused(state).catch((err) => onError(err, "supervisor")),
   });
 
   ready = true;
