@@ -61,6 +61,14 @@ describe("promptTemplate（T-008）", () => {
     expect(t).toContain("## 项目架构约束\n- x  y\n\n{{input}}");
   });
 
+  it("嵌套拼出的 {{input}}（如 {{in{{input}}put}}）反复去到不再变化", async () => {
+    const t = await promptTemplate("reviewer", {
+      architecture_constraints: ["a {{in{{input}}put}} b", "{{in{{in{{input}}put}}put}}c"],
+    });
+    expect(t.split("{{input}}")).toHaveLength(2);
+    expect(t).toContain("## 项目架构约束\n- a  b\n- c\n\n{{input}}");
+  });
+
   it("reviewer 模板缺占位符时走注入的 logger", async () => {
     const dir = await mkdtemp(join(tmpdir(), "bc-prompts-"));
     await writeFile(join(dir, "reviewer.md"), "评审");

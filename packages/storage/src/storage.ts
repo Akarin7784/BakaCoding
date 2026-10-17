@@ -44,6 +44,8 @@ export interface StorageOptions {
    * 见 `packages/desktop/scripts/rebuild-electron.mjs`；不传则用 Node 默认的那份。
    */
   nativeBinding?: string;
+  /** 警告输出（T-055：需求单 `fields` 读出损坏时记一条），默认 `console.warn`。 */
+  logger?: { warn(message: string): void };
 }
 
 /** 另一个写入者持有未过期的租约，或本进程的租约已被别人接管。 */
@@ -339,6 +341,8 @@ export interface ReadonlyStorageOptions {
   path: string;
   /** 同 `StorageOptions.nativeBinding`。 */
   nativeBinding?: string;
+  /** 同 `StorageOptions.logger`。 */
+  logger?: { warn(message: string): void };
 }
 
 /** 只读打开返回的类型：只有读方法；prStore 只有 get / list。 */
@@ -389,6 +393,7 @@ export function openStorageReadonly(options: ReadonlyStorageOptions): ReadonlySt
     {
       path: options.path,
       ...(options.nativeBinding !== undefined && { nativeBinding: options.nativeBinding }),
+      ...(options.logger !== undefined && { logger: options.logger }),
     },
     true,
   );
@@ -400,6 +405,7 @@ function open(options: StorageOptions, ro: boolean): Storage {
   const ttl = options.lease_ttl_ms ?? 30_000;
   const retentionDays = options.retention_days ?? 30;
   const light = options.redact ?? ((t: string) => redactText(t, "light").text);
+  const logger = options.logger ?? { warn: (m: string) => console.warn(m) };
 
   const dbOpts: Database.Options = {};
   if (options.nativeBinding !== undefined) dbOpts.nativeBinding = options.nativeBinding;
@@ -767,6 +773,23 @@ function open(options: StorageOptions, ro: boolean): Storage {
     });
   });
 
+  /** 读 `tickets.fields`：损坏的 JSON 或不是普通对象时读成 null 并记警告，不让一行坏数据拖垮整个读取。 */
+  function decodeFields(ticket_id: string, raw: unknown): TicketFields | null {
+    if (raw == null) return null;
+    let v: unknown;
+    try {
+      v = JSON.parse(raw as string);
+    } catch {
+      logger.warn(`[storage] 需求单 ${ticket_id} 的 fields 不是合法 JSON，按 null 读出`);
+      return null;
+    }
+    if (v === null || typeof v !== "object" || Array.isArray(v)) {
+      logger.warn(`[storage] 需求单 ${ticket_id} 的 fields 不是对象，按 null 读出`);
+      return null;
+    }
+    return v as TicketFields;
+  }
+
   function rowToTicket(row: Row): StoredTicket {
     const t: StoredTicket = {
       ticket_id: row.ticket_id as string,
@@ -777,7 +800,7 @@ function open(options: StorageOptions, ro: boolean): Storage {
       base_commit: row.base_commit as string,
       permission_list: JSON.parse(row.permission_list as string) as PermissionList,
       context_snippets: JSON.parse(row.context_snippets as string) as RawFile[],
-      fields: row.fields == null ? null : (JSON.parse(row.fields as string) as TicketFields),
+      fields: decodeFields(row.ticket_id as string, row.fields),
     };
     if (row.decomposition_summary != null)
       t.decomposition_summary = row.decomposition_summary as string;
@@ -1198,20 +1221,24 @@ function encodeFields(ticket_id: string, fields: unknown): string {
   const bad = (why: string): never => {
     throw new TypeError(`需求单 ${ticket_id} 的 fields ${why}`);
   };
+  const seen = new Set<object>();
   const check = (v: unknown, path: string): void => {
     if (v === null || typeof v === "string" || typeof v === "boolean") return;
     if (typeof v === "number") {
       if (!Number.isFinite(v)) bad(`${path} 不是有限数`);
       return;
     }
-    if (Array.isArray(v)) {
-      v.forEach((x, i) => check(x, `${path}[${i}]`));
-      return;
-    }
     if (typeof v === "object") {
-      const proto = Object.getPrototypeOf(v) as unknown;
-      if (proto !== Object.prototype && proto !== null) bad(`${path} 不是普通对象`);
-      for (const [k, x] of Object.entries(v as Record<string, unknown>)) check(x, `${path}.${k}`);
+      if (seen.has(v)) bad(`${path} 有循环引用`);
+      seen.add(v);
+      if (Array.isArray(v)) {
+        v.forEach((x, i) => check(x, `${path}[${i}]`));
+      } else {
+        const proto = Object.getPrototypeOf(v) as unknown;
+        if (proto !== Object.prototype && proto !== null) bad(`${path} 不是普通对象`);
+        for (const [k, x] of Object.entries(v as Record<string, unknown>)) check(x, `${path}.${k}`);
+      }
+      seen.delete(v);
       return;
     }
     bad(`${path} 不能 JSON 往返（${typeof v}）`);

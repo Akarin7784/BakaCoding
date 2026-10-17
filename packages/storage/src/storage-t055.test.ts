@@ -94,6 +94,50 @@ describe("tickets.fields（T-055）", () => {
   });
 });
 
+describe("fields 读出容错（T-055 评审）", () => {
+  it.each([
+    ["损坏的 JSON", "{not json", "不是合法 JSON"],
+    ["不是对象（数组）", "[1,2]", "不是对象"],
+    ["不是对象（null）", "null", "不是对象"],
+  ])("库里 fields 是%s：读成 null、记一条警告，其他单照常读", (_n, raw, msg) => {
+    const path = tmpDb();
+    const warns: string[] = [];
+    const s = openStorage({ path, logger: { warn: (m) => warns.push(m) } });
+    opened.push(s);
+    s.saveTicket({ ...base, fields });
+    s.saveTicket({ ...base, ticket_id: "R-1-2", fields });
+    const raw2 = new Database(path);
+    raw2.prepare("UPDATE tickets SET fields = ? WHERE ticket_id = 'R-1-1'").run(raw);
+    raw2.close();
+    expect(s.getTicket("R-1-1")!.fields).toBeNull();
+    expect(s.listTickets().map((t) => t.fields)).toEqual([null, fields]);
+    expect(warns.length).toBeGreaterThan(0);
+    expect(warns[0]).toContain("R-1-1");
+    expect(warns[0]).toContain(msg);
+    const roWarns: string[] = [];
+    const ro = openStorageReadonly({ path, logger: { warn: (m) => roWarns.push(m) } });
+    opened.push(ro);
+    expect(ro.getTicket("R-1-1")!.fields).toBeNull();
+    expect(roWarns).toHaveLength(1);
+  });
+
+  it("写入循环引用的 fields 抛 TypeError（不是栈溢出），不写入", () => {
+    const s = openStorage({ path: tmpDb() });
+    opened.push(s);
+    const a: Record<string, unknown> = { x: 1 };
+    a.self = a;
+    expect(() => s.saveTicket({ ...base, fields: a as never })).toThrow(TypeError);
+    const arr: unknown[] = [];
+    arr.push(arr);
+    expect(() => s.saveTicket({ ...base, fields: { arr } as never })).toThrow(/循环引用/);
+    expect(s.getTicket("R-1-1")).toBeUndefined();
+    // 同一个对象出现两次但不成环，照常写入
+    const shared = { k: "v" };
+    s.saveTicket({ ...base, fields: { a: shared, b: shared } });
+    expect(s.getTicket("R-1-1")!.fields).toEqual({ a: shared, b: shared });
+  });
+});
+
 describe("listTickets（T-055）", () => {
   it("按项目、需求、状态过滤，按 created_at、ticket_id 升序", () => {
     const s = openStorage({ path: tmpDb() });
