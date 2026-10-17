@@ -176,7 +176,8 @@ export type DesktopReloadResult =
 export interface DesktopRepoCheckItem {
   id: "git" | "commit" | "main" | "ignored";
   ok: boolean;
-  code?: "not_git" | "no_commits" | "no_main" | "not_ignored";
+  /** nested_repo（T-114）：文件夹在另一个 Git 仓库里面，detail 是固定文案、不带外层路径 */
+  code?: "not_git" | "nested_repo" | "no_commits" | "no_main" | "not_ignored";
   detail?: string;
   current?: string;
 }
@@ -203,6 +204,8 @@ export interface DesktopRepoFixFailure {
   ok: false;
   code:
     | "not_git"
+    /** T-114：文件夹在另一个 Git 仓库里面（固定文案，不带外层路径） */
+    | "nested_repo"
     | "repo_exists"
     | "no_commits"
     | "has_commits"

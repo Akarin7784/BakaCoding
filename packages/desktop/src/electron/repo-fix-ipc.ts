@@ -58,6 +58,7 @@ type FixCode = DesktopRepoFixFailure["code"];
 type ModuleFixCode = Exclude<FixCode, "cwd_repo">;
 const FIX_CODES: ReadonlySet<string> = new Set<ModuleFixCode>([
   "not_git",
+  "nested_repo",
   "repo_exists",
   "no_commits",
   "has_commits",
