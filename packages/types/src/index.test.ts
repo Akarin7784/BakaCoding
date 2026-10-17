@@ -294,6 +294,26 @@ describe("PermissionList / Diff / Ledger", () => {
     };
     expect(DiffSchema.parse(d)).toEqual(d);
     expect(DiffSchema.safeParse({ ...d, base_sha: "XYZ" }).success).toBe(false);
+    const renamed = {
+      ...d,
+      files: [
+        {
+          path: "x.json",
+          old_path: "package.json",
+          status: "renamed" as const,
+          additions: 0,
+          deletions: 0,
+          patch: "",
+        },
+      ],
+    };
+    expect(DiffSchema.parse(renamed)).toEqual(renamed);
+    expect(
+      DiffSchema.safeParse({
+        ...d,
+        files: [{ ...d.files[0], old_path: "" }],
+      }).success,
+    ).toBe(false);
   });
   it("LedgerEntry", () => {
     expect(

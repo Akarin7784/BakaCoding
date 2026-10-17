@@ -5,7 +5,7 @@ T-001：各模块共享的类型与 zod schema。只含 schema 与常量，不�
 - 事件公共字段与 `EventMap`（`docs/modules.md`「事件清单」+ `review_backlog`）
 - `CallCtx`、`Effort`、`PermissionList`（默认拒绝）
 - `LedgerStore` 接口（模块 2 实现，注入模块 3）
-- `Diff`
+- `Diff` / `DiffFile`（`old_path?`：改名 / 复制时的旧路径，T-065）
 
 ## token 计数约定
 

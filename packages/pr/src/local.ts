@@ -288,7 +288,14 @@ export class LocalPrProvider implements PrProvider {
       const paths = e.old ? [e.old, e.path] : [e.path];
       const patch = (await git(cwd, ["diff", "-M", ...range, "--", ...paths])).stdout;
       const c = counts.get(e.path) ?? { a: 0, d: 0 };
-      files.push({ path: e.path, status: e.status, additions: c.a, deletions: c.d, patch });
+      files.push({
+        path: e.path,
+        status: e.status,
+        additions: c.a,
+        deletions: c.d,
+        patch,
+        ...(e.old ? { old_path: e.old } : {}),
+      });
     }
     return DiffSchema.parse({ base_sha: base, head_sha: head, files });
   }
