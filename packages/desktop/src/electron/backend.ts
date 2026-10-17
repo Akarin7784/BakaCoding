@@ -32,12 +32,14 @@ import {
 } from "@bakacoding/storage";
 import type { PendingHighRisk, TakeOverReport, UserMessage } from "@bakacoding/supervisor";
 import type {
+  DesktopBackendError,
   DesktopChatResult,
   DesktopDecideHighRiskResult,
   DesktopSyncState,
 } from "../shared/api.js";
 import { DB_PATH_ENV, DEFAULT_DB_RELATIVE, resolveDbPath } from "./config.js";
 import { createSerialQueue, runSupervisorChat } from "./supervisor-chat.js";
+import { backendErrorDetail } from "./backend-error.js";
 import { errorDetail, toDesktopSyncState, unavailableSyncState } from "./sync-state.js";
 
 /** 仓库路径：`--repo` > BAKACODING_REPO > cwd */
@@ -51,6 +53,8 @@ export interface BackendStatus {
   mode: BackendMode;
   /** 只读原因：只写变量名 / 错误名，不写密钥值 */
   reason?: string;
+  /** 只读详情（UI-08）：已脱敏 */
+  error?: DesktopBackendError;
   takeOver?: {
     enqueued: number;
     adopted: number;
@@ -342,6 +346,7 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
 
   let mode: BackendMode = "readonly";
   let reason: string | undefined;
+  let startError: DesktopBackendError | undefined;
   let lock: WriterLock | undefined;
   let storage: Storage | undefined;
   let depsHandle: DefaultDepsHandle | undefined;
@@ -443,6 +448,7 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
       reason = undefined;
     } catch (e) {
       reason = readonlyReasonFromError(e);
+      startError = backendErrorDetail(e, repoRoot, env);
       logger.warn(`退回只读：${reason}`);
       cleanupPartial();
     }
@@ -452,6 +458,7 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
     status(): BackendStatus {
       const st: BackendStatus = { mode };
       if (reason !== undefined) st.reason = reason;
+      if (startError && mode === "readonly") st.error = startError;
       if (takeOver) st.takeOver = takeOver;
       if (storage) {
         try {

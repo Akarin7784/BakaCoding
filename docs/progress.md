@@ -155,6 +155,7 @@ flowchart BT
 | T-102 | 模块 8 + 6：`resubmitConflict` / `reReview` 接收 stop 的 signal；模块 6 GitHub 请求加请求级超时（T-096 已知缺口）；preview.1 之后 | 8 / 6 | 编排层开发、执行层开发 | 待开发 | — | — |
 | T-103 | 模块 6：合并重试幂等。本地 `merge` 在锁内读到 target 后先查 head 是否已被 target 包含，是则直接记 merged（`merge_sha` 取把 head 带进 target 的那个提交：快进为 head，非快进为当时的合并提交），不再 commit-tree、不动 target；GitHub `merge` 推分支前先查远程 PR，已合入则不推不 PUT，fetch、快进本地 target 后记 merged（`merge_sha` 用 `merge_commit_sha`），PUT 回 405 / 409 时也回查；接口不变，modules.md §6 同步。来源：编排层分析 2026-10-18，preview.1 之前。main `436fbdf`，测试 96 个文件 / 1831 个 | 6 | 执行层开发 | 已合入 | #117 | `436fbdf` |
 | T-105 | 模块 12 桌面端退出等待后端收尾：`before-quit` 等 `backend.stop()`，上限 `REPO_GIT_TIMEOUT_MS` + 5 s；`cleanupPartial` 先 `await app.stop()` 再关库；`serveWindowTheme` 失败时返回固定文案（T-096 评审跟进）；preview.1 之前 | 12 | 界面与诊断开发 | 开发中 | — | — |
+| UI-08 | 模块 12 状态与反馈（`docs/ui-design.md` §3、§4.7、§4.8；基于已合入的 UI-02 #103）：只读横幅「只读模式：原因」+ 查看详情（`backend:status` 新增脱敏后的 `error`：错误名 / 信息 / 错误码 / 一层 cause）+ 重新连接（接 T-093 `backend:reconnect`）；只读时输入框、裁决、合入 main、导出禁用并说明；操作结果改右下角 toast（错误不消失、可复制详情）；左栏底部全局状态点 + 状态卡（后端、同步、数据库、待处理、未归属并入）；右面板抽屉改 Radix Dialog（焦点移入 / 困住 / 归还，`--overlay` 遮罩）；窗口按钮留位优先用 Window Controls Overlay；主进程记住主题偏好，启动建窗口前读出，标题栏不闪；`window:theme` 失败原因脱敏 | 12 | 界面与诊断开发 | 待评审 | #119 | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 

@@ -3,6 +3,7 @@
 import { PanelRight } from "lucide-react";
 import type { ReactNode } from "react";
 import { SHORTCUT_LABEL } from "../lib/shortcuts";
+import { RIGHT_PANEL_TOGGLE_ID } from "./RightPanelShell";
 
 export function TitleBar({
   title,
@@ -29,6 +30,8 @@ export function TitleBar({
       <button
         type="button"
         aria-label={label}
+        id={RIGHT_PANEL_TOGGLE_ID}
+        data-testid="right-panel-toggle"
         aria-pressed={rightPanelOpen}
         title={`${label}（${SHORTCUT_LABEL.toggleRightPanel}）`}
         onClick={onToggleRightPanel}

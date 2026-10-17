@@ -8,6 +8,7 @@ import { CONTENT_COLUMN } from "../lib/layout";
 import { AgentIcon } from "./AgentIcon";
 import { Button } from "./ui/button";
 import { Textarea } from "./ui/textarea";
+import { READONLY_COPY } from "../lib/readonly";
 import type { SupervisorMessage } from "../mock/types";
 
 const TONE_CLASS: Record<ChatTone, string> = {
@@ -37,6 +38,8 @@ export interface SupervisorChatProps {
   onExport?: () => void;
   /** 导入 / 导出进行中：对应按钮禁用 */
   busy?: "import" | "export" | null;
+  /** 后端只读（UI-08，§4.7）：输入框和发送禁用 */
+  readonly?: boolean;
 }
 
 /** 主管 1:1：唯一可输入的地方。一次只发一条（chat 有状态），等上一条回来才能再发。 */
@@ -51,6 +54,7 @@ export function SupervisorChat({
   onOpenSettings,
   onExport,
   busy = null,
+  readonly = false,
 }: SupervisorChatProps) {
   useEffect(() => store.seed(initial), [store, initial]);
   const { items: messages, pending } = useSyncExternalStore(store.subscribe, store.getSnapshot);
@@ -60,7 +64,7 @@ export function SupervisorChat({
   const send = async () => {
     const text = draft.trim();
     // 等待状态在 store 里：组件卸载重挂也挡得住重复发送（主进程另有串行）
-    if (!text || store.getSnapshot().pending) return;
+    if (readonly || !text || store.getSnapshot().pending) return;
     store.append({ id: store.nextId("u"), from: "user", content: text, ts: now() });
     setDraft("");
     if (!api?.supervisorChat) return;
@@ -194,7 +198,10 @@ export function SupervisorChat({
             aria-label="发给主管"
             data-composer={compact ? "compact" : "supervisor"}
             rows={2}
-            placeholder="提需求或人工介入，说清是哪个项目"
+            placeholder={
+              readonly ? READONLY_COPY.composerPlaceholder : "提需求或人工介入，说清是哪个项目"
+            }
+            disabled={readonly}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
@@ -204,7 +211,13 @@ export function SupervisorChat({
               }
             }}
           />
-          <Button size="icon" aria-label="发送" disabled={pending} onClick={() => void send()}>
+          <Button
+            size="icon"
+            aria-label="发送"
+            title={readonly ? READONLY_COPY.composerPlaceholder : undefined}
+            disabled={pending || readonly}
+            onClick={() => void send()}
+          >
             <Send strokeWidth={1.5} />
           </Button>
         </div>

@@ -1,12 +1,12 @@
 // T-072：导入项目 / 导出诊断包 / 只读设置的界面状态。
+// UI-08：结果不再是内容区顶部一行小字，改成右下角 toast（成功 5 秒消失，错误不消失、可复制详情）。
 import { useState } from "react";
 import type { BakaDesktopApi, DesktopSettings } from "../../shared/api.js";
 import { failureText, stripErrorNoise } from "../../shared/error-text.js";
+import { notifyError, notifyOk } from "../lib/notify";
 
 export interface ProjectActions {
   busy: "import" | "export" | null;
-  /** 一行结果提示；error 用 role=alert */
-  notice: { tone: "ok" | "error"; text: string } | null;
   settingsOpen: boolean;
   settings: DesktopSettings | null;
   settingsError: string | null;
@@ -18,13 +18,22 @@ export interface ProjectActions {
 
 const IPC_FAILED = "和主进程通信失败，请重试";
 
+/** 操作结果的去处（UI-08：右下角 toast）；测试可注入。 */
+export interface ActionNotifier {
+  ok(text: string): void;
+  error(text: string): void;
+}
+const toastNotifier: ActionNotifier = { ok: notifyOk, error: (t) => notifyError(t) };
+
 export function useProjectActions(
   api: BakaDesktopApi | undefined,
   /** 导入成功后重新加载界面（新仓库的快照、通知回放）；测试注入 */
   reload: () => void = () => globalThis.location?.reload(),
+  notify: ActionNotifier = toastNotifier,
 ): ProjectActions {
   const [busy, setBusy] = useState<ProjectActions["busy"]>(null);
-  const [notice, setNotice] = useState<ProjectActions["notice"]>(null);
+  const setNotice = (n: { tone: "ok" | "error"; text: string }) =>
+    n.tone === "ok" ? notify.ok(n.text) : notify.error(n.text);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settings, setSettings] = useState<DesktopSettings | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
@@ -33,7 +42,6 @@ export function useProjectActions(
 
   return {
     busy,
-    notice,
     settingsOpen,
     settings,
     settingsError,

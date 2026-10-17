@@ -105,9 +105,19 @@ export interface DesktopUpdate {
 }
 
 /** 与主进程 BackendStatus 同形（不引入 storage 类型，health 用宽松对象）。 */
+/** 只读详情（UI-08，§4.7）：脱敏后的错误名、信息、错误码、一层 cause。 */
+export interface DesktopBackendError {
+  name: string;
+  message: string;
+  code?: string;
+  cause?: { name: string; message: string };
+}
+
 export interface DesktopBackendStatus {
   mode: "live" | "readonly";
   reason?: string;
+  /** 后端起不来时的错误详情（UI-08）；锁被占等没有错误对象的情况不出现。 */
+  error?: DesktopBackendError;
   takeOver?: {
     enqueued: number;
     adopted: number;

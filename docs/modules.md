@@ -359,6 +359,14 @@ graph BT
   - **状态与失败**：`backend:status` 可选字段 `reload` 为 `{ state: "queued"; waitingTickets; waitingChat }`（实时值）或 `{ state: "running" }`，没有重载时不出现。重新组装抛错或没进 live：拆掉它，装只读占位后端；`reason` 先把仓库根换成 `<仓库>`、其余绝对路径换成 `<路径>`，再走与同步错误相同的密钥 / `redact(light)` 脱敏，截到 500 码点（IPC 层兜底异常同样处理，仓库根取 `switcher.repoRoot()`）。
   - **预算**：3 的 `budgetState()` 每次从 2 的台账（`ledger.totalsByDay`，由 `call_completed` 记入库）汇总，重建后当日已用不清零。不改 8、9、10 的接口。
 - **布局骨架与窗口外框（UI-02，`docs/ui-design.md` §2）**：左栏 260（收起 56，宽窗口下的收起偏好存 localStorage `bakacoding.sidebarCollapsed`；窗口 < 1024 自动收起，此时展开只是临时的、不改偏好）；中间内容区正文最大宽 760、居中；右面板 360，默认关、不持久化，标签「概览」（暂放原右侧边栏的编码池 / Git / PR）/「动态」（空壳，后续接活动流）；窗口 < 1200 时右面板改为覆盖式抽屉（点遮罩或 Esc 关闭）。主管页的导入 / 导出移到中间标题栏，设置入口移到左栏底部、以弹窗打开（内容仍是原设置页）。全局快捷键（macOS 用 ⌘）：Ctrl+N 回主管对话并聚焦输入框、Ctrl+K 搜索与跳转（Command 面板）、Ctrl+, 设置、Ctrl+B 左栏、Ctrl+. 右面板；输入法组字中、带 Alt / Shift 时不拦；输入框的 Enter / Shift+Enter 不变。窗口最小 960×640；Windows / Linux 用 `titleBarStyle: "hidden"` + `titleBarOverlay`（最小化 / 最大化 / 关闭仍由系统绘制，高 40，底色与符号色取 `--background` / `--foreground` 的 sRGB 值），macOS 用 `hiddenInset`；拖拽区由渲染进程自绘（`app-drag` / `app-no-drag`），标题栏给系统按钮留位（Windows / Linux 右侧 138，macOS 左侧 76）。IPC `window:theme`（invoke，参数 `"system" | "light" | "dark"`）→ `{ ok: true; dark: boolean } | { ok: false; reason: string }`：主进程设 `nativeTheme.themeSource` 并按结果 `setTitleBarOverlay`；不认识的取值拒绝且不碰 nativeTheme；渲染进程启动时和主题偏好变化时各发一次，跟随系统时系统深浅变化由主进程监听 `nativeTheme` 的 `updated` 刷新标题栏。
+- **状态与反馈（UI-08，`docs/ui-design.md` §3、§4.7、§4.8）**：
+  - **只读横幅**：后端只读（`backend:status` 的 `mode: readonly`，或运行中 `storage.lease_lost`）时，内容区标题栏下一条浅红横幅「只读模式：<原因>」+［查看详情］［重新连接］。`backend:status` 新增可选 `error: { name; message; code?; cause?: { name; message } }`：后端起不来时 catch 到的错误，名字只留标识符字符，信息和一层 cause 先遮仓库路径与其他绝对路径（同 T-093 的 `sanitizeReloadReason`），再换 env 里像密钥的值、`redact(light)`、截到 2000 码点；错误码只认标识符。写入锁被占等没有错误对象的情况不出现。「重新连接」调 T-093 的 `backend:reconnect`（reloaded / queued / failed 各一条 toast），之后再取一次状态。渲染进程每 5s 取一次 `backend:status`。
+  - **只读禁用**：输入框禁用、占位「只读模式下不能发消息」；高风险裁决、合入 main、导出（标题栏和 PR 行）禁用，悬停说明原因。
+  - **toast**：导入 / 导出 / 重新连接的结果走右下角 toast（sonner）：成功 5 秒消失；错误不自动消失、带「复制详情」。内容区顶部的结果小字、数据库提示和同步状态行去掉。
+  - **全局状态点**：左栏底部齿轮旁。灰 = 空闲；强调色呼吸 = 有单在 coding / in_review / re_reviewing / resubmitting / merge_queued；红 = 需要你处理（只读、数据库打不开、同步鉴权停 / 失败 / 限流、待裁决高风险、conflict / escalated 的单、未归属上报）。点开状态卡：需要处理的事、后端模式、在跑张数、数据库路径、同步状态、未归属上报数（原左栏「未归属」入口并到这里）。
+  - **右面板抽屉**（窗口 < 1200）：改用 Radix Dialog（`role="dialog"`，打开时焦点移入、Tab 困在抽屉里，关上后焦点回到标题栏开关），底下一层 `--overlay` 淡遮罩。停靠模式不变。
+  - **窗口按钮留位**：优先用 `navigator.windowControlsOverlay.getTitlebarAreaRect()`（`geometrychange` 时重算），取不到时退回固定值（右 138 / 左 76）。
+  - **启动不闪**：`window:theme` 成功后主进程把偏好写到 userData 的 `window-theme.json`；下次启动在建窗口前同步读出、设 `nativeTheme.themeSource`，标题栏叠层颜色和窗口底色一开始就对。`window:theme` 失败的 `reason` 与其他通道同一套脱敏（换密钥值、`redact(light)`、截到 500 码点）。
 - **依赖**：3（项目导入）、`@bakacoding/app`（组合根）及各模块的接口。
 - **对应章节**：PD §15、§16。
 - **配置字段**：设计中没有专用字段；设置入口编辑模块 3 的配置。
