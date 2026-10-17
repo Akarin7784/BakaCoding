@@ -29,6 +29,27 @@ import { RepoNotReadyError } from "./repo-not-ready.js";
 
 const run = promisify(execFile);
 
+/**
+ * T-084 / #97 评审：我们调的 git 子进程 env 先剔掉 process.env 里所有 `GIT_` 开头的变量
+ * （`GIT_DIR`、`GIT_WORK_TREE`、`GIT_INDEX_FILE` 等会把 git 指到别的仓库），再显式加上自己要的。
+ * 规则同 #97 的 `gitEnv()`；#97 还没合入、main 上没有公用版本，先在包内放一份不导出的。
+ * TODO(#97 合入后)：换成模块 4 的 `gitEnv()`，删掉这份。
+ */
+function repoGitEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (!k.startsWith("GIT_")) env[k] = v;
+  }
+  env.GIT_TERMINAL_PROMPT = "0";
+  env.LC_ALL = "C";
+  return env;
+}
+
+/** 仓库检查 / targetHead 用的 git 调用：cwd 为仓库，env 走 repoGitEnv() */
+function repoGit(repoRoot: string, args: string[]): Promise<{ stdout: string }> {
+  return run("git", args, { cwd: repoRoot, env: repoGitEnv(), maxBuffer: 1024 * 1024 });
+}
+
 export interface CreateDefaultDepsOpts {
   repoRoot: string;
   notifyUser: AppDeps["notifyUser"];
@@ -76,10 +97,7 @@ function createPrForwarder(slot: { current: PrProvider | null }): ReviewPrSource
 }
 
 async function gitRevParse(repoRoot: string, rev: string): Promise<string> {
-  const { stdout } = await run("git", ["rev-parse", "--verify", rev], {
-    cwd: repoRoot,
-    maxBuffer: 1024 * 1024,
-  });
+  const { stdout } = await repoGit(repoRoot, ["rev-parse", "--verify", rev]);
   return stdout.trim();
 }
 
@@ -92,7 +110,7 @@ const BASE_BRANCH = "main";
 
 async function refExists(repoRoot: string, ref: string): Promise<boolean> {
   try {
-    await run("git", ["show-ref", "--verify", "--quiet", ref], { cwd: repoRoot });
+    await repoGit(repoRoot, ["show-ref", "--verify", "--quiet", ref]);
     return true;
   } catch {
     return false;
@@ -101,7 +119,7 @@ async function refExists(repoRoot: string, ref: string): Promise<boolean> {
 
 async function revResolves(repoRoot: string, rev: string): Promise<boolean> {
   try {
-    await run("git", ["rev-parse", "--verify", "--quiet", rev], { cwd: repoRoot });
+    await repoGit(repoRoot, ["rev-parse", "--verify", "--quiet", rev]);
     return true;
   } catch {
     return false;
@@ -111,9 +129,7 @@ async function revResolves(repoRoot: string, rev: string): Promise<boolean> {
 /** 当前检出的分支短名；分离 HEAD 时 undefined */
 async function currentBranch(repoRoot: string): Promise<string | undefined> {
   try {
-    const { stdout } = await run("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], {
-      cwd: repoRoot,
-    });
+    const { stdout } = await repoGit(repoRoot, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
     const name = stdout.trim();
     return name.length > 0 ? name : undefined;
   } catch {
@@ -127,11 +143,12 @@ async function currentBranch(repoRoot: string): Promise<string | undefined> {
  * 不是 git 仓库时 `for-each-ref` 照抛 git 的错（不归到这两种）。
  */
 async function repoNotReady(repoRoot: string, baseBranch: string): Promise<RepoNotReadyError> {
-  const { stdout } = await run(
-    "git",
-    ["for-each-ref", "--count=1", "--format=%(refname)", "refs/heads"],
-    { cwd: repoRoot },
-  );
+  const { stdout } = await repoGit(repoRoot, [
+    "for-each-ref",
+    "--count=1",
+    "--format=%(refname)",
+    "refs/heads",
+  ]);
   const hasBranch = stdout.trim().length > 0;
   if (!hasBranch && !(await revResolves(repoRoot, "HEAD^{commit}"))) {
     return new RepoNotReadyError("no_commits");

@@ -394,3 +394,84 @@ describe("仓库没准备好时启动报明确原因（T-084）", () => {
     expect(storage.nextSeq()).toBe(before);
   });
 });
+
+describe("仓库检查不受外部 GIT_* 环境变量影响（T-084，#97 评审）", () => {
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync("git", args, { cwd, encoding: "utf8", env: cleanEnv() }).trim();
+
+  /** 建测试仓库本身也不能被设进 process.env 的 GIT_* 影响 */
+  function cleanEnv(): NodeJS.ProcessEnv {
+    return Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("GIT_")));
+  }
+
+  const originalGitDir = process.env.GIT_DIR;
+  const saved = new Map<string, string | undefined>();
+  function setEnv(name: string, value: string): void {
+    if (!saved.has(name)) saved.set(name, process.env[name]);
+    process.env[name] = value;
+  }
+  afterEach(() => {
+    for (const [k, v] of saved) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    saved.clear();
+  });
+
+  function repo(branch: string, commit: boolean): { root: string; db: string } {
+    const root = mkdtempSync(join(tmpdir(), "bc-t084env-"));
+    dirs.push(root);
+    git(root, "init", "-q", "-b", branch);
+    git(root, "config", "user.email", "t@test");
+    git(root, "config", "user.name", "t");
+    if (commit) {
+      writeFileSync(join(root, "README.md"), "x\n");
+      git(root, "add", ".");
+      git(root, "commit", "-q", "-m", "init");
+    }
+    const dbDir = join(root, ".bakacoding");
+    mkdirSync(dbDir, { recursive: true });
+    return { root, db: join(dbDir, "bakacoding.db") };
+  }
+
+  it("GIT_DIR 指向另一个有 main 的仓库：目标仓库（只有 master）仍报 no_main", async () => {
+    const other = repo("main", true);
+    const { root, db } = repo("master", true);
+    setEnv("GIT_DIR", join(other.root, ".git"));
+    const storage = openDb(db);
+    const err = await createDefaultDeps(getConfig(examplePath), storage, {
+      repoRoot: root,
+      notifyUser: () => {},
+      pricingPath,
+      env,
+      logger: { warn: () => {} },
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RepoNotReadyError);
+    expect(err).toMatchObject({ code: "no_main", current: "master" });
+    expect(await integrationTargetHead(root).catch((e: unknown) => e)).toBeInstanceOf(
+      RepoNotReadyError,
+    );
+  });
+
+  it("目标仓库有 main、GIT_DIR 指向空仓库：仍正常启动，targetHead 是目标仓库的 main", async () => {
+    const empty = repo("main", false);
+    const { root, db } = repo("main", true);
+    const mainSha = git(root, "rev-parse", "main");
+    setEnv("GIT_DIR", join(empty.root, ".git"));
+    const storage = openDb(db);
+    const handle = await createDefaultDeps(getConfig(examplePath), storage, {
+      repoRoot: root,
+      notifyUser: () => {},
+      pricingPath,
+      env,
+      logger: { warn: () => {} },
+    });
+    disposers.push(handle.dispose);
+    expect(await handle.deps.targetHead()).toBe(mainSha);
+    expect(await integrationTargetHead(root)).toBe(mainSha);
+  });
+
+  it("测试设的 GIT_DIR 在用例之后已恢复原值", () => {
+    expect(process.env.GIT_DIR).toBe(originalGitDir);
+  });
+});
