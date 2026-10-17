@@ -91,8 +91,8 @@ describe("登记清单时丢弃不安全条目", () => {
     },
   );
 
-  it("ro 不安全条目同样丢弃；deny 条目保留；安全条目照常生效", () => {
-    const { reg } = quietRegistry();
+  it("ro 不安全条目原位改成 deny；deny 条目保留；安全条目照常生效", () => {
+    const { reg, warns } = quietRegistry();
     expect(
       reg.applyPermissions("T-m", [
         { glob: "src/**", level: "rw" },
@@ -101,8 +101,34 @@ describe("登记清单时丢弃不安全条目", () => {
       ]),
     ).toEqual([
       { glob: "src/**", level: "rw" },
+      { glob: "src/../**", level: "deny" },
       { glob: "src/../secret/**", level: "deny" },
     ]);
+    expect(warns).toEqual([
+      '[workspace] T-m: unsafe permission glob "src/../**" (ro) turned into deny',
+    ]);
+  });
+
+  it("后条覆盖前条：src/** rw 加不安全的 src/../src/secret/** ro，src/secret 不再可写", async () => {
+    mkdirSync(join(ws, "src", "secret"), { recursive: true });
+    writeFileSync(join(ws, "src", "secret", "k.ts"), "k\n");
+    const { reg } = quietRegistry();
+    const t = createTools({
+      ticket_id: "T-o",
+      worktree_path: ws,
+      permission_list: [
+        { glob: "src/**", level: "rw" },
+        { glob: "src/../src/secret/**", level: "ro" },
+      ],
+      registry: reg,
+    });
+    expect(code(await t.write({ file_path: "src/secret/new.ts", content: "x" }))).toBe(
+      "FS_PERMISSION_DENIED",
+    );
+    expect(existsSync(join(ws, "src", "secret", "new.ts"))).toBe(false);
+    // 范围外的部分照常可写
+    const w = await t.write({ file_path: "src/b.ts", content: "b" });
+    expect(w.ok).toBe(true);
   });
 });
 

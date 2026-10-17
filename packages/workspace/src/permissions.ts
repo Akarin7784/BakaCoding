@@ -31,13 +31,20 @@ export class PermissionRegistry {
   applyPermissions(ticket_id: string, permission_list: readonly PermissionEntry[]): PermissionList {
     if (typeof ticket_id !== "string" || ticket_id.length === 0)
       throw new TypeError("ticket_id 必须是非空字符串");
-    const parsed = PermissionListSchema.parse(permission_list).filter((e) => {
-      // 不安全的 rw / ro 条目丢掉（不放行任何读写）；deny 只会收紧，保留
-      if (e.level === "deny" || !isUnsafeGlob(e.glob)) return true;
+    const parsed = PermissionListSchema.parse(permission_list).flatMap((e) => {
+      // 只会收紧：不安全的 rw 丢掉（不放行任何写）；不安全的 ro 原位改成 deny
+      // （后条覆盖前条，丢掉会让它本来要加的限制失效）；deny 原样保留
+      if (e.level === "deny" || !isUnsafeGlob(e.glob)) return [e];
+      if (e.level === "ro") {
+        this.logger.warn(
+          `[workspace] ${ticket_id}: unsafe permission glob ${JSON.stringify(e.glob)} (ro) turned into deny`,
+        );
+        return [{ glob: e.glob, level: "deny" as const }];
+      }
       this.logger.warn(
         `[workspace] ${ticket_id}: dropped unsafe permission glob ${JSON.stringify(e.glob)} (${e.level})`,
       );
-      return false;
+      return [];
     });
     // 冻结后存：调用方之后改自己手里的数组不影响已生效的清单
     const frozen = Object.freeze(
