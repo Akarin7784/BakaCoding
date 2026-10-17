@@ -17,6 +17,7 @@ import {
 import { titleBarOverlayFor, usesTitleBarOverlay, windowChromeOptions } from "./window-chrome.js";
 import { BackendSwitcher } from "./backend-switcher.js";
 import { openEventReader, type EventReader } from "./reader.js";
+import { createQuitGuard } from "./quit-guard.js";
 import { readLastRepo, writeLastRepo } from "./repo-store.js";
 import { readSavedTheme, writeSavedTheme } from "./theme-store.js";
 
@@ -149,26 +150,33 @@ if (!gotLock) {
       },
       applyTitleBar,
       saveTheme: (source) => writeSavedTheme(userData, source),
-      env: process.env,
     });
     // 跟随系统时系统切深浅色，标题栏按钮颜色跟着变
     const onNativeTheme = () => applyTitleBar(nativeTheme.shouldUseDarkColors);
     nativeTheme.on("updated", onNativeTheme);
     const stopBackendReload = serveBackendReload(ipcMain, backend, process.env);
 
-    app.on("will-quit", () => {
-      stopReader();
-      stopBackendIpc();
-      stopHighRisk();
-      stopSyncState();
-      stopProjectSettings();
-      stopSupervisorChat();
-      stopWindowTheme();
-      nativeTheme.off("updated", onNativeTheme);
-      stopBackendReload();
-      reader.close();
-      void backend.stop();
+    // T-105：before-quit 里拦下退出，等 backend.stop()（9 收尾后才关库、放写锁）结束再退；
+    // 最多等 QUIT_STOP_TIMEOUT_MS，超时只写一条不带路径的 warn。我们自己再发起的退出直接放行。
+    // 收尾期间 IPC 照常开着（界面还能轮询）；切换 / 重载会被 switcher 以「程序正在退出」拒绝。
+    const quitGuard = createQuitGuard({
+      stop: () => backend.stop(),
+      afterStop() {
+        stopReader();
+        stopBackendIpc();
+        stopHighRisk();
+        stopSyncState();
+        stopProjectSettings();
+        stopSupervisorChat();
+        stopWindowTheme();
+        nativeTheme.off("updated", onNativeTheme);
+        stopBackendReload();
+        reader.close();
+      },
+      warn: (m) => console.warn(`[desktop] ${m}`),
+      quit: () => app.quit(),
     });
+    app.on("before-quit", (event) => quitGuard.onBeforeQuit(event));
     createWindow();
   });
   app.on("window-all-closed", () => {

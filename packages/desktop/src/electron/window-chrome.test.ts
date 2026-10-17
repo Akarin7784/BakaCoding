@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { IPC_CHANNELS } from "../shared/api";
-import { serveWindowTheme, type IpcMainLike } from "./ipc";
+import { serveWindowTheme, WINDOW_THEME_FAILED, type IpcMainLike } from "./ipc";
 import {
   isWindowThemeSource,
   MIN_WINDOW,
@@ -117,7 +117,7 @@ describe("window:theme：渲染进程主题偏好 → nativeTheme.themeSource", 
     expect(isWindowThemeSource("Dark")).toBe(false);
   });
 
-  it("主进程出错时返回原因而不是抛出", () => {
+  it("主进程出错时返回固定文案而不是抛出（T-105）", () => {
     const { ipc, call } = fakeIpc();
     serveWindowTheme(ipc, {
       setThemeSource: () => true,
@@ -125,10 +125,28 @@ describe("window:theme：渲染进程主题偏好 → nativeTheme.themeSource", 
         throw new Error("window destroyed");
       },
     });
-    expect(call("dark")).toEqual({
-      ok: false,
-      reason: expect.stringContaining("window destroyed"),
+    expect(call("dark")).toEqual({ ok: false, reason: WINDOW_THEME_FAILED });
+    expect(WINDOW_THEME_FAILED).toBe("主题设置失败");
+  });
+
+  it("T-105：错误里带路径 / 原文时，回给渲染进程的文案不含路径和原文", () => {
+    const { ipc, call } = fakeIpc();
+    const secret = "/home/eva/私有项目/.bakacoding/theme.json";
+    serveWindowTheme(ipc, {
+      setThemeSource: () => {
+        const e = new Error(`EACCES: permission denied, open '${secret}'`) as Error & {
+          path?: string;
+        };
+        e.path = secret;
+        throw e;
+      },
+      applyTitleBar: () => {},
     });
+    const r = call("light") as { ok: boolean; reason?: string };
+    expect(r).toEqual({ ok: false, reason: WINDOW_THEME_FAILED });
+    expect(JSON.stringify(r)).not.toContain("/home/eva");
+    expect(JSON.stringify(r)).not.toContain("EACCES");
+    expect(JSON.stringify(r)).not.toContain("theme.json");
   });
 
   it("停止时注销通道", () => {

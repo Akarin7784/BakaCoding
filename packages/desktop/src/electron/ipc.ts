@@ -346,17 +346,16 @@ export interface WindowThemeDeps {
   applyTitleBar(dark: boolean): void;
   /** 记住偏好，下次启动建窗口前读（UI-08）；写失败只影响下次启动，不算失败 */
   saveTheme?(source: WindowThemeSource): void;
-  /** 失败原因脱敏用（UI-08） */
-  env?: Readonly<Record<string, string | undefined>>;
 }
 
-/** window:theme 失败原因上限（码点）。 */
-export const WINDOW_THEME_REASON_MAX = 500;
+/** window:theme 主进程出错时回给渲染进程的固定文案（T-105）：不带任何原始错误内容。 */
+export const WINDOW_THEME_FAILED = "主题设置失败";
 
 /**
  * 主题同步 IPC（UI-02）：渲染进程把「跟随系统 / 浅 / 深」发过来，主进程设 nativeTheme.themeSource，
  * 再按实际深浅刷新标题栏叠层颜色。参数不认识就拒绝，不改主进程状态。
  */
+
 export function serveWindowTheme(ipc: IpcMainLike, deps: WindowThemeDeps): () => void {
   ipc.handle(IPC_CHANNELS.windowTheme, (...args: unknown[]) => {
     const source = args[1];
@@ -371,12 +370,9 @@ export function serveWindowTheme(ipc: IpcMainLike, deps: WindowThemeDeps): () =>
         /* 存不下只影响下次启动时标题栏先按系统深浅显示 */
       }
       return { ok: true, dark } satisfies DesktopWindowThemeResult;
-    } catch (e) {
-      // UI-08：失败原因与其他通道同一套脱敏（密钥值、令牌、截断）
-      return {
-        ok: false,
-        reason: sanitizeSyncErrorMessage(errorDetail(e), deps.env ?? {}, WINDOW_THEME_REASON_MAX),
-      } satisfies DesktopWindowThemeResult;
+    } catch {
+      // T-105：不把原始错误（可能带路径）传给渲染进程，只回固定文案
+      return { ok: false, reason: WINDOW_THEME_FAILED } satisfies DesktopWindowThemeResult;
     }
   });
   return () => {
