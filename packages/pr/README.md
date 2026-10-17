@@ -12,3 +12,11 @@
 - `merge`：没有 `remote` 时先补推、补开 PR；分支比 base 没有新提交就不推、不开 PR，抛错说明（不会 422）。合并前的 `pushForMerge` 保留，作兜底。
 - `checks`：评审读 CI 用 push 之后的 head sha。未结束的单张记录取本单分支本地 HEAD；远程分支不是这个 sha 或还没有 `remote` 时先补推、补开 PR，补做失败抛错，不拿远程没有的 sha 去查（查不到会被当成没配 CI）。
 - 本地实现行为不变。
+
+
+## T-066（sync / close / merge / checks）
+
+- **`sync`**：中途出错时，若已落库部分变化，抛 `SyncPartialError`（`changes` + `cause`）。调用方（如 9）应先应用 `changes`，再按 `cause` 处理；否则这些变化不会在下次 sync 再报。
+- **`close`**：`PATCH` 关远程失败时再 `GET` 一次；远程已合入则本地改回 `merged` 并抛 `PrAlreadyMergedError`，不把合入记成 closed。
+- **`merge(pr_id, target, opts?)`**：可选 `opts.expected_head`。与当前分支 HEAD 不一致抛 `ExpectedHeadMismatchError`（`code: "expected_head_mismatch"`）。GitHub 把该值作为 merge API 的 `sha`；本地用 `rev-parse` 比对。
+- **`checks`**：翻页拉齐全部 check-runs；并读 combined commit status，映射进同一 `CheckResult[]`。

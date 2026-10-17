@@ -345,22 +345,38 @@ describe("requirement_id 可空规则（T-020）", () => {
     type: "project_created",
     payload: { project_id: "p1", name: "demo", language: "typescript", has_github_remote: false },
   };
-  it("项目级事件 project_created 允许 requirement_id 为 null", () => {
-    expect(PROJECT_LEVEL_EVENT_TYPES).toEqual(["project_created"]);
+  it("项目级事件允许 requirement_id 为 null（含 review_backlog / supervisor_backlog，T-066）", () => {
+    expect(PROJECT_LEVEL_EVENT_TYPES).toEqual([
+      "project_created",
+      "review_backlog",
+      "supervisor_backlog",
+    ]);
     expect(EventSchema.safeParse({ ...projectCreated, requirement_id: null }).success).toBe(true);
     expect(EventSchema.safeParse(projectCreated).success).toBe(true);
+    const review = { ...common, type: "review_backlog", payload: { pending: 1, capacity: 2 } };
+    const supervisor = {
+      ...common,
+      type: "supervisor_backlog",
+      payload: { pending: 0, capacity: 5 },
+    };
+    expect(
+      EventSchema.safeParse({ ...review, requirement_id: null, ticket_id: null }).success,
+    ).toBe(true);
+    expect(
+      EventSchema.safeParse({ ...supervisor, requirement_id: null, ticket_id: null }).success,
+    ).toBe(true);
   });
-  it("其他事件 requirement_id 为 null 时校验报错", () => {
-    const backlog = { ...common, type: "review_backlog", payload: { pending: 1, capacity: 2 } };
-    expect(EventSchema.safeParse(backlog).success).toBe(true);
-    expect(EventSchema.safeParse({ ...backlog, requirement_id: null }).success).toBe(false);
-    for (const t of EVENT_TYPES.filter((t) => t !== "project_created")) {
+  it("非项目级事件 requirement_id 为 null 时校验报错", () => {
+    const projectLevel = new Set(PROJECT_LEVEL_EVENT_TYPES);
+    for (const t of EVENT_TYPES.filter((t) => !projectLevel.has(t as never))) {
       const shape = EventSchema.options.find((o) => o.shape.type.value === t)!.shape;
       expect(shape.requirement_id.safeParse(null).success, t).toBe(false);
     }
   });
-  it("类型上：project_created 的 requirement_id 是 string | null，其他事件是 string", () => {
+  it("类型上：项目级事件的 requirement_id 是 string | null，其他事件是 string", () => {
     expectTypeOf<EventOf<"project_created">["requirement_id"]>().toEqualTypeOf<string | null>();
-    expectTypeOf<EventOf<"review_backlog">["requirement_id"]>().toEqualTypeOf<string>();
+    expectTypeOf<EventOf<"review_backlog">["requirement_id"]>().toEqualTypeOf<string | null>();
+    expectTypeOf<EventOf<"supervisor_backlog">["requirement_id"]>().toEqualTypeOf<string | null>();
+    expectTypeOf<EventOf<"call_completed">["requirement_id"]>().toEqualTypeOf<string>();
   });
 });

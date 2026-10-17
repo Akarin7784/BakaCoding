@@ -5,6 +5,7 @@ import { DiffSchema, type Diff, type DiffFile } from "@bakacoding/types";
 import { git, GitError } from "./git.js";
 import {
   INTEGRATION_BRANCH,
+  ExpectedHeadMismatchError,
   type CheckResult,
   type SyncChange,
   type MergeResult,
@@ -306,12 +307,18 @@ export class LocalPrProvider implements PrProvider {
    * - checkout 且有未提交改动：不合并，返回 target_dirty；
    * - 未被 checkout：update-ref（带旧值校验）。
    */
-  async merge(pr_id: string, target: string): Promise<MergeResult> {
+  async merge(
+    pr_id: string,
+    target: string,
+    opts?: { expected_head?: string },
+  ): Promise<MergeResult> {
     const rec = await this.mustGet(pr_id);
     if (rec.status === "merged" || rec.status === "closed")
       throw new Error(`PR 已${rec.status === "merged" ? "合并" : "关闭"}：${pr_id}`);
     const cwd = cwdOf(rec);
     const head = await this.revParse(cwd, rec.branch);
+    if (opts?.expected_head !== undefined && opts.expected_head !== head)
+      throw new ExpectedHeadMismatchError(pr_id, opts.expected_head, head);
     const tgt = await this.revParse(cwd, target);
     const ref = `refs/heads/${target}`;
 
