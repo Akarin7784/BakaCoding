@@ -399,17 +399,23 @@ export interface Scheduler {
   backpressureState(): Promise<BackpressureState>;
   /** 依赖状态：全部合入 ready；有依赖没合入 waiting；有依赖（含间接）已上报 held */
   /**
-   * 放行被高风险闸门扣着的单（T-041c，提案 R1 / N1）：记下「当前 pr_id 已放行」并触发合并循环，返回 released；
-   * 同一 PR 已放行过返回 already。没登记、已终态、闸门没开、不是高风险单、不在 merge_queued 时抛错。
-   * 放行按 pr_id 绑定：之后冲突复投换了新 PR 会重新扣。放行只在进程内，重启后重新扣。
+   * 确认这张单的 `pr_id` 正被高风险闸门扣着、现在能裁决（T-041c）：不改任何状态，不能裁决时抛
+   * `HighRiskDecisionError`（码：not_found / terminal / gate_off / not_high_risk / not_held / stale_pr /
+   * merge_in_progress）。10 在拒绝前关 PR 之前先调它。
    */
-  releaseHighRisk(ticket_id: string): "released" | "already";
+  checkHighRisk(ticket_id: string, pr_id: string): void;
   /**
-   * 拒绝高风险单（T-041c，提案 R1 / N1、N5）：先经 6 的 close 关掉当前 PR（关不掉只调 onError，照常上报；
-   * PR 已合入抛错、不上报），再发 escalated(high_risk_rejected, detail)，状态 escalated、放锁、清 9 自建的 worktree。
-   * 没登记、已终态、不是高风险单、正在合并或后台复投 / 重审中时抛错。闸门关着也能拒绝。
+   * 放行被高风险闸门扣着的单（T-041c，提案 R1 / N1）：记下「当前 pr_id 已放行」并触发合并循环，返回 released；
+   * 同一 PR 已放行过返回 already。按 pr_id 绑定：传入的不是当前 PR 抛 `stale_pr`；其余不能放行的情况抛
+   * `HighRiskDecisionError`（码同 `checkHighRisk`，正在合并除外）。之后冲突复投换了新 PR 会重新扣。放行只在进程内，重启后重新扣。
    */
-  rejectHighRisk(ticket_id: string, detail: string): Promise<void>;
+  releaseHighRisk(ticket_id: string, pr_id: string): "released" | "already";
+  /**
+   * 拒绝高风险单（T-041c，提案 R1 / N1）：先同 `checkHighRisk` 校验（`pr_id` 必须是当前被扣的 PR），
+   * 再发 escalated(high_risk_rejected, detail)，状态 escalated、放锁、清 9 自建的 worktree，单子不再进合并队列。
+   * 9 不关 PR：关 PR 由 10 在调它之前经 041b 的 `closeTicketPr` 做（N5）。
+   */
+  rejectHighRisk(ticket_id: string, pr_id: string, detail: string): Promise<void>;
   dependencyState(ticket_id: string): DependencyState;
   status(ticket_id: string): TicketStatus | undefined;
   snapshot(): QueueEntryView[];

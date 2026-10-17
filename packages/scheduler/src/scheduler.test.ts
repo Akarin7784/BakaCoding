@@ -1,12 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { getConfig } from "@bakacoding/config-budget";
-import {
-  GithubRateLimitError,
-  PrAlreadyMergedError,
-  type MergeResult,
-  type SyncChange,
-} from "@bakacoding/pr";
+import { GithubRateLimitError, type MergeResult, type SyncChange } from "@bakacoding/pr";
 import {
   DEPENDENCY_MANIFEST_GLOBS,
   EventSchema,
@@ -20,7 +15,9 @@ import {
   createScheduler,
   type ConflictResubmitRequest,
   type DispatchOutcome,
+  HighRiskDecisionError,
   type HighRiskHeldInfo,
+  isStalePrError,
   type ReReviewRequest,
   type Scheduler,
   DEFAULT_EXCLUSIVE_ZONES,
@@ -2507,6 +2504,25 @@ describe("T-041c 高风险闸门", () => {
   }
   const view = (s: Scheduler, id: string) => s.snapshot().find((v) => v.ticket_id === id)!;
   const mergesOf = (h: Harness) => h.calls.filter((c) => c.startsWith("merge:"));
+  /** 抛的 HighRiskDecisionError 的码（没抛返回 "none"） */
+  const codeOf = (fn: () => unknown): string => {
+    try {
+      fn();
+    } catch (e) {
+      expect(e).toBeInstanceOf(HighRiskDecisionError);
+      return (e as HighRiskDecisionError).code;
+    }
+    return "none";
+  };
+  const codeOfAsync = async (p: Promise<unknown>): Promise<string> => {
+    try {
+      await p;
+    } catch (e) {
+      expect(e).toBeInstanceOf(HighRiskDecisionError);
+      return (e as HighRiskDecisionError).code;
+    }
+    return "none";
+  };
 
   it("闸门关（默认）：高风险单照常合并，held_high_risk 恒为 false，不调 onHighRiskHeld，high_risk_held 为 0", async () => {
     const h = harness();
@@ -2520,7 +2536,7 @@ describe("T-041c 高风险闸门", () => {
     expect(s.status("T-1")).toBe("merged");
     expect(held).toEqual([]);
     expect((await s.backpressureState()).pending_prs.high_risk_held).toBe(0);
-    expect(() => s.releaseHighRisk("T-1")).toThrow(/终态/);
+    expect(codeOf(() => s.releaseHighRisk("T-1", "pr-1"))).toBe("terminal");
   });
 
   it("闸门开：高风险单扣在队里不合并，后面不相干的单照常合并；同一 PR 只通知一次", async () => {
@@ -2557,22 +2573,32 @@ describe("T-041c 高风险闸门", () => {
     await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", high_risk: true });
     await s.submit({ ticket_id: "T-2", pr_id: "pr-2", worktree_path: "/2" });
     await s.idle();
-    expect(() => s.releaseHighRisk("X")).toThrow(/未登记/);
-    expect(() => s.releaseHighRisk("T-2")).toThrow(/终态/);
-    expect(s.releaseHighRisk("T-1")).toBe("released");
-    expect(s.releaseHighRisk("T-1")).toBe("already");
+    expect(codeOf(() => s.releaseHighRisk("X", "pr-1"))).toBe("not_found");
+    expect(codeOf(() => s.releaseHighRisk("T-2", "pr-2"))).toBe("terminal");
+    // 按 pr_id 绑定：不是当前被扣的 PR 抛 stale_pr，不放行
+    const stale = (() => {
+      try {
+        return s.releaseHighRisk("T-1", "pr-old");
+      } catch (e) {
+        return e;
+      }
+    })();
+    expect(isStalePrError(stale)).toBe(true);
+    expect(view(s, "T-1").held_high_risk).toBe(true);
+    expect(s.releaseHighRisk("T-1", "pr-1")).toBe("released");
+    expect(s.releaseHighRisk("T-1", "pr-1")).toBe("already");
     await s.idle();
     expect(s.status("T-1")).toBe("merged");
-    expect(() => s.releaseHighRisk("T-1")).toThrow(/终态/);
+    expect(codeOf(() => s.releaseHighRisk("T-1", "pr-1"))).toBe("terminal");
 
     const h2 = harness();
     const s2 = await started(h2);
     await s2.enqueue(ticket("T-1"));
-    expect(() => s2.releaseHighRisk("T-1")).toThrow(/闸门没开/);
+    expect(codeOf(() => s2.releaseHighRisk("T-1", "pr-1"))).toBe("gate_off");
     const { h: h3 } = gated();
     const s3 = await started(h3);
     await s3.enqueue(ticket("T-1"));
-    expect(() => s3.releaseHighRisk("T-1")).toThrow(/不是高风险/);
+    expect(codeOf(() => s3.releaseHighRisk("T-1", "pr-1"))).toBe("not_high_risk");
   });
 
   it("放行后冲突复投换了新 PR：重新扣（cause: resubmit），再放行才合入", async () => {
@@ -2587,7 +2613,7 @@ describe("T-041c 高风险闸门", () => {
       high_risk: true,
     });
     await s.idle();
-    expect(s.releaseHighRisk("T-1")).toBe("released");
+    expect(s.releaseHighRisk("T-1", "pr-1")).toBe("released");
     await s.idle();
     expect(h.resubmit).toHaveBeenCalledTimes(1);
     expect(s.status("T-1")).toBe("merge_queued");
@@ -2597,22 +2623,22 @@ describe("T-041c 高风险闸门", () => {
       ["pr-100", "resubmit"],
     ]);
     expect(mergesOf(h)).toEqual(["merge:pr-1:bakacoding/integration"]);
-    expect(s.releaseHighRisk("T-1")).toBe("released");
+    // 旧 PR 的放行不算数：按旧 pr_id 再放行抛 stale_pr
+    expect(codeOf(() => s.releaseHighRisk("T-1", "pr-1"))).toBe("stale_pr");
+    expect(s.releaseHighRisk("T-1", "pr-100")).toBe("released");
     await s.idle();
     expect(s.status("T-1")).toBe("merged");
   });
 
-  it("拒绝：先关 PR，再发 escalated(high_risk_rejected)；状态 escalated、放锁、下游 held", async () => {
+  it("拒绝：9 不关 PR（10 关），发 escalated(high_risk_rejected)；状态 escalated、放锁、下游 held", async () => {
     const { h } = gated();
     const s = await started(h);
     await s.enqueue(ticket("T-1", { write_scope: ["package.json"] }));
     await s.enqueue(ticket("T-2", { depends_on: ["T-1"], write_scope: ["src/**"] }));
     await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", high_risk: true });
     await s.idle();
-    await s.rejectHighRisk("T-1", "不需要这个依赖");
-    expect(h.calls).toContain("close:pr-1:高风险 PR 被用户拒绝：不需要这个依赖");
-    const closeAt = h.calls.indexOf("close:pr-1:高风险 PR 被用户拒绝：不需要这个依赖");
-    expect(closeAt).toBeGreaterThanOrEqual(0);
+    await s.rejectHighRisk("T-1", "pr-1", "不需要这个依赖");
+    expect(h.calls.filter((c) => c.startsWith("close:"))).toEqual([]);
     expect(escalations(h)).toEqual([
       expect.objectContaining({
         ticket_id: "T-1",
@@ -2626,8 +2652,8 @@ describe("T-041c 高风险闸门", () => {
     expect(h.statuses).toContainEqual(["T-1", "escalated"]);
     expect(view(s, "T-1")).toMatchObject({ locked_scope: null, held_high_risk: false });
     expect(s.dependencyState("T-2")).toBe("held");
-    await expect(s.rejectHighRisk("T-1", "x")).rejects.toThrow(/终态/);
-    await expect(s.rejectHighRisk("T-2", "x")).rejects.toThrow(/不是高风险/);
+    expect(await codeOfAsync(s.rejectHighRisk("T-1", "pr-1", "x"))).toBe("terminal");
+    expect(await codeOfAsync(s.rejectHighRisk("T-2", "pr-2", "x"))).toBe("not_high_risk");
 
     const h2 = harness();
     const s2 = await started(h2);
@@ -2636,25 +2662,53 @@ describe("T-041c 高风险闸门", () => {
     await s2.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", high_risk: true });
     await s2.idle();
     // 闸门关时单子会照常合并（这里合并出错已上报），拒绝已终态的单抛错
-    await expect(s2.rejectHighRisk("T-1", "x")).rejects.toThrow(/终态/);
+    expect(await codeOfAsync(s2.rejectHighRisk("T-1", "pr-1", "x"))).toBe("terminal");
   });
 
-  it("拒绝时关 PR 失败照样上报；PR 已合入时抛错、不上报", async () => {
-    const { h, closeFails } = gated();
+  it("拒绝的错误都带码：stale_pr / not_held（已放行）/ merge_in_progress；checkHighRisk 只校验不改状态", async () => {
+    const { h } = gated();
+    let unblock!: () => void;
+    const gate = new Promise<void>((r) => (unblock = r));
+    let entered = false;
+    const inner = h.deps.createPr;
+    h.deps.createPr = async (o) => {
+      const p = await inner(o);
+      return {
+        ...p,
+        merge: async (pr_id: string, target: string) => {
+          if (pr_id === "pr-2") {
+            entered = true;
+            await gate;
+          }
+          return p.merge(pr_id, target);
+        },
+      };
+    };
     const s = await started(h);
     await s.enqueue(ticket("T-1"));
     await s.enqueue(ticket("T-2"));
+    await s.enqueue(ticket("T-3"));
     await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", high_risk: true });
     await s.submit({ ticket_id: "T-2", pr_id: "pr-2", worktree_path: "/2", high_risk: true });
     await s.idle();
-    closeFails.set("pr-1", new Error("GitHub 不可用"));
-    closeFails.set("pr-2", new PrAlreadyMergedError("pr-2"));
-    await s.rejectHighRisk("T-1", "不要");
-    expect(s.status("T-1")).toBe("escalated");
-    expect(h.errors.some((e) => String(e).includes("GitHub 不可用"))).toBe(true);
-    await expect(s.rejectHighRisk("T-2", "不要")).rejects.toThrow(/已经合入/);
-    expect(s.status("T-2")).toBe("merge_queued");
-    expect(escalations(h).map((e) => e.ticket_id)).toEqual(["T-1"]);
+    expect(await codeOfAsync(s.rejectHighRisk("T-1", "pr-old", "不要"))).toBe("stale_pr");
+    expect(codeOf(() => s.checkHighRisk("T-1", "pr-old"))).toBe("stale_pr");
+    expect(codeOf(() => s.checkHighRisk("T-1", "pr-1"))).toBe("none");
+    expect(codeOf(() => s.checkHighRisk("T-3", "pr-3"))).toBe("not_high_risk");
+    expect(codeOf(() => s.checkHighRisk("T-9", "pr-9"))).toBe("not_found");
+    expect(s.status("T-1")).toBe("merge_queued");
+    expect(view(s, "T-1").held_high_risk).toBe(true);
+    expect(escalations(h)).toEqual([]);
+
+    // 放行后正在合并：合并卡住期间拒绝抛 merge_in_progress（合并中的那张也不能再拒绝）
+    expect(s.releaseHighRisk("T-2", "pr-2")).toBe("released");
+    await vi.waitFor(() => expect(entered).toBe(true));
+    expect(await codeOfAsync(s.rejectHighRisk("T-2", "pr-2", "不要"))).toBe("merge_in_progress");
+    unblock();
+    await s.idle();
+    expect(s.status("T-2")).toBe("merged");
+    expect(await codeOfAsync(s.rejectHighRisk("T-2", "pr-2", "不要"))).toBe("terminal");
+    expect(escalations(h)).toEqual([]);
   });
 
   it("adopt 带 high_risk、闸门开：接回后照样扣着，cause 为 adopt", async () => {
@@ -2684,7 +2738,7 @@ describe("T-041c 高风险闸门", () => {
     expect(held).toEqual([
       { ticket_id: "A", pr_id: "pr-A", requirement_id: "req-1", cause: "adopt" },
     ]);
-    expect(s.releaseHighRisk("A")).toBe("released");
+    expect(s.releaseHighRisk("A", "pr-A")).toBe("released");
     await s.idle();
     expect(s.status("A")).toBe("merged");
   });
@@ -2716,8 +2770,20 @@ describe("T-041c 高风险闸门", () => {
     expect(st.pending_prs).toMatchObject({ merge_queued: 2, high_risk_held: 2 });
     expect(d.handled).not.toContain("T-4");
     expect(paused).toEqual([2]);
-    // 一直暂停着不重复调
+    // 一直暂停着不重复调：多轮派单 / 合并循环 / 再查反压都不再调
+    for (let i = 0; i < 5; i++) {
+      await s.sync();
+      await settle(s);
+      await s.backpressureState();
+    }
+    await s.enqueue(ticket("T-5", { write_scope: ["src/T-5/**"] }));
     await settle(s);
+    expect(paused).toEqual([2]);
+    // 放行两张、合入后恢复；恢复时不调（只在「未暂停 → 暂停」时调）
+    s.releaseHighRisk("T-1", "pr-T-1");
+    s.releaseHighRisk("T-2", "pr-T-2");
+    await settle(s);
+    expect((await s.backpressureState()).paused).toBe(false);
     expect(paused).toEqual([2]);
   });
 });

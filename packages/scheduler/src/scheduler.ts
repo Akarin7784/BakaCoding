@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 import {
   INTEGRATION_BRANCH,
-  PrAlreadyMergedError,
   type EventContext,
   type MergeResult,
   type SyncChange,
 } from "@bakacoding/pr";
 import { DEPENDENCY_MANIFEST_GLOBS, type TicketStatus } from "@bakacoding/types";
+import { HighRiskDecisionError, type HighRiskDecisionErrorCode } from "./high-risk-error.js";
 import { BackpressureController } from "./backpressure.js";
 import { inExclusiveZone, matchesAny, scopesOverlap } from "./glob.js";
 import type {
@@ -871,6 +871,38 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     return holdHighRisk && e.high_risk && e.pr_id !== null && e.released_pr !== e.pr_id;
   }
 
+  /**
+   * 高风险裁决前的校验（T-041c）：不能裁决时抛带码的 `HighRiskDecisionError`。
+   * 放行：已放行过的同一 PR 不抛（返回后由调用方回 already）；拒绝：只能拒绝还扣着的 PR、且不在合并 / 后台处理中。
+   */
+  function checkHeld(ticket_id: string, pr_id: string, action: "release" | "reject"): Entry {
+    const fail = (code: HighRiskDecisionErrorCode, msg: string): never => {
+      throw new HighRiskDecisionError(code, ticket_id, msg);
+    };
+    const verb = action === "release" ? "放行" : "拒绝";
+    const e = entries.get(ticket_id);
+    if (!e) return fail("not_found", `未登记的单：${ticket_id}`);
+    if (TERMINAL.has(e.status))
+      fail("terminal", `单 ${ticket_id} 已是终态 ${e.status}，不能${verb}`);
+    if (!holdHighRisk && action === "release")
+      fail("gate_off", `高风险闸门没开，单 ${ticket_id} 不需要放行`);
+    if (!e.high_risk) fail("not_high_risk", `单 ${ticket_id} 不是高风险单，不需要${verb}`);
+    if (e.status !== "merge_queued" || e.pr_id === null)
+      fail("not_held", `单 ${ticket_id} 不在合并队列里等裁决（${e.status}），不能${verb}`);
+    if (e.pr_id !== pr_id)
+      fail(
+        "stale_pr",
+        `单 ${ticket_id} 的 PR 已更新（现在是 ${e.pr_id}，不是 ${pr_id}），请重新查看`,
+      );
+    if (action === "reject") {
+      if (e.busy || current === e)
+        fail("merge_in_progress", `单 ${ticket_id} 正在合并或后台处理中，稍后再拒绝`);
+      if (holdHighRisk && e.released_pr === e.pr_id)
+        fail("not_held", `单 ${ticket_id} 的 PR ${pr_id} 已放行，等合并中，不能再拒绝`);
+    }
+    return e;
+  }
+
   /** 队里被扣着、还没为当前 PR 通知过的单：调一次 onHighRiskHeld（同一 PR 只调一次）。 */
   function noteHeldHighRisk(): void {
     for (const id of queue) {
@@ -1535,36 +1567,18 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       }
       return changed;
     },
-    releaseHighRisk(ticket_id) {
-      const e = getEntry(ticket_id);
-      if (TERMINAL.has(e.status)) throw new Error(`单 ${ticket_id} 已是终态 ${e.status}，不能放行`);
-      if (!holdHighRisk) throw new Error(`高风险闸门没开，单 ${ticket_id} 不需要放行`);
-      if (!e.high_risk) throw new Error(`单 ${ticket_id} 不是高风险单，不需要放行`);
-      if (e.status !== "merge_queued" || e.pr_id === null)
-        throw new Error(`单 ${ticket_id} 不在合并队列里等裁决（${e.status}），不能放行`);
+    checkHighRisk(ticket_id, pr_id) {
+      checkHeld(ticket_id, pr_id, "reject");
+    },
+    releaseHighRisk(ticket_id, pr_id) {
+      const e = checkHeld(ticket_id, pr_id, "release");
       if (e.released_pr === e.pr_id) return "already";
       e.released_pr = e.pr_id;
       kick();
       return "released";
     },
-    async rejectHighRisk(ticket_id, detail) {
-      const e = getEntry(ticket_id);
-      if (TERMINAL.has(e.status)) throw new Error(`单 ${ticket_id} 已是终态 ${e.status}，不能拒绝`);
-      if (!e.high_risk) throw new Error(`单 ${ticket_id} 不是高风险单`);
-      if (e.busy || current === e)
-        throw new Error(`单 ${ticket_id} 正在合并或后台处理中（${e.status}），稍后再拒绝`);
-      if (e.pr_id) {
-        try {
-          await requirePr().close(e.pr_id, `高风险 PR 被用户拒绝：${detail}`.slice(0, 500));
-        } catch (err) {
-          if (err instanceof PrAlreadyMergedError) {
-            onError(err, ticket_id);
-            throw new Error(`单 ${ticket_id} 的 PR ${e.pr_id} 已经合入，不能拒绝`, { cause: err });
-          }
-          // 关不掉也照常上报，PR 留给用户处理
-          onError(err, ticket_id);
-        }
-      }
+    async rejectHighRisk(ticket_id, pr_id, detail) {
+      const e = checkHeld(ticket_id, pr_id, "reject");
       await escalate(e, "high_risk_rejected", detail.slice(0, 500));
     },
     dependencyState: (id) => dependencyState(id),
