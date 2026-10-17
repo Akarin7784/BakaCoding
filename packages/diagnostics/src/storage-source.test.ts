@@ -3,6 +3,7 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { CREDENTIAL_CASES } from "@bakacoding/config-budget";
 import { openStorage, type Storage } from "@bakacoding/storage";
 import type { BakaEvent, DiagnosticsSource } from "@bakacoding/types";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -384,35 +385,13 @@ describe("需求单 fields 不进诊断包（T-056）", () => {
 // 假凭据全部运行时拼出来，源码里不出现完整的 token 字面量。
 describe("凭据 URL 各种写法不进诊断包（T-060）", () => {
   const HEX40 = "0123456789abcdef".repeat(3).slice(0, 40);
-  const B64 = "QmFrYUNvZGluZ0Zha2VUb2tlbg".repeat(2);
-  const GHP = `ghp${"_"}${"FAKEtoken0".repeat(4)}`;
-  const PAT = `github${"_pat_"}${"FAKEpat000".repeat(3)}`;
-  const GLPAT = `glpat${"-"}${"FAKEglpat0".repeat(2)}`;
-  const sec = (tag: string) => `fakeSecret${tag}9x7q`;
-
-  // [说明, 写法, 必须查不到的凭据值]
-  const CASES: [string, string, string][] = [
-    ["user:pass@（基线）", `https://user:${sec("A")}@git.example.com/o/r`, sec("A")],
-    ["40 位十六进制用户名", `https://${HEX40}@github.com/o/r`, HEX40],
-    ["长 base64 用户名", `https://${B64}@github.com/o/r`, B64],
-    ["%3A 编码的冒号", `https://x%3A${sec("B")}@git.example.com/o/r`, sec("B")],
-    ["git:// 带 token 前缀的用户名", `git://${GHP}@git.example.com/o/r`, GHP],
-    ["ssh:// 带 token 前缀的用户名", `ssh://${GHP}@git.example.com/o/r`, GHP],
-    ["查询参数 token", `https://git.example.com/o/r?token=${sec("C")}`, sec("C")],
-    ["查询参数 access_token", `https://git.example.com/o/r?x=1&access_token=${sec("D")}`, sec("D")],
-    ["查询参数 private_token", `https://git.example.com/o/r?private_token=${sec("E")}`, sec("E")],
-    ["查询参数 api_key", `https://git.example.com/o/r?api_key=${sec("F")}`, sec("F")],
-    ["查询参数 X-Amz-Signature", `https://b.example.com/k?X-Amz-Signature=${sec("G")}`, sec("G")],
-    ["参数名大写", `https://git.example.com/o/r?TOKEN=${sec("H")}`, sec("H")],
-    ["参数名带 []", `https://git.example.com/o/r?token[]=${sec("I")}`, sec("I")],
-    ["# 后面的 access_token", `https://git.example.com/cb#access_token=${sec("J")}`, sec("J")],
-    ["scheme 后少了 //", `https:user:${sec("K")}@git.example.com`, sec("K")],
-    ["scheme 后是 /\\", `https:/\\user:${sec("L")}@git.example.com`, sec("L")],
-    ["嵌在一句话里", `远程是  https://user:${sec("M")}@git.example.com/o/r 请检查`, sec("M")],
-    ["裸 ghp_ token", `token 是 ${GHP}`, GHP],
-    ["裸 github_pat_ token", `token 是 ${PAT}`, PAT],
-    ["裸 glpat- token", `token 是 ${GLPAT}`, GLPAT],
-  ];
+  // 写法清单和模块 2、3 共用一份（T-059 的 CREDENTIAL_CASES）
+  const REJECT = CREDENTIAL_CASES.filter((c) => c.expect === "reject").map(
+    (c) => [c.name, c.build()] as const,
+  );
+  const ALLOW = CREDENTIAL_CASES.filter((c) => c.expect === "allow").map(
+    (c) => [c.name, c.build().text] as const,
+  );
 
   async function exportT2() {
     const out_dir = mkdtempSync(path.join(dir, "out-"));
@@ -424,7 +403,13 @@ describe("凭据 URL 各种写法不进诊断包（T-060）", () => {
     return { zip_path, entries };
   }
 
-  it.each(CASES)("%s：detail 和消息正文里的凭据都被抹掉", async (_label, text, secret) => {
+  it("清单非空", () => {
+    expect(REJECT.length).toBeGreaterThan(0);
+    expect(ALLOW.length).toBeGreaterThan(0);
+  });
+
+  it.each(REJECT)("%s：detail 和消息正文里的凭据都被抹掉", async (_label, { text, secret }) => {
+    expect(secret.length).toBeGreaterThan(0);
     storage.ingest(
       ev("escalated", "2026-10-10T01:00:00.999Z", "R-1", "T-2", { detail: `push 失败：${text}` }),
     );
@@ -444,6 +429,18 @@ describe("凭据 URL 各种写法不进诊断包（T-060）", () => {
     expect(
       pkg.events.filter((e) => e.type === "group_message" && e.ticket_id === "T-2"),
     ).toHaveLength(2);
+  });
+
+  it.each(ALLOW)("%s：放行的写法不被当成凭据 URL", async (_label, text) => {
+    storage.ingest(
+      ev("escalated", "2026-10-10T01:00:00.999Z", "R-1", "T-2", { detail: `push 失败：${text}` }),
+    );
+    const { zip_path } = await exportT2();
+    const pkg = await readPackage(zip_path);
+    const esc = pkg.events.find((e) => e.type === "escalated" && e.ticket_id === "T-2");
+    const detail = esc?.type === "escalated" ? (esc.payload.detail ?? "") : "";
+    expect(detail.startsWith("push 失败：")).toBe(true);
+    expect(detail).not.toContain("[REDACTED:url_credentials]");
   });
 
   it("40 位十六进制用户名由 url_credentials 规则拦下，不是碰巧被邮箱规则抹掉", async () => {
