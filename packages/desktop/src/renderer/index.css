@@ -115,6 +115,8 @@
   --animate-spin-slow: spin 1.6s linear infinite;
   /* 面板开合 200ms ease-out（UI-02 右面板抽屉） */
   --animate-slide-in-right: slide-in-right 200ms var(--ease-out);
+  /* UI-08 全局状态点「有单在跑」：强调色缓慢呼吸（减少动态效果时不动） */
+  --animate-breathe: breathe 2.4s ease-in-out infinite;
 
   @keyframes fade-in {
     from {
@@ -132,6 +134,15 @@
     to {
       transform: translateX(0);
       opacity: 1;
+    }
+  }
+  @keyframes breathe {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.35;
     }
   }
   @keyframes fade-out {

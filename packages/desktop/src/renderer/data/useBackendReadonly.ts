@@ -1,21 +1,10 @@
-// T-077：后端是否只读（backend:status 的 mode）。只读标签只在这时显示；取不到按非只读。
-import { useEffect, useState } from "react";
+// T-077：后端是否只读（backend:status 的 mode）。取不到按非只读。
+// UI-08 起由 useBackendStatus 统一取（含定时刷新、租约丢失）；这里保留给只关心布尔值的地方。
 import type { BakaDesktopApi } from "../../shared/api.js";
+import { useBackendStatus } from "./useBackendStatus";
 
 export function useBackendReadonly(
   api: Pick<BakaDesktopApi, "getBackendStatus"> | undefined,
 ): boolean {
-  const [readonly, setReadonly] = useState(false);
-  useEffect(() => {
-    if (!api?.getBackendStatus) return;
-    let alive = true;
-    api.getBackendStatus().then(
-      (s) => alive && setReadonly(s.mode === "readonly"),
-      () => {},
-    );
-    return () => {
-      alive = false;
-    };
-  }, [api]);
-  return readonly;
+  return useBackendStatus(api).readonly;
 }

@@ -125,9 +125,11 @@ describe("按钮（§5.3）", () => {
 
   it("危险样式只在 dialog.tsx 里用（确认框里的 DialogDangerButton）", () => {
     const users = sources.filter((f) =>
-      /variant:\s*"danger"|variant=["']danger["']|bg-danger\b/.test(readFileSync(f, "utf8")),
+      /variant:\s*"danger"|variant=["']danger["']|bg-danger(?![\w-])/.test(readFileSync(f, "utf8")),
     );
+    // UI-08：全局状态点「需要你处理」是红色实心小圆点（§4.8），不是按钮；浅红横幅底 bg-danger-soft 不算
     expect(users.map((f) => relative(RENDERER, f)).sort()).toEqual([
+      "components/StatusDot.tsx",
       "components/ui/button.tsx",
       "components/ui/dialog.tsx",
     ]);

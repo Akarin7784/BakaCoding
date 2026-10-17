@@ -1,5 +1,6 @@
 import { Download, GitBranch, GitMerge, TriangleAlert } from "lucide-react";
 import { Button } from "./ui/button";
+import { READONLY_COPY } from "../lib/readonly";
 import { Separator } from "./ui/separator";
 import { StatusBadge } from "./ui/badge";
 import { cn } from "../lib/utils";
@@ -33,9 +34,12 @@ function PrWarning({ codes }: { codes: string[] }) {
 export function RightPanel({
   view,
   onOpenTopic,
+  readonly = false,
 }: {
   view: ProjectView;
   onOpenTopic: (requirementId: string) => void;
+  /** 后端只读（UI-08）：合入 main、导出禁用并说明 */
+  readonly?: boolean;
 }) {
   const { pool, git, prs } = view;
   return (
@@ -67,7 +71,12 @@ export function RightPanel({
               集成 {git.integration_branch}（领先 main {git.integration_ahead_of_main}）
             </div>
             {git.main_merge === "user" && (
-              <Button variant="secondary" size="sm" disabled={git.integration_ahead_of_main === 0}>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={readonly || git.integration_ahead_of_main === 0}
+                title={readonly ? READONLY_COPY.mergeMainDisabled : undefined}
+              >
                 <GitMerge strokeWidth={1.5} />
                 {MERGE_COPY.mergeMainAction}
               </Button>
@@ -97,7 +106,13 @@ export function RightPanel({
               <span className="text-xs text-muted-foreground" title={RESUBMIT_COPY.countTitle}>
                 ×{pr.resubmit_count}
               </span>
-              <Button variant="secondary" size="icon-sm" aria-label={`导出 ${pr.ticket_id} 诊断包`}>
+              <Button
+                variant="secondary"
+                size="icon-sm"
+                aria-label={`导出 ${pr.ticket_id} 诊断包`}
+                disabled={readonly}
+                title={readonly ? READONLY_COPY.exportDisabled : undefined}
+              >
                 <Download strokeWidth={1.5} />
               </Button>
             </li>

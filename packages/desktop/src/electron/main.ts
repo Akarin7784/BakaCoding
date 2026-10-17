@@ -19,6 +19,7 @@ import { BackendSwitcher } from "./backend-switcher.js";
 import { openEventReader, type EventReader } from "./reader.js";
 import { createQuitGuard } from "./quit-guard.js";
 import { readLastRepo, writeLastRepo } from "./repo-store.js";
+import { readSavedTheme, writeSavedTheme } from "./theme-store.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -43,7 +44,9 @@ function applyTitleBar(dark: boolean): void {
 }
 
 function createWindow(): void {
-  // 主题来源由渲染进程经 window:theme 设置（默认跟随系统）；这里不再覆盖成 system
+  // UI-08：建窗口前同步读出上次保存的主题偏好，叠层颜色和窗口底色一开始就对（不闪）；
+  // 之后渲染进程经 window:theme 同步，主进程再记下来。
+  nativeTheme.themeSource = readSavedTheme(app.getPath("userData"));
   win = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -146,6 +149,8 @@ if (!gotLock) {
         return nativeTheme.shouldUseDarkColors;
       },
       applyTitleBar,
+      saveTheme: (source) => writeSavedTheme(userData, source),
+      env: process.env,
     });
     // 跟随系统时系统切深浅色，标题栏按钮颜色跟着变
     const onNativeTheme = () => applyTitleBar(nativeTheme.shouldUseDarkColors);

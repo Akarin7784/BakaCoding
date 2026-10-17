@@ -8,6 +8,7 @@ import {
   highRiskReasonLabel,
 } from "../lib/high-risk-labels";
 import { Button } from "./ui/button";
+import { READONLY_COPY } from "../lib/readonly";
 
 export interface HighRiskPanelProps {
   items: DesktopPendingHighRisk[];
@@ -100,7 +101,11 @@ export function HighRiskPanel({ items, disabled, onDecide }: HighRiskPanelProps)
                   {errors[key]}
                 </p>
               )}
-              <div className="mt-2 flex gap-2">
+              <div
+                className="mt-2 flex gap-2"
+                title={disabled ? READONLY_COPY.decideDisabled : undefined}
+                data-testid="high-risk-actions"
+              >
                 <Button
                   size="sm"
                   disabled={disabled || busy === key}

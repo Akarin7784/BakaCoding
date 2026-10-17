@@ -7,12 +7,18 @@ import { ProjectGroup } from "./components/ProjectGroup";
 import { RightPanel } from "./components/RightPanel";
 import { UnattributedPanel } from "./components/Escalations";
 import { HighRiskPanel } from "./components/HighRiskPanel";
-import { SyncStatus } from "./components/SyncStatus";
 import { useDesktopData } from "./data/useDesktopData";
 import { usePendingHighRisk } from "./data/usePendingHighRisk";
 import { useSyncState } from "./data/useSyncState";
 import { useProjectActions } from "./data/useProjectActions";
-import { useBackendReadonly } from "./data/useBackendReadonly";
+import { useBackendStatus } from "./data/useBackendStatus";
+import { ReadonlyBanner } from "./components/ReadonlyBanner";
+import { StatusDot } from "./components/StatusDot";
+import { attentionItems, globalLevel, runningCount } from "./lib/globalStatus";
+import { describeSyncState } from "./lib/sync-labels";
+import { notifyError, notifyOk } from "./lib/notify";
+import { READONLY_COPY } from "./lib/readonly";
+import { useWindowControlsInset } from "./lib/useWindowControlsInset";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { CommandPalette } from "./components/CommandPalette";
 import { TitleBar } from "./components/TitleBar";
@@ -20,9 +26,9 @@ import { RightPanelShell, type RightPanelTab } from "./components/RightPanelShel
 import { AgentIcon } from "./components/AgentIcon";
 import { Button } from "./components/ui/button";
 import { useLayout } from "./lib/useLayout";
-import { windowControlsInset } from "./lib/layout";
 import { useShortcuts } from "./lib/shortcuts";
 import * as mock from "./mock/data";
+import { failureText } from "../shared/error-text";
 import type {
   EscalationView,
   FlashCallSummary,
@@ -49,12 +55,6 @@ export interface AppProps {
   onReload?: () => void;
 }
 
-function dbNotice(db: NonNullable<ReturnType<typeof useDesktopData>>["db"]): string | null {
-  if (!db || db.state === "ok") return null;
-  if (db.state === "missing") return `还没有找到数据库：${db.path}`;
-  return `数据库打不开：${db.message}`;
-}
-
 export function App(props: AppProps) {
   const api = props.api === undefined ? globalThis.window?.bakacoding : (props.api ?? undefined);
   const live = useDesktopData(api);
@@ -67,9 +67,11 @@ export function App(props: AppProps) {
   const highRisk = usePendingHighRisk(api, props.pendingHighRisk ?? []);
   const syncState = useSyncState(api, props.syncState ?? null);
   const actions = useProjectActions(api, props.onReload);
-  const backendReadonly = useBackendReadonly(api);
+  const backend = useBackendStatus(api);
+  const backendReadonly = backend.readonly;
+  const [reconnecting, setReconnecting] = useState(false);
   const layout = useLayout();
-  const inset = windowControlsInset(api?.platform);
+  const inset = useWindowControlsInset(api?.platform);
 
   const [selection, setSelection] = useState<Selection>({ kind: "supervisor" });
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -87,7 +89,6 @@ export function App(props: AppProps) {
       ? selection.projectId
       : (lastProjectId ?? projects[0]?.project.payload.project_id);
   const current = projects.find((p) => p.project.payload.project_id === currentId);
-  const notice = live ? dbNotice(live.db) : null;
   const showProject = selection.kind === "project" && current !== undefined;
 
   // 当前视图相关的高风险单优先；主管页显示全部
@@ -160,7 +161,8 @@ export function App(props: AppProps) {
           variant="secondary"
           size="sm"
           aria-label="导出诊断包"
-          disabled={actions.busy !== null}
+          disabled={actions.busy !== null || backendReadonly}
+          title={backendReadonly ? READONLY_COPY.exportDisabled : undefined}
           onClick={() => void actions.exportDiagnostics()}
         >
           <Download strokeWidth={1.5} />
@@ -171,11 +173,60 @@ export function App(props: AppProps) {
 
   const panelDocked = layout.rightPanelOpen && !layout.drawer;
 
+  // UI-08 全局状态点（§4.8）
+  const unattributedCount = unattributed.length + unattributedWarnings.length;
+  const syncView = syncState ? describeSyncState(syncState) : null;
+  const statusInput = {
+    projects,
+    readonly: backendReadonly,
+    dbError: live?.db?.state === "error",
+    syncAlert: syncView?.tone === "error" || syncView?.tone === "warn",
+    pendingHighRisk: highRisk.items.length,
+    unattributed: unattributedCount,
+  };
+  const level = globalLevel(statusInput);
+
+  /** 只读横幅「重新连接」（§4.7，接 T-093 的 backend:reconnect） */
+  const reconnect = api?.reconnectBackend
+    ? async () => {
+        if (reconnecting) return;
+        setReconnecting(true);
+        try {
+          const r = await api.reconnectBackend();
+          if (r.state === "reloaded") notifyOk("已重新连接");
+          else if (r.state === "queued")
+            notifyOk(
+              r.waitingTickets > 0
+                ? `还有 ${r.waitingTickets} 张单在进行中，完成后自动重新连接`
+                : "主管还在回复，完成后自动重新连接",
+            );
+          else notifyError(failureText("重新连接失败", r.reason));
+        } catch {
+          notifyError("重新连接失败：和主进程通信失败，请重试");
+        } finally {
+          setReconnecting(false);
+          await backend.refresh();
+        }
+      }
+    : undefined;
+
   return (
     <div className="flex h-screen min-h-0 bg-background text-foreground">
       <ConversationList
         projects={projects}
-        unattributedCount={unattributed.length + unattributedWarnings.length}
+        status={
+          <StatusDot
+            level={level}
+            backend={backend.status}
+            sync={syncState}
+            db={live?.db}
+            attention={attentionItems(statusInput)}
+            running={runningCount(projects)}
+            unattributed={unattributedCount}
+            onOpenUnattributed={() => select({ kind: "unattributed" })}
+            collapsed={layout.sidebarCollapsed}
+          />
+        }
         selection={selection}
         onSelect={select}
         collapsed={layout.sidebarCollapsed}
@@ -192,29 +243,14 @@ export function App(props: AppProps) {
           onToggleRightPanel={layout.toggleRightPanel}
           insetRight={panelDocked ? 0 : inset.right}
         />
-        {notice && (
-          <div
-            role="status"
-            className="border-b border-border px-4 py-1 text-xs text-muted-foreground"
-          >
-            {notice}
-          </div>
+        {backendReadonly && backend.status && (
+          <ReadonlyBanner
+            status={backend.status}
+            reconnecting={reconnecting}
+            {...(reconnect && { onReconnect: () => void reconnect() })}
+          />
         )}
-        {syncState && <SyncStatus state={syncState} />}
-        {actions.notice && (
-          <div
-            role={actions.notice.tone === "error" ? "alert" : "status"}
-            data-testid="action-notice"
-            className={
-              actions.notice.tone === "error"
-                ? "border-b border-border px-4 py-1 text-xs text-danger break-all"
-                : "border-b border-border px-4 py-1 text-xs text-muted-foreground break-all"
-            }
-          >
-            {actions.notice.text}
-          </div>
-        )}
-        <HighRiskPanel items={panelItems} onDecide={highRisk.decide} />
+        <HighRiskPanel items={panelItems} disabled={backendReadonly} onDecide={highRisk.decide} />
         {selection.kind === "unattributed" ? (
           <UnattributedPanel
             escalations={unattributed}
@@ -236,6 +272,7 @@ export function App(props: AppProps) {
               initial={supervisorMessages}
               api={api}
               projectId={current.project.payload.project_id}
+              readonly={backendReadonly}
             />
           </>
         ) : (
@@ -244,6 +281,7 @@ export function App(props: AppProps) {
             initial={supervisorMessages}
             busy={actions.busy}
             api={api}
+            readonly={backendReadonly}
           />
         )}
       </main>
@@ -258,6 +296,7 @@ export function App(props: AppProps) {
           current ? (
             <RightPanel
               view={current}
+              readonly={backendReadonly}
               onOpenTopic={(rid) => {
                 select({ kind: "project", projectId: current.project.payload.project_id });
                 if (layout.drawer) layout.setRightPanelOpen(false);
