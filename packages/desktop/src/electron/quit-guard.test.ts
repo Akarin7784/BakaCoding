@@ -279,3 +279,93 @@ describe("窗口关闭按钮（T-106）", () => {
     expect(appQuit).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("组合：stop 挂住 + 收尾中点关闭 + 到点放行窗口（T-109）", () => {
+  it("stop() 一直不返回：收尾中连点关闭都拦下、不重复发起；到 QUIT_STOP_TIMEOUT_MS 才放行窗口、只退出一次", async () => {
+    vi.useFakeTimers();
+    const stop = vi.fn(() => new Promise<void>(() => {}));
+    const warn = vi.fn();
+    const afterStop = vi.fn();
+    const onStopping = vi.fn();
+    let windowClosed = 0;
+    let exited = 0;
+    /** 每次 app.quit() 触发的 before-quit 有没有被拦下 */
+    const beforeQuitPrevented: number[] = [];
+    const closeEv = () => {
+      const e = {
+        prevented: 0,
+        preventDefault() {
+          e.prevented += 1;
+        },
+      };
+      return e;
+    };
+    // 模拟 app.quit()：先 before-quit，没被拦下才关窗口（再走一次 close），窗口放行就算退出
+    const appQuit = vi.fn(() => {
+      const bq = ev();
+      g.onBeforeQuit(bq);
+      beforeQuitPrevented.push(bq.prevented);
+      if (bq.prevented) return;
+      const ce = closeEv();
+      onClose(ce);
+      if (!ce.prevented) {
+        windowClosed += 1;
+        exited += 1;
+      }
+    });
+    const g = createQuitGuard({ stop, onStopping, afterStop, warn, quit: appQuit });
+    const onClose = createWindowCloseHandler({ guard: g, platform: "win32", quit: appQuit });
+
+    // 第一次点关闭：窗口拦下、发起退出、开始收尾
+    const first = closeEv();
+    onClose(first);
+    expect(first.prevented).toBe(1);
+    expect(g.state()).toBe("stopping");
+
+    // 收尾中隔一会儿就点一次关闭，一直到上限前 1ms
+    const step = 5_000;
+    for (let t = step; t < QUIT_STOP_TIMEOUT_MS; t += step) {
+      await vi.advanceTimersByTimeAsync(step);
+      const e = closeEv();
+      onClose(e);
+      expect(e.prevented, `t=${t}`).toBe(1);
+    }
+    // 上面已走到 floor((上限-1)/step)*step，再补到上限前 1ms
+    const elapsed = Math.floor((QUIT_STOP_TIMEOUT_MS - 1) / step) * step;
+    await vi.advanceTimersByTimeAsync(QUIT_STOP_TIMEOUT_MS - 1 - elapsed);
+    const lastClick = closeEv();
+    onClose(lastClick);
+    expect(lastClick.prevented).toBe(1);
+    // 收尾中用户又按了一次退出快捷键（再走一次 app.quit() → before-quit）：仍拦下，窗口不关
+    appQuit();
+    expect(beforeQuitPrevented).toEqual([1, 1]);
+    expect(g.state()).toBe("stopping");
+    expect(windowClosed).toBe(0);
+    expect(exited).toBe(0);
+    expect(warn).not.toHaveBeenCalled();
+    // 收尾中的关闭只拦不发起：除了上面手动按的那次，只有第一次点关闭调过 app.quit()
+    expect(appQuit).toHaveBeenCalledTimes(2);
+
+    // 到上限：写一条 warn，afterStop，guard 自己发起退出，窗口放行
+    await vi.advanceTimersByTimeAsync(1);
+    await g.settled();
+    expect(g.state()).toBe("done");
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(QUIT_STOP_TIMEOUT_WARN);
+    expect(afterStop).toHaveBeenCalledTimes(1);
+    expect(windowClosed).toBe(1);
+    expect(exited).toBe(1);
+    expect(appQuit).toHaveBeenCalledTimes(3);
+    expect(beforeQuitPrevented).toEqual([1, 1, 0]);
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(onStopping).toHaveBeenCalledTimes(1);
+
+    // 之后再有关闭 / 退出（比如系统再发一次）直接放行，不再 stop、不再 warn
+    const late = closeEv();
+    onClose(late);
+    expect(late.prevented).toBe(0);
+    await vi.advanceTimersByTimeAsync(QUIT_STOP_TIMEOUT_MS);
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+});
