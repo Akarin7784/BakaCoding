@@ -3236,6 +3236,24 @@ describe("T-096 stop() 等在途工作收尾", () => {
       await flush(10);
       expect(unhandled).toEqual([]);
       expect(escalations(h)).toEqual([]);
+
+      // 合并在途、stop 之后 merge 抛错：错误交给（会抛错的）onError，照样 resolve、不留未处理的 rejection
+      const h2 = harness();
+      h2.deps.onError = () => {
+        throw new Error("onError 坏了");
+      };
+      const m = deferred<MergeResult>();
+      controllablePr(h2, { merge: () => m.promise });
+      const s2 = await started(h2);
+      await s2.enqueue(ticket("T-1"));
+      await s2.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1" });
+      await flush();
+      const p2 = s2.stop();
+      m.reject(new Error("网络断了"));
+      await expect(p2).resolves.toBeUndefined();
+      await flush(10);
+      expect(unhandled).toEqual([]);
+      expect(s2.status("T-1")).toBe("merge_queued");
     } finally {
       process.off("unhandledRejection", onUnhandled);
     }
