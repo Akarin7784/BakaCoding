@@ -45,11 +45,24 @@ export interface GitStatus {
   main_merge: "user" | "auto";
 }
 
+/** escalated 事件在界面上的提示：需要人工介入。 */
+export interface EscalationView {
+  event_id: string;
+  ts: string;
+  requirement_id: string;
+  ticket_id: string | null;
+  reason: EventMap["escalated"]["reason"];
+  detail?: string;
+}
+
 export interface ProjectView {
   project: ProjectCreatedEvent;
   requirements: Requirement[];
   messages: GroupMessageEvent[];
   prs: PrItem[];
-  git: GitStatus;
-  pool: PoolStatus;
+  escalations: EscalationView[];
+  /** 存储里还没有 Git 区数据（模块 6/9 未接入）时为 null。 */
+  git: GitStatus | null;
+  /** 存储里还没有编码池状态（模块 5/9 未接入）时为 null。 */
+  pool: PoolStatus | null;
 }

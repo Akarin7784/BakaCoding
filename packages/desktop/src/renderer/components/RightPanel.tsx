@@ -31,28 +31,40 @@ export function RightPanel({
       className="flex w-72 shrink-0 flex-col border-l border-border text-sm animate-fade-in"
     >
       <div data-testid="pool-status" className="flex gap-3 px-4 py-2 text-xs">
-        <span>
-          并发 {pool.concurrency.active}/{pool.concurrency.limit}
-        </span>
-        <Flag on={pool.rate_limited} label="限流" />
-        <Flag on={pool.backpressure} label="反压" />
+        {pool ? (
+          <>
+            <span>
+              并发 {pool.concurrency.active}/{pool.concurrency.limit}
+            </span>
+            <Flag on={pool.rate_limited} label="限流" />
+            <Flag on={pool.backpressure} label="反压" />
+          </>
+        ) : (
+          <span className="text-muted-foreground">编码池状态：未接入</span>
+        )}
       </div>
       <Separator />
       <div className="space-y-2 px-4 py-3">
         <div className="text-xs text-muted-foreground">Git · {view.project.payload.name}</div>
-        <div className="flex items-center gap-2">
-          <GitBranch size={14} strokeWidth={1.5} aria-hidden />
-          当前 {git.current_branch}
-        </div>
-        <div className="flex items-center gap-2">
-          <GitBranch size={14} strokeWidth={1.5} aria-hidden />
-          集成 {git.integration_branch}（领先 main {git.integration_ahead_of_main}）
-        </div>
-        {git.main_merge === "user" && (
-          <Button variant="outline" size="sm" disabled={git.integration_ahead_of_main === 0}>
-            <GitMerge strokeWidth={1.5} />
-            合入 main
-          </Button>
+        {git ? (
+          <>
+            <div className="flex items-center gap-2">
+              <GitBranch size={14} strokeWidth={1.5} aria-hidden />
+              当前 {git.current_branch}
+            </div>
+            <div className="flex items-center gap-2">
+              <GitBranch size={14} strokeWidth={1.5} aria-hidden />
+              集成 {git.integration_branch}（领先 main {git.integration_ahead_of_main}）
+            </div>
+            {git.main_merge === "user" && (
+              <Button variant="outline" size="sm" disabled={git.integration_ahead_of_main === 0}>
+                <GitMerge strokeWidth={1.5} />
+                合入 main
+              </Button>
+            )}
+          </>
+        ) : (
+          <p className="text-xs text-muted-foreground">Git 状态：未接入</p>
         )}
       </div>
       <Separator />
