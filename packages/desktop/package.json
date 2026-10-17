@@ -1,6 +1,6 @@
 {
   "name": "@bakacoding/desktop",
-  "version": "0.0.0",
+  "version": "1.0.0-preview",
   "private": true,
   "description": "模块 12：桌面界面（Electron + React 三栏壳子，假数据）",
   "type": "module",
@@ -11,7 +11,9 @@
     "build:app": "vite build",
     "dev": "vite",
     "typecheck": "tsc --noEmit -p .",
-    "rebuild:electron": "node scripts/rebuild-electron.mjs"
+    "rebuild:electron": "node scripts/rebuild-electron.mjs",
+    "package:win": "node scripts/package-app.mjs --platform win32",
+    "package:linux": "node scripts/package-app.mjs --platform linux"
   },
   "dependencies": {
     "@bakacoding/app": "workspace:*",

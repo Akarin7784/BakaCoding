@@ -34,3 +34,6 @@ dist-renderer/
 
 # Electron ABI 版原生模块（pnpm --filter @bakacoding/desktop rebuild:electron 生成）
 packages/desktop/native/
+
+# 桌面端打包产物（packages/desktop/scripts/package-app.mjs）
+packages/desktop/release/
