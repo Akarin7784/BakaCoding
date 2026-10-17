@@ -17,6 +17,7 @@ import {
   serveReader,
   serveSupervisorChat,
   serveSyncState,
+  serveWindowTheme,
   type IpcMainLike,
 } from "./ipc.js";
 import type { ProjectSettingsDeps } from "./project-settings-ipc.js";
@@ -111,6 +112,8 @@ const SERVE: Record<string, (ipc: IpcMainLike, backend: BackendHandle) => () => 
   serveHighRisk: (ipc, backend) => serveHighRisk(ipc, backend, () => null),
   serveSyncState: (ipc, backend) => serveSyncState(ipc, backend, () => null, 1000),
   serveSupervisorChat: (ipc, backend) => serveSupervisorChat(ipc, backend),
+  serveWindowTheme: (ipc) =>
+    serveWindowTheme(ipc, { setThemeSource: (s) => s === "dark", applyTitleBar: () => {} }),
   serveProjectSettings: (ipc, backend) =>
     serveProjectSettings(ipc, {
       backend: backend as unknown as ProjectSettingsDeps["backend"],
@@ -243,6 +246,8 @@ describe("handler 参数：第一个是 event，渲染进程参数从第二个�
       reason: "已取消",
     });
     await expect(api.getSettings()).resolves.toMatchObject({ repo: "/repo", mode: "local" });
+    // UI-02：主题同步
+    await expect(api.setWindowTheme!("dark")).resolves.toEqual({ ok: true, dark: true });
     // 以 IPC_CHANNELS 为准：新增 invoke 通道而这里没往返、或主进程没注册，都会失败
     expect([...seen].sort()).toEqual(INVOKE_CHANNELS);
     expect([...handlers.keys()].sort()).toEqual(INVOKE_CHANNELS);
@@ -371,6 +376,7 @@ describe("preload 暴露的只读 API", () => {
       "onSyncState",
       "onUpdate",
       "platform",
+      "setWindowTheme",
       "supervisorChat",
     ]);
     expect(Object.isFrozen(api)).toBe(true);

@@ -11,7 +11,9 @@ import {
   serveReader,
   serveSupervisorChat,
   serveSyncState,
+  serveWindowTheme,
 } from "./ipc.js";
+import { titleBarOverlayFor, usesTitleBarOverlay, windowChromeOptions } from "./window-chrome.js";
 import { BackendSwitcher } from "./backend-switcher.js";
 import { openEventReader, type EventReader } from "./reader.js";
 import { readLastRepo, writeLastRepo } from "./repo-store.js";
@@ -28,12 +30,23 @@ function electronSqliteBinding(): string | undefined {
 
 let win: BrowserWindow | null = null;
 
+/** 标题栏按钮叠层跟随当前深浅（UI-02）；没有叠层的平台不做。 */
+function applyTitleBar(dark: boolean): void {
+  if (!win || win.isDestroyed() || !usesTitleBarOverlay(process.platform)) return;
+  try {
+    win.setTitleBarOverlay(titleBarOverlayFor(dark));
+  } catch (e) {
+    console.warn("[desktop] 更新标题栏颜色失败", e);
+  }
+}
+
 function createWindow(): void {
-  nativeTheme.themeSource = "system";
+  // 主题来源由渲染进程经 window:theme 设置（默认跟随系统）；这里不再覆盖成 system
   win = new BrowserWindow({
     width: 1280,
     height: 800,
     title: "BakaCoding",
+    ...windowChromeOptions(process.platform, nativeTheme.shouldUseDarkColors),
     webPreferences: {
       // preload 打包成 CommonJS（preload.cjs），可以在 sandbox 下运行。
       preload: path.join(here, "preload.cjs"),
@@ -125,6 +138,16 @@ if (!gotLock) {
       },
     });
     const stopSupervisorChat = serveSupervisorChat(ipcMain, backend);
+    const stopWindowTheme = serveWindowTheme(ipcMain, {
+      setThemeSource(source) {
+        nativeTheme.themeSource = source;
+        return nativeTheme.shouldUseDarkColors;
+      },
+      applyTitleBar,
+    });
+    // 跟随系统时系统切深浅色，标题栏按钮颜色跟着变
+    const onNativeTheme = () => applyTitleBar(nativeTheme.shouldUseDarkColors);
+    nativeTheme.on("updated", onNativeTheme);
 
     app.on("will-quit", () => {
       stopReader();
@@ -133,6 +156,8 @@ if (!gotLock) {
       stopSyncState();
       stopProjectSettings();
       stopSupervisorChat();
+      stopWindowTheme();
+      nativeTheme.off("updated", onNativeTheme);
       reader.close();
       void backend.stop();
     });

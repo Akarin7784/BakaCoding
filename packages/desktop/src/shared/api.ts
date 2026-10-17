@@ -41,7 +41,16 @@ export const IPC_CHANNELS = {
   diagnosticsExport: "bakacoding:diagnostics:export",
   /** invoke：只读设置（仓库、环境变量是否已设、本地 / GitHub 模式）（T-072）。 */
   settingsGet: "bakacoding:settings:get",
+  /** invoke：界面主题偏好同步给主进程，设置 nativeTheme.themeSource 和标题栏按钮颜色（UI-02）。 */
+  windowTheme: "bakacoding:window:theme",
 } as const;
+
+/** 界面主题偏好（与渲染进程 lib/theme.ts 的 THEME_PREFERENCES 一致，测试锁住）。 */
+export const WINDOW_THEME_SOURCES = ["system", "light", "dark"] as const;
+export type WindowThemeSource = (typeof WINDOW_THEME_SOURCES)[number];
+
+/** window:theme 的结果：dark 为主进程应用后 nativeTheme.shouldUseDarkColors。 */
+export type DesktopWindowThemeResult = { ok: true; dark: boolean } | { ok: false; reason: string };
 
 /** 界面关心的事件类型；其余事件主进程不下发。 */
 export const UI_EVENT_TYPES = [
@@ -193,6 +202,8 @@ export interface BakaDesktopApi {
   exportDiagnostics(): Promise<DesktopExportResult>;
   /** 只读设置（T-072）。 */
   getSettings(): Promise<DesktopSettings>;
+  /** 主题偏好同步给主进程（UI-02）；旧版 preload / 测试假 API 可以没有。 */
+  setWindowTheme?(source: WindowThemeSource): Promise<DesktopWindowThemeResult>;
 }
 
 export type {

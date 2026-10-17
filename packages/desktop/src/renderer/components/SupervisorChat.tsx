@@ -4,6 +4,7 @@ import type { BakaDesktopApi } from "../../shared/api";
 import { supervisorChatStore, type ChatItem, type ChatStore } from "../data/chatStore";
 import { chatFailureText, chatReplyView, type ChatTone } from "../lib/chat-labels";
 import { cn } from "../lib/utils";
+import { CONTENT_COLUMN } from "../lib/layout";
 import { AgentIcon } from "./AgentIcon";
 import { Button } from "./ui/button";
 import { Textarea } from "./ui/textarea";
@@ -26,6 +27,8 @@ export interface SupervisorChatProps {
   store?: ChatStore;
   /** 选中项目时嵌在群聊下方：不显示顶栏 */
   compact?: boolean;
+  /** UI-02：放进新布局时标题和按钮在外层标题栏里，这里不再画顶栏 */
+  showHeader?: boolean;
   /** 导入项目（T-072）；没有就不显示按钮 */
   onImport?: () => void;
   /** 打开只读设置页（T-072） */
@@ -43,6 +46,7 @@ export function SupervisorChat({
   projectId,
   store = supervisorChatStore,
   compact = false,
+  showHeader = true,
   onImport,
   onOpenSettings,
   onExport,
@@ -89,7 +93,7 @@ export function SupervisorChat({
         compact ? "h-64 shrink-0 border-t border-border" : "flex-1",
       )}
     >
-      {!compact && (
+      {!compact && showHeader && (
         <header className="flex items-center gap-2 border-b border-border px-4 py-2">
           <AgentIcon supervisor />
           <span className="flex-1 text-sm font-medium">主管</span>
@@ -121,84 +125,89 @@ export function SupervisorChat({
           </Button>
         </header>
       )}
-      <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
-        {messages.map((m) => {
-          if (m.failed !== undefined) {
-            return (
-              <div
-                key={m.id}
-                role="alert"
-                data-testid="chat-error"
-                className="flex gap-2 text-sm text-danger"
-              >
-                <AlertCircle className="mt-0.5 size-4 shrink-0" strokeWidth={1.5} />
-                <p className="whitespace-pre-wrap">{m.failed}</p>
-              </div>
-            );
-          }
-          if (m.reply) {
-            const v = chatReplyView(m.reply);
-            return (
-              <div
-                key={m.id}
-                data-testid="chat-reply"
-                data-kind={v.kind}
-                className="flex gap-2 text-sm"
-              >
-                <AgentIcon supervisor />
-                <div className="min-w-0 space-y-1">
-                  <span className={cn("text-xs", TONE_CLASS[v.tone])}>{v.label}</span>
-                  <p className={cn("whitespace-pre-wrap", v.tone === "error" && "text-danger")}>
-                    {v.text}
-                  </p>
-                  {v.ticketIds.length > 0 && (
-                    <p className="text-xs text-muted-foreground" data-testid="chat-tickets">
-                      单号：{v.ticketIds.join("、")}
-                    </p>
-                  )}
+      <div className="flex-1 overflow-y-auto px-4 py-4">
+        <div className={cn(CONTENT_COLUMN, "space-y-4")}>
+          {messages.map((m) => {
+            if (m.failed !== undefined) {
+              return (
+                <div
+                  key={m.id}
+                  role="alert"
+                  data-testid="chat-error"
+                  className="flex gap-2 text-sm text-danger"
+                >
+                  <AlertCircle className="mt-0.5 size-4 shrink-0" strokeWidth={1.5} />
+                  <p className="whitespace-pre-wrap">{m.failed}</p>
                 </div>
+              );
+            }
+            if (m.reply) {
+              const v = chatReplyView(m.reply);
+              return (
+                <div
+                  key={m.id}
+                  data-testid="chat-reply"
+                  data-kind={v.kind}
+                  className="flex gap-2 text-sm"
+                >
+                  <AgentIcon supervisor />
+                  <div className="min-w-0 space-y-1">
+                    <span className={cn("text-xs", TONE_CLASS[v.tone])}>{v.label}</span>
+                    <p className={cn("whitespace-pre-wrap", v.tone === "error" && "text-danger")}>
+                      {v.text}
+                    </p>
+                    {v.ticketIds.length > 0 && (
+                      <p className="text-xs text-muted-foreground" data-testid="chat-tickets">
+                        单号：{v.ticketIds.join("、")}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              );
+            }
+            return (
+              <div key={m.id} className="flex gap-2 text-sm">
+                {m.from === "supervisor" ? (
+                  <AgentIcon supervisor />
+                ) : (
+                  <span className="w-[18px] text-xs text-muted-foreground">我</span>
+                )}
+                <p className="whitespace-pre-wrap">{m.content}</p>
               </div>
             );
-          }
-          return (
-            <div key={m.id} className="flex gap-2 text-sm">
-              {m.from === "supervisor" ? (
-                <AgentIcon supervisor />
-              ) : (
-                <span className="w-[18px] text-xs text-muted-foreground">我</span>
-              )}
-              <p className="whitespace-pre-wrap">{m.content}</p>
+          })}
+          {pending && (
+            <div
+              role="status"
+              data-testid="chat-pending"
+              className="flex items-center gap-2 text-xs text-muted-foreground"
+            >
+              <Loader2 className="size-3 animate-spin" strokeWidth={1.5} />
+              主管思考中…
             </div>
-          );
-        })}
-        {pending && (
-          <div
-            role="status"
-            data-testid="chat-pending"
-            className="flex items-center gap-2 text-xs text-muted-foreground"
-          >
-            <Loader2 className="size-3 animate-spin" strokeWidth={1.5} />
-            主管思考中…
-          </div>
-        )}
+          )}
+        </div>
       </div>
-      <div className="flex items-end gap-2 border-t border-border p-3">
-        <Textarea
-          aria-label="发给主管"
-          rows={2}
-          placeholder="提需求或人工介入，说清是哪个项目"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault();
-              void send();
-            }
-          }}
-        />
-        <Button size="icon" aria-label="发送" disabled={pending} onClick={() => void send()}>
-          <Send strokeWidth={1.5} />
-        </Button>
+      <div className="border-t border-border p-3">
+        <div className={cn(CONTENT_COLUMN, "flex items-end gap-2")}>
+          <Textarea
+            aria-label="发给主管"
+            data-composer={compact ? "compact" : "supervisor"}
+            rows={2}
+            placeholder="提需求或人工介入，说清是哪个项目"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                void send();
+              }
+            }}
+          />
+          <Button size="icon" aria-label="发送" disabled={pending} onClick={() => void send()}>
+            <Send strokeWidth={1.5} />
+          </Button>
+        </div>
       </div>
     </section>
   );

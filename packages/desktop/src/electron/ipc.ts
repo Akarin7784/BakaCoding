@@ -8,7 +8,9 @@ import {
   type DesktopSettings,
   type DesktopSyncState,
   type DesktopUpdate,
+  type DesktopWindowThemeResult,
   type SupervisorNotifyMessage,
+  type WindowThemeSource,
 } from "../shared/api.js";
 import type { UserMessage } from "@bakacoding/supervisor";
 import path from "node:path";
@@ -24,6 +26,7 @@ import {
 } from "./project-settings-ipc.js";
 import { errorDetail, sanitizeSyncErrorMessage } from "./sync-state.js";
 import type { EventReader } from "./reader.js";
+import { isWindowThemeSource } from "./window-chrome.js";
 
 /**
  * 主进程 ipcMain 的最小子集，便于测试注入。
@@ -292,5 +295,35 @@ export function serveProjectSettings(ipc: IpcMainLike, deps: ProjectSettingsDeps
     ipc.removeHandler(IPC_CHANNELS.projectImport);
     ipc.removeHandler(IPC_CHANNELS.diagnosticsExport);
     ipc.removeHandler(IPC_CHANNELS.settingsGet);
+  };
+}
+
+/** window:theme 依赖（main 注入 nativeTheme 和窗口；测试注入假的）。 */
+export interface WindowThemeDeps {
+  /** 设 nativeTheme.themeSource，返回设完后 shouldUseDarkColors */
+  setThemeSource(source: WindowThemeSource): boolean;
+  /** 按深浅更新标题栏按钮叠层颜色（没有叠层的平台为空操作） */
+  applyTitleBar(dark: boolean): void;
+}
+
+/**
+ * 主题同步 IPC（UI-02）：渲染进程把「跟随系统 / 浅 / 深」发过来，主进程设 nativeTheme.themeSource，
+ * 再按实际深浅刷新标题栏叠层颜色。参数不认识就拒绝，不改主进程状态。
+ */
+export function serveWindowTheme(ipc: IpcMainLike, deps: WindowThemeDeps): () => void {
+  ipc.handle(IPC_CHANNELS.windowTheme, (...args: unknown[]) => {
+    const source = args[1];
+    if (!isWindowThemeSource(source))
+      return { ok: false, reason: "不认识的主题" } satisfies DesktopWindowThemeResult;
+    try {
+      const dark = deps.setThemeSource(source);
+      deps.applyTitleBar(dark);
+      return { ok: true, dark } satisfies DesktopWindowThemeResult;
+    } catch (e) {
+      return { ok: false, reason: errorDetail(e) } satisfies DesktopWindowThemeResult;
+    }
+  });
+  return () => {
+    ipc.removeHandler(IPC_CHANNELS.windowTheme);
   };
 }

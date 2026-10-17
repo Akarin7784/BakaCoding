@@ -13,6 +13,8 @@ import {
   type DesktopSnapshot,
   type DesktopSyncState,
   type DesktopUpdate,
+  type DesktopWindowThemeResult,
+  type WindowThemeSource,
   type SupervisorNotifyMessage,
   type UserMessage,
 } from "../shared/api.js";
@@ -83,5 +85,7 @@ export function createDesktopApi(ipc: IpcRendererLike, platform: string): BakaDe
     getSettings: () => ipc.invoke(IPC_CHANNELS.settingsGet) as Promise<DesktopSettings>,
     supervisorChat: (message: UserMessage) =>
       ipc.invoke(IPC_CHANNELS.supervisorChat, message) as Promise<DesktopChatResult>,
+    setWindowTheme: (source: WindowThemeSource) =>
+      ipc.invoke(IPC_CHANNELS.windowTheme, source) as Promise<DesktopWindowThemeResult>,
   });
 }

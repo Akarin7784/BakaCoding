@@ -114,7 +114,7 @@ describe("渲染进程从 preload API 读真实数据", () => {
     expect(document.getElementById("topic-R-1")?.tagName).toBe("DETAILS");
     expect(screen.getByTestId("flash-calls").textContent).toContain("真实输出");
 
-    fireEvent.click(screen.getByRole("button", { name: "打开侧边栏" }));
+    fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
     expect(screen.getByText("编码中").getAttribute("data-tone")).toBe("accent");
     const esc = screen.getAllByText("需要人工介入").find((el) => el.dataset.status === "escalated");
     expect(esc?.getAttribute("data-tone")).toBe("danger");
@@ -154,7 +154,7 @@ describe("渲染进程从 preload API 读真实数据", () => {
       }),
     );
     await waitFor(() => expect(screen.getByText("T-1 增量回报")).toBeTruthy());
-    fireEvent.click(screen.getByRole("button", { name: "打开侧边栏" }));
+    fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
     expect(screen.getByText("已合入").getAttribute("data-tone")).toBe("foreground");
   });
 
@@ -241,7 +241,7 @@ describe("渲染进程从 preload API 读真实数据", () => {
     // 上报照旧，警告不算上报
     expect(screen.getByRole("alert", { name: "需要人工介入" }).textContent).toContain("T-2");
 
-    fireEvent.click(screen.getByRole("button", { name: "打开侧边栏" }));
+    fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
     expect(
       screen.getByRole("img", { name: "提示：没给写入范围，按整个仓库可写处理" }),
     ).toBeTruthy();
