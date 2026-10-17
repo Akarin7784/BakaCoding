@@ -115,9 +115,11 @@ export function createModelGateway(opts: CreateModelGatewayOptions): ModelGatewa
   const doFetch = opts.fetch ?? globalThis.fetch;
   const getSecret = opts.getSecret ?? ((n: SecretName) => defaultGetSecret(n));
   const newId = opts.newId ?? randomUUID;
-  const warn = opts.onWarning ?? ((w: EffortWarning) => console.warn(`[model-gateway] ${w.message}`));
+  const warn =
+    opts.onWarning ?? ((w: EffortWarning) => console.warn(`[model-gateway] ${w.message}`));
   const onPublishError =
-    opts.onPublishError ?? ((e: unknown) => console.error("[model-gateway] call_completed 发布失败", e));
+    opts.onPublishError ??
+    ((e: unknown) => console.error("[model-gateway] call_completed 发布失败", e));
 
   function providerConf(provider: string) {
     const p = opts.getConfig().providers[provider];
@@ -222,7 +224,18 @@ export function createModelGateway(opts: CreateModelGatewayOptions): ModelGatewa
       caps,
     );
     const scrub = (s: string) => (key ? s.split(key).join("***") : s);
-    const prompt = promptText ?? JSON.stringify({ system: req.system, messages: req.messages });
+    // prompt 记全部模型输入；本轮回复的思考内容也只记在这里（桌面会遮蔽 prompt），不进 output
+    const promptOf = (reasoning: readonly { text: string; signature?: string }[]) => {
+      if (promptText !== undefined)
+        return reasoning.length
+          ? `${promptText}\n\n[reasoning]\n${reasoning.map((r) => r.text).join("\n")}`
+          : promptText;
+      return JSON.stringify({
+        system: req.system,
+        messages: req.messages,
+        ...(reasoning.length ? { reply_reasoning: reasoning } : {}),
+      });
+    };
     const startedAt = new Date(clock.now());
     let retries = 0;
     const elapsed = () => Math.max(0, Math.round(clock.now() - startedAt.getTime()));
@@ -285,12 +298,12 @@ export function createModelGateway(opts: CreateModelGatewayOptions): ModelGatewa
           promptText !== undefined || names.length === 0
             ? parsed.content
             : `${parsed.content}\n[tool_calls] ${names.join(", ")}`;
-        await publishCompleted(req, effort, prompt, output, stats);
-        return { ...parsed, tool_calls: parsed.tool_calls, ...stats, effort };
+        await publishCompleted(req, effort, promptOf(parsed.reasoning), output, stats);
+        return { ...parsed, ...stats, effort };
       }
     } catch (e) {
       // 已经开始调用：失败或取消也发 call_completed，用量未知时按 0 记
-      await publishCompleted(req, effort, prompt, "", {
+      await publishCompleted(req, effort, promptOf([]), "", {
         tokens: ZERO,
         latency_ms: elapsed(),
         cost: 0,

@@ -56,7 +56,8 @@ export function checkToolPairing(messages: readonly ChatMessage[]): void {
       pending = new Set(m.tool_calls.map((c) => c.id));
       if (pending.size !== m.tool_calls.length) throw invalid("同一轮里工具调用 id 重复");
     } else if (m.role === "tool") {
-      if (!pending.delete(m.tool_call_id)) throw invalid(`工具结果 ${m.tool_call_id} 没有对应的调用`);
+      if (!pending.delete(m.tool_call_id))
+        throw invalid(`工具结果 ${m.tool_call_id} 没有对应的调用`);
     } else if (m.role === "user" && pending.size) {
       throw invalid("工具调用后面必须紧跟对应的工具结果");
     }
@@ -95,17 +96,18 @@ export const anthropicAdapter: ProtocolAdapter = {
           break;
         case "assistant":
           push("assistant", [
-            ...(m.reasoning ?? []).map(
-              (r): Block => ({
-                type: "thinking",
-                thinking: r.text,
-                ...(r.signature === undefined ? {} : { signature: r.signature }),
-              }),
-            ),
+            ...(m.reasoning ?? []).map((r): Block => ({
+              type: "thinking",
+              thinking: r.text,
+              ...(r.signature === undefined ? {} : { signature: r.signature }),
+            })),
             ...(m.content ? [{ type: "text", text: m.content }] : []),
-            ...m.tool_calls.map(
-              (c): Block => ({ type: "tool_use", id: c.id, name: c.name, input: toolInputObject(c.input) }),
-            ),
+            ...m.tool_calls.map((c): Block => ({
+              type: "tool_use",
+              id: c.id,
+              name: c.name,
+              input: toolInputObject(c.input),
+            })),
           ]);
           break;
         case "tool":
@@ -302,10 +304,16 @@ export function classifyError(
   const err = obj(obj(raw).error);
   const type = typeof err.type === "string" ? err.type : "";
   const message =
-    typeof err.message === "string" ? err.message.slice(0, 500) : `服务商请求失败（HTTP ${status}）`;
+    typeof err.message === "string"
+      ? err.message.slice(0, 500)
+      : `服务商请求失败（HTTP ${status}）`;
   const detail = `${type} ${typeof err.code === "string" ? err.code : ""} ${message}`.toLowerCase();
   let code: ModelErrorCode;
-  if (status === 401 || status === 403 || ["authentication_error", "permission_error"].includes(type))
+  if (
+    status === 401 ||
+    status === 403 ||
+    ["authentication_error", "permission_error"].includes(type)
+  )
     code = "AUTH";
   else if (status === 402 || /insufficient|quota|balance/u.test(detail)) code = "QUOTA";
   else if (status === 429 || type === "rate_limit_error") code = "RATE_LIMIT";
@@ -316,6 +324,10 @@ export function classifyError(
   else code = "SERVER";
   const ra = headers.get("retry-after");
   const delay =
-    ra == null ? NaN : /^\d+(?:\.\d+)?$/u.test(ra) ? Number(ra) * 1000 : Date.parse(ra) - Date.now();
+    ra == null
+      ? NaN
+      : /^\d+(?:\.\d+)?$/u.test(ra)
+        ? Number(ra) * 1000
+        : Date.parse(ra) - Date.now();
   return { code, message, ...(Number.isFinite(delay) && delay > 0 ? { retryAfterMs: delay } : {}) };
 }

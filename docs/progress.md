@@ -38,8 +38,8 @@ flowchart BT
   classDef done fill:#dcfce7,stroke:#16a34a,color:#14532d
 
   class M0,M2,M5,M6,M7,M11,M12,T done
-  class M3,M4 doing
-  class M1,M8,M9,M10 todo
+  class M1,M3,M4 doing
+  class M8,M9,M10 todo
 ```
 
 图例：绿色 = 已完成，黄色 = 进行中，灰色 = 未开始。
@@ -57,7 +57,7 @@ flowchart BT
 | T-001 | 共享类型：事件、权限清单、LedgerStore 与 zod schema | 共享类型包 | 基础层开发 | 已合入 | #3 | `56cfaca` |
 | T-002 | 读配置与读密钥接口（getConfig / validate / getSecret），补齐示例配置 | 3 | 基础层开发 | 已合入 | #5 | `adf612a` |
 | T-003 | 事件总线 publish / subscribe | 0 | 基础层开发 | 已合入 | #13 | `ea51630` |
-| T-004 | 模型接入层 call / capabilities / rateLimitState | 1 | 基础层开发 | 未开始 | — | — |
+| T-004 | 模型接入层 call / capabilities / rateLimitState | 1 | 基础层开发 | 待评审 | — | — |
 | T-005 | SQLite（WAL）与事件落库；另含总线 `initialSeq`、订阅队列上限、`DiagnosticsSource` 移入 types、modules.md 公共字段措辞 | 2 | 基础层开发 | 已合入 | #19 | `95cd3f3` |
 | T-006 | 预算台账 recordCost / budgetState | 3 | 基础层开发 | 已合入 | #23 | `14c1698` |
 | T-007 | 脱敏函数 redact（light / full） | 3 | 基础层开发 | 已合入 | #6 | `4f20ce0` |
