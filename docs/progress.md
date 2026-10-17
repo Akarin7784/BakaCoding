@@ -94,7 +94,7 @@ flowchart BT
 | T-040 | 模块 10 主管：`chat` / `split`（接口声明必填、决策记忆、项目创建告知用户） | 10 | 编排层开发 | 已合入 | #56 | `79bc488` |
 | T-041a | 模块 10 组装根 `@bakacoding/app`（8 / 9 / 10 共用一条总线）、重启接管 `takeOver`（派单沿用已开的 PR；已在合并队列的单经模块 9 新增的 `adopt` 接回；`fields_invalid` 的单不接回、只发一次警告） | 10、9 | 编排层开发 | 已合入 | #62 | `694bddb` |
 | T-041b | 模块 10 上报处理和重拆（已重拆次数 ≥ 上限（默认 2）时不再重拆，`budget_exceeded` 直接交用户；重拆前先关旧 PR、失败重试；需求原文入库；重启补跑上报处理、下游挂起；含模块 9 `replaceDependency`、`adopt` 写状态失败回滚，组合根恢复 `extendScope` 扩出的范围；写入范围首尾空白条目报错） | 10、9 | 编排层开发 | 已合入 | #65 | `30d3248` |
-| T-041c | 模块 10 高风险 PR 裁决（含模块 9 高风险闸门，组合根固定打开）：用户放行 / 拒绝（`decideHighRisk`），拒绝关 PR 并发 `escalated(high_risk_rejected)`、不重拆；放行按 PR 绑定，冲突复投换新 PR 重新扣；重启接管按 diff 补判高风险（diff 出错按高风险）、重新扣住并通知用户；反压暂停时通知写明其中等裁决的高风险 PR 数；含模块 8 导出 `isDependencyFile` / `isHighRiskDiffFile`（删除的依赖文件按路径算、改名一律算）、桌面端 `high_risk_rejected` 文案 | 10、9、8、12 | 编排层开发 | 待评审 | — | — |
+| T-041c | 模块 10 高风险 PR 裁决（含模块 9 高风险闸门，组合根固定打开）：用户放行 / 拒绝（`decideHighRisk`，按 pr_id 绑定，`stale_pr` 等带码错误），拒绝经 041b 的 `closeTicketPr` 关 PR（关失败记 `unconfirmed`、重试）并发 `escalated(high_risk_rejected)`、不重拆；冲突复投换新 PR 重新扣；`pendingHighRisk()` 带理由、命中文件、链接；8 评审前的 diff 绑定 head、交出前 head 变了重判；依赖文件一律按文件名匹配；重启接管按 diff 补判高风险（diff 出错按高风险）、重新扣住并通知用户；反压暂停时通知写明其中等裁决的高风险 PR 数；含模块 8 导出 `isDependencyFile` / `isHighRiskDiffFile`（删除的依赖文件按路径算、改名一律算）、桌面端 `high_risk_rejected` 文案 | 10、9、8、12 | 编排层开发 | 待评审 | — | — |
 | T-042 | 模块 10 集成分支审查与合入 main、主管待办指标 | 10 | 编排层开发 | 未开始 | — | — |
 | T-043 | 不可信文本包装与转义：评审池的需求单 / 摘要 / 架构约束 / diff 与编码池 feedback 统一包进带 nonce 的 `untrusted` 区块；转义前做 NFKC、忽略零宽字符和软连字符；共用函数放 `@bakacoding/types`；nonce 不进编码池公共前缀 | 5、7 | 执行层开发 | 已合入 | #35 | `876cac0` |
 | T-044 | 模块 5/7 把 `signal` 透传给模型调用（`runTicket` 加可选 `signal`，调模型前、工具调用前检查取消）；编码池工具轮把上一轮的 `reasoning`（含 `signature`）原样放进 assistant 消息回传 | 5、7 | 执行层开发 | 已合入 | #43 | `d646d20` |
@@ -150,6 +150,8 @@ flowchart BT
 - 模块 9（T-041c，Q-6）：GitHub 上手动合并 / 关闭被扣的 PR 要等 9 的 `sync()` 才生效，现在没有定时 `sync()`（另开单）。
 - 模块 8 / 组合根（T-041c）：6 的 DiffFile 没有旧路径，改名的文件一律按高风险（T-065 收窄）；重启补判取 diff 出错也按高风险，可能误扣。
 - 模块 10（T-041c）：高风险通知「同一 PR 只通知一次」、待裁决清单 `pendingHighRisk()` 都只在进程内，重启后重新通知一次。
+- 模块 10（T-041c）：拒绝后关 PR 失败（`high_risk_close.state = unconfirmed`）的重试只在进程内；重启后不接着重试，PR 可能一直开着，要用户到 GitHub 上关。
+- 模块 10（T-041c）：拒绝时发现 PR 已合入（`already_merged`）只抛错，单子留在 9 里扣着，要等 9 的 `sync()` 记成合入（T-064）。
 - 组合根（T-041a → T-041b）：依赖已上报（未被取代）或 `fields_invalid` 的单，T-041b 起重启时进 `held`、通知用户一次；依赖接管失败（`failed`）的单仍不进 `held`，9 不认识它，依赖它的单会一直 `waiting`。
 - 模块 9（T-041a）：`adopt` 接回的单复投数是估的：评审复投数从 0 记起（9 只用它报上报的 `resubmit_counts`，8 的复投上限按事件日志算），冲突复投数按 worktree 轮次估。
 - 组合根（T-041a）：`fields_invalid` 的「只通知一次」只在同一进程内去重；每次重启都会再发一条 `ticket_warning(fields_invalid)`，跨重启去重由桌面端做（T-062，按单号 + 警告码去重）。

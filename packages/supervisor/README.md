@@ -45,8 +45,8 @@
 
 ## T-041c：高风险 PR 裁决
 
-- `decideHighRisk(ticket_id, "release" | "reject", detail?)`：只由用户裁决，转调注入的 `highRisk`（9 的 `releaseHighRisk` / `rejectHighRisk`），不调模型，出错返回 `{ ok: false, error }`。
-- `highRiskHeld(info)`：9 扣住时通知用户（重启后、冲突复投换新 PR 时写明要重新放行），同一 PR 本进程只通知一次；`pendingHighRisk()` 列出等裁决的单。
+- `decideHighRisk(ticket_id, pr_id, "release" | "reject", detail?)`：只由用户裁决，不调模型，按 `pr_id` 绑定；不能裁决时抛 9 的 `HighRiskDecisionError`（`stale_pr` 等码；10 另抛 `already_merged`、`unavailable`）。拒绝先经 9 校验，再走 041b 的 `closeTicketPr` 关 PR，PR 已合入抛 `already_merged`、不上报；关失败照样拒绝、记 `fields.high_risk_close.state = unconfirmed`、发 `pr_close_failed`、按 30 秒 / 2 分钟 / 10 分钟重试。
+- `highRiskHeld(info)`：9 扣住时通知用户（写明理由和文件；重启后、冲突复投换新 PR 时写明要重新放行），同一 PR 本进程只通知一次。`pendingHighRisk()` 同步、只读内存，列出等裁决的单：`{ ticket_id, project_id, pr_id, pr_url?, reasons, files, files_more, held_at }`。
 - `backpressurePaused(state)`：反压暂停时通知用户，写明其中几张待合并 PR 是等裁决的高风险 PR。
 - `escalated(high_risk_rejected)` 不重拆，交用户。
 - v1 在 T-062 之前没有界面入口，只能调 `App.supervisor.decideHighRisk`；没人裁决就一直扣着。
