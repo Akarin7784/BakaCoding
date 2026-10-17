@@ -80,6 +80,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
 
   const entries = new Map<string, Entry>();
   const prToTicket = new Map<string, string>();
+  /** 被冲突复投取代、由 9 自己关闭的旧 PR：sync 报上来的变化一律跳过（不当用户手动关闭） */
+  const superseded = new Set<string>();
   const results = new Map<string, MergeResultRecord>();
   const mergeLog: MergeLogItem[] = [];
   /** 合并队列（merge_queued 的单号，先来先合；依赖未就绪的跳过不出队） */
@@ -249,7 +251,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     },
   ): Promise<void> {
     if (replace && "pr_id" in res && res.pr_id && res.pr_id !== replace.old_pr_id) {
-      // 新 PR 已开出：关旧 PR（closed_by: bakacoding），再清旧 worktree
+      // 新 PR 已开出：关旧 PR（closed_by: bakacoding），再清旧 worktree。先标记，close 期间的 sync 也跳过它
+      superseded.add(replace.old_pr_id);
       await requirePr().close(replace.old_pr_id, `冲突复投，由 ${res.pr_id} 取代`);
       if (replace.old_worktree) await deps.worktrees.cleanup(replace.old_worktree);
     }
@@ -498,7 +501,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         const id = prToTicket.get(c.pr_id);
         const e = id ? entries.get(id) : undefined;
         // 只处理本单当前的 PR；已被取代的旧 PR、集成记录、终态的单跳过
-        if (!e || e.pr_id !== c.pr_id || TERMINAL.has(e.status)) continue;
+        if (!e || superseded.has(c.pr_id) || e.pr_id !== c.pr_id || TERMINAL.has(e.status))
+          continue;
         if (c.to === "merged") {
           // 用户在 GitHub 上手动合并：同步为 merged；没有合并 sha，不发 interface_changed
           removeFromQueue(e.ticket.ticket_id);

@@ -356,6 +356,51 @@ describe("模块 9 合并队列（T-035）", () => {
     expect(h.calls.filter((c) => c.startsWith("merge:"))).toEqual([]);
   });
 
+  it("5b. sync：冲突复投后被 9 自己关掉的旧 PR（closed_by: bakacoding）跳过，不改状态、不当用户关闭", async () => {
+    const h = harness();
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    h.merges.set("pr-1", [conflict()]);
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/wt/T-1-r0" });
+    await s.idle();
+    expect(h.calls).toContain("close:pr-1:冲突复投，由 pr-100 取代");
+    expect(s.status("T-1")).toBe("merged");
+    const before = h.statuses.length;
+    h.syncChanges.push({ pr_id: "pr-1", from: "open", to: "closed" });
+    expect(await s.sync()).toEqual([]);
+    expect(s.status("T-1")).toBe("merged");
+    expect(h.statuses.length).toBe(before);
+    expect(escalations(h)).toEqual([]);
+  });
+
+  it("5c. sync：9 正在关旧 PR 时同步报上来它已关闭，跳过，不当用户手动关闭", async () => {
+    const h = harness();
+    const ref: { s?: Awaited<ReturnType<typeof started>> } = {};
+    const inner = h.deps.createPr;
+    let syncDuringClose: SyncChange[] | undefined;
+    h.deps.createPr = async (opts) => {
+      const pr = await inner(opts);
+      return {
+        ...pr,
+        close: async (pr_id: string, reason: string) => {
+          await pr.close(pr_id, reason);
+          // 远端已关、本单记录还指着旧 PR 的这一刻来一次 sync
+          h.syncChanges.push({ pr_id, from: "open", to: "closed" });
+          syncDuringClose = await ref.s!.sync();
+        },
+      };
+    };
+    const s = (ref.s = await started(h));
+    await s.enqueue(ticket("T-1"));
+    h.merges.set("pr-1", [conflict()]);
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/wt/T-1-r0" });
+    await s.idle();
+    expect(syncDuringClose).toEqual([]);
+    expect(s.status("T-1")).toBe("merged");
+    expect(escalations(h)).toEqual([]);
+    expect(h.statuses.filter(([, st]) => st === "escalated")).toEqual([]);
+  });
+
   it("6. 当日预算用完：暂停派新单，在途的单照常合并；重置后恢复", async () => {
     const h = harness();
     const s = await started(h);
