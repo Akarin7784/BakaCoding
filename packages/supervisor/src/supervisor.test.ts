@@ -996,6 +996,18 @@ describe("T-041b 写入范围首尾空白", () => {
       defaulted: false,
     });
   });
+  it("零宽空格 U+200B、U+FEFF 在首尾也算空白（\\s 不含 U+200B）；中间的照常按字面", () => {
+    expect(/\s/u.test("\u200B")).toBe(false);
+    for (const s of ["\u200Blib/**", "lib/**\u200B", "\uFEFFlib/**", "lib/**\uFEFF", "\u200B"])
+      for (const origin of ["split", "manual"] as const) {
+        const r = validateWriteScope([s], { origin });
+        expect(r.ok, JSON.stringify([s, origin])).toBe(false);
+        if (!r.ok) expect(r.errors.map((e) => e.code)).toEqual(["write_scope_unsafe"]);
+      }
+    // 手动单的 "\u200B**" 也不按整仓兜底
+    expect(validateWriteScope(["\u200B**"], { origin: "manual" }).ok).toBe(false);
+    expect(validateWriteScope(["lib/a\u200Bb/**"], { origin: "split" }).ok).toBe(true);
+  });
   it("split：一条空白条目整批退回重拆", async () => {
     const t = setup({
       outputs: [

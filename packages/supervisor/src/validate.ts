@@ -19,8 +19,11 @@ function firstSegmentNotLiteral(glob: string): boolean {
   return GLOB_CHARS.test(glob.split("/")[0] ?? "");
 }
 
-/** 首尾空白（Unicode 空白，含全角空格、换行）：T-041b 起直接拒绝，不 trim。 */
-const EDGE_WHITESPACE = /^\s|\s$/u;
+/**
+ * 首尾空白（Unicode 空白，含全角空格、换行）：T-041b 起直接拒绝，不 trim。
+ * T-041c 补：零宽空格 U+200B 和 U+FEFF（BOM）也算——`\s` 不含 U+200B，U+FEFF 显式列出以免依赖引擎细节。
+ */
+const EDGE_WHITESPACE = /^[\s\u200B\uFEFF]|[\s\u200B\uFEFF]$/u;
 
 export interface ValidateWriteScopeOptions {
   origin: TicketOrigin;
