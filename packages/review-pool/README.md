@@ -13,3 +13,10 @@
   - 读轮次出错时记一条 warn，退回按负载分配，评审照常进行。
 - `set` 只记在本进程内存：轮次记录由模块 8 用评审结果的 `reviewer` 写，7 不写 PR 记录。
 - `storageRoundSource` 调模块 2 的 `query({ project_id, ticket_id })`。模块 2 目前只能按项目查单，所以 `projectOf(ticket_id)` 要由调用方提供；查不到项目时当作没有记录。
+
+## 取消（T-044）
+
+- `review({ …, signal? })` 调模型时把 `{ signal }` 作为模块 1 `call()` 的第 7 个参数传下去，没给 signal 就只传 6 个参数；`deps.call` 可以直接传 `gateway.call`。解析不了换人重试的那次也传。
+- 调模型中途取消：模块 1 中止请求（`call_completed.error.code = ABORTED`）并抛 `AbortError`，7 改抛 `signal.reason`，释放成员、不写 `AssignmentStore`、不再重试。
+- 进入前已中止、排队时中止的行为不变（见 `docs/modules.md` 第 7 节）。
+- 评审是单轮调用，不涉及思考内容回传。

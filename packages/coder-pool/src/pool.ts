@@ -53,6 +53,18 @@ function changedPath(input: unknown): string | undefined {
   return rel === "" || rel === "." ? undefined : rel;
 }
 
+/** 中止时抛的错误：优先 signal.reason，没有就抛名为 AbortError 的错误（与模块 7 一致）。 */
+function abortReason(signal: AbortSignal): unknown {
+  if (signal.reason !== undefined) return signal.reason;
+  const e = new Error("编码已取消");
+  e.name = "AbortError";
+  return e;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw abortReason(signal);
+}
+
 function renderResult(r: ToolResult): string {
   return r.ok ? r.output : `${r.code}: ${r.message}`;
 }
@@ -80,6 +92,8 @@ export function createCoderPool(deps: CoderPoolDeps): CoderPool {
   }
 
   async function runTicket(input: RunTicketInput): Promise<RunTicketResult> {
+    // 进入前已取消：直接抛，不建工具、不调模型
+    throwIfAborted(input.signal);
     const config = deps.getConfig();
     const { provider, model } = config.roles.coder;
     const maxTurns = config.pipeline.max_turns;
@@ -102,7 +116,11 @@ export function createCoderPool(deps: CoderPoolDeps): CoderPool {
     /** 上一轮结束回复解析不了、已追加格式提示时的那条原文 */
     let unparsed: string | undefined;
 
+    const { signal } = input;
+
     for (let turn = 0; turn < maxTurns; turn++) {
+      // 每次调模型前检查取消（也就是工具轮之间）
+      throwIfAborted(signal);
       let res;
       try {
         res = await deps.chat({
@@ -114,8 +132,11 @@ export function createCoderPool(deps: CoderPoolDeps): CoderPool {
           tools: FILE_TOOL_DEFINITIONS,
           messages: [...messages],
           ctx,
+          ...(signal ? { signal } : {}),
         });
       } catch (error) {
+        // 调用中途取消：1 抛 AbortError；统一改抛 signal.reason
+        throwIfAborted(signal);
         if (isBudgetExceeded(error))
           return {
             status: "budget_exceeded",
@@ -124,8 +145,17 @@ export function createCoderPool(deps: CoderPoolDeps): CoderPool {
           };
         throw error;
       }
+      // 1 没理会 signal、在取消后才返回：丢弃这一轮，不执行它的工具
+      throwIfAborted(signal);
       if (res.content) lastText = res.content;
-      messages.push({ role: "assistant", content: res.content, tool_calls: res.tool_calls });
+      // 思考内容原样放进这一轮的 assistant 消息（含 signature，不改写、不截断），下一轮回传；
+      // 没有思考内容时不带 reasoning 字段
+      messages.push({
+        role: "assistant",
+        content: res.content,
+        tool_calls: res.tool_calls,
+        ...(res.reasoning && res.reasoning.length > 0 ? { reasoning: [...res.reasoning] } : {}),
+      });
 
       if (res.tool_calls.length === 0) {
         const fin = parseFinish(res.content);
@@ -147,6 +177,8 @@ export function createCoderPool(deps: CoderPoolDeps): CoderPool {
 
       // 工具调用按顺序串行执行，结果（含拒绝和错误）原样交还模型
       for (const call of res.tool_calls) {
+        // 每个工具调用前检查取消：已取消就不再动 worktree
+        throwIfAborted(signal);
         let result: ToolResult;
         if (!isFileTool(call.name)) {
           result = { ok: false, code: UNKNOWN_TOOL_CODE, message: `没有名为 ${call.name} 的工具` };
@@ -174,6 +206,8 @@ export function createCoderPool(deps: CoderPoolDeps): CoderPool {
         });
       }
     }
+    // 最后一轮的工具执行完才取消：照样按取消处理
+    throwIfAborted(signal);
     return {
       status: "turn_limit",
       summary: `达到 pipeline.max_turns 上限（${maxTurns} 轮）未完成${lastText ? `；最后一条回复：${lastText}` : ""}`,

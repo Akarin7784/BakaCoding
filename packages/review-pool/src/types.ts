@@ -20,9 +20,9 @@ export interface ReviewInput {
   /** 模块 1 call() 的 ctx；是否复投看 ctx.is_resubmit */
   ctx: CallCtx;
   /**
-   * 可选：中止排队。排队等成员时中止会立刻退出队列并抛 signal.reason；
-   * 进入前已中止直接抛；调模型期间不打断（1 的 call() 没有 signal），
-   * 模型返回后发现已中止则丢弃结果、不写 AssignmentStore、直接抛。
+   * 可选：取消评审。进入前已中止直接抛 signal.reason；排队等成员时中止会立刻退出队列并抛；
+   * 调模型时原样传给 1 的 call()（T-044），中途取消由 1 中止请求，7 释放成员、不写 AssignmentStore，
+   * 统一抛 signal.reason；1 没理会 signal、取消后才返回时同样丢弃结果并抛。
    */
   signal?: AbortSignal;
 }
@@ -41,7 +41,10 @@ export interface ReviewPoolConfig {
   backpressure: { reviews_per_member: number };
 }
 
-/** 模块 1 的 call()（只用到 output）。role 固定传 reviewer。 */
+/**
+ * 模块 1 的 call()（只用到 output；与 `@bakacoding/model-gateway` 的 `call` 同形）。role 固定传 reviewer。
+ * 调用方给了 signal 时第 7 个参数传 `{ signal }`，否则不传。
+ */
 export type ModelCall = (
   role: "reviewer",
   provider: string,
@@ -49,6 +52,7 @@ export type ModelCall = (
   effort: Effort,
   prompt: string,
   ctx: CallCtx,
+  options?: { signal?: AbortSignal },
 ) => Promise<{ output: string }>;
 
 /**

@@ -522,7 +522,7 @@ describe("signal：中止排队", () => {
     expect(t.pool.backlog().pending).toBe(0);
   });
 
-  it("调模型期间中止：模型照常返回，但丢弃结论、不写 AssignmentStore、抛 reason、释放成员", async () => {
+  it("调模型期间中止、1 没理会 signal 照常返回：丢弃结论、不写 AssignmentStore、抛 reason、释放成员", async () => {
     const assignments = new InMemoryAssignmentStore();
     const t = setup({ manual: true, assignments });
     const ac = new AbortController();
@@ -537,6 +537,69 @@ describe("signal：中止排队", () => {
     await until(() => t.gates.length === 2);
     t.gates[1]!(PASS);
     expect((await q).reviewer).toBe("reviewer-1");
+  });
+});
+
+describe("signal 透传给 1 的 call()（T-044）", () => {
+  it("给了 signal：第 7 个参数传 { signal }（同一个对象）；没给：只传 6 个参数", async () => {
+    const t = setup();
+    const ac = new AbortController();
+    await t.pool.review({ ...input("T-S1"), signal: ac.signal });
+    await t.pool.review(input("T-S2"));
+    const calls = vi.mocked(t.call).mock.calls;
+    expect(calls[0]).toHaveLength(7);
+    expect(calls[0]![6]).toEqual({ signal: ac.signal });
+    expect(calls[0]![6]!.signal).toBe(ac.signal);
+    expect(calls[1]).toHaveLength(6);
+  });
+
+  it("解析不了换人重试时，重试那次也带 signal", async () => {
+    const t = setup({ outputs: ["不是 JSON", PASS] });
+    const ac = new AbortController();
+    await t.pool.review({ ...input("T-S3"), signal: ac.signal });
+    const calls = vi.mocked(t.call).mock.calls;
+    expect(calls).toHaveLength(2);
+    for (const c of calls) expect(c[6]!.signal).toBe(ac.signal);
+  });
+
+  it("调模型中途取消：1 抛 AbortError，7 统一抛 signal.reason，释放成员、不写 AssignmentStore、不重试", async () => {
+    const assignments = new InMemoryAssignmentStore();
+    let started = 0;
+    const call: ModelCall = vi.fn(
+      (_r, _p, _m, _e, _prompt, _c, options) =>
+        new Promise<{ output: string }>((_, reject) => {
+          started++;
+          options!.signal!.addEventListener("abort", () => {
+            const e = new Error("模型调用已取消");
+            e.name = "AbortError";
+            reject(e);
+          });
+        }),
+    );
+    const t = setup({ call, assignments, getConfig: () => cfg(["solo"], 1) });
+    const ac = new AbortController();
+    const reason = new Error("stop");
+    const p = t.pool.review({ ...input("T-S4"), signal: ac.signal });
+    await until(() => started === 1);
+    ac.abort(reason);
+    await expect(p).rejects.toBe(reason);
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(await assignments.get("T-S4")).toBeUndefined();
+    expect(t.pool.backlog().pending).toBe(0);
+    // 成员已释放：唯一的槽位能给下一单
+    vi.mocked(call).mockImplementation(async () => ({ output: PASS }));
+    expect((await t.pool.review(input("T-S5"))).reviewer).toBe("solo");
+  });
+
+  it("没给 signal 时 call 抛 AbortError 照常向上抛", async () => {
+    const e = new Error("x");
+    e.name = "AbortError";
+    const t = setup({
+      call: vi.fn(async () => {
+        throw e;
+      }),
+    });
+    await expect(t.pool.review(input("T-S6"))).rejects.toBe(e);
   });
 });
 
