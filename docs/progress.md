@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`7419998` · main 上测试：105 个测试文件、1912 个测试全部通过 · 更新日期：2026-10-18（UTC+8）
+> 上次更新时 main：`cff7596` · main 上测试：108 个测试文件、1977 个测试全部通过 · 更新日期：2026-10-18（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -148,7 +148,7 @@ flowchart BT
 | T-094 | 合入后清理该单的 worktree 和 `bakacoding/<id>-r<n>` 分支：模块 4 `cleanupMerged`（只删已包含在目标分支里的分支、不碰集成分支和远程、Windows 重试 + `fs.rm` 兜底、`-c core.longpaths=true`、用 `gitEnv()`、每条 git 带 `REPO_GIT_TIMEOUT_MS` 超时、从不抛错）与进程内 git 写锁 `withGitWriteLock`（T-086 的 `initRepo` / `initialCommit` / `createMainBranch` 和 6 的 merge 落 target 段也接上），`cleanup` 改逐项处理；模块 9 在 `onMerged` / `applyManualMerge` 发完 `interface_changed` 后后台清理，不卡合并循环、失败只 `onError`；模块 6 `diff` 在 worktree 不在时改用主仓库，提交取不到时用 `merge_sha` 算 `<merge>^1..<merge>`；组合根重启补清理（接管后后台跑，整轮总超时）。main `06a4e60`，测试 85 个文件 / 1749 个 | 4、6、9、组合根 | 执行层开发 | 已合入 | #101 | `06a4e60` |
 | T-098 | 模块 3：配置校验与 JSON 解析错误不带原值 | 3 | 基础层开发 | 已合入 | #111 | `cb4e55e` |
 | T-099 | 模块 3：价格表、语言清单、项目路径、提示词模板的错误不带原值和完整路径（`loadPricing` 失败抛 `ConfigError`、`loadLanguageManifests` 抛 `ProjectImportError`；读不到只报文件名和错误码，坏 JSON 只报行列号，校验错误同 `validate`；`importProject`、`promptTemplate` 不再拼完整路径和 `String(e)`）。main `824119c`，测试 87 个文件 / 1765 个 | 3 | 基础层开发 | 已合入 | #113 | `824119c` |
-| UI-03a | 模块 12 仓库准备（`docs/ui-design.md` §4.1，含 T-100）：IPC `repo:check` / `repo:init` / `repo:list-initial-files` / `repo:initial-commit` / `repo:create-main` 接 4 的检查与修复组（主进程做参数类型校验，`files` 拒绝 `..` 和绝对路径，失败只回 `RepoFixError` 固定文案，写操作成功后自动 `backend:reconnect`，identity 只写本仓库 `.git/config`）；项目准备页（git → commit → main → ignored 逐项检查，前一项不过后面灰掉，写操作先确认，首次提交确认框列 include / excluded 并提示暂存会变回未暂存，身份表单只显示缺的字段）+ 只读横幅［准备仓库］入口（按 `repoFixRoute` 路由）；仓库来源是当前目录时不提供初始化和首次提交（`BackendStatus.repoSource`，横幅改为提示先导入项目，主进程写操作回 `cwd_repo`），准备页标题和确认框显示目标文件夹名；只读原因显示 `RepoNotReadyError` 的 message，不是 Git 仓库（含缺配置时）固定提示 `not_git`；T-100：导入检查的 models.json 读不到只报错误码、坏 JSON 只报行列号，价格表用 `ConfigError` 各条；主进程日志（`pendingHighRisk`、写 exclude、组合根 logger / onError）与切换项目失败原因脱敏；modules.md §12 同步。密钥项与模型配置向导留给 UI-03b | 12 | 界面与诊断开发 | 待评审 | #130 | — |
+| UI-03a | 模块 12 仓库准备（`docs/ui-design.md` §4.1，含 T-100）：IPC `repo:check` / `repo:init` / `repo:list-initial-files` / `repo:initial-commit` / `repo:create-main` 接 4 的检查与修复组（主进程做参数类型校验，`files` 拒绝 `..` 和绝对路径，失败只回 `RepoFixError` 固定文案，写操作成功后自动 `backend:reconnect`，identity 只写本仓库 `.git/config`）；项目准备页（git → commit → main → ignored 逐项检查，前一项不过后面灰掉，写操作先确认，首次提交确认框列 include / excluded 并提示暂存会变回未暂存，身份表单只显示缺的字段）+ 只读横幅［准备仓库］入口（按 `repoFixRoute` 路由）；仓库来源是当前目录时不提供初始化和首次提交（`BackendStatus.repoSource`，横幅改为提示先导入项目，主进程写操作回 `cwd_repo`），准备页标题和确认框显示目标文件夹名；只读原因显示 `RepoNotReadyError` 的 message，不是 Git 仓库（含缺配置时）固定提示 `not_git`；T-100：导入检查的 models.json 读不到只报错误码、坏 JSON 只报行列号，价格表用 `ConfigError` 各条；主进程日志（`pendingHighRisk`、写 exclude、组合根 logger / onError）与切换项目失败原因脱敏；modules.md §12 同步。密钥项与模型配置向导留给 UI-03b。main `cff7596`，测试 108 个文件 / 1977 个 | 12 | 界面与诊断开发 | 已合入 | #130 | `cff7596` |
 | UI-02 | 模块 12 新布局骨架（`docs/ui-design.md` §2）：左栏 260 / 收起 56（偏好持久化，< 1024 自动收起）、内容区正文最大宽 760、右面板 360 默认关（「概览」暂放原右侧边栏内容，「动态」空壳；< 1200 改覆盖式抽屉）；无边框窗口（Windows / Linux `titleBarOverlay` 保留系统窗口按钮，自绘拖拽区），最小 960×640；新增 IPC `window:theme` 把主题偏好同步到 `nativeTheme.themeSource`、刷新标题栏按钮颜色；全局快捷键 Ctrl+N / K / , / B / .；设置改为弹窗，Command 面板壳子；现有主管对话、项目群、未归属、设置都挂进新骨架，骨架不新增主按钮。main `0728d2f`，测试 92 个文件 / 1806 个 | 12 | 界面与诊断开发 | 已合入 | #103 | `0728d2f` |
 | T-104 | 模块 3：`importProject` 对根目录 `stat` / `readdir` 出错也包成 `ProjectImportError`，只报错误码（「项目路径无法访问（EACCES）」「读不到项目目录（EACCES）」），不带路径和原 message（T-099 后续）；modules.md §3 同步。main `2903399`，测试 93 个文件 / 1809 个 | 3 | 基础层开发 | 已合入 | #116 | `2903399` |
 | T-101 | 模块 9 / 组合根：`listFiles`、`userMainWorktreeFor` 的 git 调用统一走 repoGit + `gitEnv()` + 超时（T-096 评审跟进）；preview.1 之后 | 9 | 编排层开发 | 待开发 | — | — |
@@ -160,6 +160,7 @@ flowchart BT
 | T-107 | 模块 3：给 `powershellUserEnv()` 补测试（T-088 #126 评审跟进）：挪到内部文件 `secrets-powershell.ts`；mock `spawn` 断言启动参数和脚本文本里没有密钥值、值只在 stdin 里；名字拼进脚本前按白名单再核一次，不在白名单直接拒、不启动 PowerShell；Windows 默认路径（不注入 `userEnv`）保存再清除全程同样断言；接口不变，modules.md §3 同步。UI-03b 之前合入。main `7419998`，测试 105 个文件 / 1912 个 | 3 | 基础层开发 | 已合入 | #128 | `7419998` |
 | T-089 | 模块 1：`testConnection({ provider, model? })`（界面 `provider:test`，IPC 在 UI-03b）：只发一个极小请求（`max_tokens: 1`、关思考、不重试），经 `reserve` 预占并计入台账，记在主管名下（`role: "supervisor"`、`requirement_id: "provider_test"`、`ticket_id: null`，不加新角色）；预算不够返回 `budget_exhausted`、不发请求，不报成连接失败；其余失败按 `no_secret` / `auth_failed` / `quota_exhausted` / `rate_limited` / `network` / `config_error` / `http_error` 返回，不抛错；modules.md §1 同步 | 1 | 基础层开发 | 待评审 | #待定 | — |
 | UI-03b | 模块 12 模型配置：密钥项、向导、「测试连接」；`secret:*` 和 `provider:test` IPC（UI-07 复用）；依赖 T-088（#126）、T-089 | 12 | 界面与诊断开发 | 等 T-089、T-108 | — | — |
+| T-109 | 界面：`App.status.test` 重新连接失败用例偶发超时（flaky），定位并修稳；preview.1 之后处理（UI-03a #130 评审跟进） | 12 | 界面与诊断开发 | 待开发（preview.1 之后） | — | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
