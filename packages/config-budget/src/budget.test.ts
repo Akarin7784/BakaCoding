@@ -7,7 +7,7 @@ import {
   type LedgerStore,
   type LedgerBreakdown,
 } from "@bakacoding/types";
-import { createBudget, type BudgetBusLike } from "./budget.js";
+import { createBudget, perTicketLimit, type BudgetBusLike } from "./budget.js";
 import { computeCost, loadPricing } from "./pricing.js";
 
 const pricing = loadPricing(
@@ -92,6 +92,16 @@ describe("computeCost", () => {
     expect(() =>
       computeCost(pricing, "deepseek-flash", { input: 1, cache_hit_input: 2, output: 0 }, peak),
     ).toThrow(RangeError);
+  });
+});
+
+describe("perTicketLimit", () => {
+  it("比例先换成整数 ppm，没有浮点误差", () => {
+    expect(Math.floor(5_000_000 * 0.41)).toBe(2_049_999);
+    expect(perTicketLimit(5_000_000, 0.41)).toBe(2_050_000);
+    expect(perTicketLimit(100, 0.29)).toBe(29);
+    expect(perTicketLimit(1_000_000, 0.05)).toBe(50_000);
+    expect(perTicketLimit(3, 0.5)).toBe(1);
   });
 });
 

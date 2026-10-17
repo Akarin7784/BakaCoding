@@ -83,11 +83,20 @@ export function entryFromCallCompleted(
   };
 }
 
+/**
+ * 每单上限 = 每日预算 × 比例，向下取整。先把比例换成整数 ppm（百万分之一）再算，
+ * 避免浮点误差（5_000_000 × 0.41 直接乘会得到 2_049_999）。
+ */
+export function perTicketLimit(daily_micro_usd: number, ratio: number): number {
+  const ppm = Math.round(ratio * 1_000_000);
+  return Math.floor((daily_micro_usd * ppm) / 1_000_000);
+}
+
 export function createBudget(opts: CreateBudgetOptions): Budget {
   const { budget, pricing, ledger } = opts;
   const now = opts.now ?? (() => new Date());
   const daily = budget.daily_micro_usd;
-  const perTicket = Math.floor(daily * budget.per_ticket_ratio);
+  const perTicket = perTicketLimit(daily, budget.per_ticket_ratio);
 
   const recordCost = async (entry: LedgerEntry) => {
     await ledger.append(LedgerEntrySchema.parse(entry));
