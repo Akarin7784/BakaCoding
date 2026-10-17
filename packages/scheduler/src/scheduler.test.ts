@@ -1,7 +1,12 @@
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { getConfig } from "@bakacoding/config-budget";
-import { GithubRateLimitError, type MergeResult, type SyncChange } from "@bakacoding/pr";
+import {
+  GithubRateLimitError,
+  SyncPartialError,
+  type MergeResult,
+  type SyncChange,
+} from "@bakacoding/pr";
 import {
   DEPENDENCY_MANIFEST_GLOBS,
   EventSchema,
@@ -2928,6 +2933,80 @@ describe("T-064 定时 sync + 独占区域大小写 + adopt 已合入", () => {
     now += 60_000;
     await ft.flush(now);
     expect(n).toBe(2); // 停了
+    s.stop();
+  });
+
+  it("T-042 SyncPartialError：先应用 changes 再抛 cause；显式 sync 不丢变化", async () => {
+    // T-1 依赖未合的 T-0，留在队列里不自动合并
+    const h = harness();
+    const { GithubAuthError } = await import("@bakacoding/pr");
+    const sha = "ab".repeat(20);
+    const inner = h.deps.createPr;
+    h.deps.createPr = async (opts) => {
+      const pr = await inner(opts);
+      pr.sync = async () => {
+        throw new SyncPartialError(
+          [{ pr_id: "pr-1", from: "open", to: "merged", merge_sha: sha }],
+          new GithubAuthError(401, "sync"),
+        );
+      };
+      return pr;
+    };
+    const s = await started(h);
+    await s.enqueue(ticket("T-0"));
+    await s.enqueue(ticket("T-1", { depends_on: ["T-0"] }));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/wt/T-1-r0" });
+    await s.idle();
+    expect(s.status("T-1")).toBe("merge_queued");
+    await expect(s.sync()).rejects.toMatchObject({ name: "GithubAuthError" });
+    expect(s.status("T-1")).toBe("merged"); // 反向：若不先 apply changes，这里仍是 merge_queued
+  });
+
+  it("T-042 SyncPartialError：限流 / 鉴权看 cause（不看包装名）", async () => {
+    let now = 0;
+    const ft = fakeTimers(() => now);
+    const h = harness();
+    h.deps.sync_poll_ms = 1000;
+    h.deps.timers = ft.timers;
+    h.deps.clock = { now: () => now, sleep: async (ms) => void (now += ms) };
+    const { GithubAuthError } = await import("@bakacoding/pr");
+    let n = 0;
+    const inner = h.deps.createPr;
+    h.deps.createPr = async (opts) => {
+      const pr = await inner(opts);
+      pr.sync = async () => {
+        n++;
+        if (n === 1) {
+          // 包装限流：若不 unwrap，rateLimitWait 看不到 retry_after_ms → 只按普通失败退避 1s
+          throw new SyncPartialError([], rateLimit(5000));
+        }
+        if (n === 2) {
+          // 包装鉴权：若不 unwrap，errorName 是 SyncPartialError → 不会停定时同步
+          throw new SyncPartialError([], new GithubAuthError(401, "sync"));
+        }
+        return [];
+      };
+      return pr;
+    };
+    const s = createScheduler(h.deps);
+    await s.start();
+    s.startSyncLoop();
+    now = 1000;
+    await ft.flush(now);
+    expect(n).toBe(1);
+    expect(s.syncState().last_error?.name).toBe("GithubRateLimitError");
+    now = 1000 + 4999;
+    await ft.flush(now);
+    expect(n).toBe(1); // 仍在 retry_after 窗口
+    now = 1000 + 5000;
+    await ft.flush(now);
+    expect(n).toBe(2);
+    expect(s.syncState().disabled_reason).toBe("auth");
+    expect(s.syncState().enabled).toBe(false);
+    expect(s.syncState().last_error?.name).toBe("GithubAuthError");
+    now += 60_000;
+    await ft.flush(now);
+    expect(n).toBe(2);
     s.stop();
   });
 

@@ -4,6 +4,8 @@ export const MODULE_NAME = "@bakacoding/supervisor" as const;
 
 export {
   SPLIT_MAX_ATTEMPTS,
+  INTEGRATION_DIFF_MAX_CODEPOINTS,
+  MainMergeError,
   type BackpressurePausedInput,
   type ChatReply,
   type EscalationAction,
@@ -20,6 +22,10 @@ export {
   type TicketOrigin,
   type TicketValidationError,
   type UserMessage,
+  type IntegrationReview,
+  type IntegrationBlockReason,
+  type MainMergeResult,
+  type MainMergeErrorCode,
 } from "./types.js";
 export { createSupervisor } from "./supervisor.js";
 export { validateWriteScope } from "./validate.js";
