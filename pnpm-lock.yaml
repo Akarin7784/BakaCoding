@@ -209,6 +209,9 @@ importers:
       '@bakacoding/event-bus':
         specifier: workspace:*
         version: link:../event-bus
+      '@bakacoding/pr':
+        specifier: workspace:*
+        version: link:../pr
       '@types/better-sqlite3':
         specifier: ^9.6.0
         version: 9.6.0

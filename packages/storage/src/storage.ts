@@ -116,9 +116,27 @@ export interface BusLike {
   subscribe(type: "*", handler: (event: BakaEvent) => void | Promise<void>): () => void;
 }
 
+/**
+ * 模块 6 的 PR 记录（`PrRecord`）。这里只按结构约定 `pr_id` 和 `kind`，不依赖模块 6 的包；
+ * `prStore()` 的返回值在结构上满足模块 6 的 `PrStore`。
+ */
+export interface PrRecordLike {
+  pr_id: string;
+  kind: string;
+}
+
+/** 模块 6 `PrStore` 的结构等价接口。 */
+export interface PrRecordStore<T extends PrRecordLike> {
+  get(pr_id: string): Promise<T | undefined>;
+  put(record: T): Promise<void>;
+  list(): Promise<T[]>;
+}
+
 export interface Storage {
   /** 写入一条事件（幂等：同一 event_id 只记一次）。attach 时由总线调用。 */
   ingest(event: BakaEvent): void;
+  /** 给模块 6 注入的 PR 记录存储；`kind` 单独成列并原样存回，缺 `kind` 的记录拒绝写入。 */
+  prStore<T extends PrRecordLike>(): PrRecordStore<T>;
   /** 用 "*" 订阅总线全部事件落库，返回取消订阅函数。 */
   attach(bus: BusLike): () => void;
   /** 库里最大 seq + 1，空库为 0；启动时传给总线的 `initialSeq`。 */
@@ -472,6 +490,49 @@ export function openStorage(options: StorageOptions): Storage {
     ).run(ticket_id, round.round, JSON.stringify(deepRedact(round)), now().toISOString());
   });
 
+  const putPrRecord = write((record: PrRecordLike) => {
+    if (typeof record.pr_id !== "string" || record.pr_id === "") {
+      throw new TypeError("PR 记录缺少 pr_id");
+    }
+    if (typeof record.kind !== "string" || record.kind === "") {
+      throw new TypeError(`PR 记录 ${record.pr_id} 缺少 kind，不能写入`);
+    }
+    db.prepare(
+      `INSERT INTO pr_records (pr_id, kind, record, saved_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(pr_id) DO UPDATE SET kind = excluded.kind, record = excluded.record, saved_at = excluded.saved_at`,
+    ).run(record.pr_id, record.kind, JSON.stringify(record), now().toISOString());
+  });
+
+  function readPrRow<T extends PrRecordLike>(row: { kind: string; record: string }): T {
+    // 以 kind 列为准，防止记录正文里缺了 kind 被误判成别的类型
+    return { ...(JSON.parse(row.record) as T), kind: row.kind };
+  }
+
+  function prStore<T extends PrRecordLike>(): PrRecordStore<T> {
+    return {
+      get(pr_id) {
+        const row = db.prepare("SELECT kind, record FROM pr_records WHERE pr_id = ?").get(pr_id) as
+          { kind: string; record: string } | undefined;
+        return Promise.resolve(row ? readPrRow<T>(row) : undefined);
+      },
+      put(record) {
+        try {
+          putPrRecord(record);
+          return Promise.resolve();
+        } catch (err) {
+          return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+        }
+      },
+      list() {
+        const rows = db.prepare("SELECT kind, record FROM pr_records ORDER BY rowid").all() as {
+          kind: string;
+          record: string;
+        }[];
+        return Promise.resolve(rows.map((r) => readPrRow<T>(r)));
+      },
+    };
+  }
+
   const saveMergeResult = write((ticket_id: string, result: DiagMergeResult) => {
     db.prepare(
       `INSERT INTO merge_results (ticket_id, result, saved_at) VALUES (?, ?, ?)
@@ -623,6 +684,7 @@ export function openStorage(options: StorageOptions): Storage {
     }),
     saveTicket,
     savePrRecord,
+    prStore,
     saveMergeResult,
     query,
     saveDecision,

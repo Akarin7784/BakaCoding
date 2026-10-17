@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createEventBus, type PublishInput } from "@bakacoding/event-bus";
+import type { PrRecord, PrStore } from "@bakacoding/pr";
 import type { BakaEvent } from "@bakacoding/types";
 import { MODULE_ID, openStorage, StorageLeaseError, type Storage } from "./index.js";
 
@@ -383,6 +384,49 @@ describe("@bakacoding/storage", () => {
     ).toEqual(["call_completed"]);
     expect((await src.queryTickets({ project_id: "P-1" })).map((t) => t.ticket_id)).toEqual([
       "T-1",
+    ]);
+  });
+
+  it("prStore 满足模块 6 的 PrStore：kind 原样存回，缺 kind 拒绝写入，重开库后还在", async () => {
+    const path = tmpDb();
+    const s1 = openStorage({ path });
+    const store: PrStore = s1.prStore<PrRecord>();
+    const base = {
+      branch: "integration",
+      base_branch: "main",
+      base_sha: "a".repeat(40),
+      head_sha: "b".repeat(40),
+      status: "open" as const,
+      created_ts: "2026-10-17T00:00:00.000Z",
+      updated_ts: "2026-10-17T00:00:00.000Z",
+    };
+    const integ: PrRecord = { ...base, pr_id: "pr-int-1", kind: "integration", repo_path: "/repo" };
+    const ticket: PrRecord = {
+      ...base,
+      pr_id: "pr-1",
+      kind: "ticket",
+      ticket_id: "T-1",
+      branch: "bc/T-1",
+      base_branch: "integration",
+      worktree_path: "/wt/T-1",
+    };
+    await store.put(ticket);
+    await store.put(integ);
+    await store.put({ ...ticket, status: "merged" });
+    await expect(
+      store.put({ ...ticket, pr_id: "pr-x", kind: undefined } as unknown as PrRecord),
+    ).rejects.toThrow(/缺少 kind/);
+    s1.close();
+
+    const s2 = open({ path });
+    const again: PrStore = s2.prStore<PrRecord>();
+    expect((await again.get("pr-1"))?.kind).toBe("ticket");
+    expect((await again.get("pr-1"))?.status).toBe("merged");
+    expect((await again.get("pr-int-1"))?.kind).toBe("integration");
+    expect(await again.get("pr-x")).toBeUndefined();
+    expect((await again.list()).map((r) => [r.pr_id, r.kind])).toEqual([
+      ["pr-1", "ticket"],
+      ["pr-int-1", "integration"],
     ]);
   });
 });

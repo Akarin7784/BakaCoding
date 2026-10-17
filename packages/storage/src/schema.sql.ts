@@ -120,6 +120,13 @@ export const MIGRATIONS: string[] = [
     PRIMARY KEY (ticket_id, round)
   );
 
+  CREATE TABLE pr_records (
+    pr_id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    record TEXT NOT NULL,
+    saved_at TEXT NOT NULL
+  );
+
   CREATE TABLE merge_results (
     ticket_id TEXT PRIMARY KEY,
     result TEXT NOT NULL,

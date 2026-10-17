@@ -17,6 +17,7 @@
   },
   "devDependencies": {
     "@bakacoding/event-bus": "workspace:*",
+    "@bakacoding/pr": "workspace:*",
     "@types/better-sqlite3": "^9.6.0"
   }
 }
