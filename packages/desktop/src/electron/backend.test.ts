@@ -95,6 +95,13 @@ describe("startBackend（T-063）", () => {
     expect(backend.status().mode).toBe("live");
     expect(backend.status().takeOver).toBeDefined();
     expect(backend.status().storage?.ok).toBe(true);
+    // T-067：live 时 syncState 直接来自 9（无 GITHUB_TOKEN 走本地模式也能读）
+    const st = backend.syncState();
+    expect(st.available).toBe(true);
+    if (st.available) {
+      expect(typeof st.enabled).toBe("boolean");
+      expect(st.consecutive_failures).toBe(0);
+    }
     const ro = openStorageReadonly({ path: db, logger: { warn: () => {} } });
     const seq = ro.maxSeq();
     expect(seq === null || typeof seq === "number").toBe(true);
@@ -155,6 +162,11 @@ describe("startBackend（T-063）", () => {
     });
     expect(backend.status().mode).toBe("readonly");
     expect(backend.status().reason).toBe("缺少环境变量 DEEPSEEK_API_KEY");
+    // T-067：只读时同步状态不可用，原因只写变量名
+    expect(backend.syncState()).toEqual({
+      available: false,
+      reason: "只读模式：缺少环境变量 DEEPSEEK_API_KEY",
+    });
     await backend.stop();
   });
 
@@ -175,6 +187,7 @@ describe("startBackend（T-063）", () => {
       },
     });
     expect(JSON.stringify(backend.status())).not.toContain(secret);
+    expect(JSON.stringify(backend.syncState())).not.toContain(secret);
     expect(logs.join("\n")).not.toContain(secret);
     await backend.stop();
   });

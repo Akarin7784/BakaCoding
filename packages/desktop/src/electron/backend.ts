@@ -18,8 +18,9 @@ import {
   type StorageHealth,
 } from "@bakacoding/storage";
 import type { PendingHighRisk, TakeOverReport } from "@bakacoding/supervisor";
-import type { DesktopDecideHighRiskResult } from "../shared/api.js";
+import type { DesktopDecideHighRiskResult, DesktopSyncState } from "../shared/api.js";
 import { DB_PATH_ENV, DEFAULT_DB_RELATIVE, resolveDbPath } from "./config.js";
+import { toDesktopSyncState, unavailableSyncState } from "./sync-state.js";
 
 /** 仓库路径：`--repo` > BAKACODING_REPO > cwd */
 export const REPO_ENV = "BAKACODING_REPO";
@@ -83,6 +84,8 @@ export interface BackendHandle {
   onPendingHighRisk(listener: (list: PendingHighRisk[]) => void): () => void;
   /** 主动再取一次清单并推给订阅方（PR 状态变化时由 IPC 层调用） */
   refreshPendingHighRisk(): void;
+  /** 9 的定时同步状态（T-067）；只读 / 未接线为 available:false；错误信息已脱敏截断 */
+  syncState(): DesktopSyncState;
   stop(): Promise<void>;
 }
 
@@ -386,6 +389,16 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
       };
     },
     refreshPendingHighRisk,
+    syncState(): DesktopSyncState {
+      if (!app) return unavailableSyncState(reason);
+      try {
+        return toDesktopSyncState(app.scheduler.syncState(), env);
+      } catch (e) {
+        const name = e instanceof Error ? e.name : "unknown";
+        logger.warn(`syncState 失败（${name}）`);
+        return { available: false, reason: `读取同步状态失败（${name}）` };
+      }
+    },
     async stop() {
       cleanupPartial();
     },
