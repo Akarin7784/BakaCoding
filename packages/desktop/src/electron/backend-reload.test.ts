@@ -91,7 +91,8 @@ describe("BackendSwitcher.reload（T-093）", () => {
     sw.onSwap(swapped);
     await expect(sw.reload()).resolves.toEqual({ state: "reloaded" });
     expect(old.stop).toHaveBeenCalledTimes(1);
-    expect(start).toHaveBeenCalledWith("/repo-a");
+    // 假后端没带 repoSource：按 cwd 传下去（UI-03a 评审 B1）
+    expect(start).toHaveBeenCalledWith("/repo-a", "cwd");
     expect(swapped).toHaveBeenCalledTimes(1);
     expect(sw.status()).toEqual({ mode: "live" });
   });
@@ -331,7 +332,7 @@ describe("BackendSwitcher.reload（T-093）", () => {
     const start = vi.fn(async () => next.handle);
     const sw = make(ro, start);
     await expect(sw.reconnect()).resolves.toEqual({ state: "reloaded" });
-    expect(start).toHaveBeenCalledWith("/r");
+    expect(start).toHaveBeenCalledWith("/r", "cwd");
     expect(sw.status().mode).toBe("live");
   });
 });
@@ -530,5 +531,43 @@ describe("sanitizeReloadReason（T-093）", () => {
     expect(out).toContain("打不开");
     expect(out).toContain("<仓库>");
     expect(out).toContain("<路径>");
+  });
+});
+
+describe("重载 / 切换沿用原仓库来源（UI-03a 评审 B1）", () => {
+  it("cwd 来源重新连接：按 cwd 传给 start；再失败的占位后端也还是 cwd", async () => {
+    const ro = readonlyBackend("/unzip", "这个文件夹还不是 Git 仓库", "cwd");
+    const bad = fake("/unzip", { mode: "readonly", reason: "这个文件夹还不是 Git 仓库" });
+    const start = vi.fn(async () => bad.handle);
+    const sw = make(ro, start);
+    await sw.reconnect();
+    expect(start).toHaveBeenCalledWith("/unzip", "cwd");
+    expect(sw.status()).toMatchObject({ mode: "readonly", repoSource: "cwd" });
+  });
+
+  it("上次导入的来源重新连接：按 last_import 传；新切换的仓库不带来源（按新导入）", async () => {
+    const ro = readonlyBackend("/r", "写入锁被占用（pid 1）", "last_import");
+    const next = fake("/r");
+    const start = vi.fn<(repo: string, source?: string) => Promise<BackendHandle>>(
+      async () => next.handle,
+    );
+    const sw = make(ro, start);
+    await sw.reconnect();
+    expect(start).toHaveBeenLastCalledWith("/r", "last_import");
+    await sw.switchTo("/other");
+    expect(start).toHaveBeenLastCalledWith("/other");
+  });
+
+  it("切换失败退回原仓库：按原来源（cwd）重新组装", async () => {
+    const old = readonlyBackend("/unzip", "这个文件夹还不是 Git 仓库", "cwd");
+    const failing = fake("/new", { mode: "readonly", reason: "x" });
+    const start = vi.fn<(repo: string, source?: string) => Promise<BackendHandle>>(
+      async () => failing.handle,
+    );
+    const sw = make(old, start);
+    await sw.switchTo("/new");
+    expect(start).toHaveBeenNthCalledWith(1, "/new");
+    expect(start).toHaveBeenNthCalledWith(2, "/unzip", "cwd");
+    expect(sw.status().repoSource).toBe("cwd");
   });
 });

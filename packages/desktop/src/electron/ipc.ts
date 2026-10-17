@@ -33,6 +33,7 @@ import {
 import { errorDetail, sanitizeSyncErrorMessage } from "./sync-state.js";
 import type { EventReader } from "./reader.js";
 import { isWindowThemeSource } from "./window-chrome.js";
+import { repoFixHandlers, type RepoFixDeps } from "./repo-fix-ipc.js";
 
 /**
  * 主进程 ipcMain 的最小子集，便于测试注入。
@@ -355,7 +356,6 @@ export const WINDOW_THEME_FAILED = "主题设置失败";
  * 主题同步 IPC（UI-02）：渲染进程把「跟随系统 / 浅 / 深」发过来，主进程设 nativeTheme.themeSource，
  * 再按实际深浅刷新标题栏叠层颜色。参数不认识就拒绝，不改主进程状态。
  */
-
 export function serveWindowTheme(ipc: IpcMainLike, deps: WindowThemeDeps): () => void {
   ipc.handle(IPC_CHANNELS.windowTheme, (...args: unknown[]) => {
     const source = args[1];
@@ -377,5 +377,27 @@ export function serveWindowTheme(ipc: IpcMainLike, deps: WindowThemeDeps): () =>
   });
   return () => {
     ipc.removeHandler(IPC_CHANNELS.windowTheme);
+  };
+}
+
+/**
+ * 项目准备页的仓库检查与修复 IPC（UI-03a）：`repo:check` / `repo:init` / `repo:list-initial-files` /
+ * `repo:initial-commit` / `repo:create-main`，都作用于当前后端的仓库根。参数在主进程做类型校验；
+ * 失败回 `{ ok: false, code, reason }`（RepoFixError 固定文案）；写操作成功后自动 `backend:reconnect`。
+ */
+export function serveRepoFix(ipc: IpcMainLike, deps: RepoFixDeps): () => void {
+  const h = repoFixHandlers(deps);
+  // 第一个参数是 IpcMainInvokeEvent，渲染进程的参数从 args[1] 起（T-074）
+  ipc.handle(IPC_CHANNELS.repoCheck, () => h.check());
+  ipc.handle(IPC_CHANNELS.repoInit, (...args: unknown[]) => h.init(args[1]));
+  ipc.handle(IPC_CHANNELS.repoListInitialFiles, () => h.listInitialFiles());
+  ipc.handle(IPC_CHANNELS.repoInitialCommit, (...args: unknown[]) => h.initialCommit(args[1]));
+  ipc.handle(IPC_CHANNELS.repoCreateMain, () => h.createMain());
+  return () => {
+    ipc.removeHandler(IPC_CHANNELS.repoCheck);
+    ipc.removeHandler(IPC_CHANNELS.repoInit);
+    ipc.removeHandler(IPC_CHANNELS.repoListInitialFiles);
+    ipc.removeHandler(IPC_CHANNELS.repoInitialCommit);
+    ipc.removeHandler(IPC_CHANNELS.repoCreateMain);
   };
 }
