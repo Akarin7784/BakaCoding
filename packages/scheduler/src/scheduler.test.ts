@@ -2,7 +2,13 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { getConfig } from "@bakacoding/config-budget";
 import { GithubRateLimitError, type MergeResult, type SyncChange } from "@bakacoding/pr";
-import { EventSchema, type Diff, type EventOf, type TicketStatus } from "@bakacoding/types";
+import {
+  DEPENDENCY_MANIFEST_GLOBS,
+  EventSchema,
+  type Diff,
+  type EventOf,
+  type TicketStatus,
+} from "@bakacoding/types";
 import { isUnsafeGlob as workspaceIsUnsafeGlob } from "@bakacoding/workspace";
 import {
   BackpressureController,
@@ -557,7 +563,7 @@ describe("模块 9 合并队列（T-035）", () => {
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
-  it("R1a. 合并成功后的收尾（发 interface_changed）抛错：该单上报 github_manual（merged_but），队列继续，无未处理 rejection", async () => {
+  it("R1a. 合并成功后的收尾（发 interface_changed）抛错：状态保持 merged，发 escalated(merged_but)，依赖方照常放行，无未处理 rejection（T-038）", async () => {
     const h = harness();
     const pub = h.deps.bus.publish;
     let failed = false;
@@ -571,14 +577,27 @@ describe("模块 9 合并队列（T-035）", () => {
     const s = await started(h);
     await s.enqueue(ticket("T-1"));
     await s.enqueue(ticket("T-2"));
+    await s.enqueue(ticket("T-3", { depends_on: ["T-1"] }));
     await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1" });
     await s.submit({ ticket_id: "T-2", pr_id: "pr-2", worktree_path: "/2" });
     await s.idle();
     expect(escalations(h).map((e) => [e.ticket_id, e.payload])).toEqual([
-      ["T-1", { reason: "github_manual", detail: "merged_but: bus down" }],
+      [
+        "T-1",
+        {
+          reason: "merged_but",
+          resubmit_counts: { review: 0, conflict: 0 },
+          detail: "merged_but: bus down",
+        },
+      ],
     ]);
-    expect(s.status("T-1")).toBe("escalated");
+    for (const e of escalations(h)) expect(EventSchema.safeParse(e).success).toBe(true);
+    expect(s.status("T-1")).toBe("merged");
+    expect(h.statuses.filter(([id]) => id === "T-1").map(([, st]) => st)).not.toContain(
+      "escalated",
+    );
     expect(s.status("T-2")).toBe("merged");
+    expect(s.dependencyState("T-3")).toBe("ready");
     expect(
       h.published.filter((e) => e.type === "interface_changed").map((e) => e.ticket_id),
     ).toEqual(["T-2"]);
@@ -1299,42 +1318,27 @@ describe("T-039 派单与编码槽位", () => {
     expect(() => s.lock("T-x", ["a"])).toThrow(/未登记/);
   });
 
-  it("D6. write_scope_requested：能加锁回 granted 并扩大写入范围；重叠回 denied 并上报 scope_lock_failed（不改状态）；未登记的单 denied", async () => {
+  it("D6. extendScope（T-038）：能加锁并扩大写入范围；重叠返回失败并上报 scope_lock_failed（不改状态）；未登记的单失败；9 不再订阅 write_scope_requested、不发 granted/denied", async () => {
     const h = harness();
     const d = withHandle(h);
     const s = await started(h);
     await s.enqueue(ticket("T-1", { write_scope: ["src/a/**"] }));
     await s.enqueue(ticket("T-2", { write_scope: ["src/b/**"] }));
     await settle(s);
-    const req = (ticket_id: string, request_id: string, requested_scope: string[]) => ({
-      type: "write_scope_requested",
-      event_id: `e-${request_id}`,
-      seq: 1,
-      ts: "2026-10-17T08:00:00.000Z",
-      requirement_id: "req-1",
-      ticket_id,
-      trace_id: "trace-1",
-      span_id: "span-4",
-      parent_span_id: null,
-      payload: { request_id, requested_scope, reason: "需要改公共函数" },
+    expect(h.fire("write_scope_requested", {})).toBeUndefined(); // 没有订阅
+    expect(await s.extendScope("T-1", ["src/c.ts"])).toEqual({ ok: true });
+    expect(await s.extendScope("T-2", ["src/a/x.ts"])).toEqual({
+      ok: false,
+      reason: "申请的范围与在途单 T-1 的写入范围重叠",
     });
-    await h.fire("write_scope_requested", req("T-1", "r1", ["src/c.ts"]));
-    await h.fire("write_scope_requested", req("T-2", "r2", ["src/a/x.ts"]));
-    await h.fire("write_scope_requested", req("T-9", "r3", ["x"]));
+    expect(await s.extendScope("T-9", ["x"])).toEqual({
+      ok: false,
+      reason: "调度器没有登记这张单：T-9",
+    });
     const replies = h.published
       .filter((e) => e.type.startsWith("write_scope_") || e.type === "escalated")
       .map((e) => [e.type, e.ticket_id, e.payload]);
     expect(replies).toEqual([
-      ["write_scope_granted", "T-1", { request_id: "r1", granted_scope: ["src/c.ts"] }],
-      [
-        "write_scope_denied",
-        "T-2",
-        {
-          request_id: "r2",
-          requested_scope: ["src/a/x.ts"],
-          reason: "申请的范围与在途单 T-1 的写入范围重叠",
-        },
-      ],
       [
         "escalated",
         "T-2",
@@ -1344,11 +1348,6 @@ describe("T-039 派单与编码槽位", () => {
           detail: "申请的范围与在途单 T-1 的写入范围重叠：src/a/x.ts",
         },
       ],
-      [
-        "write_scope_denied",
-        "T-9",
-        { request_id: "r3", requested_scope: ["x"], reason: "调度器没有登记这张单：T-9" },
-      ],
     ]);
     expect(s.snapshot().find((v) => v.ticket_id === "T-1")!.locked_scope).toEqual([
       "src/a/**",
@@ -1356,6 +1355,43 @@ describe("T-039 派单与编码槽位", () => {
     ]);
     expect(s.status("T-2")).toBe("pending"); // 进队前状态归 8，9 不改
     expect(d.handled).toEqual(["T-1", "T-2"]);
+  });
+
+  it("D6b. extendScope：不安全范围按与所有范围重叠处理，有在途单时失败；已终态的单失败", async () => {
+    const h = harness();
+    const d = withHandle(h);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { write_scope: ["src/a/**"] }));
+    await s.enqueue(ticket("T-2", { write_scope: ["lib/**"] }));
+    await settle(s);
+    const r = await s.extendScope("T-2", ["lib/../src/a/x.ts"]);
+    expect(r.ok).toBe(false);
+    expect(s.snapshot().find((v) => v.ticket_id === "T-2")!.locked_scope).toEqual(["lib/**"]);
+    await pass(s, d, "T-1");
+    expect(s.status("T-1")).toBe("merged");
+    expect(await s.extendScope("T-1", ["src/z.ts"])).toEqual({
+      ok: false,
+      reason: "单子已是终态 merged",
+    });
+  });
+
+  it("D6c. high_risk：submit 带的标记出现在 snapshot()，只打标、照常合并", async () => {
+    const h = harness();
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.enqueue(ticket("T-2"));
+    expect(s.snapshot().every((v) => v.high_risk === false)).toBe(true);
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", high_risk: true });
+    expect(s.snapshot().find((v) => v.ticket_id === "T-1")!.high_risk).toBe(true);
+    await s.submit({ ticket_id: "T-2", pr_id: "pr-2", worktree_path: "/2" });
+    await s.idle();
+    expect(s.status("T-1")).toBe("merged");
+    expect(s.status("T-2")).toBe("merged");
+    expect(s.snapshot().find((v) => v.ticket_id === "T-2")!.high_risk).toBe(false);
+    // 默认独占区域以 8 判定依赖类单用的同一份清单开头
+    expect(DEFAULT_EXCLUSIVE_ZONES.slice(0, DEPENDENCY_MANIFEST_GLOBS.length)).toEqual([
+      ...DEPENDENCY_MANIFEST_GLOBS,
+    ]);
   });
 
   it("D7. 依赖没合入不派，合入后派", async () => {

@@ -42,17 +42,7 @@ export type PublishInput<K extends EventType = EventType> = Omit<
 
 /** 只用到的总线能力（与模块 0 的 EventBus 兼容）。 */
 export interface SchedulerBus {
-  publish(
-    input:
-      | PublishInput<"escalated">
-      | PublishInput<"interface_changed">
-      | PublishInput<"write_scope_granted">
-      | PublishInput<"write_scope_denied">,
-  ): unknown;
-  subscribe(
-    type: "write_scope_requested",
-    handler: (e: EventOf<"write_scope_requested">) => void | Promise<void>,
-  ): () => void;
+  publish(input: PublishInput<"escalated"> | PublishInput<"interface_changed">): unknown;
   subscribe(
     type: "review_backlog",
     handler: (e: EventOf<"review_backlog">) => void | Promise<void>,
@@ -277,10 +267,12 @@ export interface QueueEntryView {
   dependency: DependencyState;
   /** 因当日预算用完放回 pending、等预算重置后续跑 */
   budget_paused: boolean;
+  /** 8 在 submit 时标的高风险（依赖类单，T-038）；只打标，9 照常合并 */
+  high_risk: boolean;
 }
 
 export interface Scheduler {
-  /** 启动：建 6（注入 eventContext），订阅 review_backlog / supervisor_backlog */
+  /** 启动：建 6（注入 eventContext），订阅 review_backlog / supervisor_backlog（T-038 起不再订阅 write_scope_requested） */
   start(): Promise<void>;
   /** 停止：停合并循环、取消等待中的定时器、停止派单，并中止交给 8 的 handle / resume（signal，T-039） */
   stop(): void;
@@ -310,7 +302,18 @@ export interface Scheduler {
      * 不同就保守地重审。
      */
     base_commit?: string;
+    /** 依赖类单（改了依赖清单或锁文件，或需求单 kind: "dependency"）由 8 标为高风险（T-038）；只打标，不扣留 */
+    high_risk?: boolean;
   }): Promise<void>;
+  /**
+   * 8 转来的范围外写入申请（T-038，8 是 write_scope_requested 的唯一答复方，9 不再订阅它）：对本单重新加锁，
+   * 成功把范围并进本单 write_scope 并返回 ok；失败不改锁、发 `escalated(scope_lock_failed)`，返回原因。
+   * 未登记或已终态的单返回失败。granted / denied 事件由 8 发。
+   */
+  extendScope(
+    ticket_id: string,
+    scope: readonly string[],
+  ): Promise<{ ok: true } | { ok: false; reason: string }>;
   /** 给 6 的 eventContext：按 ticket_id，其次按 pr_id（含已关闭的旧 PR）查本单的 trace */
   eventContext: EventContextFn;
   /** 最近一次合并尝试的结果；没有尝试过返回 undefined */

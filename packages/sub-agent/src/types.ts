@@ -49,6 +49,11 @@ export interface SubAgentTicket {
   write_scope?: readonly string[];
   /** 项目架构约束；不给就按 project_id 从 deps.architectureConstraints 取 */
   architecture_constraints?: readonly string[];
+  /**
+   * 可选（T-038）：主管标的依赖类单。给了 `"dependency"` 就按高风险处理；没给时 8 看 diff 是否改了
+   * `DEPENDENCY_MANIFEST_GLOBS`（依赖清单或锁文件，只改锁文件也算）。
+   */
+  kind?: "dependency";
 }
 
 /**
@@ -91,16 +96,25 @@ export type MergeQueueSubmit = (input: {
   round?: number;
   review_resubmits?: number;
   base_commit?: string;
+  /** 依赖类单标高风险（T-038）；只打标，9 不扣留。只在为 true 时带 */
+  high_risk?: boolean;
 }) => MaybePromise<void>;
 
 /** 发布入参：seq / event_id / ts 由总线补（与模块 0 PublishInput 兼容）。 */
-export type SubAgentPublishInput<K extends "escalated" | "group_message"> = Omit<
-  EventOf<K>,
-  "seq" | "event_id" | "ts"
-> & { event_id?: string; ts?: string };
+export type SubAgentPublishInput<
+  K extends "escalated" | "group_message" | "write_scope_granted" | "write_scope_denied",
+> = Omit<EventOf<K>, "seq" | "event_id" | "ts"> & { event_id?: string; ts?: string };
 
+/**
+ * 8 发的事件：上报、群消息，以及对本单越界写申请的答复 `write_scope_granted` / `write_scope_denied`
+ * （T-038 起 8 是 `write_scope_requested` 的唯一答复方）。答复要让 4 收到，须与 `scopeRequests.bus` 是同一条总线。
+ */
 export type SubAgentPublish = (
-  event: SubAgentPublishInput<"escalated"> | SubAgentPublishInput<"group_message">,
+  event:
+    | SubAgentPublishInput<"escalated">
+    | SubAgentPublishInput<"group_message">
+    | SubAgentPublishInput<"write_scope_granted">
+    | SubAgentPublishInput<"write_scope_denied">,
 ) => unknown;
 
 /** 8 读到的配置子集；模块 3 的 Config 在结构上满足它。 */
@@ -170,17 +184,26 @@ export interface SubAgentDeps {
    */
   permissions?: TicketPermissionStore;
   /**
-   * 越界写申请（T-048）：给了就在每次调编码池时带 `scope_requests`（4 的 `ScopeRequestOptions`：本单的
-   * requirement_id 与 trace、这里的 bus 和 timeout_ms），5 原样交给 4 的 `createTools`；不给就不带（越界写直接拒绝）。
-   * 8 只透传、不批：批准方归 T-038。8 包一层 bus，看到本单自己发出的申请被批准时，把 `granted_scope`
-   * 写回需求单记录（同 `recordGrantedScope`），因为 5 在 runTicket 结束时会 release 4 的登记表，批准的范围随之清空。
+   * 越界写申请（T-048 / T-038）：给了就在每次调编码池时带 `scope_requests`（4 的 `ScopeRequestOptions`：本单的
+   * requirement_id 与 trace、包装后的 bus 和 timeout_ms），5 原样交给 4 的 `createTools`；不给就不带（越界写直接拒绝）。
+   * T-038 起 8 是 `write_scope_requested` 的唯一答复方（9 不再订阅）：包装后的 bus 把 4 发的申请原样发到这条总线，
+   * 再由 8 审批——不安全的路径直接拒（不交 9）；落在「写入范围 ∪ 已批准范围」里且没被清单显式 deny 的直接批；
+   * 范围外的交 `deps.scheduler.extendScope`。每次批准都先用 `deps.publish` 发 `write_scope_granted`，再写回需求单记录
+   * （5 在 runTicket 结束时会 release 4 的登记表，批准的范围随之清空，下一轮靠记录带回来）。
    * `registry` 不经过 8：组装时把同一个 `PermissionRegistry` 注入 5 的 `CoderPoolDeps.registry` 即可。
    */
   scopeRequests?: { bus: ScopeBus; timeout_ms?: number };
+  /** 9 的 `extendScope`（T-038）：范围外的越界写申请交给它；不给就一律拒绝范围外申请 */
+  scheduler?: {
+    extendScope(
+      ticket_id: string,
+      scope: readonly string[],
+    ): MaybePromise<{ ok: true } | { ok: false; reason: string }>;
+  };
   /**
    * 本单已批准的写入范围的持久来源（T-048 #47 修复）：每次读回需求单记录都会按写入范围重新裁剪，
    * 落在「写入范围 ∪ 已批准范围」里的 `rw` 才保留。注入 `eventLogGrantedScopes(storage)`（2 的事件日志里本单的
-   * `write_scope_granted`）。本进程经 `recordGrantedScope` / scopeRequests 写回的范围另记在内存里，总会保留；
+   * `write_scope_granted`）。本进程审批通过写回的范围另记在内存里，总会保留；
    * 不注入时重启后只认写入范围，没有对应事件的批准范围会被降为只读。
    */
   grantedScopes?: (ticket_id: string) => MaybePromise<readonly string[]>;
@@ -219,6 +242,11 @@ export interface ResumeToken {
   worktree_round: number;
   /** 暂停时所在入口：handle（续跑通过后调 submit、写状态）/ conflict / rereview（只返回结果，不写状态） */
   mode?: "handle" | "conflict" | "rereview";
+  /**
+   * 收到但还没带给编码池的接口变更说明（T-038，`interface_changed`）：续跑时接在 feedback 里交给编码池。
+   * v1 只存在凭据和进程内存里，不写 2（已知缺口）。
+   */
+  interface_notes?: string[];
 }
 
 /**
@@ -237,6 +265,8 @@ export type SubAgentOutcome =
       round: number;
       resubmit_counts: ResubmitCounts;
       reviewer: string | null;
+      /** 依赖类单标高风险（T-038），同 submit 带给 9 的标记；只在为 true 时带 */
+      high_risk?: boolean;
     }
   /** 已发 escalated（reason 同事件） */
   | {
@@ -325,12 +355,16 @@ export interface SubAgent {
   /** 9 的重审入口（基线前进且涉及本单接口或依赖）：同一 PR 再评一次，不计复投 */
   reReview(req: ReReviewRequest): Promise<SchedulerFacingOutcome>;
   /**
-   * 把批准的写入范围写回需求单记录（T-048）：以 `rw` 追加到本单权限清单末尾（不受写入范围限制，批准即授权），
-   * 返回写回后的清单。之后每次调编码池都从需求单记录读，所以复投时编码池重新 createTools 也不会丢掉已批准的范围。
-   * 谁来批准 scope_requests 归 T-038，8 只提供写回。ticket 可以只带 ticket_id（同 resume 的查找规则）。
+   * 接口变更通知（T-038，9 合并成功后发的 `interface_changed`）：对 `affected_ticket_ids` 里的每张单（合并的那张除外）
+   * 记一条说明，作为不可信反馈（5 按 T-043 包进 untrusted 区块）接在下一次 `runTicket` 的 feedback 里；
+   * 这张单正在 8 手里、还没交给 9 时，评审通过后在交出去之前再评审一次（不计复投）。纯函数式入口，可直接测。
    */
-  recordGrantedScope(
-    ticket: SubAgentTicket | { ticket_id: string },
-    granted_scope: readonly string[],
-  ): Promise<PermissionList>;
+  onInterfaceChanged(e: EventOf<"interface_changed">): void;
+  /** 订阅总线上的 `interface_changed`（转给 onInterfaceChanged），返回取消订阅 */
+  attach(bus: {
+    subscribe(
+      type: "interface_changed",
+      handler: (e: EventOf<"interface_changed">) => void | Promise<void>,
+    ): () => void;
+  }): () => void;
 }

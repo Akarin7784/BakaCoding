@@ -4,6 +4,8 @@
 
 T-035 已实现合并队列和反压信号（`createScheduler`），接口和行为见 docs/modules.md「9.」一节的「合并队列与反压信号」。T-039 加了派单、写入范围锁（`lock`）与独占区域、写入范围申请回复、编码槽位、闲时 `deferred`、`stop()` 取消信号，见同一节的「派单、写入范围锁、编码槽位」。T-048 起写入范围锁先展开花括号（`src/{a,b}.ts` 与 `src/a.ts` 重叠），独占区域另认「末段模式能写到区域里的具体文件名」的范围（`src/**/*.json` 落在 `**/package.json`），见 `expandBraces` / `inExclusiveZone`。
 
+T-038：不再订阅 `write_scope_requested`、不发 granted / denied（答复归 8）；8 对范围外的越界写申请调 `extendScope(ticket_id, scope)` 重新加锁（失败发 `escalated(scope_lock_failed)`）。`submit({ …, high_risk })` 记下 8 打的高风险标记，`snapshot()` 每项带 `high_risk`，只打标不扣留。合并成功后收尾出错时状态保持 `merged`，另发 `escalated(merged_but)`。默认独占区域以 `@bakacoding/types` 的 `DEPENDENCY_MANIFEST_GLOBS` 开头。`isUnsafeScope` 转调模块 4 的 `isUnsafeGlob`（`@deprecated`）。
+
 ```ts
 const scheduler = createScheduler({
   bus,

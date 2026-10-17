@@ -9,6 +9,7 @@ import {
   PermissionListSchema,
   TokensSchema,
   DEFAULT_PERMISSION_LEVEL,
+  DEPENDENCY_MANIFEST_GLOBS,
   ESCALATION_REASONS,
   PROJECT_LEVEL_EVENT_TYPES,
   type EventMap,
@@ -181,6 +182,22 @@ describe("EventSchema", () => {
     expect(EventSchema.safeParse({ ...base, payload: { reason: "daily_budget" } }).success).toBe(
       false,
     );
+  });
+  it("escalated：merged_but（T-038）可解析；DEPENDENCY_MANIFEST_GLOBS 冻结、含清单与锁文件", () => {
+    const ev = {
+      ...common,
+      type: "escalated",
+      payload: {
+        reason: "merged_but",
+        detail: "merged_but: bus down",
+        resubmit_counts: { review: 0, conflict: 0 },
+      },
+    };
+    expect(EventSchema.parse(ev)).toEqual(ev);
+    expect(ESCALATION_REASONS).toContain("merged_but");
+    expect(Object.isFrozen(DEPENDENCY_MANIFEST_GLOBS)).toBe(true);
+    for (const g of ["package.json", "**/package.json", "pnpm-lock.yaml", "go.sum", "**/*.lock"])
+      expect(DEPENDENCY_MANIFEST_GLOBS).toContain(g);
   });
   it("escalated：internal_error 可解析，带 detail 与 resubmit_counts", () => {
     const base = { ...common, type: "escalated" };
