@@ -243,7 +243,7 @@ BakaCoding 帮助个人开发者推进大型软件工程。核心是 **Flash 编
 - **工程结构**：TypeScript monorepo（pnpm workspace），每个模块一个包，另有共享类型包 `@bakacoding/types`（只依赖 zod，放事件类型、常量和 zod schema，所有模块包都依赖它）。测试用 vitest，lint 用 eslint，格式用 prettier。各角色提示词模板放在 `packages/config-budget/prompts/`。
 - **配置校验**：配置 JSON 里不加注释字段；schema 严格校验，遇到未知字段直接报错。示例配置中的预算是示例值，说明写在 README 的配置章节和 zod 的 `.describe()` 里。
 - **模型调用上下文**：模型接入层的 `call()` 带必填参数 `ctx: { role, requirement_id, ticket_id | null, is_resubmit, trace }`；主管等没有单号的调用 `ticket_id` 填 `null`。
-- **API key**：优先从环境变量 `DEEPSEEK_API_KEY` 读取；本地配置文件 `config/secrets.local.json` 只作备选，该文件必须写进 `.gitignore`。key 不写进仓库，也不写进配置示例。读密钥统一用配置与预算模块的 `getSecret(name)`，目前读 `DEEPSEEK_API_KEY` 和 `GITHUB_TOKEN`。
+- **API key**：只从环境变量 `DEEPSEEK_API_KEY` 读取，不读任何本地密钥文件（`config/secrets.local.json` 不读，仍保留在 `.gitignore` 里以防误提交）。key 不写进仓库，也不写进配置示例。读密钥统一用配置与预算模块的 `getSecret(name)`，目前读 `DEEPSEEK_API_KEY` 和 `GITHUB_TOKEN`。
 
 ## 16. 界面
 

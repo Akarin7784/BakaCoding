@@ -232,7 +232,7 @@
 <li><strong>工程结构</strong>：TypeScript monorepo（pnpm workspace），每个模块一个包，另有共享类型包 <code>@bakacoding/types</code>（只依赖 zod，放事件类型、常量和 zod schema，所有模块包都依赖它）。测试用 vitest，lint 用 eslint，格式用 prettier。各角色提示词模板放在 <code>packages/config-budget/prompts/</code>。</li>
 <li><strong>配置校验</strong>：配置 JSON 里不加注释字段；schema 严格校验，遇到未知字段直接报错。示例配置中的预算是示例值，说明写在 README 的配置章节和 zod 的 <code>.describe()</code> 里。</li>
 <li><strong>模型调用上下文</strong>：模型接入层的 <code>call()</code> 带必填参数 <code>ctx: { role, requirement_id, ticket_id | null, is_resubmit, trace }</code>；主管等没有单号的调用 <code>ticket_id</code> 填 <code>null</code>。</li>
-<li><strong>API key</strong>：优先从环境变量 <code>DEEPSEEK_API_KEY</code> 读取；本地配置文件 <code>config/secrets.local.json</code> 只作备选，该文件必须写进 <code>.gitignore</code>。key 不写进仓库，也不写进配置示例。读密钥统一用配置与预算模块的 <code>getSecret(name)</code>，目前读 <code>DEEPSEEK_API_KEY</code> 和 <code>GITHUB_TOKEN</code>。</li>
+<li><strong>API key</strong>：只从环境变量 <code>DEEPSEEK_API_KEY</code> 读取，不读任何本地密钥文件（<code>config/secrets.local.json</code> 不读，仍保留在 <code>.gitignore</code> 里以防误提交）。key 不写进仓库，也不写进配置示例。读密钥统一用配置与预算模块的 <code>getSecret(name)</code>，目前读 <code>DEEPSEEK_API_KEY</code> 和 <code>GITHUB_TOKEN</code>。</li>
 </ul>
 <h2 id="chapter-16">16. 界面</h2>
 <p>界面只做对话，分三栏（项目导入、设置、Git 侧栏这类配置操作直接在界面上做，不经过主管，见第 10 节）：左栏是对话列表，中间是当前对话，右侧边栏默认关闭。</p>
