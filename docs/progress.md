@@ -151,6 +151,8 @@ flowchart BT
 - 模块 8 / 组合根（T-041c）：6 的 DiffFile 没有旧路径，改名的文件一律按高风险（T-065 收窄）；重启补判取 diff 出错也按高风险，可能误扣。
 - 模块 10（T-041c）：高风险通知「同一 PR 只通知一次」、待裁决清单 `pendingHighRisk()` 都只在进程内，重启后重新通知一次。
 - 模块 10（T-041c）：拒绝后关 PR 失败（`high_risk_close.state = unconfirmed`）的重试只在进程内；重启后不接着重试，PR 可能一直开着，要用户到 GitHub 上关。
+- 模块 9（T-041c，v1 接受）：依赖文件按文件名匹配后，任意子目录的 `package.json` / 锁文件都算独占区域，碰到它们的单不能并行（monorepo 各子包改依赖的单只能排队），并发降低。
+- 模块 10（T-041c）：拒绝时关 PR 之后 9 的拒绝没生效（PR 中途换了，`stale_pr`）：发 `ticket_warning(high_risk_reject_not_applied)`、通知用户「PR 已关、裁决未生效」，要用户对新 PR 重新裁决，不自动重试。
 - 模块 10（T-041c）：拒绝时发现 PR 已合入（`already_merged`）只抛错，单子留在 9 里扣着，要等 9 的 `sync()` 记成合入（T-064）。
 - 组合根（T-041a → T-041b）：依赖已上报（未被取代）或 `fields_invalid` 的单，T-041b 起重启时进 `held`、通知用户一次；依赖接管失败（`failed`）的单仍不进 `held`，9 不认识它，依赖它的单会一直 `waiting`。
 - 模块 9（T-041a）：`adopt` 接回的单复投数是估的：评审复投数从 0 记起（9 只用它报上报的 `resubmit_counts`，8 的复投上限按事件日志算），冲突复投数按 worktree 轮次估。
