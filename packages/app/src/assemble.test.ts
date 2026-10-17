@@ -877,15 +877,33 @@ describe("T-041c judgeHighRiskOnTakeover（N4）", () => {
     }),
   });
 
-  it("删除的 package.json、改名的文件、锁文件都算高风险；普通改动不算；diff 出错按高风险", async () => {
+  it("删除的 package.json、锁文件都算高风险；普通改动、普通改名不算；diff 出错按高风险", async () => {
     const judge = async (path: string, status: "added" | "modified" | "deleted" | "renamed") =>
       (await judgeHighRiskOnTakeover(diffOf([{ path, status }]), "p")).high_risk;
     expect(await judge("package.json", "deleted")).toBe(true);
-    expect(await judge("src/x.ts", "renamed")).toBe(true);
+    expect(await judge("src/x.ts", "renamed")).toBe(false);
     expect(await judge("sub/yarn.lock", "modified")).toBe(true);
     expect(await judge("apps/web/pnpm-lock.yaml", "added")).toBe(true);
     expect(await judge("src/x.ts", "modified")).toBe(false);
     expect(await judge("docs/package.json.md", "modified")).toBe(false);
+    // T-065：改名看旧路径——package.json 改名成 x.json 也算
+    const renamedAway = {
+      diff: async () => ({
+        base_sha: HEAD,
+        head_sha: "c".repeat(40),
+        files: [
+          {
+            path: "x.json",
+            old_path: "package.json",
+            status: "renamed" as const,
+            additions: 0,
+            deletions: 0,
+            patch: "",
+          },
+        ],
+      }),
+    };
+    expect((await judgeHighRiskOnTakeover(renamedAway, "p")).high_risk).toBe(true);
     expect(
       (await judgeHighRiskOnTakeover(diffOf([{ path: "package.json", status: "deleted" }]), "p"))
         .files,
