@@ -2,6 +2,7 @@
 import {
   IPC_CHANNELS,
   type DesktopDecideHighRiskResult,
+  type DesktopSyncState,
   type DesktopUpdate,
   type SupervisorNotifyMessage,
 } from "../shared/api.js";
@@ -112,5 +113,46 @@ export function serveHighRisk(
     off();
     ipc.removeHandler(IPC_CHANNELS.highRiskPending);
     ipc.removeHandler(IPC_CHANNELS.highRiskDecide);
+  };
+}
+
+/** 同步状态轮询间隔（9 的 syncState() 是同步内存读，开销很小）。 */
+export const DEFAULT_SYNC_STATE_POLL_MS = 2000;
+
+/**
+ * 定时同步状态 IPC（T-067）：invoke `sync:state` 取一次；按间隔读 9 的 syncState()，
+ * 内容有变化才推 `sync:state-update`（next_at / last_ok_at 等每轮会变，所以每轮同步后都会推一次）。
+ */
+export function serveSyncState(
+  ipc: IpcMainLike,
+  backend: Pick<BackendHandle, "syncState">,
+  sink: () => UpdateSink | null,
+  pollMs: number = DEFAULT_SYNC_STATE_POLL_MS,
+): () => void {
+  let last: string | undefined;
+  const read = (): DesktopSyncState => {
+    const st = backend.syncState();
+    last = JSON.stringify(st);
+    return st;
+  };
+  ipc.handle(IPC_CHANNELS.syncState, () => read());
+  const timer = setInterval(() => {
+    const s = sink();
+    if (!s || s.isDestroyed()) return;
+    let st: DesktopSyncState;
+    try {
+      st = backend.syncState();
+    } catch (e) {
+      console.error("[desktop] 读取同步状态失败", e instanceof Error ? e.name : "unknown");
+      return;
+    }
+    const key = JSON.stringify(st);
+    if (key === last) return;
+    last = key;
+    s.send(IPC_CHANNELS.syncStateUpdate, st);
+  }, pollMs);
+  return () => {
+    clearInterval(timer);
+    ipc.removeHandler(IPC_CHANNELS.syncState);
   };
 }

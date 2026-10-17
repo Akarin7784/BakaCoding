@@ -2,8 +2,13 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { IPC_CHANNELS, type DesktopSnapshot, type DesktopUpdate } from "../shared/api.js";
-import { serveReader, type IpcMainLike } from "./ipc.js";
+import {
+  IPC_CHANNELS,
+  type DesktopSnapshot,
+  type DesktopSyncState,
+  type DesktopUpdate,
+} from "../shared/api.js";
+import { serveReader, serveSyncState, type IpcMainLike } from "./ipc.js";
 import { createDesktopApi, type IpcRendererLike } from "./preload-api.js";
 import type { EventReader } from "./reader.js";
 
@@ -44,6 +49,58 @@ describe("主进程 IPC", () => {
   });
 });
 
+describe("同步状态 IPC（T-067）", () => {
+  const live: DesktopSyncState = {
+    available: true,
+    enabled: true,
+    last_ok_at: "2026-10-17T15:00:00.000Z",
+    last_error: null,
+    consecutive_failures: 0,
+    rate_limited_until: null,
+    next_at: "2026-10-17T15:01:00.000Z",
+  };
+
+  it("invoke sync:state 返回当前状态；变化才推 sync:state-update；停止后移除 handler", () => {
+    vi.useFakeTimers();
+    const handlers = new Map<string, (...a: unknown[]) => unknown>();
+    const ipc: IpcMainLike = {
+      handle: (c, l) => void handlers.set(c, l),
+      removeHandler: (c) => void handlers.delete(c),
+    };
+    let current: DesktopSyncState = live;
+    const send = vi.fn();
+    const stop = serveSyncState(
+      ipc,
+      { syncState: () => current },
+      () => ({ send, isDestroyed: () => false }),
+      100,
+    );
+    expect(handlers.get(IPC_CHANNELS.syncState)?.()).toEqual(live);
+    vi.advanceTimersByTime(100);
+    expect(send).not.toHaveBeenCalled();
+    current = { ...live, enabled: false, disabled_reason: "auth", next_at: null };
+    vi.advanceTimersByTime(100);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith(IPC_CHANNELS.syncStateUpdate, current);
+    vi.advanceTimersByTime(300);
+    expect(send).toHaveBeenCalledTimes(1);
+    stop();
+    expect(handlers.has(IPC_CHANNELS.syncState)).toBe(false);
+  });
+
+  it("只读后端：sync:state 返回 available:false", () => {
+    const handlers = new Map<string, (...a: unknown[]) => unknown>();
+    const ipc: IpcMainLike = {
+      handle: (c, l) => void handlers.set(c, l),
+      removeHandler: (c) => void handlers.delete(c),
+    };
+    const ro: DesktopSyncState = { available: false, reason: "只读模式：写入锁被占用（pid 1）" };
+    const stop = serveSyncState(ipc, { syncState: () => ro }, () => null, 100);
+    expect(handlers.get(IPC_CHANNELS.syncState)?.()).toEqual(ro);
+    stop();
+  });
+});
+
 describe("preload 暴露的只读 API", () => {
   function fakeIpc() {
     const listeners = new Map<string, Set<(e: unknown, ...a: unknown[]) => void>>();
@@ -66,9 +123,11 @@ describe("preload 暴露的只读 API", () => {
       "getBackendStatus",
       "getPendingHighRisk",
       "getSnapshot",
+      "getSyncState",
       "markSupervisorReady",
       "onPendingHighRisk",
       "onSupervisorNotify",
+      "onSyncState",
       "onUpdate",
       "platform",
     ]);
@@ -89,6 +148,20 @@ describe("preload 暴露的只读 API", () => {
     off();
     ipc.emit(IPC_CHANNELS.update, u);
     expect(got).toEqual([u]);
+  });
+
+  it("getSyncState 走 sync:state；onSyncState 收 sync:state-update，取消后不再收到（T-067）", async () => {
+    const ipc = fakeIpc();
+    const api = createDesktopApi(ipc, "linux");
+    await api.getSyncState();
+    expect(ipc.invoke).toHaveBeenCalledWith(IPC_CHANNELS.syncState);
+    const got: DesktopSyncState[] = [];
+    const off = api.onSyncState((s) => got.push(s));
+    const st: DesktopSyncState = { available: false, reason: "只读模式：x" };
+    ipc.emit(IPC_CHANNELS.syncStateUpdate, st);
+    off();
+    ipc.emit(IPC_CHANNELS.syncStateUpdate, st);
+    expect(got).toEqual([st]);
   });
 
   it("窗口开 contextIsolation、关 nodeIntegration；preload 只经 contextBridge 暴露这个 API", () => {
