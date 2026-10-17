@@ -308,6 +308,16 @@ describe("T-022 e：prStore 轻脱敏并校验 kind", () => {
     expect(got?.note).not.toContain(KEY);
   });
 
+  it("closed_by 是结构字段原样往返，close_reason 仍按自由文本脱敏", async () => {
+    const s = open();
+    const store = s.prStore<PrRecord & { closed_by?: string; close_reason?: string }>();
+    await store.put({ ...base, closed_by: KEY, close_reason: `被取代，别泄露 ${KEY}` });
+    const got = await store.get("pr-1");
+    expect(got?.closed_by).toBe(KEY);
+    expect(got?.close_reason).toBeDefined();
+    expect(got?.close_reason).not.toContain(KEY);
+  });
+
   it("带 remote 的单张记录和集成记录写进去读出来完全相等", async () => {
     const s = open();
     const store = s.prStore<PrRecord & { remote?: { number: number; url: string } }>();

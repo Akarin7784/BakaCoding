@@ -16,4 +16,4 @@
 - `pnpm build:app`：vite 打包渲染进程到 `dist-renderer/`，主进程和 preload（`preload.cjs`）到 `dist-electron/`
 - `pnpm dev`：开发模式（需要 Electron 二进制；pnpm 10 默认不跑 electron 的安装脚本，需要时执行 `node node_modules/electron/install.js`）
 - `pnpm rebuild:electron`：用 `@electron/rebuild` 为当前 Electron 版本另编一份 better-sqlite3，放到 `native/electron/better_sqlite3.node`（已 gitignore），主进程通过 `nativeBinding` 加载。不就地重编，也不放进 postinstall：better-sqlite3 在 pnpm 下只有一份，被模块 2 和 Node 下的 vitest 共用。
-  - 已知问题：better-sqlite3 11.10.0 对 Electron 44 编译失败（V8 `External::Value` 接口变了），需要升级 better-sqlite3 后才能真正在 Electron 里读库。
+  - better-sqlite3 已升到 12.x（T-026），在 Electron 44.9.0 下能编过并正常加载。

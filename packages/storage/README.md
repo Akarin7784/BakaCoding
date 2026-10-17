@@ -13,11 +13,12 @@ storage.health(); // { ok, lease_lost, closed, ingest_failures, last_failure? }
 // 注入：模块 3 用 storage.ledger（LedgerStore），模块 11 用 storage.diagnosticsSource()（DiagnosticsSource）
 ```
 
+- **只读打开**：`openStorageReadonly({ path, nativeBinding? })` 给界面等读方用：库文件必须已存在（不会新建），不跑迁移，不拿也不动写入者租约，协调服务在写的时候也能读。库版本比代码旧时报错让先用写入方打开一次完成升级，比代码新时报错让升级 BakaCoding。返回对象只有读方法（含 `maxSeq()`、`diagnosticsSource()`），运行时调写方法抛 `StorageReadonlyError`。`nativeBinding`（两个打开函数都支持）指向另编的 `better_sqlite3.node`，如桌面端为 Electron 编的那份。
 - **单一写入者**：打开时抢租约（默认 30 秒，持有期间自动续），别人持有未过期的租约时抛 `StorageLeaseError`；每次写入都确认租约还在自己手里，被接管后再写也抛这个错。拿租约和所有写入都用 `BEGIN IMMEDIATE`，两个进程同时打开时按 `busy_timeout`（5 秒）排队等写锁，不会中途报 `SQLITE_BUSY`。`close()` 释放租约。
 - **落库失败可见**：经 `attach` 落库失败（租约丢了、seq 冲突、事件不合法）时调用 `onError`（默认 `console.error`），并计入 `health()`：`ok` 变成 `false`，`ingest_failures` 加一，`last_failure` 记下事件和原因；租约丢失另有 `lease_lost`。
 - **seq 唯一**：`events.seq` 有唯一索引；同一个 `event_id` 重放照常幂等，不同事件占同一个 seq 抛 `StorageSeqConflictError`。
 - **幂等**：事件按 `event_id`、台账按 `entry_id`、PR 记录按 `(ticket_id, round)`、合并结果按 `ticket_id` 去重或覆盖，重放安全。
-- **PR 记录**：`prStore()` 在结构上满足模块 6 的 `PrStore`（不依赖模块 6 的包），按 `pr_id` 覆盖写，结构字段（`branch`、`base_sha`、`head_sha`、`worktree_path`、`repo_path`、`remote` 和各时间字段等，见 `PR_STRUCTURAL_FIELDS`）既不检查也不改写、原样往返，只有带凭据的 URL（如 `https://token@...`）会整条拒写；其余字段按自由文本轻脱敏；`kind` 单独成列原样存回，只能是 `ticket` / `integration`，缺了或不对都拒绝写入。
+- **PR 记录**：`prStore()` 在结构上满足模块 6 的 `PrStore`（不依赖模块 6 的包），按 `pr_id` 覆盖写，结构字段（`branch`、`base_sha`、`head_sha`、`worktree_path`、`repo_path`、`remote`、`closed_by` 和各时间字段等，见 `PR_STRUCTURAL_FIELDS`）既不检查也不改写、原样往返，只有带凭据的 URL（如 `https://token@...`）会整条拒写；其余字段按自由文本轻脱敏；`kind` 单独成列原样存回，只能是 `ticket` / `integration`，缺了或不对都拒绝写入。
 - **轻脱敏**：落库前对事件 payload 里的字符串、提示词和输出、需求单原文、上下文片段、PR 记录、决策记忆调用模块 3 的 `redact(text, "light")`。
 - **事件**：全部进 `events` 表并带 `trace_id` / `span_id` / `parent_span_id`；`call_completed` 另写 `call_log`（提示词和输出只存这里）；`project_created` 建项目和群记录；`group_message` 存群消息并登记需求所属项目；两个积压事件存待办指标。
 - **按项目过滤**：事件公共字段不带 `project_id`，靠需求所属项目（`saveTicket`、`registerRequirement` 会覆盖；群消息只在需求还没登记时登记，不覆盖已有归属）在查询时关联，登记晚于事件也能查到。
