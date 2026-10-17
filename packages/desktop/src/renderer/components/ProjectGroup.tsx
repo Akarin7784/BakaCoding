@@ -23,6 +23,8 @@ const ESCALATION_REASON: Record<EscalationView["reason"], string> = {
   scope_lock_failed: "写入范围锁定失败",
   resplit_limit: "重新拆单超限",
   github_manual: "需人工处理 GitHub",
+  coder_failed: "编码多次未完成",
+  budget_exceeded: "本单预算用完",
 };
 
 function FlashCalls({ ids, calls }: { ids: string[]; calls: Record<string, FlashCallSummary> }) {

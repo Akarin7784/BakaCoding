@@ -9,6 +9,7 @@ import {
   PermissionListSchema,
   TokensSchema,
   DEFAULT_PERMISSION_LEVEL,
+  ESCALATION_REASONS,
   PROJECT_LEVEL_EVENT_TYPES,
   type EventMap,
   type EventOf,
@@ -159,6 +160,25 @@ describe("EventSchema", () => {
       }).success,
     ).toBe(true);
     expect(EventSchema.safeParse({ ...ev, payload: { reason: "lock_failed" } }).success).toBe(
+      false,
+    );
+  });
+  it("escalated：coder_failed / budget_exceeded 可解析，未知原因拒绝", () => {
+    const base = { ...common, type: "escalated" };
+    const coderFailed = {
+      ...base,
+      payload: {
+        reason: "coder_failed",
+        detail: "turn_limit",
+        resubmit_counts: { review: 0, conflict: 0 },
+      },
+    };
+    expect(EventSchema.parse(coderFailed)).toEqual(coderFailed);
+    const budget = { ...base, payload: { reason: "budget_exceeded" } };
+    expect(EventSchema.parse(budget)).toEqual(budget);
+    expect(ESCALATION_REASONS).toContain("coder_failed");
+    expect(ESCALATION_REASONS).toContain("budget_exceeded");
+    expect(EventSchema.safeParse({ ...base, payload: { reason: "daily_budget" } }).success).toBe(
       false,
     );
   });

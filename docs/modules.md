@@ -219,7 +219,7 @@ graph BT
 | 需要扩大写入范围 `write_scope_requested` | 4 | 9 | `ticket_id`、`request_id`、`requested_scope`、`reason` | PD §6 |
 | 已批准 `write_scope_granted` | 9 | 4 | `ticket_id`、`request_id`、`granted_scope` | PD §6 |
 | 已拒绝 `write_scope_denied` | 9 | 4 | `ticket_id`、`request_id`、`requested_scope`、`reason` | PD §6 |
-| 上报 `escalated` | 6（`github_manual`：鉴权失败或需要手动解冲突）、8（评审不过超限）、9（冲突超限、加锁失败）、10（重拆超限 `resplit_limit`，由主管自己发出） | 10；`resplit_limit` 由 12 订阅，提示「需要人工介入」 | `ticket_id`、`requirement_id`、`reason`（`review_limit` / `conflict_limit` / `scope_lock_failed` / `resplit_limit` / `github_manual`）、`resubmit_counts`（可选；`github_manual` 不带）、`detail`（可选，自由文本；`github_manual` 必写） | PD §6、§7、§8 |
+| 上报 `escalated` | 6（`github_manual`：鉴权失败或需要手动解冲突）、8（评审不过超限）、9（冲突超限、加锁失败）、8（`coder_failed`：编码池返回 `gave_up` / `turn_limit`（或 `done` 但提交时 `NoChangesError`）超过复投上限，`detail` 写最后一次状态；`budget_exceeded`：本单预算用完，不复投，主管直接交给用户，由用户决定加预算还是取消）、10（重拆超限 `resplit_limit`，由主管自己发出） | 10；`resplit_limit` 由 12 订阅，提示「需要人工介入」 | `ticket_id`、`requirement_id`、`reason`（`review_limit` / `conflict_limit` / `scope_lock_failed` / `resplit_limit` / `github_manual` / `coder_failed` / `budget_exceeded`）、`resubmit_counts`（可选；`github_manual` 不带）、`detail`（可选，自由文本；`github_manual` 必写） | PD §6、§7、§8 |
 | 接口已变更 `interface_changed` | 9（合并成功后） | 8 | `pr_id`、`ticket_id`（必填）、`base_commit`（合并后新基线）、`changed_interfaces`（改动的接口列表，每项为文件 + 符号）、`summary`、`affected_ticket_ids`（写入范围或接口声明与本次改动有交集的在途单） | PD §9 |
 | 评审积压 `review_backlog` | 7（`pending` 或 `capacity` 变化时） | 9（反压） | `pending`（进入评审尚未返回的单数，含排队）、`capacity`（成员数 × `reviews_per_member`，0 成员按 1 算） | PD §9 |
 | 主管待办指标 `supervisor_backlog` | 10 | 9 | `pending`、`capacity` | PD §9 |
