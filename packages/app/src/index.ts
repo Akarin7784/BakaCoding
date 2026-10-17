@@ -16,10 +16,28 @@ export {
   type WriterLockPayload,
 } from "./writer-lock.js";
 // T-078：桌面端在建数据库之前写 .git/info/exclude（desktop 不直接依赖 4）；T-082 加通用的 ensureExcludeLines
+// T-086：准备页的仓库检查与修复组，界面只调用
 export {
   ensureBakacodingIgnored,
   ensureExcludeLines,
   type ExcludeRule,
+  checkRepo,
+  initRepo,
+  listInitialCommitFiles,
+  initialCommit,
+  createMainBranch,
+  RepoFixError,
+  MAIN_BRANCH,
+  REPO_GIT_TIMEOUT_MS,
+  type RepoCheck,
+  type RepoCheckItem,
+  type RepoCheckId,
+  type RepoCheckCode,
+  type RepoFixCode,
+  type RepoOptions,
+  type GitIdentity,
+  type InitialCommitFiles,
+  type ExcludedReason,
 } from "@bakacoding/workspace";
 // T-087：设置页保存模型配置（desktop 不直接依赖 3）
 export {
