@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`4e518fd` · main 上测试：63 个测试文件、1442 个测试全部通过 · 更新日期：2026-10-17（UTC+8）
+> 上次更新时 main：`61716e3` · main 上测试：63 个测试文件、1444 个测试全部通过 · 更新日期：2026-10-17（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -123,7 +123,7 @@ flowchart BT
 | T-066 | 模块 6：sync 中途出错也带出已收集变化；close PATCH 失败时 GET 远程状态（已合入不记 closed）；merge 加可选 expected_head；checks 翻页并读 commit status；模块 7 发 review_backlog/supervisor_backlog 时 requirement_id、ticket_id 写 null，trace 新开 | 6、7 | 执行层开发 | 已合入 | #68 | `a51e022` |
 | T-067 | 模块 12：接 syncState()（状态展示 + 鉴权停 / 限流提示）；IPC `sync:state` / `sync:state-update`，错误信息脱敏 + 截断，只读返回不可用 | 12 | 界面与诊断开发 | 已合入 | #74 | `d4f3c9e` |
 | T-069 | 模块 6：check-runs 翻页以 total_count 为准，不再遇到本页不足 100 条就停 | 6 | 执行层开发 | 已合入 | #76 | `4e518fd` |
-| T-070 | 模块 10：高风险待裁决不计入主管待办（去掉与 9 `pending_pr_limit` 的反压双计） | 10 | 编排层开发 | 待评审 | #75 | — |
+| T-070 | 模块 10：高风险待裁决不计入主管待办（去掉与 9 `pending_pr_limit` 的反压双计） | 10 | 编排层开发 | 已合入 | #75 | `61716e3` |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
