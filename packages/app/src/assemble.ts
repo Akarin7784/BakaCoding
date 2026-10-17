@@ -699,8 +699,8 @@ export async function assemble(deps: AppDeps): Promise<App> {
     worktrees: deps.worktrees,
     subAgent: {
       handle,
-      resubmitConflict: (req) => subAgent.resubmitConflict(req),
-      reReview: (req) => subAgent.reReview(req),
+      resubmitConflict: (req, options) => subAgent.resubmitConflict(req, options),
+      reReview: (req, options) => subAgent.reReview(req, options),
       resume: (t, token, options) =>
         subAgent.resume(
           { ticket_id: t.ticket_id },

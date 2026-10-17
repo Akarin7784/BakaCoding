@@ -19,6 +19,7 @@ import {
 import type {
   ConflictResubmitRequest,
   HandleOptions,
+  SchedulerCallOptions,
   ReReviewRequest,
   ResubmitCounts,
   ResumeToken,
@@ -1114,7 +1115,8 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
       });
     },
 
-    async resubmitConflict(req: ConflictResubmitRequest) {
+    async resubmitConflict(req: ConflictResubmitRequest, options: SchedulerCallOptions = {}) {
+      throwIfAborted(options.signal);
       const ticket = await lookup(req.ticket);
       assertWorktree(req.worktree_path);
       const base_commit = deps.resolveBase
@@ -1136,11 +1138,13 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
         submit: false,
         announce: `${ticket.ticket_id} 合并冲突，基于新基线重新编码（冲突复投 ${req.resubmit_counts.conflict} 次）`,
         stage: "coding",
+        ...(options.signal ? { signal: options.signal } : {}),
       });
       return toScheduler(o);
     },
 
-    async reReview(req: ReReviewRequest) {
+    async reReview(req: ReReviewRequest, options: SchedulerCallOptions = {}) {
+      throwIfAborted(options.signal);
       const ticket = await lookup(req.ticket);
       const a = await reReviewState(ticket, req.pr_id);
       const o = await run({
@@ -1153,7 +1157,8 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
         submit: false,
         announce: undefined,
         stage: "review",
-        signal: undefined, // 不沿用 handle 时的取消信号
+        // 只用这次 9 传进来的取消信号（T-102b），不沿用 handle 时内存里那个
+        signal: options.signal,
       });
       return toScheduler(o);
     },
