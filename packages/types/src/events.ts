@@ -7,11 +7,24 @@ export const EventCommonSchema = TraceSchema.extend({
   event_id: Id,
   seq: z.number().int().nonnegative(),
   ts: IsoUtcSchema,
-  requirement_id: Id,
+  requirement_id: Id.nullable().describe(
+    "所属需求；只有项目级事件（PROJECT_LEVEL_EVENT_TYPES，目前只有 project_created）可以为 null，其他事件必填",
+  ),
   ticket_id: Id.nullable(),
 });
 
+/** 不属于任何需求的项目级事件：只有这些事件的 `requirement_id` 可以为 null。 */
+export const PROJECT_LEVEL_EVENT_TYPES = ["project_created"] as const;
+export type ProjectLevelEventType = (typeof PROJECT_LEVEL_EVENT_TYPES)[number];
+
 const ev = <T extends string, P extends z.ZodRawShape>(type: T, payload: P) =>
+  EventCommonSchema.extend({
+    type: z.literal(type),
+    requirement_id: Id.describe("所属需求，必填"),
+    payload: z.object(payload),
+  });
+
+const projectEv = <T extends ProjectLevelEventType, P extends z.ZodRawShape>(type: T, payload: P) =>
   EventCommonSchema.extend({ type: z.literal(type), payload: z.object(payload) });
 
 export const TokensSchema = z
@@ -34,7 +47,7 @@ export const TokensSchema = z
   })
   .describe("token 计数：input 含 cache_hit_input，未命中 = input - cache_hit_input");
 
-export const ProjectCreatedSchema = ev("project_created", {
+export const ProjectCreatedSchema = projectEv("project_created", {
   project_id: Id,
   name: z.string().min(1),
   language: z.string().min(1),
