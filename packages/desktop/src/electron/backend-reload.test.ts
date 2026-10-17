@@ -184,6 +184,7 @@ describe("BackendSwitcher.reload（T-093）", () => {
     const st = sw.status();
     expect(st.mode).toBe("readonly");
     expect(st.reason).not.toContain(secret);
+    expect(st.reason).toContain("重载后端失败");
     expect(st.reason).not.toContain("/home/eva");
     expect(sw.repoRoot()).toBe("/home/eva/proj");
   });
@@ -199,6 +200,8 @@ describe("BackendSwitcher.reload（T-093）", () => {
     });
     expect(bad.stop).toHaveBeenCalledTimes(1);
     expect(sw.status().mode).toBe("readonly");
+    expect(sw.status().reason).toContain("重载后端失败");
+    expect(sw.status().reason).toContain("缺少环境变量 DEEPSEEK_API_KEY");
   });
 
   it("只读重新连接：不看在途单，直接重新组装，成功回到 live", async () => {
