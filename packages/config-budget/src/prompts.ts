@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ROLES, type Role } from "@bakacoding/types";
+import { errnoCode } from "./safe-error.js";
 
 /** 内置模板目录（源码与 dist 下都指向包根的 prompts/）。 */
 export const PROMPTS_DIR = fileURLToPath(new URL("../prompts/", import.meta.url));
@@ -42,7 +43,7 @@ export async function promptTemplate(
   try {
     raw = await readFile(file, "utf8");
   } catch (e) {
-    throw new PromptTemplateError(`读不到 ${role} 的提示词模板 ${file}：${String(e)}`);
+    throw new PromptTemplateError(`读不到 ${role} 的提示词模板 ${role}.md（${errnoCode(e)}）`);
   }
   const template = raw
     .replace(/^\uFEFF/, "")

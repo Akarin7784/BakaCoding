@@ -1,8 +1,8 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConfigError, ConfigSchema, getConfig, getSecret, validate } from "./config.js";
 
 const examplePath = fileURLToPath(new URL("../../../config/models.example.json", import.meta.url));
@@ -89,8 +89,13 @@ describe("配置错误不带原值（T-098）", () => {
     }
     throw new Error("应当抛 ConfigError");
   };
+  const tmpDirs: string[] = [];
+  afterEach(() => {
+    for (const d of tmpDirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
   const writeTmp = (text: string) => {
     const dir = mkdtempSync(join(tmpdir(), "bc-t098-"));
+    tmpDirs.push(dir);
     const p = join(dir, "models.json");
     writeFileSync(p, text);
     return { dir, p };

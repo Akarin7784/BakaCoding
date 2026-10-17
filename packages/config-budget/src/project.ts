@@ -6,6 +6,7 @@ import { basename, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 import type { EventOf, Trace } from "@bakacoding/types";
 import { PROMPTS_DIR } from "./prompts.js";
+import { errnoCode, jsonErrorText, schemaIssues } from "./safe-error.js";
 
 export interface Project {
   /** `<名称 slug>-<真实路径 sha256 前 8 位>`：同一路径重复导入得到同一个 id（2 落库 INSERT OR IGNORE） */
@@ -56,8 +57,28 @@ export type LanguageManifests = z.infer<typeof LanguagesSchema>["languages"];
 export const LANGUAGES_FILE = join(PROMPTS_DIR, "languages.json");
 export const UNKNOWN_LANGUAGE = "unknown";
 
+/** T-099：失败抛 ProjectImportError，错误不含文件内容、原值和完整路径。 */
 export async function loadLanguageManifests(file = LANGUAGES_FILE): Promise<LanguageManifests> {
-  return LanguagesSchema.parse(JSON.parse(await readFile(file, "utf8"))).languages;
+  const name = basename(file);
+  let text: string;
+  try {
+    text = await readFile(file, "utf8");
+  } catch (e) {
+    throw new ProjectImportError(`读不到语言清单 ${name}（${errnoCode(e)}）`);
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch (e) {
+    throw new ProjectImportError(jsonErrorText(text, e, `语言清单 ${name} `));
+  }
+  const r = LanguagesSchema.safeParse(raw);
+  if (!r.success) {
+    throw new ProjectImportError(
+      `语言清单 ${name} 格式不对：${schemaIssues(r.error.issues).join("；")}`,
+    );
+  }
+  return r.data.languages;
 }
 
 /** 只看根目录（不递归）：普通文件名精确匹配，`*.ext` 按后缀匹配。 */
@@ -170,9 +191,9 @@ export async function importProject(
   try {
     root = await realpath(resolve(path));
   } catch (e) {
-    throw new ProjectImportError(`项目路径不存在：${path}（${String(e)}）`);
+    throw new ProjectImportError(`项目路径不存在或无法访问（${errnoCode(e)}）`);
   }
-  if (!(await stat(root)).isDirectory()) throw new ProjectImportError(`项目路径不是目录：${root}`);
+  if (!(await stat(root)).isDirectory()) throw new ProjectImportError("项目路径不是目录");
   const entries = (await readdir(root, { withFileTypes: true }))
     .filter((d) => d.isFile() || d.isSymbolicLink())
     .map((d) => d.name);
