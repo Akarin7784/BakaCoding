@@ -29,11 +29,15 @@ export const ReviewReasonSchema = z
   .strict();
 export type ReviewReason = z.infer<typeof ReviewReasonSchema>;
 
-/** review() 的返回值：判不过时至少一条原因。 */
+/**
+ * review() 的返回值：判不过时至少一条原因。
+ * reviewer 是给出结论的评审组成员 id；CI 失败直接判不过、没调模型时为 null。
+ */
 export const ReviewResultSchema = z
   .object({
     verdict: ReviewVerdictSchema,
     reasons: z.array(ReviewReasonSchema),
+    reviewer: z.string().min(1).nullable(),
   })
   .strict()
   .refine((r) => r.verdict === "pass" || r.reasons.length > 0, {

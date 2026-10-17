@@ -203,8 +203,9 @@ export function createReviewPool(deps: ReviewPoolDeps): ReviewPool {
         verdict: "fail",
         reasons: failed.map((c): ReviewReason => ({
           category: "ci_failed",
-          detail: `${c.name}: ${c.conclusion}${c.url ? `（${c.url}）` : ""}`,
+          detail: `CI 检查 ${c.name} 结果为 ${c.conclusion}，请按日志修复后重新提交${c.url ? `：${c.url}` : ""}`,
         })),
+        reviewer: null,
       };
     }
 
@@ -224,8 +225,16 @@ export function createReviewPool(deps: ReviewPoolDeps): ReviewPool {
       }
       await assignments.set(input.ticket.ticket_id, member.id);
       if (!out)
-        return { verdict: "fail", reasons: [{ category: "bug", detail: UNPARSEABLE_DETAIL }] };
-      return ReviewResultSchema.parse({ verdict: out.verdict, reasons: out.reasons });
+        return {
+          verdict: "fail",
+          reasons: [{ category: "bug", detail: UNPARSEABLE_DETAIL }],
+          reviewer: member.id,
+        };
+      return ReviewResultSchema.parse({
+        verdict: out.verdict,
+        reasons: out.reasons,
+        reviewer: member.id,
+      });
     } finally {
       if (held) release(held);
     }
