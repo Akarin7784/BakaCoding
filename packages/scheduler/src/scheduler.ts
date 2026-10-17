@@ -245,7 +245,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   let syncNextAt: number | null = null;
   let dispatchRunning: Promise<string[]> | undefined;
   let dispatchQueued: Promise<string[]> | undefined;
-  /** stop() 时中止：传给 8 的 handle / resume，8 再原样传给 5 / 7（T-039） */
+  /** stop() 时中止：传给 8 的 handle / resume（T-039）和 resubmitConflict / reReview（T-102b），8 再原样传给 5 / 7 */
   const abort = new AbortController();
   /** 被 stop() 取消的 8 调用：不上报、不改状态，只记一笔 */
   const cancelled = (): boolean => abort.signal.aborted;
@@ -918,18 +918,22 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       const wt = await deps.worktrees.create(e.ticket.ticket_id, base_commit, round);
       let res: SubAgentOutcome;
       try {
-        res = await deps.subAgent.resubmitConflict({
-          ticket: e.ticket,
-          round,
-          worktree_path: wt.path,
-          branch: wt.branch,
-          base_commit,
-          conflicted_files,
-          previous_pr_id: old_pr_id,
-          resubmit_counts: { ...e.counts },
-        });
+        res = await deps.subAgent.resubmitConflict(
+          {
+            ticket: e.ticket,
+            round,
+            worktree_path: wt.path,
+            branch: wt.branch,
+            base_commit,
+            conflicted_files,
+            previous_pr_id: old_pr_id,
+            resubmit_counts: { ...e.counts },
+          },
+          { signal: abort.signal },
+        );
       } catch (err) {
-        // 8 失败：新 worktree 归 9 管，上报时一起清掉
+        // 8 失败：新 worktree 归 9 管，上报时一起清掉；被 stop() 中止（T-102b）时同样记在 9 名下，
+        // track 不上报、不改状态，下次启动由 takeOver 接手
         e.worktree_path = wt.path;
         e.own_worktree = true;
         throw err;
@@ -958,12 +962,15 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     track(e, "re_review", async () => {
       await setStatus(e, "re_reviewing");
       const base_seq = mergeLog.length;
-      const res = await deps.subAgent.reReview({
-        ticket: e.ticket,
-        pr_id,
-        merged_since: since.map((m) => ({ ticket_id: m.ticket_id, sha: m.sha, files: m.files })),
-        ...(target_head !== undefined ? { base_unknown: true, target_head } : {}),
-      });
+      const res = await deps.subAgent.reReview(
+        {
+          ticket: e.ticket,
+          pr_id,
+          merged_since: since.map((m) => ({ ticket_id: m.ticket_id, sha: m.sha, files: m.files })),
+          ...(target_head !== undefined ? { base_unknown: true, target_head } : {}),
+        },
+        { signal: abort.signal },
+      );
       await finishSubAgent(e, res, { seq: base_seq, unknown: false });
       // 重审不改变排队位置：回到队首
       if (e.status === "merge_queued" && !queue.includes(e.ticket.ticket_id))

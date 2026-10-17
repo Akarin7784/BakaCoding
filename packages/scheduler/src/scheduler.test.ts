@@ -25,6 +25,7 @@ import {
   isStalePrError,
   type ReReviewRequest,
   type Scheduler,
+  type SubAgentCallOptions,
   DEFAULT_EXCLUSIVE_ZONES,
   expandBraces,
   globToRegExp,
@@ -79,8 +80,12 @@ interface Harness {
     type: K,
     payload: { pending: number; capacity: number },
   ): void;
-  resubmit: ReturnType<typeof vi.fn<(r: ConflictResubmitRequest) => Promise<SubAgentOutcome>>>;
-  reReview: ReturnType<typeof vi.fn<(r: ReReviewRequest) => Promise<SubAgentOutcome>>>;
+  resubmit: ReturnType<
+    typeof vi.fn<(r: ConflictResubmitRequest, o?: SubAgentCallOptions) => Promise<SubAgentOutcome>>
+  >;
+  reReview: ReturnType<
+    typeof vi.fn<(r: ReReviewRequest, o?: SubAgentCallOptions) => Promise<SubAgentOutcome>>
+  >;
   resume: ReturnType<typeof vi.fn<(t: SchedulerTicket, token: unknown) => Promise<ResumeOutcome>>>;
   eventContextInjected: unknown[];
   errors: unknown[];
@@ -109,14 +114,18 @@ function harness(over: { pending_pr_limit?: number; conflict_limit?: number } = 
   let seq = 0;
   let newPr = 100;
   const h: Partial<Harness> = {};
-  const resubmit = vi.fn(async (r: ConflictResubmitRequest): Promise<SubAgentOutcome> => {
+  const resubmit = vi.fn<
+    (r: ConflictResubmitRequest, o?: SubAgentCallOptions) => Promise<SubAgentOutcome>
+  >(async (r) => {
     calls.push(`resubmit:${r.ticket.ticket_id}:r${r.round}`);
     return { pr_id: `pr-${newPr++}` };
   });
-  const reReview = vi.fn(async (r: ReReviewRequest): Promise<SubAgentOutcome> => {
-    calls.push(`reReview:${r.ticket.ticket_id}`);
-    return { pr_id: r.pr_id };
-  });
+  const reReview = vi.fn<(r: ReReviewRequest, o?: SubAgentCallOptions) => Promise<SubAgentOutcome>>(
+    async (r) => {
+      calls.push(`reReview:${r.ticket.ticket_id}`);
+      return { pr_id: r.pr_id };
+    },
+  );
   const resume = vi.fn(async (t: SchedulerTicket, token: unknown): Promise<ResumeOutcome> => {
     calls.push(`resume:${t.ticket_id}:${JSON.stringify(token)}`);
     return { kind: "escalated", pr_id: null };
@@ -2168,6 +2177,72 @@ describe("T-039 取消信号", () => {
     expect(escalations(h)).toEqual([]);
     expect(s.budgetPaused()).toEqual(["T-1"]);
     expect(s.snapshot()[0]).toMatchObject({ status: "pending", budget_paused: true });
+  });
+});
+
+describe("T-102b 冲突复投 / 重审的取消信号", () => {
+  /** 8 的调用挂着，直到收到的 signal 被中止才以 signal.reason 失败（模拟 8 把 signal 传给 5 / 7） */
+  const untilAborted = (_r: unknown, o?: SubAgentCallOptions) =>
+    new Promise<SubAgentOutcome>((_, reject) => {
+      o?.signal?.addEventListener("abort", () => reject(o.signal!.reason));
+    });
+
+  it("C3. 重审收到的就是 9 交给 handle 的那个 signal；stop() 中止它，不上报、不改状态", async () => {
+    const h = harness();
+    const d = withHandle(h);
+    h.reReview.mockImplementationOnce(untilAborted);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { write_scope: ["a/**"] }));
+    await s.enqueue(ticket("T-2", { write_scope: ["b/**"] }));
+    await settle(s);
+    const handleSignal = (d.handle.mock.calls[1]![1] as { signal: AbortSignal }).signal;
+    handleSignal.addEventListener("abort", () => d.pending.get("T-2")!.reject(handleSignal.reason));
+    // 基线不明 → 重审
+    await s.submit({
+      ticket_id: "T-1",
+      pr_id: "pr-1",
+      worktree_path: "/wt/T-1-r0",
+      base_commit: SHA("9"),
+    });
+    d.pending.get("T-1")!.resolve({ kind: "merge_queued", pr_id: "pr-1" });
+    await vi.waitFor(() => expect(h.reReview).toHaveBeenCalledTimes(1));
+    const opts = h.reReview.mock.calls[0]![1];
+    expect(opts?.signal).toBe(handleSignal);
+    expect(opts!.signal!.aborted).toBe(false);
+    const before = [...h.statuses];
+    expect(s.status("T-1")).toBe("re_reviewing");
+    await s.stop();
+    expect(opts!.signal!.aborted).toBe(true);
+    expect(escalations(h)).toEqual([]);
+    expect(s.status("T-1")).toBe("re_reviewing");
+    expect(h.statuses).toEqual(before);
+    expect(h.calls.filter((c) => c.startsWith("close:") || c.startsWith("cleanup:"))).toEqual([]);
+    expect(h.errors.map((e) => (e as Error).name)).toContain("AbortError");
+  });
+
+  it("C4. 冲突复投收到 9 的 signal；stop() 中止它，不上报、不改状态，新 worktree 留给下次启动的 takeOver", async () => {
+    const h = harness();
+    h.resubmit.mockImplementationOnce(untilAborted);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    h.merges.set("pr-1", [conflict()]);
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("a") });
+    await vi.waitFor(() => expect(h.resubmit).toHaveBeenCalledTimes(1));
+    const opts = h.resubmit.mock.calls[0]![1];
+    expect(opts?.signal).toBeInstanceOf(AbortSignal);
+    expect(opts!.signal!.aborted).toBe(false);
+    const before = [...h.statuses];
+    expect(s.status("T-1")).toBe("resubmitting");
+    await s.stop();
+    expect(opts!.signal!.aborted).toBe(true);
+    expect((opts!.signal!.reason as Error).name).toBe("AbortError");
+    expect(escalations(h)).toEqual([]);
+    expect(s.status("T-1")).toBe("resubmitting");
+    expect(h.statuses).toEqual(before);
+    // 旧 PR 不关、新旧 worktree 都不清：下次启动由 takeOver 接手
+    expect(h.calls.filter((c) => c.startsWith("close:") || c.startsWith("cleanup:"))).toEqual([]);
+    expect(h.calls).toContain(`create:T-1:${SHA("a")}:r1`);
+    expect(h.errors.map((e) => (e as Error).name)).toContain("AbortError");
   });
 });
 

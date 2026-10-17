@@ -133,7 +133,7 @@ export type ResumeOutcome =
 export type DispatchOutcome = ResumeOutcome;
 
 /**
- * 9 调 8 的 handle / resume 时带的选项（T-039）：`signal` 在 9 的 stop() 时中止，8 原样传给 5 的 runTicket
+ * 9 调 8 的 handle / resume（T-039）和 resubmitConflict / reReview（T-102b）时带的选项：`signal` 在 9 的 stop() 时中止，8 原样传给 5 的 runTicket
  * 和 7 的 review；中止后 8 抛 signal.reason，9 不上报、不改状态（没有 aborted 状态）。
  */
 export interface SubAgentCallOptions {
@@ -147,8 +147,16 @@ export interface SchedulerSubAgent {
    * 8 的 handle 要完整的 SubAgentTicket，组合根按单号补全（同 resume）。
    */
   handle?(ticket: SchedulerTicket, options?: SubAgentCallOptions): Promise<DispatchOutcome>;
-  resubmitConflict(req: ConflictResubmitRequest): Promise<SubAgentOutcome>;
-  reReview(req: ReReviewRequest): Promise<SubAgentOutcome>;
+  /**
+   * 冲突复投：对应 8 的 `resubmitConflict`。`options.signal`（T-102b）同 handle：stop() 时中止，
+   * 被中止的调用不上报、不改状态，新建的 r<n+1> worktree 记在 9 名下，下次启动由 takeOver 接手。
+   */
+  resubmitConflict(
+    req: ConflictResubmitRequest,
+    options?: SubAgentCallOptions,
+  ): Promise<SubAgentOutcome>;
+  /** 重审：对应 8 的 `reReview`。`options.signal`（T-102b）同 handle。 */
+  reReview(req: ReReviewRequest, options?: SubAgentCallOptions): Promise<SubAgentOutcome>;
   /**
    * 预算重置后续跑：对应 8 的 `resume(ticket, token)`，token 是 8 给的续跑凭据，原样交回。
    * 注意：8 的 resume 要完整的 SubAgentTicket，9 只有 SchedulerTicket，组合根要按单号补全（或 8 像
@@ -361,7 +369,8 @@ export interface Scheduler {
   /** 启动：建 6（注入 eventContext），订阅 review_backlog / supervisor_backlog（T-038 起不再订阅 write_scope_requested） */
   start(): Promise<void>;
   /**
-   * 停止：停合并循环、取消等待中的定时器、停止派单，并中止交给 8 的 handle / resume（signal，T-039）。
+   * 停止：停合并循环、取消等待中的定时器、停止派单，并中止交给 8 的 handle / resume（signal，T-039）
+   * 和 resubmitConflict / reReview（同一个 signal，T-102b）。
    * 这些同步生效（T-096 前后不变）。返回的 Promise（T-096）在在途的派单 / 续跑、冲突复投 / 重审、
    * 合并循环和 sync 都收尾之后才 resolve；之后 9 不再写库、不再发事件。从不 reject，出错照旧交给
    * `onError`（`onError` 自己抛错也不会 reject）。重复调用返回同一个 Promise。9 不设总超时，上限由调用方定。

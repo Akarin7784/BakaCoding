@@ -19,6 +19,7 @@ import {
 import type {
   ConflictResubmitRequest,
   HandleOptions,
+  SchedulerCallOptions,
   ReReviewRequest,
   ResubmitCounts,
   ResumeToken,
@@ -281,6 +282,14 @@ function abortReason(signal: AbortSignal): unknown {
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw abortReason(signal);
+}
+
+/**
+ * 交给 6 的调用选项（T-102b）：有 signal 才多传一个 `{ signal }`，没有就不加参数（调用形状与之前一致）。
+ * 6 在 signal 中止时抛 `signal.reason`（T-102a），8 照常原样抛出。
+ */
+function prOpts(signal: AbortSignal | undefined): [] | [{ signal: AbortSignal }] {
+  return signal ? [{ signal }] : [];
 }
 
 function roundFromPath(p: string): number {
@@ -792,10 +801,15 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
             // 6 的 commitWorktree 要求先有一条未结束的 PR 记录：第一次提交前开 PR，之后复用同一个 pr_id
             if (s.pr_id === null) {
               s.stage = "open";
-              s.pr_id = await deps.pr.open(s.ticket.ticket_id, s.worktree_path, s.branch);
+              s.pr_id = await deps.pr.open(
+                s.ticket.ticket_id,
+                s.worktree_path,
+                s.branch,
+                ...prOpts(s.signal),
+              );
             }
             s.stage = "commit";
-            await deps.pr.commitWorktree(s.ticket.ticket_id, s.worktree_path);
+            await deps.pr.commitWorktree(s.ticket.ticket_id, s.worktree_path, ...prOpts(s.signal));
           } catch (e) {
             if (e instanceof NoChangesError) {
               failure = {
@@ -822,7 +836,7 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
         }
         // 改动文件以 6 的 diff 为准（编码池的 changed_files 只是自报）
         s.stage = "diff";
-        const files = (await deps.pr.diff(s.pr_id!)).files.map((f) => f.path);
+        const files = (await deps.pr.diff(s.pr_id!, ...prOpts(s.signal))).files.map((f) => f.path);
         s.last = { summary: res.summary, changed_files: files };
         await say(
           s.ticket,
@@ -839,7 +853,7 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
       s.stage = "diff";
       if (!s.last) {
         // 重审 / 重启后接着评：没有本进程的编码结果，从 diff 取改动文件
-        const files = (await deps.pr.diff(pr_id)).files.map((f) => f.path);
+        const files = (await deps.pr.diff(pr_id, ...prOpts(s.signal))).files.map((f) => f.path);
         s.last = { summary: "", changed_files: files };
       }
       const seqAtReview = noteSeq.get(s.ticket.ticket_id) ?? 0;
@@ -857,7 +871,7 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
         : baseSummary;
       // 本轮 diff 在评审前取一次，绑定当时的 head（diff.head_sha）；评审不改代码，评审后写轮次记录沿用同一份
       s.stage = "diff";
-      const diff = await deps.pr.diff(pr_id);
+      const diff = await deps.pr.diff(pr_id, ...prOpts(s.signal));
       // 依赖类单标高风险（T-038）：主管标了 kind: "dependency"，或 diff 改了依赖清单 / 锁文件；
       // 改名的文件看新旧路径（isHighRiskDiffFile，T-065）
       let high_risk = s.ticket.kind === "dependency" || diff.files.some(isHighRiskDiffFile);
@@ -917,7 +931,9 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
         }
         // 交给 9 之前终判高风险（T-041c）：PR 的 head 已不是评审前那次 diff 的 head，按新 diff 重判；
         // 取不到 diff（不知道合进去的是什么）一律按高风险
-        if (!high_risk) high_risk = await headStillJudged(s.ticket, pr_id, diff.head_sha);
+        if (!high_risk) high_risk = await headStillJudged(s.ticket, pr_id, diff.head_sha, s.signal);
+        // 交给 9 之前最后一个检查点（T-102b）：中止后不写 merge_queued、不 submit
+        throwIfAborted(s.signal);
         remember(s);
         if (s.submit) {
           // 先写 merge_queued 再交给 9：交出去之后的状态归 9，8 不再写
@@ -955,11 +971,14 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
     ticket: SubAgentTicket,
     pr_id: string,
     reviewed_head: string,
+    signal: AbortSignal | undefined,
   ): Promise<boolean> {
     let latest: Awaited<ReturnType<typeof deps.pr.diff>>;
     try {
-      latest = await deps.pr.diff(pr_id);
+      latest = await deps.pr.diff(pr_id, ...prOpts(signal));
     } catch (e) {
+      // 被中止（T-102b）不算「取不到 diff」：原样抛，不按高风险接着交给 9
+      throwIfAborted(signal);
       logger.warn(
         `[bakacoding/sub-agent] ${ticket.ticket_id} 交出前重新取 PR ${pr_id} 的 diff 失败，按高风险处理：${String(e)}`,
       );
@@ -1114,7 +1133,8 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
       });
     },
 
-    async resubmitConflict(req: ConflictResubmitRequest) {
+    async resubmitConflict(req: ConflictResubmitRequest, options: SchedulerCallOptions = {}) {
+      throwIfAborted(options.signal);
       const ticket = await lookup(req.ticket);
       assertWorktree(req.worktree_path);
       const base_commit = deps.resolveBase
@@ -1136,11 +1156,13 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
         submit: false,
         announce: `${ticket.ticket_id} 合并冲突，基于新基线重新编码（冲突复投 ${req.resubmit_counts.conflict} 次）`,
         stage: "coding",
+        ...(options.signal ? { signal: options.signal } : {}),
       });
       return toScheduler(o);
     },
 
-    async reReview(req: ReReviewRequest) {
+    async reReview(req: ReReviewRequest, options: SchedulerCallOptions = {}) {
+      throwIfAborted(options.signal);
       const ticket = await lookup(req.ticket);
       const a = await reReviewState(ticket, req.pr_id);
       const o = await run({
@@ -1153,7 +1175,8 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
         submit: false,
         announce: undefined,
         stage: "review",
-        signal: undefined, // 不沿用 handle 时的取消信号
+        // 只用这次 9 传进来的取消信号（T-102b），不沿用 handle 时内存里那个
+        signal: options.signal,
       });
       return toScheduler(o);
     },
