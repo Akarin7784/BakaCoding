@@ -44,34 +44,55 @@ export function repoLockedBy(
 export const REPO_LOCKED_REASON =
   "仓库已被启动参数 / 环境变量锁定（--repo、BAKACODING_REPO，或绝对路径的 --db、BAKACODING_DB_PATH），不能在界面里切换项目";
 
-export type DirCheck = { ok: true } | { ok: false; missing?: string[]; reason?: string };
+export type DirCheck =
+  { ok: true; note?: string } | { ok: false; missing?: string[]; reason?: string };
+
+/** 设了 BAKACODING_CONFIG 时给用户的说明（导入结果 / 提示里都带上） */
+export function envConfigNote(configPath: string): string {
+  return `当前使用 BAKACODING_CONFIG 指定的配置：${configPath}`;
+}
 
 /**
- * (a) git 仓库检查 + 两个配置文件是否存在；(b) 用 3 的 validate / loadPricing 校验内容。
- * 错误信息先换密钥值、再 redact(light)、截断。`--config` / BAKACODING_CONFIG 指定的配置不在这里查（锁定时已拒绝导入）。
+ * (a) git 仓库检查 + 配置文件是否存在；(b) 用 3 的 validate / loadPricing 校验内容。
+ * 设了 BAKACODING_CONFIG 时不看仓库里的 config/models.json，改为校验它指向的文件（相对路径相对所选目录，
+ * 与 backend.resolveConfigPath 一致），结果里写明在用它。错误信息先换密钥值、再 redact(light)、截断。
  */
 export function checkProjectDir(
   dir: string,
   env: Readonly<Record<string, string | undefined>> = {},
 ): DirCheck {
+  const fromEnv = env[CONFIG_ENV];
+  const models = fromEnv
+    ? path.isAbsolute(fromEnv)
+      ? fromEnv
+      : path.resolve(dir, fromEnv)
+    : path.join(dir, MODELS_FILE);
+  const modelsLabel = fromEnv ? `BAKACODING_CONFIG（${models}）` : MODELS_FILE;
+  const note = fromEnv ? envConfigNote(models) : undefined;
+  const clean = (text: string) => sanitizeSyncErrorMessage(text, env, IMPORT_REASON_MAX);
+
   const missing: string[] = [];
   if (!existsSync(path.join(dir, GIT_DIR))) missing.push(GIT_DIR);
-  const models = path.join(dir, MODELS_FILE);
   const pricing = path.join(dir, PRICING_FILE);
-  if (!env[CONFIG_ENV] && !existsSync(models)) missing.push(MODELS_FILE);
+  if (!fromEnv && !existsSync(models)) missing.push(MODELS_FILE);
   if (!existsSync(pricing)) missing.push(PRICING_FILE);
-  if (missing.length) {
+  const envMissing = fromEnv !== undefined && !existsSync(models);
+  if (missing.length || envMissing) {
     const names = missing.map((m) => (m === GIT_DIR ? "不是 git 仓库（没有 .git）" : `缺少 ${m}`));
-    return { ok: false, missing, reason: names.join("；") };
+    if (envMissing) names.push(`BAKACODING_CONFIG 指定的配置文件不存在：${models}`);
+    if (note) names.push(note);
+    return {
+      ok: false,
+      ...(missing.length && { missing }),
+      reason: clean(names.join("；")),
+    };
   }
   const errors: string[] = [];
-  if (!env[CONFIG_ENV]) {
-    try {
-      const errs = validate(JSON.parse(readFileSync(models, "utf8")));
-      errors.push(...errs.map((e) => `${MODELS_FILE}：${e}`));
-    } catch (e) {
-      errors.push(`${MODELS_FILE} 读取失败：${e instanceof Error ? e.message : String(e)}`);
-    }
+  try {
+    const errs = validate(JSON.parse(readFileSync(models, "utf8")));
+    errors.push(...errs.map((e) => `${modelsLabel}：${e}`));
+  } catch (e) {
+    errors.push(`${modelsLabel} 读取失败：${e instanceof Error ? e.message : String(e)}`);
   }
   try {
     loadPricing(pricing);
@@ -79,10 +100,8 @@ export function checkProjectDir(
     errors.push(`${PRICING_FILE} 校验失败：${e instanceof Error ? e.message : String(e)}`);
   }
   if (errors.length) {
-    return {
-      ok: false,
-      reason: sanitizeSyncErrorMessage(errors.join("\n"), env, IMPORT_REASON_MAX),
-    };
+    if (note) errors.push(note);
+    return { ok: false, reason: clean(errors.join("\n")) };
   }
-  return { ok: true };
+  return note ? { ok: true, note: clean(note) } : { ok: true };
 }

@@ -43,7 +43,10 @@ export function useProjectActions(
       try {
         const r = await api.importProject();
         if (r.ok) {
-          setNotice({ tone: "ok", text: `已导入项目「${r.project.name}」：${r.project.path}` });
+          setNotice({
+            tone: "ok",
+            text: `已导入项目「${r.project.name}」：${r.project.path}${r.note ? `。${r.note}` : ""}`,
+          });
           reload();
         } else if (!r.canceled) {
           const missing = r.missing?.length ? `缺少：${r.missing.join("、")}。` : "";

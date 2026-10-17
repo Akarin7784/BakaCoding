@@ -143,9 +143,9 @@ export type ChatReplyKind = ChatReply["kind"];
  * 只读 / 未接线 / chat() 抛错都是 ok:false，reason 已在主进程脱敏、截到 CHAT_REASON_MAX 字。
  */
 export type DesktopChatResult = { ok: true; reply: ChatReply } | { ok: false; reason: string };
-/** `project:import` 结果（T-072）：project 原样取自 3 的 importProject。 */
+/** `project:import` 结果（T-072）：project 原样取自 3 的 importProject；note 为补充说明（如在用 BAKACODING_CONFIG）。 */
 export type DesktopImportResult =
-  | { ok: true; project: Project }
+  | { ok: true; project: Project; note?: string }
   | { ok: false; canceled?: true; missing?: string[]; reason?: string };
 
 /** `diagnostics:export` 结果（T-072）；reason 已脱敏截断。 */
@@ -156,7 +156,8 @@ export type DesktopExportResult =
 export interface DesktopSettings {
   repo: string | null;
   env: { name: string; set: boolean }[];
-  mode: "local" | "github";
+  /** readonly：后端只读（没有 PR 实现，不显示成 local） */
+  mode: "local" | "github" | "readonly";
 }
 
 /** preload 通过 contextBridge 暴露在 window.bakacoding 上的 API。 */

@@ -224,7 +224,11 @@ export function serveProjectSettings(ipc: IpcMainLike, deps: ProjectSettingsDeps
     const r = await deps.backend.switchTo(path.resolve(dir));
     if (!r.ok) return { ok: false, reason: r.reason } satisfies DesktopImportResult;
     deps.saveLastRepo(path.resolve(dir));
-    return { ok: true, project: r.project } satisfies DesktopImportResult;
+    return {
+      ok: true,
+      project: r.project,
+      ...(check.note !== undefined && { note: check.note }),
+    } satisfies DesktopImportResult;
   });
 
   ipc.handle(IPC_CHANNELS.diagnosticsExport, async () => {
@@ -256,7 +260,7 @@ export function serveProjectSettings(ipc: IpcMainLike, deps: ProjectSettingsDeps
     const settings: DesktopSettings = {
       repo: deps.backend.repoRoot() || null,
       env: envPresence(deps.env),
-      mode: deps.backend.prMode(),
+      mode: deps.backend.status().mode === "readonly" ? "readonly" : deps.backend.prMode(),
     };
     return settings;
   });

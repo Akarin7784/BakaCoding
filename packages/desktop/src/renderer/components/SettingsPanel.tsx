@@ -3,6 +3,12 @@ import { ArrowLeft } from "lucide-react";
 import type { DesktopSettings } from "../../shared/api";
 import { Button } from "./ui/button";
 
+export const SETTINGS_MODE_LABEL: Record<DesktopSettings["mode"], string> = {
+  github: "GitHub 模式",
+  local: "本地模式",
+  readonly: "只读",
+};
+
 export function SettingsPanel({
   settings,
   error,
@@ -48,9 +54,7 @@ export function SettingsPanel({
             </div>
             <div>
               <h3 className="mb-1 text-xs text-muted-foreground">PR 模式</h3>
-              <p data-testid="settings-mode">
-                {settings.mode === "github" ? "GitHub 模式" : "本地模式"}
-              </p>
+              <p data-testid="settings-mode">{SETTINGS_MODE_LABEL[settings.mode]}</p>
             </div>
             <div>
               <h3 className="mb-1 text-xs text-muted-foreground">

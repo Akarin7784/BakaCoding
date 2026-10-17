@@ -151,6 +151,68 @@ describe("checkProjectDir（T-072）", () => {
   });
 });
 
+describe("BAKACODING_CONFIG（T-072）", () => {
+  it("合法：不看仓库里的 models.json，校验环境变量指向的文件，结果写明在用它", () => {
+    const r = repo({ models: false });
+    const cfgDir = tmp("bc-cfg-");
+    const cfg = join(cfgDir, "models.json");
+    copyFileSync(examplePath, cfg);
+    const c = checkProjectDir(r, { ...env, BAKACODING_CONFIG: cfg });
+    expect(c).toEqual({ ok: true, note: `当前使用 BAKACODING_CONFIG 指定的配置：${cfg}` });
+  });
+
+  it("不合法：拒绝，错误经 redact(light)，带 [REDACTED:…]、不含原始密钥", () => {
+    const r = repo();
+    const cfg = join(tmp("bc-cfg-"), "models.json");
+    // 键名不合规（被 validate 报出来），键名里带假密钥
+    writeFileSync(cfg, JSON.stringify({ [FAKE_GH]: 1 }));
+    const c = checkProjectDir(r, { BAKACODING_CONFIG: cfg });
+    expect(c.ok).toBe(false);
+    if (c.ok) return;
+    expect(c.reason).toContain("BAKACODING_CONFIG");
+    expect(c.reason).toContain("当前使用 BAKACODING_CONFIG 指定的配置");
+    expect(c.reason).toMatch(/\[REDACTED:[a-z_]+\]/);
+    expect(c.reason).not.toContain(FAKE_GH);
+  });
+
+  it("指向的文件不存在：拒绝", () => {
+    const r = repo();
+    const cfg = join(tmp("bc-cfg-"), "nope.json");
+    const c = checkProjectDir(r, { ...env, BAKACODING_CONFIG: cfg });
+    expect(c.ok).toBe(false);
+    if (c.ok) return;
+    expect(c.reason).toContain(`BAKACODING_CONFIG 指定的配置文件不存在：${cfg}`);
+  });
+
+  it("导入成功时 IPC 结果带上 note", async () => {
+    const r = repo({ models: false });
+    const cfg = join(tmp("bc-cfg-"), "models.json");
+    copyFileSync(examplePath, cfg);
+    const project = { project_id: "p", name: "p", path: r } as Project;
+    const { ipc, invoke } = fakeIpc();
+    serveProjectSettings(ipc, {
+      backend: {
+        switchTo: async () => ({ ok: true as const, project }),
+        repoRoot: () => "/repo",
+        prMode: () => "local" as const,
+        exportDiagnostics: async (t: string) => t,
+        status: () => ({ mode: "live" as const }),
+      },
+      argv: [],
+      env: { BAKACODING_CONFIG: cfg },
+      pickDirectory: async () => r,
+      pickSavePath: async () => null,
+      downloadsDir: "/dl",
+      saveLastRepo: () => {},
+    });
+    await expect(invoke(IPC_CHANNELS.projectImport)).resolves.toEqual({
+      ok: true,
+      project,
+      note: `当前使用 BAKACODING_CONFIG 指定的配置：${cfg}`,
+    });
+  });
+});
+
 describe("BackendSwitcher 重新组装（T-072）", () => {
   it("切到新仓库：旧后端拆掉，新后端 live，project_created 只落库一次、只通知一次；连导两次第二次仍 live", async () => {
     const a = repo();
@@ -484,6 +546,15 @@ describe("project:import / diagnostics:export / settings:get IPC（T-072）", ()
     expect(raw).not.toContain(FAKE_DS);
     expect(raw).not.toContain(FAKE_GH);
     expect(envPresence({}).every((e) => !e.set)).toBe(true);
+  });
+
+  it("settings:get：后端只读时 mode 为 readonly（不显示成 local）", async () => {
+    const { ipc, invoke } = fakeIpc();
+    const c = deps();
+    (c.backend as { status: () => { mode: string } }).status = () => ({ mode: "readonly" });
+    serveProjectSettings(ipc, c.d);
+    const s = await invoke<DesktopSettings>(IPC_CHANNELS.settingsGet);
+    expect(s.mode).toBe("readonly");
   });
 
   it("live 后端：无 GITHUB_TOKEN 时 prMode 为 local（取自 app.pr 是否 GithubPrProvider）", async () => {
