@@ -9,6 +9,7 @@ const scheduler = createScheduler({
   bus,
   createPr: ({ eventContext }) => createPrProvider({ ...prOpts, publish: bus.publish, eventContext }),
   config,
+  targetHead: () => git(repo, ["rev-parse", INTEGRATION_BRANCH]), // 目标分支当前 HEAD
   budgetState: () => budget.budgetState(),
   tickets: { setStatus: (id, status) => /* 写 2 的 tickets.status */ undefined },
   worktrees: { create: (id, base, n) => wt.createWorktree(id, base, n), cleanup: (p) => wt.cleanup(p) },
@@ -16,5 +17,7 @@ const scheduler = createScheduler({
 });
 await scheduler.start();
 ```
+
+配置 `backpressure.pending_pr_limit` 默认 16（`config/models.example.json` 里也是 16）：默认值 16 没有实测依据，待实测后再定。JSON 不能写注释，说明放在这里和 modules.md §9。
 
 5、7、8 还没接上：8 的 `resubmitConflict` / `reReview` 由调用方注入，测试里用 mock。

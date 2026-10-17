@@ -79,8 +79,12 @@ export interface ConflictResubmitRequest {
 export interface ReReviewRequest {
   ticket: SchedulerTicket;
   pr_id: string;
-  /** 本单基线之后合入的单 */
+  /** 本单基线之后合入的单（base_unknown 时为空：记录不足，不知道合了哪些） */
   merged_since: Array<{ ticket_id: string; sha: string; files: string[] }>;
+  /** 合并日志定不了本单基线、且目标分支 HEAD 与本单基线不同，保守重审 */
+  base_unknown?: true;
+  /** base_unknown 时目标分支当前 HEAD */
+  target_head?: string;
 }
 
 /**
@@ -125,6 +129,11 @@ export interface SchedulerDeps {
     >;
     backpressure: Config["backpressure"];
   };
+  /**
+   * 目标分支（集成分支）当前 HEAD 的 sha，如 `git rev-parse <target>`。start() 时读一次作为合并日志的起点；
+   * 合并日志定不了某张单的基线时（重启后、基线未知），合并前再读一次比对。
+   */
+  targetHead(): MaybePromise<string>;
   /** 3 的 budgetState()，只看 daily_exhausted */
   budgetState(): MaybePromise<Pick<BudgetState, "daily_exhausted">>;
   tickets: TicketStatusStore;
@@ -141,7 +150,7 @@ export interface SchedulerDeps {
   newId?: () => string;
   /** target_dirty 后的重试间隔，默认 30 秒 */
   target_dirty_retry_ms?: number;
-  /** 后台任务（复投、重审）出错时调用，默认 console.warn */
+  /** 后台任务（复投、重审）出错时调用，默认 console.warn；9 随后发 escalated(github_manual) */
   onError?: (error: unknown, ticket_id: string) => void;
 }
 
@@ -192,8 +201,9 @@ export interface Scheduler {
     round?: number;
     review_resubmits?: number;
     /**
-     * 本轮 worktree 的基线 commit。是本会话内某次合并的 sha 时，只有它之后的合并才算「基线前进」；
-     * 不传或不认识时按 enqueue 时的位置算（之后的合并都算）。
+     * 本轮 worktree 的基线 commit，不传用 6 的 diff(pr_id).base_sha。是本会话内某次合并的 sha 或 start()
+     * 时的目标分支 HEAD 时，从那里算「基线前进」；都不是（或拿不到）时合并前和目标分支当前 HEAD 比，
+     * 不同就保守地重审。
      */
     base_commit?: string;
   }): Promise<void>;

@@ -54,6 +54,9 @@ interface Harness {
   resubmit: ReturnType<typeof vi.fn<(r: ConflictResubmitRequest) => Promise<SubAgentOutcome>>>;
   reReview: ReturnType<typeof vi.fn<(r: ReReviewRequest) => Promise<SubAgentOutcome>>>;
   eventContextInjected: unknown[];
+  errors: unknown[];
+  head: { sha: string };
+  diffFails: Set<string>;
 }
 
 function harness(over: { pending_pr_limit?: number; conflict_limit?: number } = {}): Harness {
@@ -67,6 +70,9 @@ function harness(over: { pending_pr_limit?: number; conflict_limit?: number } = 
   const daily = { exhausted: false };
   const handlers = new Map<string, (e: unknown) => void>();
   const eventContextInjected: unknown[] = [];
+  const errors: unknown[] = [];
+  const head = { sha: SHA("a") };
+  const diffFails = new Set<string>();
   let now = Date.parse("2026-10-17T08:00:00.000Z");
   let id = 0;
   let seq = 0;
@@ -101,23 +107,27 @@ function harness(over: { pending_pr_limit?: number; conflict_limit?: number } = 
           const q = merges.get(pr_id) ?? [];
           const next = q.shift() ?? merged("f");
           if (next instanceof Error) throw next;
+          if (next.merged) head.sha = next.sha;
           return next;
         },
         close: async (pr_id: string, reason: string) => {
           calls.push(`close:${pr_id}:${reason}`);
         },
         sync: async () => h.syncChanges!.splice(0),
-        diff: async (pr_id: string): Promise<Diff> => ({
-          base_sha: SHA("a"),
-          head_sha: SHA("b"),
-          files: (diffs.get(pr_id) ?? []).map((path) => ({
-            path,
-            status: "modified",
-            additions: 1,
-            deletions: 0,
-            patch: "",
-          })),
-        }),
+        diff: async (pr_id: string): Promise<Diff> => {
+          if (diffFails.has(pr_id)) throw new Error(`diff 失败：${pr_id}`);
+          return {
+            base_sha: SHA("a"),
+            head_sha: SHA("b"),
+            files: (diffs.get(pr_id) ?? []).map((path) => ({
+              path,
+              status: "modified",
+              additions: 1,
+              deletions: 0,
+              patch: "",
+            })),
+          };
+        },
       };
     },
     config: {
@@ -133,6 +143,7 @@ function harness(over: { pending_pr_limit?: number; conflict_limit?: number } = 
         ...(over.pending_pr_limit !== undefined ? { pending_pr_limit: over.pending_pr_limit } : {}),
       },
     },
+    targetHead: () => head.sha,
     budgetState: () => ({ daily_exhausted: daily.exhausted }),
     tickets: { setStatus: (t, s) => void statuses.push([t, s]) },
     worktrees: {
@@ -152,9 +163,7 @@ function harness(over: { pending_pr_limit?: number; conflict_limit?: number } = 
     },
     newId: () => `ev-${id++}`,
     target_dirty_retry_ms: 5000,
-    onError: (e) => {
-      throw e;
-    },
+    onError: (e) => void errors.push(e),
   };
   Object.assign(h, {
     deps,
@@ -171,6 +180,9 @@ function harness(over: { pending_pr_limit?: number; conflict_limit?: number } = 
     resubmit,
     reReview,
     eventContextInjected,
+    errors,
+    head,
+    diffFails,
   });
   return h as Harness;
 }
@@ -401,6 +413,116 @@ describe("模块 9 合并队列（T-035）", () => {
     expect(h.statuses.filter(([, st]) => st === "escalated")).toEqual([]);
   });
 
+  it("Q3a. 冲突复投后台抛错：调 onError，直接上报 github_manual（resubmit_error），状态 escalated", async () => {
+    const h = harness();
+    h.resubmit.mockImplementationOnce(async () => {
+      throw new Error("coder crashed");
+    });
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    h.merges.set("pr-1", [conflict()]);
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/wt/T-1-r0" });
+    await s.idle();
+    expect(h.errors.map((e) => (e as Error).message)).toEqual(["coder crashed"]);
+    expect(escalations(h).map((e) => [e.ticket_id, e.payload])).toEqual([
+      ["T-1", { reason: "github_manual", detail: "resubmit_error: coder crashed" }],
+    ]);
+    expect(s.status("T-1")).toBe("escalated");
+    expect(h.statuses.filter(([t]) => t === "T-1").at(-1)).toEqual(["T-1", "escalated"]);
+    expect(h.calls.some((c) => c.startsWith("close:"))).toBe(false);
+  });
+
+  it("Q3b. 建 worktree 抛错也走同一条：resubmit_error 上报，不停在 resubmitting", async () => {
+    const h = harness();
+    h.deps.worktrees.create = () => {
+      throw new Error("worktree 已存在");
+    };
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    h.merges.set("pr-1", [conflict()]);
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/wt/T-1-r0" });
+    await s.idle();
+    expect(escalations(h).map((e) => e.payload)).toEqual([
+      { reason: "github_manual", detail: "resubmit_error: worktree 已存在" },
+    ]);
+    expect(s.status("T-1")).toBe("escalated");
+  });
+
+  it("Q3c. 重审后台抛错：调 onError，上报 github_manual（re_review_error），状态 escalated", async () => {
+    const h = harness();
+    h.reReview.mockImplementationOnce(async () => {
+      throw new Error("review pool down");
+    });
+    const s = await started(h);
+    await s.enqueue(ticket("A"));
+    await s.enqueue(ticket("B", { depends_on: ["A"] }));
+    await s.submit({ ticket_id: "A", pr_id: "pr-a", worktree_path: "/a" });
+    await s.idle();
+    await s.submit({ ticket_id: "B", pr_id: "pr-b", worktree_path: "/b", base_commit: SHA("a") });
+    await s.idle();
+    expect(h.reReview).toHaveBeenCalledTimes(1);
+    expect(h.errors.map((e) => (e as Error).message)).toEqual(["review pool down"]);
+    expect(escalations(h).map((e) => [e.ticket_id, e.payload])).toEqual([
+      ["B", { reason: "github_manual", detail: "re_review_error: review pool down" }],
+    ]);
+    expect(s.status("B")).toBe("escalated");
+  });
+
+  it("Q4a. 基线不在合并日志里（如重启后）且与目标分支 HEAD 不同：保守重审，再合并", async () => {
+    const h = harness();
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("9") });
+    await s.idle();
+    expect(h.reReview).toHaveBeenCalledTimes(1);
+    expect(h.reReview.mock.calls[0]![0]).toMatchObject({
+      pr_id: "pr-1",
+      merged_since: [],
+      base_unknown: true,
+      target_head: SHA("a"),
+    });
+    expect(s.status("T-1")).toBe("merged");
+    expect(s.mergeResult("pr-1")).toMatchObject({ base_changed: true, re_reviewed: true });
+    expect(s.snapshot()[0]!.resubmit_counts).toEqual({ review: 0, conflict: 0 });
+  });
+
+  it("Q4b. 基线不在合并日志里但等于目标分支当前 HEAD：没前进，直接合", async () => {
+    const h = harness();
+    const s = await started(h);
+    h.head.sha = SHA("9"); // 启动后目标分支被别处推进到 9，本单正好基于 9
+    await s.enqueue(ticket("T-1"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("9") });
+    await s.idle();
+    expect(h.reReview).not.toHaveBeenCalled();
+    expect(s.mergeResult("pr-1")).toMatchObject({ merged: true, base_changed: false });
+  });
+
+  it("Q4c. 没带 base_commit 时用 6 的 diff base_sha；连它也拿不到就保守重审，不跳过", async () => {
+    const h = harness();
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.enqueue(ticket("T-2"));
+    // T-1：diff 的 base_sha（a）就是启动时的 HEAD，不重审
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1" });
+    await s.idle();
+    expect(h.reReview).not.toHaveBeenCalled();
+    // T-2：diff 失败，基线未知 → 重审
+    h.diffFails.add("pr-2");
+    await s.submit({ ticket_id: "T-2", pr_id: "pr-2", worktree_path: "/2" });
+    await s.idle();
+    expect(h.reReview).toHaveBeenCalledTimes(1);
+    expect(h.reReview.mock.calls[0]![0]).toMatchObject({ pr_id: "pr-2", base_unknown: true });
+    expect(s.status("T-2")).toBe("merged");
+  });
+
+  it("Q4d. 启动时读一次目标分支 HEAD 作为合并日志起点", async () => {
+    const h = harness();
+    const spy = vi.fn(() => SHA("a"));
+    h.deps.targetHead = spy;
+    await started(h);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
   it("6. 当日预算用完：暂停派新单，在途的单照常合并；重置后恢复", async () => {
     const h = harness();
     const s = await started(h);
@@ -625,7 +747,7 @@ describe("模块 9 合并队列（T-035）", () => {
     expect(s.status("T-1")).toBe("escalated");
     expect(s.status("T-2")).toBe("escalated");
     expect(escalations(h).map((e) => [e.ticket_id, e.payload])).toEqual([
-      ["T-2", { reason: "github_manual", detail: "merge_error: Error: boom" }],
+      ["T-2", { reason: "github_manual", detail: "merge_error: boom" }],
     ]);
   });
 

@@ -34,6 +34,14 @@ const defaultClock: SchedulerClock = {
 /** 6 已经自己发过 escalated(github_manual) 的错误，9 不重复上报。 */
 const ESCALATED_BY_PR = new Set(["GithubAuthError", "GithubBranchDivergedError"]);
 
+function errorName(e: unknown): string {
+  return (e as Error | undefined)?.name ?? "Error";
+}
+function errorMessage(e: unknown): string {
+  const m = (e as Error | undefined)?.message;
+  return typeof m === "string" && m ? m : String(e);
+}
+
 function rateLimitWait(e: unknown): number | undefined {
   if (typeof e !== "object" || e === null) return undefined;
   const x = e as { retryable?: unknown; retry_after_ms?: unknown; name?: unknown };
@@ -58,6 +66,12 @@ interface Entry {
   round: number;
   /** 本轮基线对应的合并日志位置：之后的合并都算「基线前进」 */
   base_seq: number;
+  /**
+   * 合并日志定不了本单基线（重启后、基线不是本会话见过的提交）：合并前和目标分支当前 HEAD 比，
+   * 不同就保守地重审。base_commit 为 submit 带的或 6 的 diff 给的 base_sha。
+   */
+  base_unknown: boolean;
+  base_commit: string | undefined;
   counts: { review: number; conflict: number };
   rate_limit_streak: number;
   conflicted: boolean;
@@ -93,6 +107,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   let supervisorBacklog: { pending: number; capacity: number } | null = null;
   let pumping: Promise<void> | undefined;
   let pumpAgain = false;
+  /** start() 时目标分支的 HEAD：合并日志第 0 条之前的基线 */
+  let startHead: string | undefined;
 
   const requirePr = (): SchedulerPr => {
     if (!pr) throw new Error("调度器尚未 start()");
@@ -168,9 +184,23 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     return m.files.some((f) => mine.some((i) => i.file === f));
   }
 
-  function track(ticket_id: string, task: () => Promise<void>): void {
+  /**
+   * 后台任务（冲突复投、重审）。抛错时调 onError 并直接上报 github_manual，状态改 escalated，
+   * 不让单子停在 resubmitting / re_reviewing。
+   */
+  function track(e: Entry, kind: "resubmit" | "re_review", task: () => Promise<void>): void {
+    const ticket_id = e.ticket.ticket_id;
     const p = task()
-      .catch((err) => onError(err, ticket_id))
+      .catch(async (err) => {
+        onError(err, ticket_id);
+        if (TERMINAL.has(e.status)) return;
+        try {
+          await escalate(e, "github_manual", `${kind}_error: ${errorMessage(err)}`.slice(0, 500));
+        } catch (err2) {
+          onError(err2, ticket_id);
+        }
+        void pump();
+      })
       .finally(() => {
         background.delete(p);
       });
@@ -274,6 +304,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     }
     if (res.review_resubmits !== undefined) e.counts.review = res.review_resubmits;
     e.base_seq = base_seq;
+    e.base_unknown = false;
     await setStatus(e, "merge_queued");
   }
 
@@ -281,7 +312,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     const old_pr_id = e.pr_id!;
     const old_worktree = e.worktree_path;
     const round = e.round + 1;
-    track(e.ticket.ticket_id, async () => {
+    track(e, "resubmit", async () => {
       await setStatus(e, "resubmitting");
       const base_seq = mergeLog.length;
       const wt = await deps.worktrees.create(e.ticket.ticket_id, target, round);
@@ -306,17 +337,18 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     });
   }
 
-  function startReReview(e: Entry, since: MergeLogItem[]): void {
+  function startReReview(e: Entry, since: MergeLogItem[], target_head?: string): void {
     const pr_id = e.pr_id!;
     removeFromQueue(e.ticket.ticket_id);
     e.re_reviewed = true;
-    track(e.ticket.ticket_id, async () => {
+    track(e, "re_review", async () => {
       await setStatus(e, "re_reviewing");
       const base_seq = mergeLog.length;
       const res = await deps.subAgent.reReview({
         ticket: e.ticket,
         pr_id,
         merged_since: since.map((m) => ({ ticket_id: m.ticket_id, sha: m.sha, files: m.files })),
+        ...(target_head !== undefined ? { base_unknown: true, target_head } : {}),
       });
       await finishSubAgent(e, res, base_seq);
       // 重审不改变排队位置：回到队首
@@ -331,6 +363,19 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     if (!id) return false;
     const e = getEntry(id);
     const pr_id = e.pr_id!;
+
+    // 合并日志定不了基线：和目标分支当前 HEAD 比，不同（或连基线都不知道）就保守地重审
+    if (e.base_unknown) {
+      const head = await deps.targetHead();
+      if (e.base_commit !== undefined && head === e.base_commit) {
+        e.base_unknown = false;
+        e.base_seq = mergeLog.length;
+      } else {
+        e.base_changed = true;
+        startReReview(e, [], head);
+        return true;
+      }
+    }
 
     // 基线前进：涉及本单接口或依赖 → 重新评审（不计复投）；否则直接合
     const since = mergeLog.slice(e.base_seq);
@@ -359,17 +404,13 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         return true;
       }
       e.rate_limit_streak = 0;
-      const name = (err as Error)?.name ?? "Error";
+      const name = errorName(err);
       if (ESCALATED_BY_PR.has(name)) {
         // 6 已发 escalated(github_manual)，这里只改状态，不重复上报
         removeFromQueue(id);
         await setStatus(e, "escalated");
       } else {
-        await escalate(
-          e,
-          "github_manual",
-          `merge_error: ${name}: ${(err as Error)?.message ?? ""}`.slice(0, 500),
-        );
+        await escalate(e, "github_manual", `merge_error: ${errorMessage(err)}`.slice(0, 500));
       }
       return true;
     }
@@ -443,6 +484,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
 
   return {
     async start() {
+      startHead = await deps.targetHead();
       pr = await deps.createPr({ eventContext });
       unsubs.push(
         deps.bus.subscribe("review_backlog", (ev) => {
@@ -465,6 +507,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         worktree_path: null,
         round: 0,
         base_seq: mergeLog.length,
+        base_unknown: false,
+        base_commit: undefined,
         counts: { review: 0, conflict: 0 },
         rate_limit_streak: 0,
         conflicted: false,
@@ -482,10 +526,28 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       e.worktree_path = worktree_path;
       if (round !== undefined) e.round = round;
       if (review_resubmits !== undefined) e.counts.review = review_resubmits;
-      if (base_commit) {
-        // 基线是本会话内某次合并的结果：只有它之后的合并才算基线前进
-        const i = mergeLog.map((m) => m.sha).lastIndexOf(base_commit);
-        if (i >= 0) e.base_seq = i + 1;
+      // 基线：submit 带的 base_commit，没带就用 6 的 diff(pr_id).base_sha
+      let base = base_commit;
+      if (!base) {
+        try {
+          base = (await requirePr().diff(pr_id)).base_sha;
+        } catch (err) {
+          onError(err, ticket_id);
+        }
+      }
+      e.base_commit = base || undefined;
+      const i = base ? mergeLog.map((m) => m.sha).lastIndexOf(base) : -1;
+      if (i >= 0) {
+        // 本会话内某次合并的结果：只有它之后的合并才算基线前进
+        e.base_seq = i + 1;
+        e.base_unknown = false;
+      } else if (base && base === startHead) {
+        // 启动时的目标分支 HEAD：本会话的合并都在它之后
+        e.base_seq = 0;
+        e.base_unknown = false;
+      } else {
+        // 记录不足以判断：合并前和目标分支 HEAD 比，不同就重审
+        e.base_unknown = true;
       }
       prToTicket.set(pr_id, ticket_id);
       await setStatus(e, "merge_queued");
