@@ -20,7 +20,26 @@ export const PREP_COPY = {
   unstagedNote: "你之前暂存的文件会变回未暂存，内容不会丢",
   identityHint: "只写入本仓库的 .git/config，不改全局设置。",
   checkFailed: "检查仓库失败",
+  /** 确认框里的目标文件夹（UI-03a 评审 B1：只显示最后一级文件夹名） */
+  targetFolder: "目标文件夹",
+  /** 来源是当前工作目录时横幅的提示和按钮（不给「准备仓库」） */
+  importFirst: "还没选项目文件夹，请先导入项目",
+  importAction: "导入项目",
 } as const;
+
+/** 文件夹名显示上限（字符）；更长的截断，结尾用省略号 */
+export const FOLDER_NAME_MAX = 32;
+
+/** 只取最后一级文件夹名（主进程已经只给 basename，这里再防一层）并截断。 */
+export function shortFolder(name: string, max = FOLDER_NAME_MAX): string {
+  const base =
+    name
+      .replace(/[\\/]+$/, "")
+      .split(/[\\/]/)
+      .pop() || name;
+  const chars = [...base];
+  return chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : base;
+}
 
 export interface RepoItemCopy {
   title: string;

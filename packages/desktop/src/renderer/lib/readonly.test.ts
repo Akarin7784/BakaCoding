@@ -6,6 +6,7 @@ import { readonlyReason, repoFixRoute } from "./readonly";
 const ro = (error?: DesktopBackendStatus["error"], reason = "x"): DesktopBackendStatus => ({
   mode: "readonly",
   reason,
+  repoSource: "last_import",
   ...(error && { error }),
 });
 

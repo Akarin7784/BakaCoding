@@ -50,11 +50,28 @@ export function readonlyDetailText(s: DesktopBackendStatus): string {
 /**
  * 只读原因对应的一键修复（UI-03，`docs/ui-design.md` §4.1）：按主进程给的错误码路由——
  * 组合根 RepoNotReadyError 的 `no_commits` / `no_main`（错误名必须对上），以及「不是 Git 仓库」的 `not_git`。
- * 修复入口要等仓库修复的 IPC 定下来才接上；这里只给出该去哪一项。
+ * 仓库来源是当前工作目录（或不明）时一律不给路由（见 repoSourceWritable）。
  */
 export type RepoFixRoute = "init_repo" | "initial_commit" | "create_main";
 
+/**
+ * 仓库来源能不能在界面里初始化 / 首次提交（UI-03a 评审 B1）：来源是当前工作目录（Windows 双击启动时是解压目录）
+ * 或不明时不行，要先「导入项目」选文件夹。
+ */
+export function repoSourceWritable(s: DesktopBackendStatus): boolean {
+  return s.repoSource !== undefined && s.repoSource !== "cwd";
+}
+
+/** 仓库没准备好、但来源是当前工作目录：横幅提示先导入项目，不给「准备仓库」。 */
+export function needsImportFirst(s: DesktopBackendStatus): boolean {
+  return !repoSourceWritable(s) && rawRepoFixRoute(s) !== null;
+}
+
 export function repoFixRoute(s: DesktopBackendStatus): RepoFixRoute | null {
+  return repoSourceWritable(s) ? rawRepoFixRoute(s) : null;
+}
+
+function rawRepoFixRoute(s: DesktopBackendStatus): RepoFixRoute | null {
   if (s.mode !== "readonly" || !s.error) return null;
   const { name, code } = s.error;
   if (code === "not_git") return "init_repo";

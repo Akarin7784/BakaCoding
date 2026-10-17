@@ -1,6 +1,7 @@
 // UI-03a：项目准备页的仓库检查与修复 IPC（docs/ui-design.md §4.1，modules.md §12）。
 // 只调 4 的 checkRepo / initRepo / listInitialCommitFiles / initialCommit / createMainBranch（经组合根再导出），
 // 仓库固定是当前后端的仓库根；渲染进程传的参数在这里先做类型校验，失败只回 RepoFixError 的固定文案。
+// 评审 B1：仓库来源是当前工作目录（或不明）时三个写操作一律拒绝（cwd_repo），界面那边也不给入口，这里是纵深防御。
 import path from "node:path";
 import {
   checkRepo as checkRepoDefault,
@@ -12,6 +13,7 @@ import {
 } from "@bakacoding/app";
 import type {
   DesktopGitIdentity,
+  DesktopRepoSource,
   DesktopReloadResult,
   DesktopRepoCheckResult,
   DesktopRepoFilesResult,
@@ -39,6 +41,8 @@ export const DEFAULT_REPO_FIX_FNS: RepoFixFns = {
 export interface RepoFixDeps {
   /** 当前后端的仓库根（BackendSwitcher.repoRoot） */
   repoRoot(): string;
+  /** 当前后端的仓库来源（BackendStatus.repoSource）；cwd 或 undefined 时拒绝写操作 */
+  repoSource(): DesktopRepoSource | undefined;
   /** 写操作成功后调（BackendSwitcher.reconnect，与只读横幅「重新连接」同一条路径） */
   reconnect(): Promise<DesktopReloadResult>;
   fns?: Partial<RepoFixFns>;
@@ -50,7 +54,9 @@ export const MAX_INITIAL_FILES = 20_000;
 const MAX_REL_PATH = 4096;
 
 type FixCode = DesktopRepoFixFailure["code"];
-const FIX_CODES: ReadonlySet<string> = new Set<FixCode>([
+/** 4 的 RepoFixError 码（cwd_repo 是桌面端自己的拒绝码） */
+type ModuleFixCode = Exclude<FixCode, "cwd_repo">;
+const FIX_CODES: ReadonlySet<string> = new Set<ModuleFixCode>([
   "not_git",
   "repo_exists",
   "no_commits",
@@ -70,7 +76,25 @@ export function repoFixFailure(e: unknown): DesktopRepoFixFailure {
   return { ok: false, code: "git_failed", reason: new RepoFixError("git_failed").message };
 }
 
-const fail = (code: FixCode): DesktopRepoFixFailure => repoFixFailure(new RepoFixError(code));
+const fail = (code: ModuleFixCode): DesktopRepoFixFailure => repoFixFailure(new RepoFixError(code));
+
+/** 来源是当前工作目录时写操作的固定回复（UI-03a 评审 B1） */
+export const CWD_REPO_REASON = "还没选项目文件夹：请先导入项目，再准备仓库";
+export const CWD_REPO_FAILURE: DesktopRepoFixFailure = {
+  ok: false,
+  code: "cwd_repo",
+  reason: CWD_REPO_REASON,
+};
+
+/** 文件夹名上限（字符）；界面再按显示宽度截断 */
+const MAX_FOLDER_NAME = 255;
+
+/** 仓库根的最后一级文件夹名：只给 basename，不带上级路径。 */
+export function repoFolderName(root: string): string {
+  const trimmed = root.replace(/[\\/]+$/, "");
+  const name = trimmed.split(/[\\/]/).pop() ?? "";
+  return (name || trimmed || root).slice(0, MAX_FOLDER_NAME);
+}
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
@@ -103,7 +127,7 @@ export type ParsedInitialCommit =
   | { files: string[]; identity?: DesktopGitIdentity }
   | { empty: true; identity?: DesktopGitIdentity };
 
-export function parseInitialCommit(v: unknown): ParsedInitialCommit | FixCode {
+export function parseInitialCommit(v: unknown): ParsedInitialCommit | ModuleFixCode {
   if (!isObj(v)) return "invalid_files";
   const identity = parseIdentity(v.identity);
   if (identity === "invalid") return "invalid_identity";
@@ -130,6 +154,11 @@ export interface RepoFixHandlers {
 /** 五个通道的处理函数（不抛过 IPC）。写操作成功后 reconnect；reconnect 自己出错按 failed 回，修复本身仍算成功。 */
 export function repoFixHandlers(deps: RepoFixDeps): RepoFixHandlers {
   const fns: RepoFixFns = { ...DEFAULT_REPO_FIX_FNS, ...deps.fns };
+  /** 写操作只在来源明确不是 cwd 时放行（不明 = 组装失败的占位后端没带来源，按 cwd 处理） */
+  const writable = (): boolean => {
+    const src = deps.repoSource();
+    return src !== undefined && src !== "cwd";
+  };
   const reconnect = async (): Promise<DesktopReloadResult> => {
     try {
       return await deps.reconnect();
@@ -140,9 +169,11 @@ export function repoFixHandlers(deps: RepoFixDeps): RepoFixHandlers {
   return {
     async check() {
       try {
-        const r = await fns.checkRepo(deps.repoRoot());
+        const root = deps.repoRoot();
+        const r = await fns.checkRepo(root);
         return {
           ok: true,
+          folder: repoFolderName(root),
           check: {
             items: r.items.map((i) => ({
               id: i.id,
@@ -160,6 +191,7 @@ export function repoFixHandlers(deps: RepoFixDeps): RepoFixHandlers {
       }
     },
     async init(arg) {
+      if (!writable()) return CWD_REPO_FAILURE;
       const o = arg === undefined ? {} : arg;
       if (!isObj(o)) return fail("invalid_identity");
       const identity = parseIdentity(o.identity);
@@ -184,6 +216,7 @@ export function repoFixHandlers(deps: RepoFixDeps): RepoFixHandlers {
       }
     },
     async initialCommit(arg) {
+      if (!writable()) return CWD_REPO_FAILURE;
       const req = parseInitialCommit(arg);
       if (typeof req === "string") return fail(req);
       let commit: string;
@@ -195,6 +228,7 @@ export function repoFixHandlers(deps: RepoFixDeps): RepoFixHandlers {
       return { ok: true, commit, reload: await reconnect() };
     },
     async createMain() {
+      if (!writable()) return CWD_REPO_FAILURE;
       let from: string;
       try {
         ({ from } = await fns.createMainBranch(deps.repoRoot()));

@@ -1,7 +1,7 @@
 // UI-03a：项目准备页（docs/ui-design.md §4.1）。从只读横幅「准备仓库」进来，逐项检查当前仓库：
 // git → commit → main → ignored，前一项不过后面灰掉；没通过的第一项给主按钮，写操作都先弹确认框。
 import { useCallback, useEffect, useState } from "react";
-import { ArrowLeft, Circle, CircleAlert, CircleCheck, RefreshCw } from "lucide-react";
+import { ArrowLeft, Circle, CircleAlert, CircleCheck, FolderClosed, RefreshCw } from "lucide-react";
 import type {
   BakaDesktopApi,
   DesktopRepoCheck,
@@ -23,6 +23,7 @@ import {
   PREP_COPY,
   prepItems,
   ROUTE_ITEM,
+  shortFolder,
   type IdentityField,
   type PrepItemView,
   type RepoItemId,
@@ -65,6 +66,18 @@ function ItemIcon({ state }: { state: PrepItemView["state"] }) {
   return <Circle size={18} strokeWidth={1.5} aria-hidden className="text-muted-foreground" />;
 }
 
+/** 确认框里的目标文件夹一行（只显示最后一级文件夹名，过长截断） */
+function TargetFolder({ folder }: { folder: string | null }) {
+  if (folder === null) return null;
+  return (
+    <p data-testid="target-folder" className="flex min-w-0 items-center gap-2">
+      <FolderClosed size={16} strokeWidth={1.5} aria-hidden className="shrink-0" />
+      <span className="shrink-0 text-muted-foreground">{PREP_COPY.targetFolder}</span>
+      <span className="min-w-0 truncate font-medium">{shortFolder(folder)}</span>
+    </p>
+  );
+}
+
 const STATE_LABEL: Record<PrepItemView["state"], string> = {
   ok: "通过",
   fail: "未通过",
@@ -85,6 +98,7 @@ export function RepoPrepPage({
   onFixed?: () => void | Promise<void>;
 }) {
   const [check, setCheck] = useState<DesktopRepoCheck | null>(null);
+  const [folder, setFolder] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [dialog, setDialog] = useState<Fix | null>(null);
@@ -99,6 +113,7 @@ export function RepoPrepPage({
       const r = await api.checkRepo();
       if (r.ok) {
         setCheck(r.check);
+        setFolder(typeof r.folder === "string" ? r.folder : null);
         setError(null);
       } else setError(r.reason);
     } catch {
@@ -162,7 +177,17 @@ export function RepoPrepPage({
       <div className="mx-auto flex w-full max-w-[760px] flex-col gap-6 px-6 py-8">
         <div className="flex items-start gap-3">
           <div className="min-w-0 flex-1">
-            <h1 className="text-lg font-semibold">{PREP_COPY.title}</h1>
+            <h1 className="flex min-w-0 items-baseline gap-2 text-lg font-semibold">
+              <span className="shrink-0">{PREP_COPY.title}</span>
+              {folder !== null && (
+                <span
+                  data-testid="prep-folder"
+                  className="min-w-0 truncate font-normal text-muted-foreground"
+                >
+                  {shortFolder(folder)}
+                </span>
+              )}
+            </h1>
             <p className="mt-1 text-muted-foreground">{PREP_COPY.intro}</p>
           </div>
           <Button variant="secondary" size="sm" onClick={onBack}>
@@ -248,6 +273,7 @@ export function RepoPrepPage({
               在这个文件夹里执行 git init，并把默认分支设成 main。你的文件不会被改动，也不会提交。
             </DialogDescription>
           </DialogHeader>
+          <TargetFolder folder={folder} />
           <DialogFooter>
             <Button variant="secondary" disabled={busy} onClick={() => setDialog(null)}>
               {PREP_COPY.cancel}
@@ -268,6 +294,10 @@ export function RepoPrepPage({
               提交到 main。副 Agent 只能看到已提交的代码，所以要先有一次提交。
             </DialogDescription>
           </DialogHeader>
+          <TargetFolder folder={folder} />
+          <p data-testid="unstaged-note" className="text-muted-foreground">
+            {PREP_COPY.unstagedNote}
+          </p>
           <CommitBody
             files={files}
             missing={missing}
@@ -275,9 +305,6 @@ export function RepoPrepPage({
             identity={identity}
             onIdentity={setIdentity}
           />
-          <p data-testid="unstaged-note" className="text-muted-foreground">
-            {PREP_COPY.unstagedNote}
-          </p>
           <DialogFooter className="sticky bottom-0 -mx-6 -mb-6 flex-wrap rounded-b-2xl border-t border-border bg-popover px-6 py-4">
             <Button variant="secondary" disabled={busy} onClick={() => setDialog(null)}>
               {PREP_COPY.cancel}
@@ -325,6 +352,7 @@ export function RepoPrepPage({
               只新建，不切换、不改名、不删除原来的分支。
             </DialogDescription>
           </DialogHeader>
+          <TargetFolder folder={folder} />
           <DialogFooter>
             <Button variant="secondary" disabled={busy} onClick={() => setDialog(null)}>
               {PREP_COPY.cancel}

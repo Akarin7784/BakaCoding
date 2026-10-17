@@ -1,7 +1,7 @@
 // T-072：一次组装只对应一个仓库。导入项目时拆掉旧后端、在新仓库上重新组装，桌面侧订阅转到新后端。
 import type { Project } from "@bakacoding/config-budget";
 import type { PendingHighRisk } from "@bakacoding/supervisor";
-import type { BackendHandle, BackendStatus, NotifyMessage } from "./backend.js";
+import type { BackendHandle, BackendStatus, NotifyMessage, RepoSource } from "./backend.js";
 import { errorDetail, sanitizeSyncErrorMessage, unavailableSyncState } from "./sync-state.js";
 
 export type SwitchResult =
@@ -99,7 +99,11 @@ export class BackendSwitcher implements BackendHandle {
 
   constructor(
     private current: BackendHandle,
-    private readonly start: (repo: string) => Promise<BackendHandle>,
+    /**
+     * 组装后端。source 不传 = 新导入的仓库（按「上次导入」）；重载 / 切换失败退回原仓库时传原来源，
+     * 让 cwd 来源重载后仍是 cwd（UI-03a 评审 B1：不能因为重连就变成可初始化的来源）。
+     */
+    private readonly start: (repo: string, source?: RepoSource) => Promise<BackendHandle>,
     private readonly env: Readonly<Record<string, string | undefined>> = {},
     opts: SwitcherOptions = {},
   ) {
@@ -120,9 +124,12 @@ export class BackendSwitcher implements BackendHandle {
   }
 
   /** 组装一个后端；抛错时返回 null 和原因（错误名过滤、信息脱敏） */
-  private async tryStart(repo: string): Promise<{ handle: BackendHandle | null; why: string }> {
+  private async tryStart(
+    repo: string,
+    source?: RepoSource,
+  ): Promise<{ handle: BackendHandle | null; why: string }> {
     try {
-      const handle = await this.start(repo);
+      const handle = await (source === undefined ? this.start(repo) : this.start(repo, source));
       return { handle, why: handle.status().reason ?? "未知原因" };
     } catch (e) {
       return { handle: null, why: sanitizeSyncErrorMessage(errorDetail(e), this.env, 500) };
@@ -183,6 +190,7 @@ export class BackendSwitcher implements BackendHandle {
     const quitting: SwitchResult = { ok: false, reason: "程序正在退出" };
     this.switching = true;
     const oldRepo = this.current.repoRoot();
+    const oldSource = this.current.status().repoSource;
     // UI-03：失败原因里的新 / 原仓库路径和其他绝对路径都换成占位符
     const clean = (m: string) => sanitizeSwitchReason(m, repo, oldRepo, this.env);
     const wasReady = this.rendererReady;
@@ -198,7 +206,7 @@ export class BackendSwitcher implements BackendHandle {
         this.install(next.handle);
       } else {
         await next.handle?.stop();
-        const back = await this.tryStart(oldRepo);
+        const back = await this.tryStart(oldRepo, oldSource ?? "cwd");
         if (this.stopped) {
           await this.discard(back.handle);
           return quitting;
@@ -210,7 +218,11 @@ export class BackendSwitcher implements BackendHandle {
         }
         await back.handle?.stop();
         this.install(
-          readonlyBackend(oldRepo, clean(`切换项目失败，原仓库也没能重新启动（${back.why}）`)),
+          readonlyBackend(
+            oldRepo,
+            clean(`切换项目失败，原仓库也没能重新启动（${back.why}）`),
+            oldSource,
+          ),
         );
         this.restoreReady(wasReady);
         return {
@@ -323,6 +335,7 @@ export class BackendSwitcher implements BackendHandle {
   private async doReload(): Promise<ReloadResult> {
     this.restarting = true;
     const repo = this.current.repoRoot();
+    const source = this.current.status().repoSource;
     const wasReady = this.rendererReady;
     try {
       try {
@@ -330,7 +343,7 @@ export class BackendSwitcher implements BackendHandle {
       } catch {
         /* 拆旧失败也继续尝试重新组装 */
       }
-      const next = await this.tryStart(repo);
+      const next = await this.tryStart(repo, source ?? "cwd");
       if (this.stopped) {
         await this.discard(next.handle);
         return { state: "failed", reason: "程序正在退出" };
@@ -342,7 +355,7 @@ export class BackendSwitcher implements BackendHandle {
       }
       await this.discard(next.handle);
       const why = sanitizeReloadReason(next.why, repo, this.env);
-      this.install(readonlyBackend(repo, `重载后端失败（${why}）`));
+      this.install(readonlyBackend(repo, `重载后端失败（${why}）`, source));
       this.restoreReady(wasReady);
       return {
         state: "failed",
@@ -436,10 +449,14 @@ export class BackendSwitcher implements BackendHandle {
 }
 
 /** 组装都失败时的占位后端：只读，什么都不做（原因只写变量名 / 错误名，已脱敏）。 */
-export function readonlyBackend(repo: string, reason: string): BackendHandle {
+export function readonlyBackend(
+  repo: string,
+  reason: string,
+  repoSource?: RepoSource,
+): BackendHandle {
   const unavailable = () => Promise.reject(new Error(`只读模式：${reason}`));
   return {
-    status: () => ({ mode: "readonly", reason }),
+    status: () => ({ mode: "readonly", reason, ...(repoSource && { repoSource }) }),
     markRendererReady: () => [],
     pendingNotifications: () => [],
     onNotify: () => () => {},

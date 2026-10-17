@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { acquireWriterLock, type App } from "@bakacoding/app";
+import { acquireWriterLock, createDefaultDeps, type App } from "@bakacoding/app";
 import {
   openStorage,
   openStorageReadonly,
@@ -26,7 +26,9 @@ import {
   readonlyReasonFromError,
   resolveConfigPath,
   resolveRepoDbPath,
+  lastRepoForStart,
   resolveRepoPath,
+  resolveRepoSource,
   sanitizedDepsLogging,
   startBackend,
 } from "./backend.js";
@@ -609,6 +611,112 @@ describe("UI-03：日志里的错误与 backendErrorDetail 同一套脱敏", () 
     for (const c of mine) {
       expect(c).toHaveLength(1);
       expect(String(c[0])).not.toContain(root);
+    }
+    await be.stop();
+  });
+});
+
+describe("仓库来源（UI-03a 评审 B1）", () => {
+  it("resolveRepoSource 按 --repo > BAKACODING_REPO > 上次导入 > cwd 给出来源；空字符串当没给", () => {
+    const cwd = "/tmp/cwd-x";
+    expect(resolveRepoSource(["--repo=/r"], { BAKACODING_REPO: "/e" }, cwd, "/l")).toEqual({
+      root: "/r",
+      source: "arg",
+    });
+    expect(resolveRepoSource(["--repo", "/r2"], {}, cwd)).toEqual({ root: "/r2", source: "arg" });
+    expect(resolveRepoSource([], { BAKACODING_REPO: "/e" }, cwd, "/l")).toEqual({
+      root: "/e",
+      source: "env",
+    });
+    expect(resolveRepoSource([], {}, cwd, "/l")).toEqual({ root: "/l", source: "last_import" });
+    expect(resolveRepoSource([], { BAKACODING_REPO: "" }, cwd, "")).toEqual({
+      root: cwd,
+      source: "cwd",
+    });
+    expect(resolveRepoSource([], {}, cwd)).toEqual({ root: cwd, source: "cwd" });
+  });
+
+  it("status() 带 repoSource：cwd 启动是 cwd，--repo 是 arg", async () => {
+    const { root } = gitRepoWithConfig();
+    const fromCwd = await startBackend({
+      argv: [],
+      env: { DEEPSEEK_API_KEY: "sk-src" },
+      cwd: root,
+      pricingPath,
+      logger: { warn: () => {} },
+    });
+    expect(fromCwd.status().repoSource).toBe("cwd");
+    await fromCwd.stop();
+    const fromArg = await startBackend({
+      argv: [`--repo=${root}`],
+      env: { DEEPSEEK_API_KEY: "sk-src" },
+      cwd: tmpdir(),
+      pricingPath,
+      logger: { warn: () => {} },
+    });
+    expect(fromArg.status().repoSource).toBe("arg");
+    await fromArg.stop();
+  });
+
+  it("不是 Git 仓库的当前目录（如解压目录）：只读、not_git、来源 cwd", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "bc-unzip-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "BakaCoding.exe"), "x");
+    const be = await startBackend({
+      argv: [],
+      env: {},
+      cwd: dir,
+      pricingPath,
+      logger: { warn: () => {} },
+    });
+    expect(be.status()).toMatchObject({
+      mode: "readonly",
+      repoSource: "cwd",
+      error: { code: "not_git" },
+    });
+    await be.stop();
+  });
+
+  it("lastRepoForStart：cwd 来源重载不把仓库当上次导入传；其他照常", () => {
+    expect(lastRepoForStart("/cwd", "cwd", "/saved")).toBeUndefined();
+    expect(lastRepoForStart("/r", "last_import", "/saved")).toBe("/r");
+    expect(lastRepoForStart("/new", undefined, "/saved")).toBe("/new");
+    expect(lastRepoForStart(undefined, undefined, "/saved")).toBe("/saved");
+    expect(lastRepoForStart(undefined, undefined, undefined)).toBeUndefined();
+  });
+});
+
+describe("组合根 logger / onError 的脱敏接线（UI-03a 评审 N1）", () => {
+  it("交给 createDefaultDeps 的 logger.warn 和 onError 写到桌面 logger 的都是一行脱敏字符串", async () => {
+    const { root } = gitRepoWithConfig();
+    const KEY_VAL = "sk-n1-wiring-secret-0123456789";
+    const calls: unknown[][] = [];
+    let captured: Parameters<typeof createDefaultDeps>[2] | undefined;
+    const be = await startBackend({
+      argv: [`--repo=${root}`],
+      env: { DEEPSEEK_API_KEY: KEY_VAL },
+      cwd: root,
+      pricingPath,
+      logger: { warn: (...a: unknown[]) => void calls.push(a) },
+      createDefaultDeps: (config, storage, o) => {
+        captured = o;
+        return createDefaultDeps(config, storage, o);
+      },
+    });
+    expect(be.status().mode).toBe("live");
+    expect(captured?.logger).toBeDefined();
+    expect(captured?.onError).toBeDefined();
+    calls.length = 0;
+    const err = new Error(`git failed in ${root}/w ${KEY_VAL}`);
+    captured!.onError!(err, "scheduler.sync");
+    captured!.logger!.warn(`清理 ${root}/w 失败`, err);
+    expect(calls).toHaveLength(2);
+    for (const c of calls) {
+      expect(c).toHaveLength(1);
+      expect(typeof c[0]).toBe("string");
+      expect(String(c[0])).not.toContain(root);
+      expect(String(c[0])).not.toContain(KEY_VAL);
+      expect(String(c[0])).toContain("<仓库>");
     }
     await be.stop();
   });

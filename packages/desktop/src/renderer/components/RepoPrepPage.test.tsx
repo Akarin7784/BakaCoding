@@ -12,7 +12,8 @@ import type {
 import { App } from "../App";
 import { toast, Toaster } from "./ui/sonner";
 import { RepoPrepPage, type RepoPrepApi } from "./RepoPrepPage";
-import { identityFormFields, missingIdentity, prepItems } from "../lib/repoPrep";
+import { identityFormFields, missingIdentity, prepItems, shortFolder } from "../lib/repoPrep";
+import { needsImportFirst, repoFixRoute } from "../lib/readonly";
 
 beforeAll(() => {
   Element.prototype.scrollIntoView ??= function () {};
@@ -83,12 +84,13 @@ const ALL_OK: DesktopRepoCheck = {
 };
 const OK_FIX: DesktopRepoFixResult = { ok: true, reload: { state: "reloaded" } };
 
-function api(checks: DesktopRepoCheck[], over: Partial<RepoPrepApi> = {}) {
+function api(checks: DesktopRepoCheck[], over: Partial<RepoPrepApi> = {}, folder = "my-project") {
   const queue = [...checks];
   const a = {
     checkRepo: vi.fn(async () => ({
       ok: true as const,
       check: queue.length > 1 ? queue.shift()! : queue[0]!,
+      folder,
     })),
     initRepo: vi.fn(async () => OK_FIX),
     listInitialFiles: vi.fn(async () => ({
@@ -248,6 +250,7 @@ describe("只读横幅入口（UI-03a）", () => {
       message: "仓库没有任何提交，请先提交一次再启动",
       code: "no_commits",
     },
+    repoSource: "last_import",
   };
   const appApi = (s: DesktopBackendStatus) =>
     ({
@@ -279,5 +282,84 @@ describe("只读横幅入口（UI-03a）", () => {
     render(<App api={appApi({ mode: "readonly", reason: "写入锁被占用（pid 1）" })} />);
     const banner = await screen.findByRole("region", { name: "只读模式" });
     expect(within(banner).queryByRole("button", { name: "准备仓库" })).toBeNull();
+  });
+});
+
+describe("目标文件夹名（UI-03a 评审 B1）", () => {
+  it("准备页标题和三个确认框都显示最后一级文件夹名", async () => {
+    const check = async (checks: DesktopRepoCheck[], button: string) => {
+      renderPage(api(checks, {}, "my-project"));
+      expect((await screen.findByTestId("prep-folder")).textContent).toBe("my-project");
+      fireEvent.click(await screen.findByRole("button", { name: button }));
+      const dlg = await screen.findByRole("dialog");
+      expect(within(dlg).getByTestId("target-folder").textContent).toContain("my-project");
+      cleanup();
+    };
+    await check([NOT_GIT], "初始化 Git");
+    await check([NO_COMMITS()], "创建首次提交");
+    await check([NO_MAIN], "从当前分支新建 main");
+  });
+
+  it("过长的文件夹名截断；就算传来带路径的也只取最后一级", async () => {
+    expect(shortFolder("a".repeat(40))).toBe(`${"a".repeat(31)}…`);
+    expect(shortFolder("/home/eva/secret/proj")).toBe("proj");
+    expect(shortFolder("C:\\Users\\eva\\proj\\")).toBe("proj");
+    renderPage(api([NOT_GIT], {}, "很长".repeat(30)));
+    const t = (await screen.findByTestId("prep-folder")).textContent!;
+    expect([...t]).toHaveLength(32);
+    expect(t.endsWith("…")).toBe(true);
+  });
+});
+
+describe("仓库来源是当前工作目录（UI-03a 评审 B1）", () => {
+  const notGit = (repoSource?: DesktopBackendStatus["repoSource"]): DesktopBackendStatus => ({
+    mode: "readonly",
+    reason: "这个文件夹还不是 Git 仓库",
+    error: { name: "Error", message: "这个文件夹还不是 Git 仓库", code: "not_git" },
+    ...(repoSource && { repoSource }),
+  });
+  const appApi = (s: DesktopBackendStatus, importProject = vi.fn(async () => ({ ok: false }))) =>
+    ({
+      platform: "win32",
+      getSnapshot: async () => ({
+        db: { path: "/p", state: "ok" },
+        events: [],
+        tickets: [],
+        last_seq: 0,
+      }),
+      onUpdate: () => () => {},
+      getBackendStatus: vi.fn(async () => s),
+      importProject,
+      ...api([NOT_GIT]),
+    }) as unknown as BakaDesktopApi;
+
+  for (const src of ["cwd", undefined] as const) {
+    it(`来源 ${String(src)} 且不是 Git 仓库：没有「准备仓库」，横幅提示先导入项目`, async () => {
+      const importProject = vi.fn(async () => ({ ok: false }));
+      render(<App api={appApi(notGit(src), importProject)} />);
+      const banner = await screen.findByRole("region", { name: "只读模式" });
+      expect(within(banner).queryByRole("button", { name: "准备仓库" })).toBeNull();
+      expect(within(banner).getByTestId("import-first-hint").textContent).toContain("请先导入项目");
+      fireEvent.click(within(banner).getByRole("button", { name: "导入项目" }));
+      await waitFor(() => expect(importProject).toHaveBeenCalled());
+      expect(screen.queryByTestId("repo-prep")).toBeNull();
+    });
+  }
+
+  it("来源是上次导入：照常给「准备仓库」，不提示导入", async () => {
+    render(<App api={appApi(notGit("last_import"))} />);
+    const banner = await screen.findByRole("region", { name: "只读模式" });
+    expect(within(banner).getByRole("button", { name: "准备仓库" })).toBeTruthy();
+    expect(within(banner).queryByTestId("import-first-hint")).toBeNull();
+  });
+
+  it("repoFixRoute / needsImportFirst：cwd 或不明来源不给路由", () => {
+    expect(repoFixRoute(notGit("cwd"))).toBeNull();
+    expect(repoFixRoute(notGit())).toBeNull();
+    expect(needsImportFirst(notGit("cwd"))).toBe(true);
+    expect(repoFixRoute(notGit("arg"))).toBe("init_repo");
+    expect(needsImportFirst(notGit("env"))).toBe(false);
+    // 不是仓库没准备好的只读（锁被占）：不提示导入
+    expect(needsImportFirst({ mode: "readonly", reason: "写入锁被占用（pid 1）" })).toBe(false);
   });
 });

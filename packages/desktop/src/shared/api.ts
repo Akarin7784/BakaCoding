@@ -123,8 +123,16 @@ export interface DesktopBackendError {
   cause?: { name: string; message: string };
 }
 
+/**
+ * 仓库从哪来（UI-03a 评审 B1），按 repoRoot 解析顺序：`--repo` 参数 > BAKACODING_REPO > 上次导入 > 当前工作目录。
+ * `cwd` 时界面不提供初始化 / 首次提交 / 新建 main（Windows 双击启动时当前目录是解压目录）。
+ */
+export type DesktopRepoSource = "arg" | "env" | "last_import" | "cwd";
+
 export interface DesktopBackendStatus {
   mode: "live" | "readonly";
+  /** 仓库来源（UI-03a）；组装失败的占位后端不知道时不出现，按 cwd 处理 */
+  repoSource?: DesktopRepoSource;
   reason?: string;
   /** 后端起不来时的错误详情（UI-08）；锁被占等没有错误对象的情况不出现。 */
   error?: DesktopBackendError;
@@ -194,11 +202,15 @@ export interface DesktopRepoFixFailure {
     | "invalid_identity"
     | "invalid_files"
     | "timeout"
-    | "git_failed";
+    | "git_failed"
+    /** UI-03a 评审 B1：仓库来源是当前工作目录（或不明）时主进程拒绝写操作 */
+    | "cwd_repo";
   reason: string;
 }
 
-export type DesktopRepoCheckResult = { ok: true; check: DesktopRepoCheck } | DesktopRepoFixFailure;
+/** `folder`：仓库根的最后一级文件夹名（basename，不带上级路径），给准备页标题和确认框显示。 */
+export type DesktopRepoCheckResult =
+  { ok: true; check: DesktopRepoCheck; folder: string } | DesktopRepoFixFailure;
 
 /** 首次提交会带上的文件（相对仓库根、posix 分隔符）与默认排除的文件。 */
 export type DesktopRepoFilesResult =

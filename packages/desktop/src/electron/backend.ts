@@ -34,6 +34,7 @@ import {
 import type { PendingHighRisk, TakeOverReport, UserMessage } from "@bakacoding/supervisor";
 import type {
   DesktopBackendError,
+  DesktopRepoSource,
   DesktopChatResult,
   DesktopDecideHighRiskResult,
   DesktopSyncState,
@@ -44,15 +45,23 @@ import { backendErrorDetail } from "./backend-error.js";
 import { sanitizeReloadReason } from "./backend-switcher.js";
 import { errorDetail, toDesktopSyncState, unavailableSyncState } from "./sync-state.js";
 
-/** 仓库路径：`--repo` > BAKACODING_REPO > cwd */
+/** 仓库路径：`--repo` > BAKACODING_REPO > 上次导入 > cwd */
 export const REPO_ENV = "BAKACODING_REPO";
 /** 配置路径：`--config` > BAKACODING_CONFIG > `<repo>/config/models.json` */
 export const CONFIG_ENV = "BAKACODING_CONFIG";
 
 export type BackendMode = "live" | "readonly";
 
+/** 仓库来源（UI-03a 评审 B1），与 resolveRepoPath 的解析顺序一一对应 */
+export type RepoSource = DesktopRepoSource;
+
 export interface BackendStatus {
   mode: BackendMode;
+  /**
+   * 仓库来源（UI-03a）：arg = `--repo`，env = BAKACODING_REPO，last_import = 上次导入，cwd = 当前工作目录。
+   * startBackend 一定给；组装都失败的占位后端沿用原后端的来源，不知道时不出现（界面和主进程都按 cwd 处理）。
+   */
+  repoSource?: RepoSource;
   /** 只读原因：只写变量名 / 错误名，不写密钥值 */
   reason?: string;
   /** 只读详情（UI-08）：已脱敏 */
@@ -95,6 +104,8 @@ export interface BackendOptions {
   lastRepo?: string;
   /** 测试钩子：组装好之后拿到 App（断言拆除时 10 退订、9 停定时 sync） */
   onAssembled?: (app: App) => void;
+  /** 测试注入：组合根的 createDefaultDeps（UI-03a 评审 N1：断言交给它的 logger / onError 已脱敏） */
+  createDefaultDeps?: typeof createDefaultDeps;
   /** 测试钩子：拿到 createDefaultDeps 的结果（T-093 断言重载后预算从台账恢复） */
   onDeps?: (handle: DefaultDepsHandle) => void;
   /** 测试注入：模块 3 的 importProject */
@@ -190,19 +201,47 @@ export class NotifyBuffer {
   }
 }
 
-export function resolveRepoPath(
+/** 仓库根和它的来源：`--repo` > BAKACODING_REPO > 上次导入 > cwd（空字符串当没给）。 */
+export function resolveRepoSource(
   argv: readonly string[],
   env: Readonly<Record<string, string | undefined>>,
   cwd: string,
   lastRepo?: string,
-): string {
+): { root: string; source: RepoSource } {
   let fromArg: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     if (a.startsWith("--repo=")) fromArg = a.slice("--repo=".length);
     else if (a === "--repo" && argv[i + 1] !== undefined) fromArg = argv[i + 1];
   }
-  return path.resolve(cwd, fromArg || env[REPO_ENV] || lastRepo || cwd);
+  const pick: [string | undefined, RepoSource][] = [
+    [fromArg, "arg"],
+    [env[REPO_ENV], "env"],
+    [lastRepo, "last_import"],
+  ];
+  for (const [p, source] of pick) if (p) return { root: path.resolve(cwd, p), source };
+  return { root: path.resolve(cwd), source: "cwd" };
+}
+
+/**
+ * main 组装后端时传给 startBackend 的 lastRepo（UI-03a 评审 B1）：新导入的仓库（source 不传）和非 cwd 来源
+ * 用 repo（没有就用保存的上次导入）；原来是 cwd 来源的重载 / 退回不传，来源仍按 cwd 解析。
+ */
+export function lastRepoForStart(
+  repo: string | undefined,
+  source: RepoSource | undefined,
+  saved: string | undefined,
+): string | undefined {
+  return source === "cwd" ? undefined : (repo ?? saved);
+}
+
+export function resolveRepoPath(
+  argv: readonly string[],
+  env: Readonly<Record<string, string | undefined>>,
+  cwd: string,
+  lastRepo?: string,
+): string {
+  return resolveRepoSource(argv, env, cwd, lastRepo).root;
 }
 
 export function resolveConfigPath(
@@ -389,7 +428,7 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
   const open = opts.openStorage ?? openStorage;
   const loadConfig = opts.getConfig ?? getConfig;
 
-  const repoRoot = resolveRepoPath(argv, env, cwd, opts.lastRepo);
+  const { root: repoRoot, source: repoSource } = resolveRepoSource(argv, env, cwd, opts.lastRepo);
   const logDetail = (e: unknown) => backendLogDetail(e, repoRoot, env);
   const doImport = opts.importProject ?? importProjectDefault;
   const dbPath = resolveRepoDbPath(argv, env, repoRoot);
@@ -522,7 +561,7 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
       }
       const config = loadConfig(configPath);
 
-      depsHandle = await createDefaultDeps(config, storage, {
+      depsHandle = await (opts.createDefaultDeps ?? createDefaultDeps)(config, storage, {
         repoRoot,
         notifyUser,
         ...(opts.pricingPath !== undefined && { pricingPath: opts.pricingPath }),
@@ -563,7 +602,7 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
 
   return {
     status(): BackendStatus {
-      const st: BackendStatus = { mode };
+      const st: BackendStatus = { mode, repoSource };
       if (reason !== undefined) st.reason = reason;
       if (startError && mode === "readonly") st.error = startError;
       if (takeOver) st.takeOver = takeOver;

@@ -7,7 +7,14 @@ import { initialCommit } from "@bakacoding/app";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { IPC_CHANNELS, type DesktopRepoFixResult } from "../shared/api.js";
 import { serveRepoFix, type IpcMainLike } from "./ipc.js";
-import { isSafeRelPath, parseInitialCommit, repoFixFailure } from "./repo-fix-ipc.js";
+import {
+  CWD_REPO_REASON,
+  isSafeRelPath,
+  parseInitialCommit,
+  repoFixFailure,
+  repoFolderName,
+  type RepoFixFns,
+} from "./repo-fix-ipc.js";
 
 let dirs: string[] = [];
 const tmp = (p: string) => {
@@ -44,7 +51,11 @@ function setup(root: string) {
     removeHandler: (c) => void handlers.delete(c),
   };
   const reconnect = vi.fn(async () => ({ state: "reloaded" as const }));
-  const stop = serveRepoFix(ipc, { repoRoot: () => root, reconnect });
+  const stop = serveRepoFix(ipc, {
+    repoRoot: () => root,
+    repoSource: () => "last_import",
+    reconnect,
+  });
   const invoke = <T>(c: string, ...args: unknown[]) =>
     handlers.get(c)!(FAKE_EVENT, ...args) as Promise<T>;
   return { invoke, reconnect, stop, handlers };
@@ -245,6 +256,7 @@ describe("repo:create-main（UI-03a）", () => {
       { handle: (c, l) => void handlers.set(c, l), removeHandler: () => {} },
       {
         repoRoot: () => root,
+        repoSource: () => "arg",
         reconnect: async () => {
           throw new Error(`boom ${root}`);
         },
@@ -264,6 +276,7 @@ describe("主进程参数校验先于 4（UI-03a）", () => {
       { handle: (c, l) => void handlers.set(c, l), removeHandler: () => {} },
       {
         repoRoot: () => "/r",
+        repoSource: () => "env",
         reconnect: async () => ({ state: "reloaded" }),
         fns: { initRepo, initialCommit: initialCommitFn },
       },
@@ -292,6 +305,7 @@ describe("主进程参数校验先于 4（UI-03a）", () => {
       { handle: (c, l) => void handlers.set(c, l), removeHandler: () => {} },
       {
         repoRoot: () => "/r",
+        repoSource: () => "env",
         reconnect: async () => ({ state: "reloaded" }),
         fns: { initialCommit: initialCommitFn },
       },
@@ -320,6 +334,7 @@ describe("失败文案（UI-03a）", () => {
       { handle: (c, l) => void handlers.set(c, l), removeHandler: () => {} },
       {
         repoRoot: () => "/r",
+        repoSource: () => "env",
         reconnect: async () => ({ state: "reloaded" }),
         fns: {
           checkRepo: async () => {
@@ -347,5 +362,76 @@ describe("失败文案（UI-03a）", () => {
       identity: ID,
     });
     expect(parseInitialCommit({ empty: true })).toEqual({ empty: true });
+  });
+});
+
+describe("仓库来源是当前工作目录时拒绝写操作（UI-03a 评审 B1）", () => {
+  const make = (source: "cwd" | "arg" | "env" | "last_import" | undefined) => {
+    const handlers = new Map<string, (...a: unknown[]) => unknown>();
+    const fns = {
+      checkRepo: vi.fn(async () => ({
+        items: [{ id: "git" as const, ok: false, code: "not_git" as const }],
+        current_branch: null,
+        identity: { name: false, email: false },
+      })),
+      initRepo: vi.fn(async () => {}),
+      listInitialCommitFiles: vi.fn(async () => ({ include: ["a"], excluded: [] })),
+      initialCommit: vi.fn(async () => ({ commit: "c" })),
+      createMainBranch: vi.fn(async () => ({ from: "master" })),
+    };
+    const reconnect = vi.fn(async () => ({ state: "reloaded" as const }));
+    serveRepoFix(
+      { handle: (c, l) => void handlers.set(c, l), removeHandler: () => {} },
+      {
+        repoRoot: () => "/home/eva/Downloads/BakaCoding-win32-x64",
+        repoSource: () => source,
+        reconnect,
+        fns: fns as unknown as Partial<RepoFixFns>,
+      },
+    );
+    const call = (c: string, a?: unknown) => handlers.get(c)!(FAKE_EVENT, a);
+    return { call, fns, reconnect };
+  };
+
+  for (const source of ["cwd", undefined] as const) {
+    it(`来源 ${String(source)}：init / initial-commit / create-main 都回 cwd_repo 固定文案，不调 4、不 reconnect`, async () => {
+      const { call, fns, reconnect } = make(source);
+      for (const [c, a] of [
+        [IPC_CHANNELS.repoInit, { identity: ID }],
+        [IPC_CHANNELS.repoInitialCommit, { files: ["a"], identity: ID }],
+        [IPC_CHANNELS.repoInitialCommit, { empty: true }],
+        [IPC_CHANNELS.repoCreateMain, undefined],
+      ] as const) {
+        const r = await call(c, a);
+        expect(r).toEqual({ ok: false, code: "cwd_repo", reason: CWD_REPO_REASON });
+        expect(JSON.stringify(r)).not.toContain("Downloads");
+      }
+      expect(fns.initRepo).not.toHaveBeenCalled();
+      expect(fns.initialCommit).not.toHaveBeenCalled();
+      expect(fns.createMainBranch).not.toHaveBeenCalled();
+      expect(reconnect).not.toHaveBeenCalled();
+      // 只读检查照常可用（界面要据此显示「先导入项目」）
+      expect(await call(IPC_CHANNELS.repoCheck)).toMatchObject({ ok: true });
+    });
+  }
+
+  it("来源是参数 / 环境变量 / 上次导入：写操作照常交给 4", async () => {
+    for (const source of ["arg", "env", "last_import"] as const) {
+      const { call, fns } = make(source);
+      expect(await call(IPC_CHANNELS.repoInit, {})).toMatchObject({ ok: true });
+      expect(await call(IPC_CHANNELS.repoCreateMain)).toMatchObject({ ok: true });
+      expect(fns.initRepo).toHaveBeenCalledTimes(1);
+      expect(fns.createMainBranch).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("repo:check 只回最后一级文件夹名（basename），不带上级路径", async () => {
+    const { call } = make("last_import");
+    const r = (await call(IPC_CHANNELS.repoCheck)) as { ok: true; folder: string };
+    expect(r.folder).toBe("BakaCoding-win32-x64");
+    expect(JSON.stringify(r)).not.toContain("/home/eva");
+    expect(repoFolderName("C:\\Users\\eva\\proj\\")).toBe("proj");
+    expect(repoFolderName("/srv/my-app/")).toBe("my-app");
+    expect(repoFolderName("x".repeat(400))).toHaveLength(255);
   });
 });

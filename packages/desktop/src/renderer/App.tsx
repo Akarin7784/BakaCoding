@@ -17,7 +17,7 @@ import { StatusDot } from "./components/StatusDot";
 import { attentionItems, globalLevel, runningCount } from "./lib/globalStatus";
 import { describeSyncState } from "./lib/sync-labels";
 import { notifyError, notifyOk } from "./lib/notify";
-import { READONLY_COPY, repoFixRoute } from "./lib/readonly";
+import { needsImportFirst, READONLY_COPY, repoFixRoute, repoSourceWritable } from "./lib/readonly";
 import { PREP_COPY } from "./lib/repoPrep";
 import { RepoPrepPage } from "./components/RepoPrepPage";
 import { useWindowControlsInset } from "./lib/useWindowControlsInset";
@@ -131,7 +131,8 @@ export function App(props: AppProps) {
   ) : null;
   const prepRoute = backend.status ? repoFixRoute(backend.status) : null;
   const canPrepare = !!api?.checkRepo;
-  const showPrep = prepOpen && canPrepare;
+  // 来源是当前工作目录（评审 B1）时不显示准备页（即使之前开着）
+  const showPrep = prepOpen && canPrepare && !!backend.status && repoSourceWritable(backend.status);
   const title = showPrep ? (
     <span className="truncate">{PREP_COPY.title}</span>
   ) : selection.kind === "unattributed" ? (
@@ -257,6 +258,10 @@ export function App(props: AppProps) {
             reconnecting={reconnecting}
             {...(reconnect && { onReconnect: () => void reconnect() })}
             {...(canPrepare && prepRoute && !showPrep && { onPrepare: () => setPrepOpen(true) })}
+            {...(api &&
+              needsImportFirst(backend.status) && {
+                onImport: () => void actions.importProject(),
+              })}
           />
         )}
         {!showPrep && (

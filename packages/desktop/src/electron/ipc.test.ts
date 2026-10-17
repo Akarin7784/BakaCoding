@@ -129,6 +129,7 @@ const SERVE: Record<string, (ipc: IpcMainLike, backend: BackendHandle) => () => 
   serveRepoFix: (ipc) =>
     serveRepoFix(ipc, {
       repoRoot: () => "/repo",
+      repoSource: () => "last_import",
       reconnect: async () => ({ state: "reloaded" as const }),
       fns: {
         checkRepo: async () => ({
