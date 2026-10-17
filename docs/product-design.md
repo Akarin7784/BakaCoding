@@ -2,7 +2,7 @@
 
 版本 3.1（接口决定）· 2026 年 10 月 17 日（UTC+8）· 采用 MIT 协议的开源项目
 
-> 本文是 BakaCoding 的整体设计，依据 [分析与设计](bakacoding-analysis-and-design.md) 和 [设计决策与待办](bakacoding-design-backlog.md) 重写。现阶段只做整体设计，不划分开发切片。**当前处于设计阶段，尚无可运行代码**；性能、规模和效果都需要实测验证。文中不写吞吐、速度、价格数字，配置默认值都是初始值，待实测；需要时引用 [Flash 并发研究](bakacoding-flash-concurrency-research.md) 中带来源的事实。
+> 本文是 BakaCoding 的整体设计，依据 [分析与设计](bakacoding-analysis-and-design.md) 和 [设计决策与待办](bakacoding-design-backlog.md) 重写。**v1（1.0.0-preview）已实现全部 13 个模块，实现进度见 [progress.md](progress.md)**；性能、规模和效果都需要实测验证。文中不写吞吐、速度、价格数字，配置默认值都是初始值，待实测；需要时引用 [Flash 并发研究](bakacoding-flash-concurrency-research.md) 中带来源的事实。
 
 ## 1. 定位
 
@@ -58,7 +58,7 @@ BakaCoding 帮助个人开发者推进大型软件工程。核心是 **Flash 编
 - 默认模型：DeepSeek V4.1-Flash（`deepseek-flash`）。开发阶段所有角色都用 DeepSeek Flash，一个 key 跑通整条流水线（开发配置，不是产品设计，见第 10 节）。
 - 并发数 N 按研究文档第 5.5 节的公式计算，默认上限 8，硬上限 64（初始值，待实测）；超过硬上限须用户手动改配置。
 - 并发数只计编码阶段的单；PR 等待合并时不占编码槽位。编码槽位统一由调度器（模块 9）管理，编码池本身不设并发上限。
-- 每单一个 Git worktree，从确认基线创建，路径为 `.bakacoding/worktrees/<ticket_id>-r<n>`（`n` 为轮次），该目录写进 `.gitignore`。
+- 每单一个 Git worktree，从确认基线创建，路径为 `.bakacoding/worktrees/<ticket_id>-r<n>`（`n` 为轮次）；整个 `/.bakacoding/` 写进仓库的 `.git/info/exclude`，不改用户的 `.gitignore`。
 - 协调器统一用令牌桶限流（由模型接入适配层实现，见第 15 节），令牌桶按账号全局共享，所有 Flash 代理和所有项目合用一个桶，不按 key 分；遇到 429 时指数退避加抖动，启动时平滑放量。服务商限额按账号计算，多开 key 不增加额度（见研究文档第 1–2 节）。
 - 提示词把稳定的公共前缀放在前、需求单放在后，以提高前缀缓存命中率。同一项目的系统提示、工具定义、架构约束组成逐字节固定的公共前缀，不放时间戳和单号；DeepSeek 新版缓存须完整匹配前缀单元才算命中（https://api-docs.deepseek.com/guides/kv_cache ）。
 - **后备做法**：确需中途改提示时，新内容作为一条 system 消息追加到历史末尾，工具定义只增不改，开头不动，以保留前缀缓存（与 harness 对 V4.1-Flash 的做法一致：[models.ts](https://github.com/deepseek-ai/deepseek-harness/tree/dsh-v0.2.1-alpha.5/packages/llm/llm-deepseek/src/models.ts)、[serialize.ts](https://github.com/deepseek-ai/deepseek-harness/tree/dsh-v0.2.1-alpha.5/packages/llm/llm-deepseek/src/serialize.ts)）。
