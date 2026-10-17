@@ -11,6 +11,11 @@ import {
   type DesktopHighRiskDecision,
   type DesktopPendingHighRisk,
   type DesktopReloadResult,
+  type DesktopRepoCheckResult,
+  type DesktopRepoFilesResult,
+  type DesktopRepoFixResult,
+  type DesktopInitialCommitRequest,
+  type DesktopGitIdentity,
   type DesktopSnapshot,
   type DesktopSyncState,
   type DesktopUpdate,
@@ -91,5 +96,14 @@ export function createDesktopApi(ipc: IpcRendererLike, platform: string): BakaDe
     reloadBackend: () => ipc.invoke(IPC_CHANNELS.backendReload) as Promise<DesktopReloadResult>,
     reconnectBackend: () =>
       ipc.invoke(IPC_CHANNELS.backendReconnect) as Promise<DesktopReloadResult>,
+    checkRepo: () => ipc.invoke(IPC_CHANNELS.repoCheck) as Promise<DesktopRepoCheckResult>,
+    initRepo: (req: { identity?: DesktopGitIdentity } = {}) =>
+      ipc.invoke(IPC_CHANNELS.repoInit, req) as Promise<DesktopRepoFixResult>,
+    listInitialFiles: () =>
+      ipc.invoke(IPC_CHANNELS.repoListInitialFiles) as Promise<DesktopRepoFilesResult>,
+    initialCommit: (req: DesktopInitialCommitRequest) =>
+      ipc.invoke(IPC_CHANNELS.repoInitialCommit, req) as Promise<DesktopRepoFixResult>,
+    createMainBranch: () =>
+      ipc.invoke(IPC_CHANNELS.repoCreateMain) as Promise<DesktopRepoFixResult>,
   });
 }

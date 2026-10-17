@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { acquireWriterLock, type App } from "@bakacoding/app";
+import { acquireWriterLock, createDefaultDeps, type App } from "@bakacoding/app";
 import {
   openStorage,
   openStorageReadonly,
@@ -20,10 +20,16 @@ import {
 } from "@bakacoding/storage";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  backendLogDetail,
+  NOT_GIT_REASON,
   NotifyBuffer,
+  readonlyReasonFromError,
   resolveConfigPath,
   resolveRepoDbPath,
+  lastRepoForStart,
   resolveRepoPath,
+  resolveRepoSource,
+  sanitizedDepsLogging,
   startBackend,
 } from "./backend.js";
 
@@ -403,5 +409,315 @@ describe("T-105：拆后端先 await app.stop() 再关库、放写锁（真实 b
       ro.close();
     }
     await backend.stop();
+  });
+});
+
+/** UI-03：没准备好的仓库（没有提交 / 没有 main / 不是 git 仓库），带好配置 */
+function unpreparedRepo(kind: "no_commits" | "no_main" | "not_git"): string {
+  const root = mkdtempSync(join(tmpdir(), "bc-ui03-"));
+  dirs.push(root);
+  if (kind !== "not_git") {
+    execFileSync("git", ["init", "-q", "-b", kind === "no_main" ? "master" : "main"], {
+      cwd: root,
+    });
+    execFileSync("git", ["config", "user.email", "t@test"], { cwd: root });
+    execFileSync("git", ["config", "user.name", "t"], { cwd: root });
+    if (kind === "no_main") {
+      writeFileSync(join(root, "README.md"), "x\n");
+      execFileSync("git", ["add", "."], { cwd: root });
+      execFileSync("git", ["commit", "-qm", "init"], { cwd: root });
+    }
+  }
+  mkdirSync(join(root, "config"), { recursive: true });
+  copyFileSync(examplePath, join(root, "config", "models.json"));
+  return root;
+}
+
+describe("UI-03：只读原因按 RepoNotReadyError 的 message / 不是 Git 仓库给明确提示", () => {
+  const start = (root: string, logs: string[] = []) =>
+    startBackend({
+      argv: [`--repo=${root}`],
+      env: { DEEPSEEK_API_KEY: "sk-ui03-test" },
+      cwd: root,
+      pricingPath,
+      logger: { warn: (m, d) => logs.push(d === undefined ? m : `${m} ${String(d)}`) },
+    });
+
+  it("没有提交：横幅原因就是 message，详情带 code no_commits", async () => {
+    const root = unpreparedRepo("no_commits");
+    const be = await start(root);
+    const st = be.status();
+    expect(st.mode).toBe("readonly");
+    expect(st.reason).toBe("仓库没有任何提交，请先提交一次再启动");
+    expect(st.error).toMatchObject({ name: "RepoNotReadyError", code: "no_commits" });
+    expect(JSON.stringify(st)).not.toContain(root);
+    await be.stop();
+  });
+
+  it("没有 main：原因带当前分支名，code no_main", async () => {
+    const root = unpreparedRepo("no_main");
+    const be = await start(root);
+    const st = be.status();
+    expect(st.reason).toBe("仓库里没有 main 分支（当前是 master），这一版只支持 main");
+    expect(st.error).toMatchObject({ name: "RepoNotReadyError", code: "no_main" });
+    await be.stop();
+  });
+
+  it("不是 Git 仓库：固定中文提示 + code not_git，git 原始报错不进状态和日志", async () => {
+    const root = unpreparedRepo("not_git");
+    const logs: string[] = [];
+    const be = await start(root, logs);
+    const st = be.status();
+    expect(st.mode).toBe("readonly");
+    expect(st.reason).toBe(NOT_GIT_REASON);
+    expect(st.error).toEqual({ name: "Error", message: NOT_GIT_REASON, code: "not_git" });
+    const all = JSON.stringify(st) + logs.join("\n");
+    expect(all).not.toContain(root);
+    expect(all).not.toMatch(/fatal|not a git repository/i);
+    await be.stop();
+  });
+
+  it("UI-03a：不是 Git 仓库又缺 config/models.json（ConfigError）：按准备页顺序先报 not_git", async () => {
+    const root = unpreparedRepo("not_git");
+    rmSync(join(root, "config"), { recursive: true, force: true });
+    const be = await start(root);
+    const st = be.status();
+    expect(st.reason).toBe(NOT_GIT_REASON);
+    expect(st.error).toEqual({ name: "Error", message: NOT_GIT_REASON, code: "not_git" });
+    await be.stop();
+  });
+
+  it("是 Git 仓库但缺 config/models.json：照旧报配置校验失败", async () => {
+    const root = unpreparedRepo("no_main");
+    rmSync(join(root, "config"), { recursive: true, force: true });
+    const be = await start(root);
+    expect(be.status().reason).toBe("配置校验失败（ConfigError）");
+    await be.stop();
+  });
+
+  it("checkRepo 说是仓库（或查不了）时，未知错误照旧只写错误名", async () => {
+    const root = unpreparedRepo("not_git");
+    for (const checkRepo of [
+      async () => ({ items: [{ id: "git", ok: true }] }),
+      async () => {
+        throw new Error("boom");
+      },
+    ]) {
+      const be = await startBackend({
+        argv: [`--repo=${root}`],
+        env: { DEEPSEEK_API_KEY: "sk-ui03-test" },
+        cwd: root,
+        pricingPath,
+        logger: { warn: () => {} },
+        checkRepo,
+      });
+      expect(be.status().reason).toBe("启动失败（Error）");
+      await be.stop();
+    }
+  });
+
+  it("readonlyReasonFromError：RepoNotReadyError 的 message 仍过路径 / 密钥脱敏；别的错误不透出 message", () => {
+    const e = Object.assign(
+      new Error("仓库里没有 main 分支（当前是 /home/u/x），sk-abcdefghijklmnopqrstu"),
+      {
+        name: "RepoNotReadyError",
+        code: "no_main",
+      },
+    );
+    const r = readonlyReasonFromError(e, "/home/u", {
+      DEEPSEEK_API_KEY: "sk-abcdefghijklmnopqrstu",
+    });
+    expect(r).not.toContain("/home/u");
+    expect(r).not.toContain("sk-abcdefghijklmnopqrstu");
+    // 名字对了但 code 不认识：不当 RepoNotReadyError，只写错误名
+    const fake = Object.assign(new Error("/secret/path"), { name: "RepoNotReadyError", code: "x" });
+    expect(readonlyReasonFromError(fake)).toBe("启动失败（RepoNotReadyError）");
+  });
+});
+
+describe("UI-03：日志里的错误与 backendErrorDetail 同一套脱敏", () => {
+  const ROOT = "/home/eva/proj";
+  const KEY = "sk-ui03logkeyvalue1234567";
+  const env = { DEEPSEEK_API_KEY: KEY };
+
+  it("backendLogDetail：仓库根、其他绝对路径、密钥值都换掉；对象也转成字符串", () => {
+    const t = backendLogDetail(new Error(`open ${ROOT}/a and /var/lib/b with ${KEY}`), ROOT, env);
+    expect(t).toContain("<仓库>/a");
+    expect(t).toContain("<路径>");
+    expect(t).not.toContain(ROOT);
+    expect(t).not.toContain("/var/lib/b");
+    expect(t).not.toContain(KEY);
+    const o = backendLogDetail({ path: `${ROOT}/x` }, ROOT, env);
+    expect(o).not.toContain(ROOT);
+  });
+
+  it("sanitizedDepsLogging：logger.warn 和 onError 只写一行脱敏后的字符串，不交原始错误对象", () => {
+    const calls: unknown[][] = [];
+    const { logger, onError } = sanitizedDepsLogging(
+      { warn: (...a: unknown[]) => void calls.push(a) },
+      ROOT,
+      env,
+    );
+    onError(new Error(`git failed in ${ROOT} ${KEY}`), "scheduler.sync");
+    logger.warn(`清理 ${ROOT}/w 失败`, new Error(`rm ${ROOT}/w`));
+    logger.warn("纯文案");
+    for (const c of calls) {
+      expect(c).toHaveLength(1);
+      expect(typeof c[0]).toBe("string");
+      expect(String(c[0])).not.toContain(ROOT);
+      expect(String(c[0])).not.toContain(KEY);
+    }
+    expect(String(calls[0]![0])).toContain("scheduler.sync：");
+  });
+
+  it("写 exclude 抛错带路径：warn 里只有占位符", async () => {
+    const { root } = gitRepoWithConfig();
+    const logs: string[] = [];
+    const be = await startBackend({
+      argv: [`--repo=${root}`],
+      env: { DEEPSEEK_API_KEY: "sk-t078" },
+      cwd: root,
+      pricingPath,
+      logger: { warn: (m) => logs.push(m) },
+      ensureIgnored: async () => {
+        throw new Error(`EACCES: open '${root}/.git/info/exclude'`);
+      },
+    });
+    const mine = logs.filter((m) => m.includes("写 .git/info/exclude 失败"));
+    expect(mine).toHaveLength(1);
+    expect(mine[0]).toContain("<仓库>");
+    expect(mine[0]).not.toContain(root);
+    await be.stop();
+  });
+
+  it("pendingHighRisk 抛错：warn 只有一行脱敏字符串", async () => {
+    const { root } = gitRepoWithConfig();
+    const calls: unknown[][] = [];
+    const be = await startBackend({
+      argv: [`--repo=${root}`],
+      env: { DEEPSEEK_API_KEY: "sk-t078" },
+      cwd: root,
+      pricingPath,
+      logger: { warn: (...a: unknown[]) => void calls.push(a) },
+      onAssembled: (app) => {
+        app.supervisor.pendingHighRisk = () => {
+          throw new Error(`read ${root}/.bakacoding/x failed`);
+        };
+      },
+    });
+    expect(be.pendingHighRisk()).toEqual([]);
+    const mine = calls.filter((c) => String(c[0]).startsWith("pendingHighRisk 失败"));
+    expect(mine.length).toBeGreaterThan(0);
+    for (const c of mine) {
+      expect(c).toHaveLength(1);
+      expect(String(c[0])).not.toContain(root);
+    }
+    await be.stop();
+  });
+});
+
+describe("仓库来源（UI-03a 评审 B1）", () => {
+  it("resolveRepoSource 按 --repo > BAKACODING_REPO > 上次导入 > cwd 给出来源；空字符串当没给", () => {
+    const cwd = "/tmp/cwd-x";
+    expect(resolveRepoSource(["--repo=/r"], { BAKACODING_REPO: "/e" }, cwd, "/l")).toEqual({
+      root: "/r",
+      source: "arg",
+    });
+    expect(resolveRepoSource(["--repo", "/r2"], {}, cwd)).toEqual({ root: "/r2", source: "arg" });
+    expect(resolveRepoSource([], { BAKACODING_REPO: "/e" }, cwd, "/l")).toEqual({
+      root: "/e",
+      source: "env",
+    });
+    expect(resolveRepoSource([], {}, cwd, "/l")).toEqual({ root: "/l", source: "last_import" });
+    expect(resolveRepoSource([], { BAKACODING_REPO: "" }, cwd, "")).toEqual({
+      root: cwd,
+      source: "cwd",
+    });
+    expect(resolveRepoSource([], {}, cwd)).toEqual({ root: cwd, source: "cwd" });
+  });
+
+  it("status() 带 repoSource：cwd 启动是 cwd，--repo 是 arg", async () => {
+    const { root } = gitRepoWithConfig();
+    const fromCwd = await startBackend({
+      argv: [],
+      env: { DEEPSEEK_API_KEY: "sk-src" },
+      cwd: root,
+      pricingPath,
+      logger: { warn: () => {} },
+    });
+    expect(fromCwd.status().repoSource).toBe("cwd");
+    await fromCwd.stop();
+    const fromArg = await startBackend({
+      argv: [`--repo=${root}`],
+      env: { DEEPSEEK_API_KEY: "sk-src" },
+      cwd: tmpdir(),
+      pricingPath,
+      logger: { warn: () => {} },
+    });
+    expect(fromArg.status().repoSource).toBe("arg");
+    await fromArg.stop();
+  });
+
+  it("不是 Git 仓库的当前目录（如解压目录）：只读、not_git、来源 cwd", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "bc-unzip-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "BakaCoding.exe"), "x");
+    const be = await startBackend({
+      argv: [],
+      env: {},
+      cwd: dir,
+      pricingPath,
+      logger: { warn: () => {} },
+    });
+    expect(be.status()).toMatchObject({
+      mode: "readonly",
+      repoSource: "cwd",
+      error: { code: "not_git" },
+    });
+    await be.stop();
+  });
+
+  it("lastRepoForStart：cwd 来源重载不把仓库当上次导入传；其他照常", () => {
+    expect(lastRepoForStart("/cwd", "cwd", "/saved")).toBeUndefined();
+    expect(lastRepoForStart("/r", "last_import", "/saved")).toBe("/r");
+    expect(lastRepoForStart("/new", undefined, "/saved")).toBe("/new");
+    expect(lastRepoForStart(undefined, undefined, "/saved")).toBe("/saved");
+    expect(lastRepoForStart(undefined, undefined, undefined)).toBeUndefined();
+  });
+});
+
+describe("组合根 logger / onError 的脱敏接线（UI-03a 评审 N1）", () => {
+  it("交给 createDefaultDeps 的 logger.warn 和 onError 写到桌面 logger 的都是一行脱敏字符串", async () => {
+    const { root } = gitRepoWithConfig();
+    const KEY_VAL = "sk-n1-wiring-secret-0123456789";
+    const calls: unknown[][] = [];
+    let captured: Parameters<typeof createDefaultDeps>[2] | undefined;
+    const be = await startBackend({
+      argv: [`--repo=${root}`],
+      env: { DEEPSEEK_API_KEY: KEY_VAL },
+      cwd: root,
+      pricingPath,
+      logger: { warn: (...a: unknown[]) => void calls.push(a) },
+      createDefaultDeps: (config, storage, o) => {
+        captured = o;
+        return createDefaultDeps(config, storage, o);
+      },
+    });
+    expect(be.status().mode).toBe("live");
+    expect(captured?.logger).toBeDefined();
+    expect(captured?.onError).toBeDefined();
+    calls.length = 0;
+    const err = new Error(`git failed in ${root}/w ${KEY_VAL}`);
+    captured!.onError!(err, "scheduler.sync");
+    captured!.logger!.warn(`清理 ${root}/w 失败`, err);
+    expect(calls).toHaveLength(2);
+    for (const c of calls) {
+      expect(c).toHaveLength(1);
+      expect(typeof c[0]).toBe("string");
+      expect(String(c[0])).not.toContain(root);
+      expect(String(c[0])).not.toContain(KEY_VAL);
+      expect(String(c[0])).toContain("<仓库>");
+    }
+    await be.stop();
   });
 });

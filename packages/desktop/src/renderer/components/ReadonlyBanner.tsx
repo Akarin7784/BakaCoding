@@ -1,7 +1,7 @@
 // UI-08：只读横幅 + 详情弹层（§4.7）。
 // 「只读模式：<人话原因>」[查看详情] [重新连接]；详情列脱敏后的错误名、信息、错误码、一层起因，可复制。
 import { useState } from "react";
-import { CircleAlert, Copy, RefreshCw } from "lucide-react";
+import { CircleAlert, Copy, FolderOpen, RefreshCw, Wrench } from "lucide-react";
 import type { DesktopBackendStatus } from "../../shared/api.js";
 import {
   READONLY_COPY,
@@ -10,6 +10,7 @@ import {
   readonlyReason,
 } from "../lib/readonly";
 import { COPY_DETAIL, copyText } from "../lib/notify";
+import { PREP_COPY } from "../lib/repoPrep";
 import { toast } from "./ui/sonner";
 import { Banner } from "./Banner";
 import { Button } from "./ui/button";
@@ -26,8 +27,14 @@ export function ReadonlyBanner({
   status,
   onReconnect,
   reconnecting = false,
+  onPrepare,
+  onImport,
 }: {
   status: DesktopBackendStatus;
+  /** UI-03a：仓库没准备好（repoFixRoute 有结果）时打开项目准备页；没有就不显示按钮 */
+  onPrepare?: () => void;
+  /** UI-03a 评审 B1：仓库没准备好但来源是当前工作目录时，提示先导入项目（不给「准备仓库」） */
+  onImport?: () => void;
   /** 没有就不显示「重新连接」（浏览器预览 / 旧 preload） */
   onReconnect?: () => void;
   reconnecting?: boolean;
@@ -42,6 +49,18 @@ export function ReadonlyBanner({
         testId="readonly-banner"
         actions={
           <>
+            {onImport && (
+              <Button variant="secondary" size="sm" onClick={onImport}>
+                <FolderOpen strokeWidth={1.5} />
+                {PREP_COPY.importAction}
+              </Button>
+            )}
+            {onPrepare && (
+              <Button variant="secondary" size="sm" onClick={onPrepare}>
+                <Wrench strokeWidth={1.5} />
+                {PREP_COPY.bannerEntry}
+              </Button>
+            )}
             <Button variant="secondary" size="sm" onClick={() => setOpen(true)}>
               {READONLY_COPY.details}
             </Button>
@@ -59,6 +78,11 @@ export function ReadonlyBanner({
       >
         <span className="font-medium">{READONLY_COPY.bannerPrefix}</span>
         <span data-testid="readonly-reason">{readonlyReason(status)}</span>
+        {onImport && (
+          <span data-testid="import-first-hint" className="text-muted-foreground">
+            {`。${PREP_COPY.importFirst}`}
+          </span>
+        )}
       </Banner>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="sm:max-w-lg">
