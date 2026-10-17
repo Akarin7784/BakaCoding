@@ -56,6 +56,7 @@ describe("EventSchema", () => {
         "project_created",
         "review_backlog",
         "supervisor_backlog",
+        "ticket_status_changed",
         "ticket_warning",
         "write_scope_denied",
         "write_scope_granted",
@@ -249,6 +250,39 @@ describe("EventSchema", () => {
       EventSchema.safeParse({ ...tw, payload: { project_id: "p", code: "write_scope_defaulted" } })
         .success,
     ).toBe(false);
+  });
+  it("ticket_status_changed：ticket_id 必填，from 可为 null，from / to 只认 TicketStatus（T-085）", () => {
+    const sc = {
+      ...common,
+      ticket_id: "req-1-1",
+      type: "ticket_status_changed",
+      payload: { project_id: "p", from: "pending", to: "coding" },
+    };
+    expect(EventSchema.parse(sc)).toEqual(sc);
+    const fromNull = { ...sc, payload: { ...sc.payload, from: null } };
+    expect(EventSchema.parse(fromNull)).toEqual(fromNull);
+    expect(EventSchema.safeParse({ ...sc, ticket_id: null }).success).toBe(false);
+    expect(EventSchema.safeParse({ ...sc, requirement_id: null }).success).toBe(false);
+    expect(EventSchema.safeParse({ ...sc, payload: { ...sc.payload, to: "done" } }).success).toBe(
+      false,
+    );
+    expect(
+      EventSchema.safeParse({ ...sc, payload: { ...sc.payload, from: "reviewing" } }).success,
+    ).toBe(false);
+    expect(
+      EventSchema.safeParse({ ...sc, payload: { project_id: "p", to: "coding" } }).success,
+    ).toBe(false);
+    expectTypeOf<EventMap["ticket_status_changed"]["to"]>().toEqualTypeOf<
+      | "pending"
+      | "coding"
+      | "in_review"
+      | "resubmitting"
+      | "merge_queued"
+      | "conflict"
+      | "re_reviewing"
+      | "merged"
+      | "escalated"
+    >();
   });
   it("group_message 支持 escalation，supervisor_backlog 非负", () => {
     const gm = {
