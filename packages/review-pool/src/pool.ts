@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import {
   ReviewBacklogSchema,
   ReviewResultSchema,
@@ -206,18 +206,22 @@ export function createReviewPool(deps: ReviewPoolDeps): ReviewPool {
     void drain();
   }
 
-  async function emitBacklog(ctx: CallCtx) {
+  /**
+   * T-066：项目级事件。requirement_id / ticket_id 均为 null，trace 新开，不借用本单 ctx
+   *（与 10 的 supervisor_backlog 对齐）。
+   */
+  async function emitBacklog() {
     const capacity = capacityOf(deps.getConfig());
     if (lastEmitted && lastEmitted.pending === pending && lastEmitted.capacity === capacity) return;
     lastEmitted = { pending, capacity };
     try {
       const event = ReviewBacklogSchema.omit({ seq: true, event_id: true, ts: true }).parse({
         type: "review_backlog",
-        requirement_id: ctx.requirement_id,
-        ticket_id: ctx.ticket_id,
-        trace_id: ctx.trace.trace_id,
-        span_id: ctx.trace.span_id,
-        parent_span_id: ctx.trace.parent_span_id,
+        requirement_id: null,
+        ticket_id: null,
+        trace_id: randomUUID(),
+        span_id: randomUUID(),
+        parent_span_id: null,
         payload: { pending, capacity },
       });
       await deps.publish(event);
@@ -301,12 +305,12 @@ export function createReviewPool(deps: ReviewPoolDeps): ReviewPool {
       // 进入前已中止：直接抛，不查 CI、不调模型、不计入 pending
       throwIfAborted(input.signal);
       pending++;
-      await emitBacklog(input.ctx);
+      await emitBacklog();
       try {
         return await reviewInner(input);
       } finally {
         pending--;
-        await emitBacklog(input.ctx);
+        await emitBacklog();
       }
     },
     backlog() {
