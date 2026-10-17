@@ -23,31 +23,30 @@ import {
   type ReviewPrSource,
 } from "@bakacoding/review-pool";
 import type { Storage } from "@bakacoding/storage";
-import { PermissionRegistry, WorktreeManager, WORKTREES_DIR } from "@bakacoding/workspace";
+import {
+  gitEnv,
+  PermissionRegistry,
+  REPO_GIT_TIMEOUT_MS,
+  WorktreeManager,
+  WORKTREES_DIR,
+} from "@bakacoding/workspace";
 import type { AppDeps } from "./assemble.js";
 import { RepoNotReadyError } from "./repo-not-ready.js";
 
 const run = promisify(execFile);
 
 /**
- * T-084 / #97 评审：我们调的 git 子进程 env 先剔掉 process.env 里所有 `GIT_` 开头的变量
- * （`GIT_DIR`、`GIT_WORK_TREE`、`GIT_INDEX_FILE` 等会把 git 指到别的仓库），再显式加上自己要的。
- * 规则同 #97 的 `gitEnv()`；#97 还没合入、main 上没有公用版本，先在包内放一份不导出的。
- * TODO(#97 合入后)：换成模块 4 的 `gitEnv()`，删掉这份。
+ * 仓库检查 / targetHead 用的 git 调用（T-084）：cwd 为仓库，env 用模块 4 的 `gitEnv()`
+ * （剔掉继承来的所有 `GIT_*`，再加 `GIT_TERMINAL_PROMPT=0`、`LC_ALL=C`），
+ * 外部的 `GIT_DIR` / `GIT_WORK_TREE` 等不会把检查带到别的仓库；超时同模块 4 的 `REPO_GIT_TIMEOUT_MS`。
  */
-function repoGitEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (!k.startsWith("GIT_")) env[k] = v;
-  }
-  env.GIT_TERMINAL_PROMPT = "0";
-  env.LC_ALL = "C";
-  return env;
-}
-
-/** 仓库检查 / targetHead 用的 git 调用：cwd 为仓库，env 走 repoGitEnv() */
 function repoGit(repoRoot: string, args: string[]): Promise<{ stdout: string }> {
-  return run("git", args, { cwd: repoRoot, env: repoGitEnv(), maxBuffer: 1024 * 1024 });
+  return run("git", args, {
+    cwd: repoRoot,
+    env: gitEnv(),
+    timeout: REPO_GIT_TIMEOUT_MS,
+    maxBuffer: 1024 * 1024,
+  });
 }
 
 export interface CreateDefaultDepsOpts {
