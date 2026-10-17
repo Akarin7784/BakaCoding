@@ -65,7 +65,7 @@ flowchart TD
 
 Node.js + TypeScript 本机协调服务，React + TypeScript 界面，Electron 桌面壳，SQLite（WAL）。默认在本机 Git worktree 中执行，见 [执行配置草案](config/execution.example.json)。
 
-[模型配置示例](config/models.example.json) 按评审组 / 主管结构给出开发阶段的角色示例（`supervisor`、`review_board`、`sub_agent`、`coder`，均为 DeepSeek Flash），字段仍是草案，完整字段草案见 [整体设计 §10](docs/product-design.md#10-评审组与主管模型)。目前没有运行程序读取这些配置。
+[模型配置示例](config/models.example.json) 按评审组 / 主管结构给出开发阶段的角色示例（`supervisor`、`review_board`、`sub_agent`、`coder`，均为 DeepSeek Flash），字段仍是草案，完整字段草案见 [整体设计 §10](docs/product-design.md#10-评审组与主管模型)。这些配置由 `@bakacoding/config-budget` 读取和校验（开发中）。
 
 ## 文档
 
@@ -76,6 +76,13 @@ Node.js + TypeScript 本机协调服务，React + TypeScript 界面，Electron �
 - [Flash 并发研究](docs/bakacoding-flash-concurrency-research.md) · [设计评审](docs/bakacoding-plan-review.md)
 
 文档通过 GitHub Pages 托管，`docs/` 更新合并到 `main` 后自动部署。
+
+## 配置
+
+配置示例在 `config/models.example.json`。配置按 schema 严格校验，遇到未知字段直接报错，JSON 里不写注释。
+
+- `budget.daily_micro_usd`：每日预算，必填，单位是整数微美元（1 美元 = 1,000,000）。示例文件里的数值是示例，请按自己预算改。
+- API key 只从环境变量读取（`DEEPSEEK_API_KEY`；用 GitHub 时另读 `GITHUB_TOKEN`），不要写进配置或仓库。
 
 ## 开发
 
