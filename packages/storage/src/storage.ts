@@ -211,6 +211,7 @@ export const PR_STRUCTURAL_FIELDS: ReadonlySet<string> = new Set([
   "worktree_path",
   "repo_path",
   "remote",
+  "closed_by",
 ]);
 
 export interface BusLike {
