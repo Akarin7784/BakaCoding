@@ -1,5 +1,9 @@
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import type { CallCtx } from "@bakacoding/types";
-import { describe, expect, it, vi } from "vitest";
+import { FILE_TOOL_DEFINITIONS as WORKSPACE_FILE_TOOL_DEFINITIONS } from "@bakacoding/workspace";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   appendSystemNote,
   FINISH_RETRY_PROMPT,
@@ -23,7 +27,7 @@ const N = "feedc0de12345678";
 function liveTags(text: string): string[] {
   const view = Array.from(text)
     .filter((c) => !/[\u200b-\u200d\u2060\ufeff\u00ad]/.test(c))
-    .map((c) => c.normalize("NFKC"))
+    .map((c) => c.normalize("NFKD").replace(/\p{M}/gu, ""))
     .join("");
   return [...view.matchAll(/<\s*\/?\s*(untrusted(?:-[\w-]*)?|feedback)(?![\w-])/gi)].map((m) =>
     m[0].replace(/\s+/g, "").toLowerCase(),
@@ -102,13 +106,13 @@ function deps(over: Partial<CoderPoolDeps> & Pick<CoderPoolDeps, "chat">): Coder
 describe("runTicket 基本流程（5-1 / 5-3）", () => {
   it("多轮工具调用后模型说做完：返回 done、summary 和改过的文件，不返回补丁", async () => {
     const { chat, requests } = script([
-      { content: "先看看", tool_calls: [call("read", { path: "src/a.ts" })] },
+      { content: "先看看", tool_calls: [call("read", { file_path: "src/a.ts" })] },
       {
         content: "",
         tool_calls: [
-          call("edit", { path: "src/a.ts", old_string: "foo", new_string: "bar" }, "e1"),
-          call("write", { path: "./src/b.ts", content: "x" }, "w1"),
-          call("edit", { path: "src/a.ts", old_string: "1", new_string: "2" }, "e2"),
+          call("edit", { file_path: "src/a.ts", old_string: "foo", new_string: "bar" }, "e1"),
+          call("write", { file_path: "./src/b.ts", content: "x" }, "w1"),
+          call("edit", { file_path: "src/a.ts", old_string: "1", new_string: "2" }, "e2"),
         ],
       },
       done("foo 改成 bar"),
@@ -122,7 +126,7 @@ describe("runTicket 基本流程（5-1 / 5-3）", () => {
       changed_files: ["src/a.ts", "src/b.ts"],
     });
     expect(chat).toHaveBeenCalledTimes(3);
-    expect(tools.read).toHaveBeenCalledWith({ path: "src/a.ts" });
+    expect(tools.read).toHaveBeenCalledWith({ file_path: "src/a.ts" });
     // 第三轮看到的历史：需求单、助手、工具结果……
     const last = requests[2]!.messages;
     expect(last.map((m) => m.role)).toEqual([
@@ -184,7 +188,7 @@ describe("runTicket 基本流程（5-1 / 5-3）", () => {
   it("格式提示那轮模型又调了工具：照常继续，之后解析不了会重新给一次机会", async () => {
     const { chat } = script([
       { content: "好了", tool_calls: [] },
-      { content: "", tool_calls: [call("write", { path: "src/d.ts", content: "d" })] },
+      { content: "", tool_calls: [call("write", { file_path: "src/d.ts", content: "d" })] },
       { content: "好了", tool_calls: [] },
       done("补了 d.ts"),
     ]);
@@ -195,7 +199,7 @@ describe("runTicket 基本流程（5-1 / 5-3）", () => {
 
   it("格式提示那轮刚好碰到 max_turns：返回 turn_limit", async () => {
     const { chat } = script([
-      { content: "", tool_calls: [call("read", { path: "src/a.ts" })] },
+      { content: "", tool_calls: [call("read", { file_path: "src/a.ts" })] },
       { content: "好了", tool_calls: [] },
       done(),
     ]);
@@ -260,8 +264,8 @@ describe("工具结果原样交还模型（5-5）", () => {
       {
         content: "",
         tool_calls: [
-          call("write", { path: "src/x.ts", content: "" }),
-          call("edit", { path: "src/a.ts", old_string: "zz", new_string: "y" }),
+          call("write", { file_path: "src/x.ts", content: "" }),
+          call("edit", { file_path: "src/a.ts", old_string: "zz", new_string: "y" }),
           call("shell", { cmd: "rm -rf /" }),
           call("grep", { pattern: "foo" }),
         ],
@@ -317,7 +321,7 @@ describe("工具结果原样交还模型（5-5）", () => {
 describe("公共前缀（5-2）", () => {
   it("同一项目不同单、不同轮次、不同 effort、带不带 feedback：system 和 tools 逐字节相同", async () => {
     const { chat, requests } = script([
-      { content: "", tool_calls: [call("read", { path: "src/a.ts" })] },
+      { content: "", tool_calls: [call("read", { file_path: "src/a.ts" })] },
       done(),
       done(),
       done(),
@@ -488,7 +492,7 @@ describe("轮数上限（5-8）与预算", () => {
   it("到 pipeline.max_turns 仍在调工具：返回 turn_limit，已改文件照报", async () => {
     const chat = vi.fn(async (): Promise<ChatResponse> => ({
       content: "继续",
-      tool_calls: [call("edit", { path: "src/a.ts", old_string: "a", new_string: "b" })],
+      tool_calls: [call("edit", { file_path: "src/a.ts", old_string: "a", new_string: "b" })],
     }));
     const pool = createCoderPool(
       deps({
@@ -509,7 +513,7 @@ describe("轮数上限（5-8）与预算", () => {
   it("1 报预算耗尽：返回 budget_exceeded，不再调用", async () => {
     const err = Object.assign(new Error("budget"), { code: "BUDGET_EXCEEDED" });
     const { chat } = script([
-      { content: "", tool_calls: [call("write", { path: "src/c.ts", content: "c" })] },
+      { content: "", tool_calls: [call("write", { file_path: "src/c.ts", content: "c" })] },
       err,
     ]);
     const r = await createCoderPool(deps({ chat })).runTicket(input());
@@ -538,7 +542,7 @@ describe("每单一个代理（不共享会话状态）", () => {
     const chat = vi.fn(async (req: ChatRequest): Promise<ChatResponse> => {
       requests.push(structuredClone(req) as ChatRequest);
       return req.messages.length === 1
-        ? { content: "", tool_calls: [call("read", { path: `${req.ctx.ticket_id}.ts` })] }
+        ? { content: "", tool_calls: [call("read", { file_path: `${req.ctx.ticket_id}.ts` })] }
         : done();
     });
     const pool = createCoderPool(deps({ chat }));
@@ -565,5 +569,107 @@ describe("parseFinish", () => {
     });
     expect(parseFinish('{"status":"maybe","summary":"s"}')).toBeUndefined();
     expect(parseFinish("没有 JSON")).toBeUndefined();
+  });
+});
+
+describe("接模块 4 的文件工具（T-034）", () => {
+  let dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+    dirs = [];
+  });
+  function worktree(files: Record<string, string>): string {
+    const root = mkdtempSync(join(tmpdir(), "bc-coder-t034-"));
+    dirs.push(root);
+    for (const [rel, content] of Object.entries(files)) {
+      mkdirSync(dirname(join(root, rel)), { recursive: true });
+      writeFileSync(join(root, rel), content);
+    }
+    return root;
+  }
+  const results = (req: ChatRequest) =>
+    req.messages.filter((m): m is Extract<ChatMessage, { role: "tool" }> => m.role === "tool");
+
+  it("工具定义就是 @bakacoding/workspace 的 FILE_TOOL_DEFINITIONS（参数名 file_path / include），且深冻结", () => {
+    expect(FILE_TOOL_DEFINITIONS).toEqual(WORKSPACE_FILE_TOOL_DEFINITIONS);
+    const props = (name: string) =>
+      Object.keys(
+        (
+          FILE_TOOL_DEFINITIONS.find((t) => t.name === name)!.input_schema as {
+            properties: Record<string, unknown>;
+          }
+        ).properties,
+      );
+    expect(props("read")).toEqual(["file_path", "offset", "limit"]);
+    expect(props("write")).toEqual(["file_path", "content"]);
+    expect(props("edit")).toEqual(["file_path", "old_string", "new_string", "replace_all"]);
+    expect(props("glob")).toEqual(["pattern", "path"]);
+    expect(props("grep")).toEqual(["pattern", "path", "include"]);
+    expect(Object.isFrozen(FILE_TOOL_DEFINITIONS)).toBe(true);
+    expect(Object.isFrozen(FILE_TOOL_DEFINITIONS[0]!.input_schema)).toBe(true);
+  });
+
+  it("不注入 createTools 时用模块 4 的 createTools：read / edit / write / glob / grep 按模块 4 的参数走通，changed_files 取 file_path", async () => {
+    const root = worktree({ "src/a.ts": "const foo = 1;\n" });
+    const { chat, requests } = script([
+      { content: "", tool_calls: [call("read", { file_path: "src/a.ts" }, "r1")] },
+      {
+        content: "",
+        tool_calls: [
+          call("edit", { file_path: "./src/a.ts", old_string: "foo", new_string: "bar" }, "e1"),
+          call("write", { file_path: "src/sub/../b.ts", content: "export {};\n" }, "w1"),
+          call("glob", { pattern: "*.ts", path: "src" }, "g1"),
+          call("grep", { pattern: "bar", path: "src", include: "*.ts" }, "s1"),
+          call("edit", { file_path: "src/a.ts", old_string: "1", new_string: "2" }, "e2"),
+        ],
+      },
+      done(),
+    ]);
+    const pool = createCoderPool({ ...deps({ chat }), createTools: undefined });
+    const r = await pool.runTicket(input({ worktree_path: root }));
+    expect(r.status).toBe("done");
+    // 去重、规范成相对 worktree 的路径、按首次修改顺序
+    expect(r.changed_files).toEqual(["src/a.ts", "src/b.ts"]);
+    expect(readFileSync(join(root, "src/a.ts"), "utf8")).toBe("const bar = 2;\n");
+    expect(readFileSync(join(root, "src/b.ts"), "utf8")).toBe("export {};\n");
+    const out = results(requests[2]!);
+    expect(out.every((m) => !m.is_error)).toBe(true);
+    expect(out.find((m) => m.tool_call_id === "g1")!.content).toContain("src/a.ts");
+    expect(out.find((m) => m.tool_call_id === "s1")!.content).toContain("const bar = 1;");
+    expect(results(requests[1]!)[0]!.content).toContain("1: const foo = 1;");
+  });
+
+  it("越权路径被模块 4 拒绝：错误码原样交还模型，不改文件、不计入 changed_files，模型可据此调整", async () => {
+    const root = worktree({ "src/a.ts": "a\n", "docs/readme.md": "r\n", ".env": "SECRET=1\n" });
+    const { chat, requests } = script([
+      {
+        content: "",
+        tool_calls: [
+          call("write", { file_path: "../escape.ts", content: "x" }, "out"),
+          call("write", { file_path: "/etc/passwd", content: "x" }, "abs"),
+          call("write", { file_path: "docs/readme.md", content: "x" }, "deny"),
+          call("read", { file_path: ".env" }, "env"),
+          call("write", { path: "src/a.ts", content: "x" }, "oldparam"),
+        ],
+      },
+      { content: "", tool_calls: [call("write", { file_path: "src/new.ts", content: "ok" })] },
+      done(),
+    ]);
+    const pool = createCoderPool({ ...deps({ chat }), createTools: undefined });
+    const r = await pool.runTicket(input({ worktree_path: root }));
+    const codes = Object.fromEntries(
+      results(requests[1]!).map((m) => [m.tool_call_id, m.content.split(":")[0]]),
+    );
+    expect(codes).toEqual({
+      out: "FS_OUTSIDE_WORKSPACE",
+      abs: "FS_OUTSIDE_WORKSPACE",
+      deny: "FS_PERMISSION_DENIED",
+      env: "FS_PROTECTED_PATH",
+      oldparam: "FS_INVALID_INPUT",
+    });
+    expect(results(requests[1]!).every((m) => m.is_error)).toBe(true);
+    expect(readFileSync(join(root, "docs/readme.md"), "utf8")).toBe("r\n");
+    expect(existsSync(join(root, "..", "escape.ts"))).toBe(false);
+    expect(r).toMatchObject({ status: "done", changed_files: ["src/new.ts"] });
   });
 });

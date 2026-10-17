@@ -159,7 +159,7 @@ describe("review：输入与结论", () => {
 function liveTags(text: string): string[] {
   const view = Array.from(text)
     .filter((c) => !/[\u200b-\u200d\u2060\ufeff\u00ad]/.test(c))
-    .map((c) => c.normalize("NFKC"))
+    .map((c) => c.normalize("NFKD").replace(/\p{M}/gu, ""))
     .join("");
   return [...view.matchAll(/<\s*\/?\s*(untrusted(?:-[\w-]*)?|feedback)(?![\w-])/gi)].map((m) =>
     m[0].replace(/\s+/g, "").toLowerCase(),

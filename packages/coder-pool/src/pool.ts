@@ -1,4 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
+import { posix } from "node:path";
+import { createTools as createWorkspaceTools } from "@bakacoding/workspace";
 import {
   buildSystemPrefix,
   buildTicketMessage,
@@ -39,9 +41,16 @@ function isFileTool(name: string): name is FileToolName {
   return (FILE_TOOL_NAMES as readonly string[]).includes(name);
 }
 
-function toolPath(input: unknown): string | undefined {
-  const p = (input as { path?: unknown } | null)?.path;
-  return typeof p === "string" && p.length > 0 ? p.replace(/^\.\/+/, "") : undefined;
+/**
+ * write / edit 的目标文件（模块 4 的参数名 `file_path`），按模块 4 的规则规范成相对 worktree 的路径：
+ * 反斜杠转 `/`、`posix.normalize`（去掉 `./`、合并 `a/../`）、去掉末尾 `/`。只在工具成功后调用，
+ * 成功说明路径已过模块 4 的越界检查。
+ */
+function changedPath(input: unknown): string | undefined {
+  const p = (input as { file_path?: unknown } | null)?.file_path;
+  if (typeof p !== "string" || p.length === 0) return undefined;
+  const rel = posix.normalize(p.replace(/\\/g, "/")).replace(/\/+$/, "");
+  return rel === "" || rel === "." ? undefined : rel;
 }
 
 function renderResult(r: ToolResult): string {
@@ -76,7 +85,7 @@ export function createCoderPool(deps: CoderPoolDeps): CoderPool {
     const maxTurns = config.pipeline.max_turns;
     const system = await systemPrefix(input.ticket.project_id);
     // 每单一个代理：会话状态只活在这次调用里，跑完即丢
-    const tools = await deps.createTools({
+    const tools = await (deps.createTools ?? createWorkspaceTools)({
       ticket_id: input.ticket.ticket_id,
       worktree_path: input.worktree_path,
       permission_list: input.permission_list,
@@ -153,7 +162,7 @@ export function createCoderPool(deps: CoderPoolDeps): CoderPool {
           }
         }
         if (result.ok && (call.name === "write" || call.name === "edit")) {
-          const p = toolPath(call.input);
+          const p = changedPath(call.input);
           if (p && !changed.includes(p)) changed.push(p);
         }
         messages.push({

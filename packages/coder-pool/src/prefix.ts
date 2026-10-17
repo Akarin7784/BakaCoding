@@ -1,82 +1,23 @@
 import { untrustedNotice, wrapUntrusted } from "@bakacoding/types";
+import { FILE_TOOL_DEFINITIONS as WORKSPACE_FILE_TOOL_DEFINITIONS } from "@bakacoding/workspace";
 import type { ChatMessage, ToolDefinition } from "./types.js";
 
 /**
- * 五个文件工具的定义（对齐 harness 完整模式的入参）。属于公共前缀：顺序和内容固定，
- * 以后只能在末尾追加新工具，不能改已有项。
+ * 五个文件工具的定义：取自模块 4 的 `FILE_TOOL_DEFINITIONS`（名称、参数同 DeepSeek Harness
+ * 完整模式，参数名 `file_path` / `include` 等），模块 5 不再自己定义。属于公共前缀：加载时深拷贝并深冻结，
+ * 之后谁改了模块 4 导出的对象也不影响已发出的前缀字节；只能在末尾追加新工具，不能改已有项。
  */
-export const FILE_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
-  {
-    name: "read",
-    description: "读取工作区内的文件。写或改一个文件之前必须先读过它。",
-    input_schema: {
-      type: "object",
-      properties: {
-        path: { type: "string", description: "相对工作区根目录的路径" },
-        offset: { type: "integer", minimum: 1, description: "起始行（可选）" },
-        limit: { type: "integer", minimum: 1, description: "读取行数（可选）" },
-      },
-      required: ["path"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "write",
-    description: "整文件写入。已存在的文件须先 read。",
-    input_schema: {
-      type: "object",
-      properties: {
-        path: { type: "string" },
-        content: { type: "string" },
-      },
-      required: ["path", "content"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "edit",
-    description:
-      "把文件里与 old_string 字面量唯一匹配的片段替换为 new_string；replace_all 为 true 时替换全部匹配。换行统一 LF，不做模糊匹配。",
-    input_schema: {
-      type: "object",
-      properties: {
-        path: { type: "string" },
-        old_string: { type: "string" },
-        new_string: { type: "string" },
-        replace_all: { type: "boolean" },
-      },
-      required: ["path", "old_string", "new_string"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "glob",
-    description: "按 glob 模式列出工作区内的文件。",
-    input_schema: {
-      type: "object",
-      properties: {
-        pattern: { type: "string" },
-        path: { type: "string", description: "搜索起点目录（可选）" },
-      },
-      required: ["pattern"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "grep",
-    description: "按正则在工作区文件内容里搜索。",
-    input_schema: {
-      type: "object",
-      properties: {
-        pattern: { type: "string" },
-        path: { type: "string" },
-        glob: { type: "string", description: "只搜匹配这个 glob 的文件（可选）" },
-      },
-      required: ["pattern"],
-      additionalProperties: false,
-    },
-  },
-]);
+export const FILE_TOOL_DEFINITIONS: readonly ToolDefinition[] = deepFreeze(
+  structuredClone(WORKSPACE_FILE_TOOL_DEFINITIONS) as ToolDefinition[],
+);
+
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const v of Object.values(value)) deepFreeze(v);
+    Object.freeze(value);
+  }
+  return value;
+}
 
 /** 结束协议：模型不再调用工具时，最后一条回复须是这个 JSON。属于公共前缀。 */
 export const FINISH_PROTOCOL = `完成或放弃时不再调用工具，最后一条回复只输出一个 JSON 对象：

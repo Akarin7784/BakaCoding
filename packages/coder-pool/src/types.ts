@@ -29,7 +29,7 @@ export type RunStatus = "done" | "gave_up" | "turn_limit" | "budget_exceeded";
 export interface RunTicketResult {
   status: RunStatus;
   summary: string;
-  /** write / edit 成功过的文件（相对 worktree 的路径，按首次修改顺序） */
+  /** write / edit 成功过的文件（取调用的 `file_path`，按模块 4 规范成相对 worktree 的路径，去重，按首次修改顺序） */
   changed_files: string[];
 }
 
@@ -78,7 +78,7 @@ export interface ChatResponse {
 /** 模块 1 的多轮调用接口（需与基础层对接）；预算耗尽时应抛错，由 isBudgetExceeded 识别。 */
 export type ModelChat = (req: ChatRequest) => Promise<ChatResponse>;
 
-// ---- 4 的文件工具（T-010 未合入，按 modules.md 第 4 节的形状注入） ----
+// ---- 4 的文件工具（与 @bakacoding/workspace 的 createTools 同形；默认就用它） ----
 
 export type ToolResult =
   | { ok: true; output: string }
@@ -106,7 +106,11 @@ export interface CoderPoolConfig {
 export interface CoderPoolDeps {
   getConfig: () => CoderPoolConfig;
   chat: ModelChat;
-  createTools: CreateFileTools;
+  /**
+   * 为每单建文件工具；默认用模块 4 的 `createTools`（@bakacoding/workspace），
+   * 工具参数以模块 4 为准（`file_path`、`include` 等）。测试或接线时可注入替身。
+   */
+  createTools?: CreateFileTools;
   /** 3 的 promptTemplate("coder")（T-008 未合入，暂注入）：公共前缀里的系统提示 */
   promptTemplate: (role: "coder") => MaybePromise<string>;
   /** 同一项目的架构约束（公共前缀的一部分；同一项目每次必须返回相同内容） */

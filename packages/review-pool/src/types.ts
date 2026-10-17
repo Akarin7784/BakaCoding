@@ -63,7 +63,10 @@ export interface ReviewPrSource {
   checks(pr_id: string): Promise<CheckResultLike[]>;
 }
 
-/** 记住每张单上一轮由哪个成员评审（复投粘性）。等基础层定了字段后由 2 实现。 */
+/**
+ * 记住每张单上一轮由哪个成员评审（复投粘性）。默认内存实现；持久化用 `createRoundAssignmentStore`，
+ * 从 2 的 PR 轮次 `reviewer` 字段恢复。
+ */
 export interface AssignmentStore {
   get(ticket_id: string): MaybePromise<string | undefined>;
   set(ticket_id: string, member_id: string): MaybePromise<void>;
