@@ -61,17 +61,24 @@ export function ProjectGroup({
   calls,
   sidebarOpen,
   onToggleSidebar,
+  readonly = false,
 }: {
   view: ProjectView;
   calls: Record<string, FlashCallSummary>;
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
+  /** 后端只读时显示「只读」标签（T-077） */
+  readonly?: boolean;
 }) {
   return (
     <section aria-label="项目群" className="flex min-w-0 flex-1 flex-col">
       <header className="flex items-center gap-2 border-b border-border px-4 py-2">
         <span className="flex-1 text-sm font-medium"># {view.project.payload.name}</span>
-        <span className="text-xs text-muted-foreground">只读</span>
+        {readonly && (
+          <span className="text-xs text-muted-foreground" data-testid="readonly-tag">
+            只读
+          </span>
+        )}
         <Button
           variant="ghost"
           size="icon"
