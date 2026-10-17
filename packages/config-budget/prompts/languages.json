@@ -1,0 +1,60 @@
+{
+  "languages": [
+    {
+      "language": "TypeScript",
+      "files": ["tsconfig.json", "deno.json", "deno.jsonc"]
+    },
+    {
+      "language": "JavaScript",
+      "files": ["package.json"]
+    },
+    {
+      "language": "Python",
+      "files": ["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile"]
+    },
+    {
+      "language": "Go",
+      "files": ["go.mod"]
+    },
+    {
+      "language": "Rust",
+      "files": ["Cargo.toml"]
+    },
+    {
+      "language": "Kotlin",
+      "files": ["build.gradle.kts"]
+    },
+    {
+      "language": "Java",
+      "files": ["pom.xml", "build.gradle"]
+    },
+    {
+      "language": "C#",
+      "files": ["*.sln", "*.csproj"]
+    },
+    {
+      "language": "Swift",
+      "files": ["Package.swift"]
+    },
+    {
+      "language": "Dart",
+      "files": ["pubspec.yaml"]
+    },
+    {
+      "language": "Ruby",
+      "files": ["Gemfile"]
+    },
+    {
+      "language": "PHP",
+      "files": ["composer.json"]
+    },
+    {
+      "language": "Elixir",
+      "files": ["mix.exs"]
+    },
+    {
+      "language": "C/C++",
+      "files": ["CMakeLists.txt", "meson.build"]
+    }
+  ]
+}

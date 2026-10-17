@@ -31,3 +31,19 @@
 - `budgetState(ticket_id?)`：当日（UTC）上限、已花、复投、剩余、`daily_exhausted`，每单上限（每日预算 × `per_ticket_ratio`，向下取整），按角色分列，`offpeak_now`、`offpeak_preference`；传 `ticket_id` 时另带该单累计花费（含复投、不分日期）和 `exhausted`。已花 ≥ 上限即 exhausted。另带进行中调用的预占额（`reserved_today_micro_usd`，单的 `reserved_micro_usd`）。
 - `reserve({ ticket_id, amount_micro_usd })`：模块 1 每次调用前预占。已花 + 其他调用的预占 ≥ 每日或每单上限时返回 `{ ok: false, scope }`，否则记下并返回 `release()`。本次预占额不参与自己的判断，所以最多超出一个进行中调用的费用。预占与释放串行执行；预占只在进程内存里。
 - `computeCost(pricing, model, tokens, at)`：缓存命中输入、未命中输入、输出分别按单价计，按调用时刻选高峰或闲时价，向上取整到微美元；模型不在 `pricing.json` 里直接报错。
+
+## 项目导入（T-008）
+
+- `importProject(path, opts?)`：只读不写，不要求是 git 仓库。返回 `{ project_id, name, path, language, languages, manifests, has_github_remote }`。
+  - 语言：只看项目根目录下的清单文件，按 [`prompts/languages.json`](prompts/languages.json) 的顺序匹配（`*.ext` 按后缀），第一个命中的是主语言，都没命中为 `unknown`。例如有 `tsconfig.json` 是 TypeScript，只有 `package.json` 是 JavaScript。
+  - GitHub 远程：读 `.git/config`（worktree 跟 `gitdir` 和 `commondir` 找到主仓库），任一 `[remote]` 的 `url` 指向 github.com（https、ssh、`git@github.com:` 写法）即为 `true`。
+  - `project_id` 是名称 slug 加真实路径 sha256 的前 8 位，同一路径（含经符号链接）重复导入得到同一个 id，2 落库时 `INSERT OR IGNORE`。
+  - 传 `publish`（通常是 `(e) => bus.publish(e)`）时发 `project_created`，`requirement_id`、`ticket_id` 为 `null`；`trace` 不传就新开一条。本包不依赖总线。
+- 路径不存在或不是目录报 `ProjectImportError`，不发事件。
+
+## 提示词模板（T-008）
+
+- `promptTemplate(role, opts?)`：读 `prompts/<role>.md`（`supervisor`、`reviewer`、`sub_agent`、`coder`）。每次调用都读文件，去 BOM、换行统一 LF、去首尾空白，同样的文件跨平台逐字节相同；5 按内容哈希缓存公共前缀，所以改模板后下一单自动生效。
+- `reviewer` 模板带 `{{input}}`，7 的 `buildPrompt` 替换它；模板里没有时 7 把输入接在末尾。
+- `architecture_constraints`：给了非空数组时加一节「## 项目架构约束」，放在 `{{input}}` 前面（没有占位符就接在末尾），供 7 带上与 5 公共前缀同一份的项目约束。`coder` 不用传，5 自己拼。
+- `dir` 可指向自定义模板目录。未知角色或读不到文件报 `PromptTemplateError`。
