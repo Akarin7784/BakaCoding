@@ -134,6 +134,9 @@ export const ConfigSchema = z
         resplit_limit: NonNegInt.default(2),
         supervisor_backlog_limit: PosInt.default(10),
         main_merge: z.enum(["user", "supervisor"]).default("user"),
+        max_turns: PosInt.default(40).describe(
+          "Flash 代理每单最多调用模型的轮数，到上限返回 turn_limit",
+        ),
       })
       .strict()
       .default({})

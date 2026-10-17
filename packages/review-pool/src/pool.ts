@@ -33,6 +33,20 @@ interface Waiter {
   pick: () => Promise<Member | undefined>;
   resolve: (m: Member) => void;
   reject: (e: unknown) => void;
+  /** 已出队（拿到成员、出错或被中止），drain 不再处理 */
+  settled: boolean;
+}
+
+/** signal 中止时抛的错误：优先 signal.reason，没有就抛名为 AbortError 的错误。 */
+export function abortReason(signal: AbortSignal): unknown {
+  if (signal.reason !== undefined) return signal.reason;
+  const e = new Error("评审已中止");
+  e.name = "AbortError";
+  return e;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined) {
+  if (signal?.aborted) throw abortReason(signal);
 }
 
 export interface ReviewPool {
@@ -111,21 +125,23 @@ export function createReviewPool(deps: ReviewPoolDeps): ReviewPool {
     try {
       do {
         redrain = false;
-        for (let i = 0; i < waiters.length;) {
-          const w = waiters[i]!;
+        // 按快照顺序处理；pick 期间被中止的等待者已出队，跳过
+        for (const w of [...waiters]) {
+          if (w.settled) continue;
           let m: Member | undefined;
           try {
             m = await w.pick();
           } catch (e) {
-            waiters.splice(i, 1);
+            if (w.settled) continue;
+            dequeue(w);
             w.reject(e);
             continue;
           }
-          if (m) {
-            waiters.splice(i, 1);
+          if (m && !w.settled) {
+            dequeue(w);
             inflight.set(m.id, busy(m.id) + 1);
             w.resolve(m);
-          } else i++;
+          }
         }
       } while (redrain);
     } finally {
@@ -143,9 +159,39 @@ export function createReviewPool(deps: ReviewPoolDeps): ReviewPool {
     }, pollMs);
   }
 
-  function acquire(pick: () => Promise<Member | undefined>): Promise<Member> {
+  /** 出队；队列空了就清掉轮询定时器。 */
+  function dequeue(w: Waiter) {
+    w.settled = true;
+    const i = waiters.indexOf(w);
+    if (i >= 0) waiters.splice(i, 1);
+    if (waiters.length === 0 && pollTimer) {
+      clearTimeout(pollTimer);
+      pollTimer = undefined;
+    }
+  }
+
+  function acquire(pick: () => Promise<Member | undefined>, signal?: AbortSignal): Promise<Member> {
     return new Promise<Member>((resolve, reject) => {
-      waiters.push({ pick, resolve, reject });
+      if (signal?.aborted) return reject(abortReason(signal));
+      const onAbort = () => {
+        if (w.settled) return;
+        dequeue(w);
+        reject(abortReason(signal!));
+      };
+      const w: Waiter = {
+        pick,
+        resolve: (m) => {
+          signal?.removeEventListener("abort", onAbort);
+          resolve(m);
+        },
+        reject: (e) => {
+          signal?.removeEventListener("abort", onAbort);
+          reject(e);
+        },
+        settled: false,
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      waiters.push(w);
       void drain();
     });
   }
@@ -212,16 +258,20 @@ export function createReviewPool(deps: ReviewPoolDeps): ReviewPool {
     const diff = await deps.pr.diff(input.pr_id);
     const prompt = buildPrompt(await deps.promptTemplate("reviewer"), input, diff);
 
-    let held: Member | undefined = await acquire(picker(input.ticket, input.ctx));
+    const { signal } = input;
+    let held: Member | undefined = await acquire(picker(input.ticket, input.ctx), signal);
     try {
       let member: Member = held;
+      // 调模型期间不打断（1 的 call() 没有 signal 参数）；返回后已中止就丢弃结果、不写分配记录
       let out = await runModel(member, input, prompt);
+      throwIfAborted(signal);
       if (!out) {
         // 7-6：换一个成员重试一次（只有一个成员就同一个再试）
         release(member);
         held = undefined;
-        member = held = await acquire(picker(input.ticket, input.ctx, member.id));
+        member = held = await acquire(picker(input.ticket, input.ctx, member.id), signal);
         out = await runModel(member, input, prompt);
+        throwIfAborted(signal);
       }
       await assignments.set(input.ticket.ticket_id, member.id);
       if (!out)
@@ -242,6 +292,8 @@ export function createReviewPool(deps: ReviewPoolDeps): ReviewPool {
 
   return {
     async review(input) {
+      // 进入前已中止：直接抛，不查 CI、不调模型、不计入 pending
+      throwIfAborted(input.signal);
       pending++;
       await emitBacklog(input.ctx);
       try {

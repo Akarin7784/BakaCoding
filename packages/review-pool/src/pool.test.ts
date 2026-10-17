@@ -336,6 +336,115 @@ describe("7-6 输出解析不了", () => {
   });
 });
 
+describe("parseModelOutput：json 代码块优先", () => {
+  it("第一个块是 ts 代码、第二个是 json：取 json 块", () => {
+    const out = "先看代码：\n```ts\nconst x = { a: 1 };\n```\n结论：\n```json\n" + FAIL + "\n```";
+    expect(parseModelOutput(out)?.verdict).toBe("fail");
+  });
+  it("标了 json 的块优先于更靠前的合法未标块；多个 json 块取第一个能通过校验的", () => {
+    const out =
+      "```\n" + FAIL + '\n```\n```json\n{"verdict":"maybe"}\n```\n```JSON\n' + PASS + "\n```";
+    expect(parseModelOutput(out)).toEqual({ verdict: "pass", reasons: [] });
+  });
+  it("未标语言的块里第一个不合法、第二个合法：取第二个", () => {
+    const out = '```\n{"verdict":"fail","reasons":[]}\n```\n```\n' + PASS + "\n```";
+    expect(parseModelOutput(out)).toEqual({ verdict: "pass", reasons: [] });
+  });
+  it("纯 JSON 文本；代码块都不合法时退回整段文本", () => {
+    expect(parseModelOutput(FAIL)?.reasons[0]?.file).toBe("b.ts");
+    expect(parseModelOutput("```ts\nlet a = 1;\n```\n" + PASS)).toEqual({
+      verdict: "pass",
+      reasons: [],
+    });
+    expect(parseModelOutput("```json\n{bad}\n```")).toBeUndefined();
+  });
+});
+
+describe("signal：中止排队", () => {
+  it("进入前已中止：直接抛 signal.reason，不查 CI、不调模型、不发 backlog", async () => {
+    const t = setup();
+    const ac = new AbortController();
+    const reason = new Error("需求已取消");
+    ac.abort(reason);
+    await expect(t.pool.review({ ...input("T-AB0"), signal: ac.signal })).rejects.toBe(reason);
+    expect(t.pr.checks).not.toHaveBeenCalled();
+    expect(t.call).not.toHaveBeenCalled();
+    expect(t.events).toHaveLength(0);
+    expect(t.pool.backlog().pending).toBe(0);
+  });
+
+  it("所有成员一直被限流时 abort：立刻退出排队，pending 回 0 并发 backlog，不影响其他排队者", async () => {
+    const limited = new Set(["reviewer-1-model", "reviewer-2-model"]);
+    const t = setup({ isRateLimited: ({ model }) => limited.has(model) });
+    const ac = new AbortController();
+    const aborted = t.pool.review({ ...input("T-AB1"), signal: ac.signal });
+    const other = t.pool.review(input("T-AB2"));
+    await until(() => t.pool.backlog().pending === 2);
+    await new Promise((r) => setTimeout(r, 20)); // 轮询了几轮仍在排队
+    expect(t.call).not.toHaveBeenCalled();
+    ac.abort();
+    const err = await aborted.catch((e: unknown) => e);
+    expect((err as Error).name).toBe("AbortError");
+    expect(t.pool.backlog().pending).toBe(1);
+    expect(t.events.at(-1)?.payload).toEqual({ pending: 1, capacity: 4 });
+    limited.clear();
+    expect((await other).verdict).toBe("pass");
+    expect(t.calls.map((c) => c.ctx.ticket_id)).toEqual(["T-AB2"]);
+    expect(t.pool.backlog().pending).toBe(0);
+    expect(t.events.at(-1)?.payload).toEqual({ pending: 0, capacity: 4 });
+  });
+
+  it("唯一排队者 abort 后轮询定时器清掉、不再查限流", async () => {
+    const isRateLimited = vi.fn(() => true);
+    const t = setup({ isRateLimited });
+    const ac = new AbortController();
+    const p = t.pool.review({ ...input("T-AB3"), signal: ac.signal });
+    await until(() => isRateLimited.mock.calls.length >= 4);
+    ac.abort();
+    await expect(p).rejects.toThrow();
+    const n = isRateLimited.mock.calls.length;
+    await new Promise((r) => setTimeout(r, 30));
+    expect(isRateLimited.mock.calls.length).toBe(n);
+    expect(t.pool.backlog().pending).toBe(0);
+  });
+
+  it("等成员槽位时 abort：不占成员，后来的人照常拿到", async () => {
+    const t = setup({ manual: true });
+    t.setConfig(cfg(["solo"], 1));
+    const first = t.pool.review(input("T-AB4"));
+    const ac = new AbortController();
+    const waiting = t.pool.review({ ...input("T-AB5"), signal: ac.signal });
+    const third = t.pool.review(input("T-AB6"));
+    await until(() => t.gates.length === 1);
+    ac.abort();
+    await expect(waiting).rejects.toThrow();
+    t.gates[0]!(PASS);
+    await first;
+    await until(() => t.gates.length === 2);
+    t.gates[1]!(PASS);
+    expect((await third).reviewer).toBe("solo");
+    expect(t.calls.map((c) => c.ctx.ticket_id)).toEqual(["T-AB4", "T-AB6"]);
+    expect(t.pool.backlog().pending).toBe(0);
+  });
+
+  it("调模型期间中止：模型照常返回，但丢弃结论、不写 AssignmentStore、抛 reason、释放成员", async () => {
+    const assignments = new InMemoryAssignmentStore();
+    const t = setup({ manual: true, assignments });
+    const ac = new AbortController();
+    const p = t.pool.review({ ...input("T-AB7"), signal: ac.signal });
+    await until(() => t.gates.length === 1);
+    ac.abort(new Error("stop"));
+    t.gates[0]!(PASS);
+    await expect(p).rejects.toThrow("stop");
+    expect(await assignments.get("T-AB7")).toBeUndefined();
+    expect(t.pool.backlog().pending).toBe(0);
+    const q = t.pool.review(input("T-AB8"));
+    await until(() => t.gates.length === 2);
+    t.gates[1]!(PASS);
+    expect((await q).reviewer).toBe("reviewer-1");
+  });
+});
+
 describe("7-7 review_backlog", () => {
   it("排队数或容量变化时发，公共字段取自 ctx，不重复发相同值", async () => {
     const t = setup({ manual: true });

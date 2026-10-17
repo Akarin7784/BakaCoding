@@ -106,7 +106,7 @@ graph BT
 - **对外接口（草案）**：`getConfig()`、`validate() → errors[]`、`getSecret(name)`（读 `DEEPSEEK_API_KEY`、`GITHUB_TOKEN`）、`createBudget({ budget, pricing, ledger, now? })` 返回 `{ recordCost, budgetState, attach }`：`recordCost(entry: LedgerEntry)`（手工补记，`entry_id` 幂等）、`attach(bus, { onError })`（订阅 `call_completed` 记台账，`entry_id` 取 `event_id`，闲时按事件 `ts` 判断，失败交给 `onError`）、`budgetState(ticket_id?) → Promise<BudgetState>`（当日 UTC 上限 / 已花 / 复投 / 剩余 / `daily_exhausted`、每单上限 = 每日预算 × `per_ticket_ratio` 向下取整、按角色分列、`offpeak_now`、`offpeak_preference`；传 `ticket_id` 时另带该单已花 / 复投 / 剩余 / `exhausted`；已花 ≥ 上限即 exhausted）；`computeCost(pricing, model, tokens, at) → { cost_micro_usd, offpeak }`（命中、未命中、输出分开计价，按调用时刻选高峰或闲时价，向上取整到微美元，未知模型报错，供 1 计费）、`redact(text, level: light | full) → { text, report }`、`importProject(path) → project`、`promptTemplate(role)`；事件：项目已创建。
 - **依赖**：无。
 - **对应章节**：PD §2、§10、§11、§13、§15。
-- **配置字段**：`roles.supervisor`（必填）、`budget.daily_micro_usd`（必填，整数微美元）、`budget.per_ticket_ratio`、`budget.offpeak_preference`（默认 `false`），以及所有草案字段的加载入口。
+- **配置字段**：`roles.supervisor`（必填）、`budget.daily_micro_usd`（必填，整数微美元）、`budget.per_ticket_ratio`、`budget.offpeak_preference`（默认 `false`）、`pipeline.max_turns`（默认 40，Flash 代理每单最多调用模型的轮数，由 5 读取），以及所有草案字段的加载入口。
 
 ### 4. 工作区与受限工具层
 - **职责**：每单创建 Git worktree 和工作分支（路径 `.bakacoding/worktrees/<ticket_id>-r<n>`，`n` 为轮次；从确认基线创建，不带入未跟踪的密钥文件），把路径交给 6，用完清理；提供五个文件工具，对齐 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（tag dsh-v0.2.1-alpha.5） 完整模式：`read`、`write`（整文件写）、`edit`（`old_string` / `new_string` / `replace_all`，字面量唯一匹配，换行统一 LF，不模糊匹配）、`glob`、`grep`（[工具目录](https://github.com/deepseek-ai/deepseek-harness/tree/dsh-v0.2.1-alpha.5/docs/tool-catalog.md)）；先读后写和陈旧版本检测；错误码 `FS_EDIT_NOT_FOUND` / `FS_AMBIGUOUS_EDIT` / `FS_NOT_OBSERVED` / `FS_STALE_VERSION` 及文案照搬，失败时文件不动、错误返回模型重试（[fsio.ts](https://github.com/deepseek-ai/deepseek-harness/tree/dsh-v0.2.1-alpha.5/packages/fs/fs-local/src/fsio.ts)、[error.ts](https://github.com/deepseek-ai/deepseek-harness/tree/dsh-v0.2.1-alpha.5/packages/fs/tool-fs/src/error.ts)）；与「只给基础编码工具、不给 shell」一致；按三级权限清单（读写、只读、拒绝，未列出的默认拒绝）执行；守住外层硬边界（只在本单工作区、按真实路径解析、处理符号链接、密钥和 `.env` 类文件不放行，不给 shell、网络、git）；只负责执行权限清单，不写 PR 记录。越界时在总线上发「需要扩大写入范围」，从总线收「已批准」「已拒绝」后执行。
@@ -118,11 +118,22 @@ graph BT
 ## 执行层
 
 ### 5. Flash 编码池
-- **职责**：临时 Flash 代理的生命周期（每单一个，写完即销毁）；编码槽位只计编码阶段，统一由 9 管理，5 本身不设并发上限；提示词公共前缀在前、需求单在后；同一项目的系统提示、工具定义、架构约束组成逐字节固定的公共前缀，不放时间戳和单号，否则无法命中 DeepSeek 缓存（新版缓存须完整匹配前缀单元：https://api-docs.deepseek.com/guides/kv_cache ）；复投时升档（第 1 次 `low`，第 2、3 次 `high`）；后备做法：确需中途改提示时，新内容作为一条 system 消息追加到历史末尾，工具定义只增不改，开头不动以保留前缀缓存（[models.ts](https://github.com/deepseek-ai/deepseek-harness/tree/dsh-v0.2.1-alpha.5/packages/llm/llm-deepseek/src/models.ts)、[serialize.ts](https://github.com/deepseek-ai/deepseek-harness/tree/dsh-v0.2.1-alpha.5/packages/llm/llm-deepseek/src/serialize.ts)）；Flash 使用 4 的五个文件工具（同 harness 完整模式），不给 shell。
-- **对外接口（草案）**：`runTicket(ticket, worktree_path, permission_list, attempt) → patch`；`slots() → { used, limit }`。
-- **依赖**：1、3、4。
+- **职责**：临时 Flash 代理的生命周期（每单一个，跑完即销毁，不共享会话状态）；编码槽位只计编码阶段，统一由 9 管理，5 本身不设并发上限；提示词公共前缀在前、需求单在后；同一项目的系统提示、工具定义、架构约束组成逐字节固定的公共前缀，不放时间戳和单号，否则无法命中 DeepSeek 缓存（新版缓存须完整匹配前缀单元：https://api-docs.deepseek.com/guides/kv_cache ）；后备做法：确需中途改提示时，新内容作为一条 system 消息追加到历史末尾，工具定义只增不改，开头不动以保留前缀缓存（[models.ts](https://github.com/deepseek-ai/deepseek-harness/tree/dsh-v0.2.1-alpha.5/packages/llm/llm-deepseek/src/models.ts)、[serialize.ts](https://github.com/deepseek-ai/deepseek-harness/tree/dsh-v0.2.1-alpha.5/packages/llm/llm-deepseek/src/serialize.ts)）；Flash 只用 4 的五个文件工具（同 harness 完整模式）直接改 worktree，不给 shell、网络、git。
+- **对外接口（草案）**：`createCoderPool(deps) → { runTicket, prefix }`。
+  - `runTicket({ ticket, prompt, worktree_path, permission_list, effort, feedback?, ctx }) → { status: "done" | "gave_up" | "turn_limit" | "budget_exceeded", summary, changed_files }`，不返回补丁。
+  - 5-1 提交由调用方调 6 的 `commitWorktree`，5 自己不提交；`changed_files` 是 `write` / `edit` 成功过的文件（相对 worktree，按首次修改顺序）。
+  - 5-2 `prompt` 是 8 写好的需求单部分；5 只拼公共前缀（`promptTemplate("coder")` + 结束协议 + 项目架构约束作系统提示，加五个工具定义），同一项目只拼一次、逐字节相同。`feedback`（上一轮评审理由、冲突文件或上一轮 diff）截断后标注为不可信输入，接在需求单后面，不动前缀。
+  - 5-3 不收 `attempt`：`effort` 由 8 算好传入，复投次数由 8 计；`ctx.is_resubmit` 由 8 填，5 原样传给 1（`role` 为 `coder`，`provider` / `model` 取 `roles.coder`）。
+  - 5-4 worktree 由 8/9 管，5 只用传进来的 `worktree_path`，不建不清。
+  - 5-5 越界写由 4 自己发 `write_scope_requested`、9 回复，5 不加回调；工具返回的拒绝和错误（含 `FS_*` 错误码、未知工具、工具抛错）原样作为工具结果交还模型。
+  - 5-6 没有 `slots()`，5 不设并发上限。
+  - 5-7 5 不发事件，调用记录靠 1 的 `call_completed`。
+  - 5-8 每次调模型算一轮，到 `pipeline.max_turns`（默认 40）仍未结束返回 `turn_limit`。
+  - 结束：模型不再调工具时，最后一条回复是 `{"status":"done"|"gave_up","summary":"…"}`（```json 代码块优先）；解析不了按 `done`、summary 用原文。1 报预算耗尽（调用抛错，默认看 `error.code === "BUDGET_EXCEEDED"`，可注入判断）时返回 `budget_exceeded`；其他错误照常抛出。
+  - 多轮工具调用：1 的 `call(role, provider, model, effort, prompt, ctx)` 只收一个字符串，不够用，5 暂定义最小注入接口 `chat({ role, provider, model, effort, system, tools, messages, ctx }) → { content, tool_calls }`，待与 1 对接。
+- **依赖**：1、3、4（未合入前都以注入方式接入）。
 - **对应章节**：PD §5、§8。
-- **配置字段**：`roles.coder.resubmit_effort`（并发字段 `pipeline.concurrency_max` / `pipeline.concurrency_hard_max` 由 9 读取）。
+- **配置字段**：`roles.coder`（`provider` / `model`）、`pipeline.max_turns`（并发字段 `pipeline.concurrency_max` / `pipeline.concurrency_hard_max` 由 9 读取；5 不再读 `roles.coder.resubmit_effort`）。
 
 ### 6. PR 抽象
 - **职责**：一套接口两种实现：有 GitHub 时推工作分支开真 PR、轮到时合入集成分支；没有远程仓库或读不到 `GITHUB_TOKEN`（经 3 的 `getSecret`）时只建本地 PR 记录。Flash 产出的补丁由 6 转成 commit。worktree 路径和分支由 4 交来，6 自己用 git 读 diff。单张 PR 和集成分支的 CI check 都由 6 读，集成分支也作为一种 PR 记录。本地记录为准，GitHub 状态同步回本地，差异记入日志；6 自己处理不了的 GitHub 情况发「上报」事件。
@@ -136,14 +147,15 @@ graph BT
 
 ### 7. 评审池
 - **职责**：评审池成员按负载分配，复投的单交给原来的模型，被限流的模型跳过；评审输入固定为「diff + 需求单 + 精简摘要」，从 6 读 diff，对照需求单审查（是否完成需求、是否越界、有没有明显 bug、是否违反架构约束），给出评审结论；判不过的门槛待实测，由 11 的诊断包统计评审精度后再定；成员数为 0 时由主管兼任。
-- **对外接口（草案）**：`createReviewPool(deps)` 返回 `review({ ticket, pr_id, permission_list, summary, ctx }) → { verdict, reasons[], reviewer }` 和 `backlog() → { pending, capacity }`；事件：评审积压 `review_backlog`（9 订阅，9 不直接调用 7）。`ctx` 即 1 的 `call()` 的 `ctx`，是否复投看 `ctx.is_resubmit`（不再传 `attempt`）。`verdict` 取 `pass` / `fail`；`reasons[]` 每项 `{ category, detail, file?, line? }`，`category` 取 `incomplete` / `out_of_scope` / `bug` / `arch_violation` / `ci_failed`，`fail` 至少一条；`detail` 要写成编码代理能直接照着改的修改要求，8 会把 `reasons` 原样作为下一轮 `runTicket` 的 `feedback`。`reviewer` 是给出结论的评审组成员 id，供 8 写进轮次记录和群消息；CI 失败直接判不过、没调模型时为 `null`。类型和 zod schema（`ReviewResultSchema`、`ReviewReasonSchema`、模型输出用的 `ReviewModelOutputSchema`）放在 `@bakacoding/types`。
+- **对外接口（草案）**：`createReviewPool(deps)` 返回 `review({ ticket, pr_id, permission_list, summary, ctx, signal? }) → { verdict, reasons[], reviewer }` 和 `backlog() → { pending, capacity }`；事件：评审积压 `review_backlog`（9 订阅，9 不直接调用 7）。`ctx` 即 1 的 `call()` 的 `ctx`，是否复投看 `ctx.is_resubmit`（不再传 `attempt`）。`verdict` 取 `pass` / `fail`；`reasons[]` 每项 `{ category, detail, file?, line? }`，`category` 取 `incomplete` / `out_of_scope` / `bug` / `arch_violation` / `ci_failed`，`fail` 至少一条；`detail` 要写成编码代理能直接照着改的修改要求，8 会把 `reasons` 原样作为下一轮 `runTicket` 的 `feedback`。`reviewer` 是给出结论的评审组成员 id，供 8 写进轮次记录和群消息；CI 失败直接判不过、没调模型时为 `null`。类型和 zod schema（`ReviewResultSchema`、`ReviewReasonSchema`、模型输出用的 `ReviewModelOutputSchema`）放在 `@bakacoding/types`。
 - **评审规则**（T-030）：
   - 精简摘要由 8 写好作为 `summary` 传入，7 不另调模型；评审输入固定为「diff（6 的 `diff(pr_id)`）+ 需求单 + 精简摘要」，另附 `permission_list`（判断越界）和需求单里的架构约束；提示词模板取 3 的 `promptTemplate("reviewer")`（3 尚未提供，暂由调用方注入）。
   - 先调 6 的 `checks(pr_id)`：有结论为 `failure` / `timed_out` 的 check 就直接判 `fail`，每个失败的 check 一条 `ci_failed`，不读 diff、不调模型；check 还在跑或没配 CI 的不等，照常评审。
   - 成员数为 0 时主管兼任：用 `roles.supervisor` 的 provider / model，`effort` 固定 `max`，调用和事件里 `role` 记 `reviewer`（台账随之记在评审组一栏）；7 不依赖 10。容量按 1 个成员算。
   - 分配：非复投按 `review_assignment`（目前只有 `least_busy`：未限流、未满 `reviews_per_member` 的成员里正在评审数最少的，平手按配置顺序）。复投且 `sticky_on_resubmit` 时交给上一轮的成员（忙就排队等它）；它被限流或已不在配置里就换人。记住成员用注入的 `AssignmentStore { get(ticket_id), set(ticket_id, member_id) }`，默认内存实现，等 2 的 PR 记录轮次字段定下来再接 2。`skip_rate_limited` 时用 1 的 `rateLimitState()`（注入为 `isRateLimited({ provider, model })`）跳过被限流的成员；全忙或全被限流时排队等待并定时重查，不交给主管。
-  - 模型须输出 JSON，用 zod 校验；解析不了就换一个成员重试一次（只有一个成员就同一个再试），仍不行判 `fail`，`{ category: "bug", detail: "评审输出无法解析" }`。
+  - 模型须输出 JSON，用 zod 校验；解析不了就换一个成员重试一次（只有一个成员就同一个再试），仍不行判 `fail`，`{ category: "bug", detail: "评审输出无法解析" }`。解析顺序：先取标了 json 的代码块（多个时取第一个能通过 `ReviewModelOutputSchema` 校验的），再按出现顺序取其余代码块里第一个能通过校验的，最后试整段文本；都不行才算解析不了。
   - `review_backlog`：`pending` = 已进入 `review()`、尚未返回的单数（含正在评审和排队），`capacity` = 成员数 × `backpressure.reviews_per_member`（0 成员按 1 算）；任一值变化时经 0 发出，公共字段取自本单的 `ctx`，相同值不重复发。
+  - `signal?: AbortSignal`（可选，#27 评审意见）：进入 `review()` 前已中止就直接抛 `signal.reason`（没有则抛名为 `AbortError` 的错误），不查 CI、不调模型、不计入 `pending`；排队等成员时（含所有成员一直被限流、轮询等待）中止就立刻出队，不占成员，队列空了清掉轮询定时器，`pending` 减回并发 `review_backlog`，不影响其他排队者；拿到成员后调模型期间不打断（1 的 `call()` 没有 signal 参数，不传），模型返回后若已中止则丢弃结论、不写复投成员记录、释放成员并抛出。
 - **依赖**：1（`call`、`rateLimitState`）、2（复投成员记录，暂用注入的内存实现）、3（配置、提示词模板）、6（`diff`、`checks`）。
 - **对应章节**：PD §8、§10。
 - **配置字段**：`roles.review_board.members`、`roles.review_board.review_assignment`、`roles.review_board.sticky_on_resubmit`、`roles.review_board.skip_rate_limited`、`backpressure.reviews_per_member`。
