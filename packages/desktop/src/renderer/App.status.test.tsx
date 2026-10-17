@@ -88,6 +88,13 @@ const hr: DesktopPendingHighRisk = {
   held_at: "2026-10-17T12:00:00Z",
 };
 
+/** 这条文字所在的 sonner toast 还没被移除（sonner 移除时先把 data-removed 设成 true，200ms 后才卸载）（T-109） */
+function expectToastKept(text: string) {
+  const li = screen.getByText(text).closest("[data-sonner-toast]");
+  expect(li, text).not.toBeNull();
+  expect(li!.getAttribute("data-removed"), text).toBe("false");
+}
+
 const renderApp = (props: Parameters<typeof App>[0]) =>
   render(
     <>
@@ -150,16 +157,19 @@ describe("只读横幅（§4.7）", () => {
     fireEvent.click(screen.getByRole("button", { name: "重新连接" }));
     expect(await screen.findByText("重新连接失败：ConfigError：models.json 不合法")).toBeTruthy();
     const copy = await screen.findByRole("button", { name: "复制详情" });
-    fireEvent.click(copy);
+    await act(async () => fireEvent.click(copy));
     await waitFor(() => expect(clip).toContain("重新连接失败：ConfigError：models.json 不合法"));
+    // T-109：点「复制详情」不关错误 toast。以前 sonner 默认关掉它（200ms 后卸载），
+    // 末尾断言能否通过取决于测试跑得比 200ms 快不快，负载高时偶发失败。这里直接看移除标记，不靠时间。
+    expectToastKept("重新连接失败：ConfigError：models.json 不合法");
 
     f.set({ mode: "live" });
     fireEvent.click(screen.getByRole("button", { name: "重新连接" }));
     expect(await screen.findByText("已重新连接")).toBeTruthy();
     await waitFor(() => expect(screen.queryByRole("region", { name: "只读模式" })).toBeNull());
     expect(reconnectBackend).toHaveBeenCalledTimes(3);
-    // 错误 toast 还在（不自动消失）
-    expect(screen.getByText("重新连接失败：ConfigError：models.json 不合法")).toBeTruthy();
+    // 错误 toast 还在（不自动消失，复制后也不关）
+    expectToastKept("重新连接失败：ConfigError：models.json 不合法");
   });
 
   it("没有 reconnectBackend（旧 preload）时不显示「重新连接」", async () => {
@@ -226,10 +236,10 @@ describe("操作结果用 toast（§3）", () => {
     renderApp({ api });
     fireEvent.click(await screen.findByRole("button", { name: "导出诊断包" }));
     expect(await screen.findByText("导出失败：磁盘满了")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "复制详情" }));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "复制详情" })));
     await waitFor(() => expect(clip).toEqual(["导出失败：磁盘满了"]));
-    await act(() => new Promise((r) => setTimeout(r, 50)));
-    expect(screen.getByText("导出失败：磁盘满了")).toBeTruthy();
+    // T-109：原来等 50ms 再看，只因为短于 sonner 的 200ms 卸载才过；改成看移除标记
+    expectToastKept("导出失败：磁盘满了");
   });
 });
 
