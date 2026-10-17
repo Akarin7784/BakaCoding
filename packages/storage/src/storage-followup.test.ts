@@ -277,14 +277,40 @@ describe("T-022 e：prStore 轻脱敏并校验 kind", () => {
     updated_ts: "2026-10-17T00:00:00.000Z",
   };
 
-  it("存进去的记录做了轻脱敏，pr_id 和 kind 原样", async () => {
+  it("字段里疑似有密钥时拒绝写入，不改写记录", async () => {
     const s = open();
     const store = s.prStore<PrRecord>();
-    await store.put(base);
-    const got = await store.get("pr-1");
-    expect(got?.pr_id).toBe("pr-1");
-    expect(got?.kind).toBe("ticket");
-    expect(JSON.stringify(got)).not.toContain(KEY);
+    await expect(store.put(base)).rejects.toThrow(/worktree_path 疑似含密钥/);
+    expect(await store.get("pr-1")).toBeUndefined();
+  });
+
+  it("带 remote 的单张记录和集成记录写进去读出来完全相等", async () => {
+    const s = open();
+    const store = s.prStore<PrRecord & { remote?: { number: number; url: string } }>();
+    const t = {
+      ...base,
+      worktree_path: "/home/u/.bakacoding/wt/T-1",
+      merged_into: "integration",
+      remote: { number: 42, url: "https://github.com/o/r/pull/42" },
+    };
+    const i = {
+      pr_id: "pr-int-1",
+      kind: "integration" as const,
+      branch: "integration",
+      base_branch: "main",
+      base_sha: "c".repeat(40),
+      head_sha: "d".repeat(40),
+      status: "open" as const,
+      repo_path: "/home/u/proj",
+      created_ts: "2026-10-17T00:00:00.000Z",
+      updated_ts: "2026-10-17T00:00:00.000Z",
+      remote: { number: 7, url: "https://github.com/o/r/pull/7" },
+    };
+    await store.put(t);
+    await store.put(i);
+    expect(await store.get("pr-1")).toEqual(t);
+    expect(await store.get("pr-int-1")).toEqual(i);
+    expect(await store.list()).toEqual([t, i]);
   });
 
   it("kind 只能是 ticket 或 integration", async () => {
