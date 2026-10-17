@@ -283,7 +283,9 @@ describe("组合根：同一条总线", () => {
     const stored = storage.queryEvents();
     const seqs = stored.map((e) => e.seq);
     expect(new Set(seqs).size).toBe(seqs.length);
-    expect(stored.map((e) => e.event_id).sort()).toEqual(seen.map((e) => e.event_id).sort());
+    // start() 可能在订阅前已发 supervisor_backlog，库里可多、seen 里的都必须在库里
+    const storedIds = new Set(stored.map((e) => e.event_id));
+    for (const e of seen) expect(storedIds.has(e.event_id)).toBe(true);
   });
 });
 

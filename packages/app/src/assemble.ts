@@ -1,6 +1,9 @@
 // T-041a：组合根。把 0 事件总线、2 存储、3 配置 / 预算、6 PR 与编排层 8 / 9 / 10 装到同一条总线上，并做重启接管。
 // 不是功能模块：在编排层之上、12 之下（modules.md「组合根」一节）。
+import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
+import { dirname } from "node:path";
+import { promisify } from "node:util";
 import type { Budget, Config } from "@bakacoding/config-budget";
 import type { CoderPool } from "@bakacoding/coder-pool";
 import { createEventBus, type EventBus } from "@bakacoding/event-bus";
@@ -323,6 +326,37 @@ export async function assemble(deps: AppDeps): Promise<App> {
   const pr = await deps.createPr({ eventContext, publish, store });
 
   // ---- 10 ----
+  /** T-042：9 里没有非终态单 → 可自动审集成分支 */
+  function integrationIdle(): boolean {
+    // scheduler.snapshot 若有更准；这里用 2 的状态（与 takeOver 一致）
+    return !storage.listTickets().some((r) => {
+      const s = r.status ?? "pending";
+      return s !== "merged" && s !== "escalated";
+    });
+  }
+
+  /** T-042 C3：用户仓库是否正检出 main（本地模式合 main 会动工作区） */
+  async function userMainWorktree(): Promise<string | null> {
+    if (pr.kind !== "local") return null;
+    // worktreeRoot = <repo>/.bakacoding/worktrees
+    const repo = dirname(dirname(deps.worktreeRoot));
+    try {
+      const { stdout } = await promisify(execFile)(
+        "git",
+        ["worktree", "list", "--porcelain"],
+        { cwd: repo, encoding: "utf8" },
+      );
+      let path: string | undefined;
+      for (const line of stdout.split("\n")) {
+        if (line.startsWith("worktree ")) path = line.slice(9);
+        else if (line === "branch refs/heads/main") return path ?? null;
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }
+
   const supervisor = createSupervisor({
     call: deps.call,
     getConfig: () => config,
@@ -343,6 +377,11 @@ export async function assemble(deps: AppDeps): Promise<App> {
       check: (id, pr_id) => scheduler.checkHighRisk(id, pr_id),
       release: (id, pr_id) => scheduler.releaseHighRisk(id, pr_id),
       reject: (id, pr_id, detail) => scheduler.rejectHighRisk(id, pr_id, detail),
+    },
+    pr,
+    integration: {
+      idle: () => integrationIdle(),
+      userMainWorktree,
     },
     publish,
     subscribe: (type, handler) => bus.subscribe(type, handler),
