@@ -551,3 +551,25 @@ describe("listFiles 大输出（T-101）", () => {
     expect(files).toEqual([...names].sort());
   });
 });
+
+describe("testConnection 透出（UI-03b）", () => {
+  it("handle.testConnection 转给同一个网关：没配置的服务商回 config_error，不发请求、不抛错", async () => {
+    const { root, db } = gitRepo();
+    const storage = openDb(db);
+    const handle = await createDefaultDeps(getConfig(examplePath), storage, {
+      repoRoot: root,
+      notifyUser: () => {},
+      pricingPath,
+      env,
+      logger: { warn: () => {} },
+    });
+    disposers.push(handle.dispose);
+    await expect(handle.testConnection({ provider: "no-such-provider" })).resolves.toEqual({
+      ok: false,
+      reason: "config_error",
+    });
+    await expect(
+      handle.testConnection({ provider: "deepseek", model: "no-such-model" }),
+    ).resolves.toMatchObject({ ok: false, reason: "config_error" });
+  });
+});

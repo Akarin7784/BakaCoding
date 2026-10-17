@@ -1,4 +1,4 @@
-// T-072：导入项目——检查目录（git 仓库、config/models.json、config/pricing.json 及其内容），
+// T-072：导入项目——检查目录（config/models.json、config/pricing.json 及其内容；UI-03b 起不是 git 仓库也能导入），
 // 然后由 BackendSwitcher 拆掉旧后端、在新仓库上重新组装，再用新后端的总线调 3 的 importProject。
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -8,7 +8,7 @@ import { sanitizeSyncErrorMessage } from "./sync-state.js";
 
 export const MODELS_FILE = "config/models.json";
 export const PRICING_FILE = "config/pricing.json";
-/** missing 里表示「不是 git 仓库」的项 */
+/** 「不是 git 仓库」看的目录（UI-03b 起只用来给 notGit，不再进 missing） */
 export const GIT_DIR = ".git";
 /** 导入错误信息上限 */
 export const IMPORT_REASON_MAX = 2000;
@@ -44,8 +44,9 @@ export function repoLockedBy(
 export const REPO_LOCKED_REASON =
   "仓库已被启动参数 / 环境变量锁定（--repo、BAKACODING_REPO，或绝对路径的 --db、BAKACODING_DB_PATH），不能在界面里切换项目";
 
+/** notGit（UI-03b）：配置都对、只是还不是 Git 仓库——照样导入，导入后进项目准备页初始化 */
 export type DirCheck =
-  { ok: true; note?: string } | { ok: false; missing?: string[]; reason?: string };
+  { ok: true; note?: string; notGit?: true } | { ok: false; missing?: string[]; reason?: string };
 
 export type ConfigSource = "--config" | "BAKACODING_CONFIG";
 
@@ -108,13 +109,14 @@ export function checkProjectDir(
   const clean = (text: string) => sanitizeSyncErrorMessage(text, env, IMPORT_REASON_MAX);
 
   const missing: string[] = [];
-  if (!existsSync(path.join(dir, GIT_DIR))) missing.push(GIT_DIR);
+  // UI-03b：不是 Git 仓库不再拒绝导入（导入后在项目准备页初始化），只看配置
+  const notGit = !existsSync(path.join(dir, GIT_DIR));
   const pricing = path.join(dir, PRICING_FILE);
   if (!source && !existsSync(models)) missing.push(MODELS_FILE);
   if (!existsSync(pricing)) missing.push(PRICING_FILE);
   const envMissing = !!source && !existsSync(models);
   if (missing.length || envMissing) {
-    const names = missing.map((m) => (m === GIT_DIR ? "不是 git 仓库（没有 .git）" : `缺少 ${m}`));
+    const names = missing.map((m) => `缺少 ${m}`);
     // 路径只写一次
     if (envMissing) names.push(`当前使用 ${source} 指定的配置，但文件不存在：${models}`);
     else if (note) names.push(note);
@@ -157,5 +159,9 @@ export function checkProjectDir(
     if (note) errors.push(note);
     return { ok: false, reason: clean(errors.join("\n")) };
   }
-  return note ? { ok: true, note: clean(note) } : { ok: true };
+  return {
+    ok: true,
+    ...(note !== undefined && { note: clean(note) }),
+    ...(notGit && { notGit: true as const }),
+  };
 }

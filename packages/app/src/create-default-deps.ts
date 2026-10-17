@@ -12,7 +12,7 @@ import {
 } from "@bakacoding/config-budget";
 import { createCoderPool } from "@bakacoding/coder-pool";
 import { createEventBus, type EventBus } from "@bakacoding/event-bus";
-import { createModelGateway } from "@bakacoding/model-gateway";
+import { createModelGateway, type ModelGateway } from "@bakacoding/model-gateway";
 import { createPrProvider, INTEGRATION_BRANCH, type PrProvider } from "@bakacoding/pr";
 import {
   createReviewPool,
@@ -55,6 +55,11 @@ export interface DefaultDepsHandle {
   reviewPr: ReviewPrSource;
   /** 唯一的一条总线（与 deps.bus 相同） */
   bus: EventBus;
+  /**
+   * UI-03b：模块 1 的 testConnection（界面 `provider:test`），用的是本组装里同一个网关
+   * （同一份预算预占、台账和总线），只转发，不改语义。
+   */
+  testConnection: ModelGateway["testConnection"];
 }
 
 /** 7 的 PR 还没被 assemble 的 createPr 接上。 */
@@ -323,6 +328,7 @@ export async function createDefaultDeps(
     registry,
     reviewPr,
     bus,
+    testConnection: (target, options) => gateway.testConnection(target, options),
     dispose() {
       while (unsubs.length > 0) unsubs.pop()?.();
     },

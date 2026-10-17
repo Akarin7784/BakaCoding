@@ -107,9 +107,14 @@ export function parseIdentity(v: unknown): DesktopGitIdentity | undefined | "inv
   if (v === undefined) return undefined;
   if (!isObj(v)) return "invalid";
   const { name, email } = v;
-  if (typeof name !== "string" || typeof email !== "string") return "invalid";
-  if (name.length > 200 || email.length > 320) return "invalid";
-  return { name, email };
+  // UI-03b（T-108）：可以只给一项，至少一项；给了的必须是字符串
+  if (name === undefined && email === undefined) return "invalid";
+  if (name !== undefined && (typeof name !== "string" || name.length > 200)) return "invalid";
+  if (email !== undefined && (typeof email !== "string" || email.length > 320)) return "invalid";
+  return {
+    ...(name !== undefined && { name: name as string }),
+    ...(email !== undefined && { email: email as string }),
+  };
 }
 
 /**

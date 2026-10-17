@@ -138,12 +138,16 @@ describe("checkProjectDir（T-072）", () => {
     expect(checkProjectDir(repo(), env)).toEqual({ ok: true });
   });
 
-  it("不是 git 仓库、缺配置文件：missing 列出并写中文原因", () => {
+  it("不是 git 仓库但配置都对（UI-03b）：通过，带 notGit（导入后进准备页初始化）", () => {
+    expect(checkProjectDir(repo({ git: false }), env)).toEqual({ ok: true, notGit: true });
+  });
+
+  it("缺配置文件：missing 列出并写中文原因；不是 git 仓库不算缺（UI-03b）", () => {
     const r = checkProjectDir(repo({ git: false, models: false, pricing: false }), env);
     expect(r).toEqual({
       ok: false,
-      missing: [".git", "config/models.json", "config/pricing.json"],
-      reason: "不是 git 仓库（没有 .git）；缺少 config/models.json；缺少 config/pricing.json",
+      missing: ["config/models.json", "config/pricing.json"],
+      reason: "缺少 config/models.json；缺少 config/pricing.json",
     });
     const r2 = checkProjectDir(repo({ pricing: false }), env);
     expect(r2.ok === false && r2.missing).toEqual(["config/pricing.json"]);
@@ -1078,5 +1082,118 @@ describe("UI-03：切换项目失败原因脱敏（新 / 原仓库路径、其�
     expect(r.reason).toContain("<新仓库>/config");
     expect(r.reason).not.toContain(b);
     await sw.stop();
+  });
+});
+
+describe("导入不是 Git 仓库的文件夹（UI-03b）", () => {
+  it("切到它不回滚：装上它的只读后端（not_git、来源 last_import），准备好后第一次重新连接进 live 并补导入项目", async () => {
+    const a = repo();
+    const b = repo({ git: false });
+    const sw = new BackendSwitcher(await startOn(a), startOn, env);
+    const r = await sw.switchTo(b);
+    expect(r).toMatchObject({ ok: false, switched: true, needsPrep: true });
+    expect(sw.repoRoot()).toBe(b);
+    const st = sw.status();
+    expect(st).toMatchObject({ mode: "readonly", repoSource: "last_import" });
+    expect(st.error?.code).toBe("not_git");
+    // 原仓库的写锁已放开
+    const again = await startOn(a);
+    expect(again.status().mode).toBe("live");
+    await again.stop();
+
+    // 用户在准备页里初始化 + 首次提交（这里直接用 git）
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: b });
+    execFileSync("git", ["config", "user.email", "t@test"], { cwd: b });
+    execFileSync("git", ["config", "user.name", "t"], { cwd: b });
+    execFileSync("git", ["add", "."], { cwd: b });
+    execFileSync("git", ["commit", "-qm", "init"], { cwd: b });
+    await expect(sw.reconnect()).resolves.toEqual({ state: "reloaded" });
+    expect(sw.status().mode).toBe("live");
+    await tick();
+    await sw.stop();
+    const ro = openStorageReadonly({
+      path: join(b, ".bakacoding", "bakacoding.db"),
+      logger: quiet,
+    });
+    // b 自己的库里正好一条项目（准备好后补的 importProject）
+    expect(ro.listProjects()).toHaveLength(1);
+    ro.close();
+  });
+
+  it("别的原因没进 live（缺密钥）照旧回到原仓库，不当成要准备", async () => {
+    const a = repo();
+    const c = repo();
+    const start = (r: string) =>
+      r === c
+        ? startBackend({ argv: [], env: {}, cwd: r, lastRepo: r, logger: quiet })
+        : startOn(r);
+    const sw = new BackendSwitcher(await startOn(a), start, env);
+    const r = await sw.switchTo(c);
+    expect(r).toEqual({
+      ok: false,
+      reason: "新仓库没能启动（缺少环境变量 DEEPSEEK_API_KEY），已回到原仓库",
+    });
+    expect(sw.repoRoot()).toBe(a);
+    await sw.stop();
+  });
+
+  it("project:import IPC：配置都对的非 Git 文件夹不再拒绝，记下路径、回 needsPrep", async () => {
+    const b = repo({ git: false });
+    const saveLastRepo = vi.fn();
+    const switchTo = vi.fn(async () => ({
+      ok: false as const,
+      switched: true as const,
+      needsPrep: true as const,
+      reason: "这个文件夹还不是 Git 仓库",
+    }));
+    const { ipc, invoke } = fakeIpc();
+    serveProjectSettings(ipc, {
+      backend: {
+        switchTo,
+        repoRoot: () => "/repo",
+        prMode: () => "local" as const,
+        exportDiagnostics: async (t: string) => t,
+        status: () => ({ mode: "live" as const }),
+      },
+      argv: [],
+      env,
+      pickDirectory: async () => b,
+      pickSavePath: async () => null,
+      downloadsDir: "/dl",
+      saveLastRepo,
+    });
+    await expect(invoke(IPC_CHANNELS.projectImport)).resolves.toEqual({
+      ok: false,
+      needsPrep: true,
+      reason: "这个文件夹还不是 Git 仓库",
+    });
+    expect(switchTo).toHaveBeenCalledWith(path.resolve(b));
+    expect(saveLastRepo).toHaveBeenCalledWith(path.resolve(b));
+  });
+
+  it("project:import IPC：非 Git 又缺配置仍然拒绝，不切换", async () => {
+    const b = repo({ git: false, pricing: false });
+    const switchTo = vi.fn();
+    const { ipc, invoke } = fakeIpc();
+    serveProjectSettings(ipc, {
+      backend: {
+        switchTo,
+        repoRoot: () => "/repo",
+        prMode: () => "local" as const,
+        exportDiagnostics: async (t: string) => t,
+        status: () => ({ mode: "live" as const }),
+      },
+      argv: [],
+      env,
+      pickDirectory: async () => b,
+      pickSavePath: async () => null,
+      downloadsDir: "/dl",
+      saveLastRepo: () => {},
+    });
+    await expect(invoke(IPC_CHANNELS.projectImport)).resolves.toMatchObject({
+      ok: false,
+      missing: ["config/pricing.json"],
+    });
+    expect(switchTo).not.toHaveBeenCalled();
   });
 });

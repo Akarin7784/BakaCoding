@@ -57,6 +57,12 @@ export const IPC_CHANNELS = {
   repoInitialCommit: "bakacoding:repo:initial-commit",
   /** invoke：从当前分支新建 main（UI-03a，4 的 createMainBranch）；成功后自动 backend:reconnect。 */
   repoCreateMain: "bakacoding:repo:create-main",
+  /** invoke（UI-03b，UI-07 复用）：密钥状态 / 保存 / 清除，接 3 的 secretStatus / setUserSecret / clearUserSecret。 */
+  secretStatus: "bakacoding:secret:status",
+  secretSet: "bakacoding:secret:set",
+  secretClear: "bakacoding:secret:clear",
+  /** invoke（UI-03b，UI-07 复用）：测试连接，接 1 的 testConnection。 */
+  providerTest: "bakacoding:provider:test",
   /** 主进程 → 渲染进程：开始退出收尾，界面显示「正在退出…」；不带内容，每次退出只发一次（T-106）。 */
   appQuitting: "bakacoding:app:quitting",
 } as const;
@@ -183,9 +189,10 @@ export interface DesktopRepoCheck {
 }
 
 /** Git 身份：只写进本仓库 .git/config。 */
+/** UI-03b（接 T-108）：可以只给 name 或只给 email，至少一项；只写本仓库 .git/config。 */
 export interface DesktopGitIdentity {
-  name: string;
-  email: string;
+  name?: string;
+  email?: string;
 }
 
 /**
@@ -267,7 +274,12 @@ export type DesktopChatResult = { ok: true; reply: ChatReply } | { ok: false; re
 /** `project:import` 结果（T-072）：project 原样取自 3 的 importProject；note 为补充说明（如在用 BAKACODING_CONFIG）。 */
 export type DesktopImportResult =
   | { ok: true; project: Project; note?: string }
-  | { ok: false; canceled?: true; missing?: string[]; reason?: string };
+  | { ok: false; canceled?: true; missing?: string[]; reason?: string }
+  /**
+   * UI-03b：文件夹还没准备好（不是 Git 仓库 / 没有提交 / 没有 main）：已切到它（只读，来源 last_import），
+   * 界面直接进项目准备页；reason 是只读原因（已脱敏）。
+   */
+  | { ok: false; needsPrep: true; reason: string; note?: string };
 
 /** `diagnostics:export` 结果（T-072）；reason 已脱敏截断。 */
 export type DesktopExportResult =
@@ -330,9 +342,71 @@ export interface BakaDesktopApi {
   initialCommit?(req: DesktopInitialCommitRequest): Promise<DesktopRepoFixResult>;
   /** 从当前分支新建 main（UI-03a）。 */
   createMainBranch?(): Promise<DesktopRepoFixResult>;
+  /** 密钥状态（UI-03b）：只回是否已设、来源、末 4 位，绝不回值。 */
+  secretStatus?(name: DesktopSecretName): Promise<DesktopSecretStatusResult>;
+  /** 保存密钥（UI-03b）：值只经这一次调用传到主进程，主进程绝不回传。 */
+  setSecret?(name: DesktopSecretName, value: string): Promise<DesktopSecretSetResult>;
+  /** 清除 BakaCoding 保存的密钥（UI-03b）；系统环境变量里的不能清。 */
+  clearSecret?(name: DesktopSecretName): Promise<DesktopSecretClearResult>;
+  /** 测试连接（UI-03b）：只发一个极小请求，计入台账（记在主管名下）。 */
+  testProvider?(target: DesktopProviderTarget): Promise<DesktopProviderTestResult>;
   /** 订阅「正在退出」（T-106），返回取消订阅函数；旧版 preload / 测试假 API 可以没有。 */
   onQuitting?(listener: () => void): () => void;
 }
+
+/** 界面能保存的密钥名（与 3 的 SECRET_NAMES 一致，测试锁住）。 */
+export const DESKTOP_SECRET_NAMES = ["DEEPSEEK_API_KEY", "GITHUB_TOKEN"] as const;
+export type DesktopSecretName = (typeof DESKTOP_SECRET_NAMES)[number];
+
+/** 3 的 secretStatus 原样（来源 system 时没有 last4）。 */
+export interface DesktopSecretStatus {
+  set: boolean;
+  source: "bakacoding" | "system" | null;
+  last4?: string;
+}
+
+/** secret:* 失败：code 是固定码，reason 是固定中文文案（shared/secret-text.ts），不含值、路径和原始报错。 */
+export interface DesktopSecretFailure {
+  ok: false;
+  code:
+    | "invalid_name"
+    | "invalid_value"
+    | "unsupported_platform"
+    | "write_failed"
+    | "not_owned"
+    | "not_set"
+    | "failed";
+  reason: string;
+}
+export type DesktopSecretStatusResult =
+  { ok: true; status: DesktopSecretStatus } | DesktopSecretFailure;
+/** 保存成功：后端是只读时主进程顺手重新连接一次，结果在 reload；live 时不重连（网关每次调用现读环境变量）。 */
+export type DesktopSecretSetResult =
+  { ok: true; status: DesktopSecretStatus; reload?: DesktopReloadResult } | DesktopSecretFailure;
+export type DesktopSecretClearResult =
+  { ok: true; status: DesktopSecretStatus } | DesktopSecretFailure;
+
+export interface DesktopProviderTarget {
+  provider: string;
+  model?: string;
+}
+/** 1 的 testConnection 失败原因，加上桌面端自己的 invalid_target / unavailable（后端只读）/ failed。 */
+export type DesktopProviderTestCode =
+  | "budget_exhausted"
+  | "no_secret"
+  | "auth_failed"
+  | "quota_exhausted"
+  | "rate_limited"
+  | "network"
+  | "config_error"
+  | "http_error"
+  | "invalid_target"
+  | "unavailable"
+  | "failed";
+/** provider:test 结果：失败时 reason 是 code 对应的固定中文文案（shared/secret-text.ts），HTTP 失败带 status。 */
+export type DesktopProviderTestResult =
+  | { ok: true; latency_ms: number; cost_micro_usd: number }
+  | { ok: false; code: DesktopProviderTestCode; reason: string; status?: number };
 
 export type {
   ChatReply,
