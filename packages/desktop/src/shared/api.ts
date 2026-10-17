@@ -41,6 +41,10 @@ export const IPC_CHANNELS = {
   diagnosticsExport: "bakacoding:diagnostics:export",
   /** invoke：只读设置（仓库、环境变量是否已设、本地 / GitHub 模式）（T-072）。 */
   settingsGet: "bakacoding:settings:get",
+  /** invoke：同一仓库停掉再起来；有在途单则排队，空闲后自动执行（T-093）。 */
+  backendReload: "bakacoding:backend:reload",
+  /** invoke：只读横幅的「重新连接」；与 backend:reload 同一条路径（T-093）。 */
+  backendReconnect: "bakacoding:backend:reconnect",
 } as const;
 
 /** 界面关心的事件类型；其余事件主进程不下发。 */
@@ -109,7 +113,19 @@ export interface DesktopBackendStatus {
     closed: boolean;
     ingest_failures: number;
   };
+  /** 重载进度（T-093）：queued = 等 waitingTickets 张在途单跑完；running = 正在停起。没有就不出现。 */
+  reload?: { state: "queued"; waitingTickets: number } | { state: "running" };
 }
+
+/**
+ * `backend:reload` / `backend:reconnect` 结果（T-093）。reloaded：已重新起来且是 live；
+ * queued：已排队，等 waitingTickets 张在途单（编码 / 评审 / 合并队列）跑完后自动重载；
+ * failed：没起来（现在是只读）或正在切换项目，reason 已脱敏截断。
+ */
+export type DesktopReloadResult =
+  | { state: "reloaded" }
+  | { state: "queued"; waitingTickets: number }
+  | { state: "failed"; reason: string };
 
 export interface SupervisorNotifyMessage {
   text: string;
@@ -193,6 +209,10 @@ export interface BakaDesktopApi {
   exportDiagnostics(): Promise<DesktopExportResult>;
   /** 只读设置（T-072）。 */
   getSettings(): Promise<DesktopSettings>;
+  /** 重载后端（T-093）：改配置或密钥后调用；有在途单时排队。 */
+  reloadBackend(): Promise<DesktopReloadResult>;
+  /** 只读横幅「重新连接」（T-093）。 */
+  reconnectBackend(): Promise<DesktopReloadResult>;
 }
 
 export type {

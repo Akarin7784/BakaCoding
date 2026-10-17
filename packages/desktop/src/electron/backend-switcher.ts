@@ -1,13 +1,50 @@
 // T-072：一次组装只对应一个仓库。导入项目时拆掉旧后端、在新仓库上重新组装，桌面侧订阅转到新后端。
 import type { Project } from "@bakacoding/config-budget";
 import type { PendingHighRisk } from "@bakacoding/supervisor";
-import type { BackendHandle, NotifyMessage } from "./backend.js";
+import type { BackendHandle, BackendStatus, NotifyMessage } from "./backend.js";
 import { errorDetail, sanitizeSyncErrorMessage, unavailableSyncState } from "./sync-state.js";
 
 export type SwitchResult =
   | { ok: true; project: Project }
   /** switched：新仓库已在运行（只是导入失败），调用方据此记下路径 */
   | { ok: false; reason: string; switched?: true };
+
+/**
+ * `backend:reload` / `backend:reconnect` 的结果（T-093）。
+ * reloaded：同一仓库的后端已停掉并重新起来、进入 live；
+ * queued：有在途单，已排队，等 waitingTickets 张单跑完后自动重载（结果看 backend:status 的 reload / mode）；
+ * failed：没重载成或没起来，reason 已脱敏（不含绝对路径和密钥值）。
+ */
+export type ReloadResult =
+  | { state: "reloaded" }
+  | { state: "queued"; waitingTickets: number }
+  | { state: "failed"; reason: string };
+
+export const RELOAD_POLL_MS = 1000;
+export const RELOAD_REASON_MAX = 500;
+
+/**
+ * 重载失败原因脱敏（T-093）：先换掉仓库根和其余绝对路径（Unix、Windows 盘符、UNC），
+ * 再走 sanitizeSyncErrorMessage（密钥值、令牌）并截断。
+ */
+export function sanitizeReloadReason(
+  message: string,
+  repoRoot: string,
+  env: Readonly<Record<string, string | undefined>>,
+  max = RELOAD_REASON_MAX,
+): string {
+  let out = message;
+  if (repoRoot.length > 1) out = out.split(repoRoot).join("<仓库>");
+  out = out
+    .replace(/(?:[A-Za-z]:[\\/]|\\\\)[^\s"'`()（）,，;；]*/g, "<路径>")
+    .replace(/(^|[\s"'`=(（:：])\/[^\s"'`()（）,，;；]+/g, "$1<路径>");
+  return sanitizeSyncErrorMessage(out, env, max);
+}
+
+export interface SwitcherOptions {
+  /** 排队重载时检查在途单的间隔（默认 1000ms，测试注入） */
+  reloadPollMs?: number;
+}
 
 /**
  * 包一层 BackendHandle：IPC 层只拿这个；切换时把 onNotify / onPendingHighRisk 的订阅转到新后端，
@@ -21,12 +58,19 @@ export class BackendSwitcher implements BackendHandle {
   private rendererReady = false;
   private switching = false;
   private readonly swapListeners: Array<() => void> = [];
+  /** 正在停起的那次重载（合并并发请求） */
+  private reloading: Promise<ReloadResult> | null = null;
+  /** 排队中的重载：定时检查在途单，空闲时执行 */
+  private reloadTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly reloadPollMs: number;
 
   constructor(
     private current: BackendHandle,
     private readonly start: (repo: string) => Promise<BackendHandle>,
     private readonly env: Readonly<Record<string, string | undefined>> = {},
+    opts: SwitcherOptions = {},
   ) {
+    this.reloadPollMs = opts.reloadPollMs ?? RELOAD_POLL_MS;
     this.attach();
   }
 
@@ -77,6 +121,8 @@ export class BackendSwitcher implements BackendHandle {
    */
   async switchTo(repo: string): Promise<SwitchResult> {
     if (this.switching) return { ok: false, reason: "正在切换项目，请稍候" };
+    if (this.reloading || this.reloadTimer)
+      return { ok: false, reason: "正在等待重载后端，完成后再切换项目" };
     const busy = this.current.busyCount();
     if (busy > 0) return { ok: false, reason: `还有 ${busy} 张单在进行中，完成后再切换项目` };
     this.switching = true;
@@ -125,8 +171,107 @@ export class BackendSwitcher implements BackendHandle {
     }
   }
 
-  status() {
-    return this.current.status();
+  /**
+   * 重载（T-093）：同一仓库的后端停掉再起来，复用切换流程的拆旧 / 组装。
+   * - 只读：直接重新组装（只读横幅的「重新连接」也走这里）。
+   * - live 且没有在途单（runningCount）：立即停起。
+   * - 有在途单：排队，返回 queued；空闲后自动执行。不提供「立即重载」。
+   * - 重复请求合并：排队中再调返回 queued（不再起计时器）；停起中再调拿到同一个结果。
+   * - 起不来：装只读占位后端，原因脱敏。预算当日已用额度在台账（模块 2 的库）里，重建后照常读出。
+   */
+  reload(): Promise<ReloadResult> {
+    if (this.reloading) return this.reloading;
+    if (this.switching)
+      return Promise.resolve({ state: "failed", reason: "正在切换项目，请稍候再重载" });
+    const live = this.current.status().mode === "live";
+    const running = live ? this.current.runningCount() : 0;
+    if (running > 0) {
+      if (!this.reloadTimer) {
+        this.reloadTimer = setInterval(() => this.checkQueuedReload(), this.reloadPollMs);
+        this.reloadTimer.unref?.();
+      }
+      return Promise.resolve({ state: "queued", waitingTickets: running });
+    }
+    return this.runReload();
+  }
+
+  /** 只读横幅的「重新连接」（T-093）：与 reload 同一条路径；只读时没有在途单，直接重新组装。 */
+  reconnect(): Promise<ReloadResult> {
+    return this.reload();
+  }
+
+  private checkQueuedReload(): void {
+    if (this.reloading || this.switching) return;
+    let running: number;
+    try {
+      running = this.current.status().mode === "live" ? this.current.runningCount() : 0;
+    } catch {
+      return;
+    }
+    if (running > 0) return;
+    void this.runReload();
+  }
+
+  private clearReloadTimer(): void {
+    if (this.reloadTimer) clearInterval(this.reloadTimer);
+    this.reloadTimer = null;
+  }
+
+  private runReload(): Promise<ReloadResult> {
+    this.clearReloadTimer();
+    const p = this.doReload().finally(() => {
+      this.reloading = null;
+    });
+    this.reloading = p;
+    return p;
+  }
+
+  private async doReload(): Promise<ReloadResult> {
+    this.switching = true;
+    const repo = this.current.repoRoot();
+    const wasReady = this.rendererReady;
+    try {
+      try {
+        await this.teardown();
+      } catch {
+        /* 拆旧失败也继续尝试重新组装 */
+      }
+      const next = await this.tryStart(repo);
+      if (next.handle && next.handle.status().mode === "live") {
+        this.install(next.handle);
+        this.restoreReady(wasReady);
+        return { state: "reloaded" };
+      }
+      try {
+        await next.handle?.stop();
+      } catch {
+        /* ignore */
+      }
+      const why = sanitizeReloadReason(next.why, repo, this.env);
+      this.install(readonlyBackend(repo, `重载后端失败（${why}）`));
+      this.restoreReady(wasReady);
+      return {
+        state: "failed",
+        reason: sanitizeReloadReason(`后端没能重新启动（${why}），现在是只读模式`, repo, this.env),
+      };
+    } finally {
+      this.switching = false;
+    }
+  }
+
+  status(): BackendStatus {
+    const st = this.current.status();
+    if (this.reloading) return { ...st, reload: { state: "running" } };
+    if (this.reloadTimer) {
+      let waiting = 0;
+      try {
+        waiting = this.current.runningCount();
+      } catch {
+        /* ignore */
+      }
+      return { ...st, reload: { state: "queued", waitingTickets: waiting } };
+    }
+    return st;
   }
   markRendererReady() {
     this.rendererReady = true;
@@ -168,6 +313,9 @@ export class BackendSwitcher implements BackendHandle {
   busyCount() {
     return this.current.busyCount();
   }
+  runningCount() {
+    return this.current.runningCount();
+  }
   importCurrentRepo() {
     return this.current.importCurrentRepo();
   }
@@ -178,6 +326,7 @@ export class BackendSwitcher implements BackendHandle {
     return this.current.exportDiagnostics(target, now);
   }
   async stop() {
+    this.clearReloadTimer();
     for (const off of this.offs.splice(0)) off();
     await this.current.stop();
   }
@@ -204,6 +353,7 @@ export function readonlyBackend(repo: string, reason: string): BackendHandle {
     repoRoot: () => repo,
     prMode: () => "local",
     busyCount: () => 0,
+    runningCount: () => 0,
     importCurrentRepo: unavailable,
     exportDiagnostics: unavailable,
     stop: async () => {},

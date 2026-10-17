@@ -6,6 +6,7 @@ import { app, BrowserWindow, dialog, ipcMain, nativeTheme } from "electron";
 import { resolveRepoDbPath, startBackend } from "./backend.js";
 import {
   serveBackend,
+  serveBackendReload,
   serveHighRisk,
   serveProjectSettings,
   serveReader,
@@ -125,6 +126,7 @@ if (!gotLock) {
       },
     });
     const stopSupervisorChat = serveSupervisorChat(ipcMain, backend);
+    const stopBackendReload = serveBackendReload(ipcMain, backend, process.env);
 
     app.on("will-quit", () => {
       stopReader();
@@ -133,6 +135,7 @@ if (!gotLock) {
       stopSyncState();
       stopProjectSettings();
       stopSupervisorChat();
+      stopBackendReload();
       reader.close();
       void backend.stop();
     });

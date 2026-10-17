@@ -60,6 +60,11 @@ export interface BackendStatus {
     skipped_invalid: number;
   };
   storage?: StorageHealth;
+  /**
+   * 重载进度（T-093，只由 BackendSwitcher 填）：queued = 等在途单跑完，waitingTickets 为当前在途单数；
+   * running = 正在停起后端。没有重载在排队 / 进行时不出现。
+   */
+  reload?: { state: "queued"; waitingTickets: number } | { state: "running" };
 }
 
 export interface NotifyMessage {
@@ -84,6 +89,8 @@ export interface BackendOptions {
   lastRepo?: string;
   /** 测试钩子：组装好之后拿到 App（断言拆除时 10 退订、9 停定时 sync） */
   onAssembled?: (app: App) => void;
+  /** 测试钩子：拿到 createDefaultDeps 的结果（T-093 断言重载后预算从台账恢复） */
+  onDeps?: (handle: DefaultDepsHandle) => void;
   /** 测试注入：模块 3 的 importProject */
   importProject?: typeof importProjectDefault;
   /** 测试注入：模块 4 的 ensureBakacodingIgnored（T-078） */
@@ -118,6 +125,11 @@ export interface BackendHandle {
   prMode(): "local" | "github";
   /** 进行中的单 ∪ 等裁决的高风险单，按 ticket_id 去重计数（T-072 切换前检查） */
   busyCount(): number;
+  /**
+   * 重载前的「在途」计数（T-093）：状态处于编码、评审（含重新评审、原地重写）、合并队列（含冲突）的单
+   * ∪ 等裁决的高风险单，按 ticket_id 去重。pending（还没派单）不算：重载后它们按新配置派单。
+   */
+  runningCount(): number;
   /** 用本后端的总线调 3 的 importProject（发 project_created）；只读抛错（T-072） */
   importCurrentRepo(): Promise<Project>;
   /** 用 11 的 exportPackage 导出当前仓库项目最近 24 小时的诊断包，复制到 target（T-072） */
@@ -222,6 +234,27 @@ export function countBusy(
 ): number {
   const ids = new Set<string>(pendingHighRiskIds);
   for (const t of tickets) if (isTicketActive(t.status)) ids.add(t.ticket_id);
+  return ids.size;
+}
+
+/** 挡住重载的状态（T-093）：编码、评审、重写、重新评审、合并队列、冲突。pending 与终态不挡。 */
+export const RELOAD_BLOCKING_STATUSES: ReadonlySet<string> = new Set([
+  "coding",
+  "in_review",
+  "resubmitting",
+  "re_reviewing",
+  "merge_queued",
+  "conflict",
+]);
+
+/** 重载前的在途计数（T-093）：见 BackendHandle.runningCount。 */
+export function countRunning(
+  tickets: readonly { ticket_id: string; status?: string | null }[],
+  pendingHighRiskIds: readonly string[],
+): number {
+  const ids = new Set<string>(pendingHighRiskIds);
+  for (const t of tickets)
+    if (t.status && RELOAD_BLOCKING_STATUSES.has(t.status)) ids.add(t.ticket_id);
   return ids.size;
 }
 
@@ -376,6 +409,7 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
         onError: (err, where) => logger.warn(String(where), err),
       });
 
+      opts.onDeps?.(depsHandle);
       app = await assemble(depsHandle.deps);
       opts.onAssembled?.(app);
       takeOver = takeOverCounts(app.takeOver);
@@ -469,6 +503,13 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
     busyCount(): number {
       if (!storage || !app) return 0;
       return countBusy(
+        storage.listTickets(),
+        readPending().map((h) => h.ticket_id),
+      );
+    },
+    runningCount(): number {
+      if (!storage || !app) return 0;
+      return countRunning(
         storage.listTickets(),
         readPending().map((h) => h.ticket_id),
       );

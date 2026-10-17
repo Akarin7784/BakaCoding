@@ -5,6 +5,7 @@ import {
   type DesktopDecideHighRiskResult,
   type DesktopExportResult,
   type DesktopImportResult,
+  type DesktopReloadResult,
   type DesktopSettings,
   type DesktopSyncState,
   type DesktopUpdate,
@@ -13,6 +14,11 @@ import {
 import type { UserMessage } from "@bakacoding/supervisor";
 import path from "node:path";
 import type { BackendHandle } from "./backend.js";
+import {
+  RELOAD_REASON_MAX,
+  sanitizeReloadReason,
+  type BackendSwitcher,
+} from "./backend-switcher.js";
 import { checkProjectDir, repoLockedBy, REPO_LOCKED_REASON } from "./project-import.js";
 import {
   defaultExportName,
@@ -174,6 +180,33 @@ export function serveSyncState(
   return () => {
     clearInterval(timer);
     ipc.removeHandler(IPC_CHANNELS.syncState);
+  };
+}
+
+/**
+ * 重载 IPC（T-093）：`backend:reload` / `backend:reconnect` 都转给 BackendSwitcher 的同一条路径。
+ * 不抛过 IPC：意外异常转成 failed，原因脱敏。
+ */
+export function serveBackendReload(
+  ipc: IpcMainLike,
+  switcher: Pick<BackendSwitcher, "reload" | "reconnect">,
+  env: Readonly<Record<string, string | undefined>> = {},
+): () => void {
+  const safely = async (fn: () => Promise<DesktopReloadResult>): Promise<DesktopReloadResult> => {
+    try {
+      return await fn();
+    } catch (e) {
+      return {
+        state: "failed",
+        reason: sanitizeReloadReason(errorDetail(e), "", env, RELOAD_REASON_MAX),
+      };
+    }
+  };
+  ipc.handle(IPC_CHANNELS.backendReload, () => safely(() => switcher.reload()));
+  ipc.handle(IPC_CHANNELS.backendReconnect, () => safely(() => switcher.reconnect()));
+  return () => {
+    ipc.removeHandler(IPC_CHANNELS.backendReload);
+    ipc.removeHandler(IPC_CHANNELS.backendReconnect);
   };
 }
 
