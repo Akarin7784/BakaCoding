@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProjectCreatedSchema } from "@bakacoding/types";
@@ -149,6 +149,21 @@ describe("importProject（T-008）", () => {
     );
     expect(events).toEqual([]);
   });
+
+  it.skipIf(process.getuid?.() === 0)(
+    "目录没有读权限（真实 EACCES）：只报错误码，不带路径",
+    async () => {
+      const root = await repo({ "a.txt": "" });
+      await chmod(root, 0o000);
+      try {
+        const e = await importProject(root).catch((x: unknown) => x);
+        expect(e).toBeInstanceOf(ProjectImportError);
+        expect((e as Error).message).toBe("读不到项目目录（EACCES）");
+      } finally {
+        await chmod(root, 0o755);
+      }
+    },
+  );
 
   describe("不可信项目里的 git 元数据（#52 评审）", () => {
     const fifo = (p: string) => execFileSync("mkfifo", [p]);
