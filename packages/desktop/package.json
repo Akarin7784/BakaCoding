@@ -23,7 +23,9 @@
     "lucide-react": "^1.58.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
-    "tailwind-merge": "^3.7.0"
+    "tailwind-merge": "^3.7.0",
+    "@bakacoding/app": "workspace:*",
+    "@bakacoding/supervisor": "workspace:*"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.1",
