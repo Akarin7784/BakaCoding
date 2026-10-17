@@ -8,6 +8,7 @@ export const ESCALATION_REASON: Record<EscalationView["reason"], string> = {
   github_manual: "需人工处理 GitHub",
   coder_failed: "编码多次未完成",
   budget_exceeded: "本单预算用完",
+  internal_error: "内部错误",
 };
 
 /** 合并队列给不认识的 PR 上报时，requirement_id 填 `unattributed:<pr_id>`（T-035）。 */
