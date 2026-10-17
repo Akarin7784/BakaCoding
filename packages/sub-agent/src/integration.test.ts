@@ -21,7 +21,6 @@ import { WorktreeManager } from "@bakacoding/workspace";
 import {
   createSubAgent,
   eventLogResubmitHistory,
-  type SubAgent,
   type SubAgentDeps,
   type SubAgentPublish,
   type SubAgentTicket,
@@ -164,16 +163,14 @@ describe("8 接真实的 4/5/6/7/2（模型和 9 用替身）", () => {
       },
       backpressure: { reviews_per_member: 2 },
     };
-    // 7 的复投成员从 2 的轮次记录恢复；projectOf 取 8 登记的需求单 project_id（T-011 listPrRounds 合入前）
-    const holder: { agent?: SubAgent } = {};
-    const projectOf = (id: string) => holder.agent?.projectOf(id);
+    // 7 的复投成员从 2 的轮次记录恢复：按单号走 listPrRounds（T-045）
     const pool = createReviewPool({
       getConfig: () => reviewCfg,
       call,
       pr,
       promptTemplate: () => "你是评审。",
       publish: () => undefined,
-      assignments: createRoundAssignmentStore({ rounds: storageRoundSource(storage, projectOf) }),
+      assignments: createRoundAssignmentStore({ rounds: storageRoundSource(storage) }),
     });
 
     const mgr = await WorktreeManager.open(repo);
@@ -203,7 +200,6 @@ describe("8 接真实的 4/5/6/7/2（模型和 9 用替身）", () => {
         ingest(e);
       },
     });
-    holder.agent = agent;
 
     const out = await agent.handle(ticket);
     expect(out).toMatchObject({
@@ -242,7 +238,7 @@ describe("8 接真实的 4/5/6/7/2（模型和 9 用替身）", () => {
     expect(prs.map((r) => r.pr_id)).toEqual([out.pr_id]);
 
     // 「重启」后新建的 7 记录从 2 的轮次里找回原成员
-    const fresh = createRoundAssignmentStore({ rounds: storageRoundSource(storage, projectOf) });
+    const fresh = createRoundAssignmentStore({ rounds: storageRoundSource(storage) });
     expect(await fresh.get("T-1")).toBe(reviewCalls[0]!.model);
 
     expect(statuses).toEqual(["coding", "in_review", "resubmitting", "in_review", "merge_queued"]);

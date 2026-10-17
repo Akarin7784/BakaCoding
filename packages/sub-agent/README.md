@@ -26,4 +26,4 @@ const outcome = await subAgent.handle(ticket);
 
 - 复投（评审不过、编码池 `gave_up` / `turn_limit` / 没改动 / 提交失败）都在同一 worktree、同一 PR 上进行，计入评审复投计数；超过 `pipeline.resubmit_limits.review` 上报。
 - 当日预算用完不上报、不计复投，返回 `requeue_budget` 和续跑凭据，第二天用 `resume(ticket, token)` 续跑。
-- 7 的复投成员持久化：`createRoundAssignmentStore({ rounds: storageRoundSource(storage, (id) => subAgent.projectOf(id)) })`。
+- 7 的复投成员持久化：`createRoundAssignmentStore({ rounds: storageRoundSource(storage) })`（T-045 起按单号走 2 的 `listPrRounds`，不再需要 `projectOf`）。

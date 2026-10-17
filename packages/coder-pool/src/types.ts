@@ -1,4 +1,5 @@
 import type { CallCtx, Effort, PermissionList } from "@bakacoding/types";
+import type { PermissionRegistry, ScopeRequestOptions } from "@bakacoding/workspace";
 
 export type MaybePromise<T> = T | Promise<T>;
 
@@ -27,6 +28,11 @@ export interface RunTicketInput {
    * 已中止时 runTicket 抛 `signal.reason`（没有则抛名为 `AbortError` 的错误），不返回部分结果。
    */
   signal?: AbortSignal;
+  /**
+   * 可选：越界写申请（T-045），原样传给 4 的 `createTools`。给了时写 / 改被权限清单拒绝就由 4 发
+   * `write_scope_requested` 并等批复；不给就直接 `FS_PERMISSION_DENIED`。5 不批、不写回需求单。
+   */
+  scope_requests?: ScopeRequestOptions;
 }
 
 export type RunStatus = "done" | "gave_up" | "turn_limit" | "budget_exceeded";
@@ -122,6 +128,10 @@ export type CreateFileTools = (opts: {
   ticket_id: string;
   worktree_path: string;
   permission_list: PermissionList;
+  /** 5 用的权限登记表（`deps.registry`，默认 4 的 `defaultPermissionRegistry`）；runTicket 结束时 5 对它 release（T-045） */
+  registry: PermissionRegistry;
+  /** runTicket 收到的 `scope_requests`，原样传下去；没收到时不带这个字段（T-045） */
+  scope_requests?: ScopeRequestOptions;
 }) => MaybePromise<FileTools>;
 
 /** 读到的配置子集；模块 3 的 Config 在结构上满足它。 */
@@ -138,6 +148,13 @@ export interface CoderPoolDeps {
    * 工具参数以模块 4 为准（`file_path`、`include` 等）。测试或接线时可注入替身。
    */
   createTools?: CreateFileTools;
+  /**
+   * 权限登记表（T-045）：传给 `createTools`，runTicket 结束（成功、抛错、取消、预算耗尽、turn_limit）时
+   * 对这张单 `release` 一次。默认 4 的 `defaultPermissionRegistry`。注入了 `createTools` 替身时 5 同样对它 release。
+   */
+  registry?: PermissionRegistry;
+  /** release 抛错时记 warn（不覆盖原结果或原错误）；默认 console */
+  logger?: { warn(message: string): void };
   /** 3 的 promptTemplate("coder")（T-008 未合入，暂注入）：公共前缀里的系统提示 */
   promptTemplate: (role: "coder") => MaybePromise<string>;
   /** 同一项目的架构约束（公共前缀的一部分；同一项目每次必须返回相同内容） */

@@ -1,6 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import { posix } from "node:path";
-import { createTools as createWorkspaceTools } from "@bakacoding/workspace";
+import {
+  createTools as createWorkspaceTools,
+  defaultPermissionRegistry,
+} from "@bakacoding/workspace";
 import {
   buildSystemPrefix,
   buildTicketMessage,
@@ -72,6 +75,8 @@ function renderResult(r: ToolResult): string {
 export function createCoderPool(deps: CoderPoolDeps): CoderPool {
   const isBudgetExceeded = deps.isBudgetExceeded ?? defaultIsBudgetExceeded;
   const maxFeedback = deps.maxFeedbackChars ?? DEFAULT_MAX_FEEDBACK_CHARS;
+  const registry = deps.registry ?? defaultPermissionRegistry;
+  const logger = deps.logger ?? console;
   // 本池的不可信区块标签 nonce：创建时随机生成，池内不变；只出现在需求单之后，不进公共前缀
   const nonce = randomBytes(8).toString("hex");
   // 按项目缓存公共前缀，键是模板 + 架构约束的内容哈希：内容没变就复用同一个字符串
@@ -98,11 +103,36 @@ export function createCoderPool(deps: CoderPoolDeps): CoderPool {
     const { provider, model } = config.roles.coder;
     const maxTurns = config.pipeline.max_turns;
     const system = await systemPrefix(input.ticket.project_id);
+    const ticket_id = input.ticket.ticket_id;
+    // 从建工具起（4 在这里登记这张单的权限清单），不论怎么结束都释放一次（T-045）
+    try {
+      return await runAgent(input, system, provider, model, maxTurns);
+    } finally {
+      try {
+        registry.release(ticket_id);
+      } catch (error) {
+        // 释放失败不覆盖原结果或原错误
+        logger.warn(
+          `[bakacoding/coder-pool] 释放 ${ticket_id} 的权限清单失败：${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  }
+
+  async function runAgent(
+    input: RunTicketInput,
+    system: string,
+    provider: string,
+    model: string,
+    maxTurns: number,
+  ): Promise<RunTicketResult> {
     // 每单一个代理：会话状态只活在这次调用里，跑完即丢
     const tools = await (deps.createTools ?? createWorkspaceTools)({
       ticket_id: input.ticket.ticket_id,
       worktree_path: input.worktree_path,
       permission_list: input.permission_list,
+      registry,
+      ...(input.scope_requests ? { scope_requests: input.scope_requests } : {}),
     });
     const messages: ChatMessage[] = [
       {
