@@ -123,6 +123,7 @@ flowchart BT
 | T-066 | 模块 6：sync 中途出错也带出已收集变化；close PATCH 失败时 GET 远程状态（已合入不记 closed）；merge 加可选 expected_head；checks 翻页并读 commit status；模块 7 发 review_backlog/supervisor_backlog 时 requirement_id、ticket_id 写 null，trace 新开 | 6、7 | 执行层开发 | 已合入 | #68 | `a51e022` |
 | T-067 | 模块 12：接 syncState()（状态展示 + 鉴权停 / 限流提示）；IPC `sync:state` / `sync:state-update`，错误信息脱敏 + 截断，只读返回不可用 | 12 | 界面与诊断开发 | 已合入 | #74 | `d4f3c9e` |
 | T-069 | 模块 6：check-runs 翻页以 total_count 为准，不再遇到本页不足 100 条就停 | 6 | 执行层开发 | 已合入 | #76 | `4e518fd` |
+| T-070 | 模块 10：高风险待裁决不计入主管待办（去掉与 9 `pending_pr_limit` 的反压双计） | 10 | 编排层开发 | 待评审 | #75 | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
@@ -181,8 +182,8 @@ flowchart BT
 
 - 已解决（T-066 + T-042）：6 的 `merge` 已支持 `expected_head`；10 的 `mergeMain` 合入时传入当前 head。
 - 已解决（T-042）：9 对 `SyncPartialError` 先应用 `changes`，限流退避 / 鉴权停定时同步看 `cause`。
-- 模块 10（T-042，Q-5）：高风险待裁决同时计入 9 的 `high_risk_held` 与主管待办，可能双计触发反压（接受）。
-- 模块 10（T-042）：`INTEGRATION_DIFF_MAX_CODEPOINTS` = 200000，没有实测依据。
+- 已解决（T-070）：高风险待裁决只计入 9 的待合并 PR 数（`pending_pr_limit`），不再计入主管待办 `supervisor_backlog.pending`，两条反压不再重复触发；主管待办照样经 `pendingHighRisk()` 展示。
+- 模块 10（T-042）：`INTEGRATION_DIFF_MAX_CODEPOINTS` = 200000，没有实测依据，**待实测**（T-070 不改）。
 - 已解决（T-066）：7 / 10 发 `review_backlog` / `supervisor_backlog` 时 `requirement_id` / `ticket_id` 为 null，trace 新开。
 
 ### 不对应需求单的 PR

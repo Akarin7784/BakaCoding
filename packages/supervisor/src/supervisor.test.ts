@@ -1582,6 +1582,42 @@ describe("T-041c 高风险 PR 裁决", () => {
     return "none";
   };
 
+  const backlogs = (t: { published: Published[] }) =>
+    t.published
+      .filter((e) => e.type === "supervisor_backlog")
+      .map((e) => (e.payload as { pending: number; capacity: number }).pending);
+
+  it("T-070：高风险 PR 只算进 9 的待合并 PR 数，不推高主管待办计数；照样在 pendingHighRisk 里展示", async () => {
+    const { t } = await hrSetup();
+    const before = backlogs(t);
+    const last = before.at(-1) ?? 0;
+    await t.sup.highRiskHeld(held("req-1-1", "pr-1", "submit"));
+    await t.sup.highRiskHeld(held("req-1-2", "pr-2", "adopt", { diff_files: null }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(t.sup.pendingHighRisk().map((p) => p.pr_id)).toEqual(["pr-1", "pr-2"]);
+    // 没有新的积压数字（数字不变不发）；要发也不会比扣住前大
+    for (const n of backlogs(t).slice(before.length)) expect(n).toBeLessThanOrEqual(last);
+  });
+
+  it("T-070：只有高风险项时，主管待办不超过 supervisor_backlog_limit，积压反压不触发", async () => {
+    const { t } = await hrSetup();
+    t.deps.getConfig = () =>
+      ({
+        roles: { supervisor: { provider: "deepseek", model: "deepseek-flash", effort: "max" } },
+        pipeline: { resplit_limit: 2, supervisor_backlog_limit: 0 },
+      }) as never;
+    t.sup = createSupervisor(t.deps);
+    t.sup.start();
+    await new Promise((r) => setTimeout(r, 0));
+    t.published.length = 0;
+    await t.sup.highRiskHeld(held("req-1-1", "pr-1", "submit"));
+    await t.sup.highRiskHeld(held("req-1-2", "pr-2", "submit"));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(t.sup.pendingHighRisk()).toHaveLength(2);
+    // 9 的判据是 pending > supervisor_backlog_limit（这里是 0）
+    for (const n of backlogs(t)) expect(n).toBe(0);
+  });
+
   it("highRiskHeld：按 cause 写不同的通知（重启后写明放行不保存、要再放行；换新 PR 写明要重新裁决），同一 PR 只通知一次；记进 pendingHighRisk", async () => {
     const { t } = await hrSetup();
     const before = t.notified.length;
