@@ -1,9 +1,27 @@
 import type {
   BakaEvent,
-  Diff,
+  CiCheck,
+  DiagMergeResult,
+  DiagnosticsSource,
   LedgerTotals,
+  OutcomeLabel,
   PermissionList,
+  RawFile,
+  RoundRecord,
   TicketStatus,
+} from "@bakacoding/types";
+
+// 数据源相关类型已挪进 @bakacoding/types（T-005），这里转出，保持原有导入路径可用。
+export {
+  OUTCOME_LABELS,
+  type CiCheck,
+  type DiagEventFilter,
+  type DiagMergeResult as MergeResult,
+  type DiagnosticsSource,
+  type OutcomeLabel,
+  type RawFile,
+  type RoundRecord,
+  type TicketRecord,
 } from "@bakacoding/types";
 
 /**
@@ -31,15 +49,6 @@ export interface ExportOptions {
   include_full_repo?: boolean;
 }
 
-/** 每张单的结果标签（PD §18）：通过、复投后通过、超限上报、被用户否决。 */
-export const OUTCOME_LABELS = [
-  "passed",
-  "passed_after_resubmit",
-  "escalated",
-  "rejected_by_user",
-] as const;
-export type OutcomeLabel = (typeof OUTCOME_LABELS)[number];
-
 /** 用户在导出界面人工补填的评测任务；2 不额外采集（v1 不跑测试）。 */
 export interface EvalTask {
   /** 测试名列表，转 SWE-bench 时作为 FAIL_TO_PASS。 */
@@ -52,75 +61,6 @@ export interface EvalTask {
   test_patch?: string;
   /** 测试名是否由 GitHub CI check 预填（仅作参考）。 */
   prefilled_from_ci?: boolean;
-}
-
-/** 原始文件（上下文片段或完整仓库中的文件）。 */
-export interface RawFile {
-  path: string;
-  content: string;
-}
-
-export interface RoundRecord {
-  round: number;
-  diff: Diff;
-  verdict: "pass" | "fail";
-  /** 不通过原因。 */
-  fail_reasons: string[];
-  /** 复投时带回的评审意见。 */
-  review_comments?: string;
-}
-
-export interface MergeResult {
-  conflicted: boolean;
-  base_changed: boolean;
-  re_reviewed: boolean;
-  merged: boolean;
-}
-
-export interface CiCheck {
-  name: string;
-  conclusion: string;
-  tests?: string[];
-}
-
-/** 数据源给出的单张需求单记录（来自模块 2 的 PR 记录、合并结果、基线与上下文包）。 */
-export interface TicketRecord {
-  project_id: string;
-  ticket_id: string;
-  requirement_id: string;
-  created_at: string;
-  /** 需求单原文。 */
-  ticket_text: string;
-  /** 主管拆单时的推理摘要。 */
-  decomposition_summary?: string;
-  status?: TicketStatus;
-  outcome?: OutcomeLabel;
-  base_commit: string;
-  permission_list: PermissionList;
-  rounds: RoundRecord[];
-  merge?: MergeResult;
-  ci_checks?: CiCheck[];
-  /** 复现所需的上下文片段（默认随包导出）。 */
-  context_snippets: RawFile[];
-  marked_for_eval_set?: boolean;
-}
-
-export interface DiagEventFilter {
-  project_id: string;
-  ticket_id?: string;
-  requirement_id?: string;
-  from?: string;
-  to?: string;
-}
-
-/**
- * 诊断数据源。由模块 2 实现（queryEvents / query）；在 2 落地前由调用方注入。
- * 只在 include_full_repo 为 true 时才调用 repoFiles。
- */
-export interface DiagnosticsSource {
-  queryEvents(filter: DiagEventFilter): Promise<BakaEvent[]>;
-  queryTickets(filter: DiagEventFilter): Promise<TicketRecord[]>;
-  repoFiles?(project_id: string): Promise<RawFile[]>;
 }
 
 /** 导出时的运行依赖（不属于 modules.md 的导出参数）。 */
@@ -154,7 +94,7 @@ export interface DiagTicket {
   permission_list: PermissionList;
   rounds: (RoundRecord & { diff_file: string })[];
   resubmit_count: number;
-  merge?: MergeResult;
+  merge?: DiagMergeResult;
   ci_checks?: CiCheck[];
   context_files: string[];
   cost: CostSummary;

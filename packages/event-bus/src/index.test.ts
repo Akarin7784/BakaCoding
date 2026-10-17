@@ -145,3 +145,53 @@ describe("@bakacoding/event-bus", () => {
     });
   });
 });
+
+describe("initialSeq / 队列上限 / 回调兜底（T-005）", () => {
+  it("initialSeq 指定起始序号", async () => {
+    const bus = createEventBus({ initialSeq: 42 });
+    expect((await bus.publish(backlog())).seq).toBe(42);
+    expect((await bus.publish(backlog())).seq).toBe(43);
+    expect(() => createEventBus({ initialSeq: -1 })).toThrow(RangeError);
+  });
+
+  it("慢订阅者积压超过 maxQueue 时告警一次，事件不丢", async () => {
+    const onQueueOverflow = vi.fn();
+    const bus = createEventBus({ maxQueue: 2, onQueueOverflow });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const got: number[] = [];
+    bus.subscribe("*", async (e) => {
+      await gate;
+      got.push(e.seq);
+    });
+    const ps = [0, 1, 2, 3].map(() => bus.publish(backlog()));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(onQueueOverflow).toHaveBeenCalledTimes(1);
+    expect(onQueueOverflow.mock.calls[0]![0]).toMatchObject({
+      subscription: "*",
+      pending: 3,
+      limit: 2,
+    });
+    release();
+    await Promise.all(ps);
+    expect(got).toEqual([0, 1, 2, 3]);
+  });
+
+  it("onHandlerError 自己抛错时兜底 console.error，其他订阅者照常", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const bus = createEventBus({
+      onHandlerError: () => {
+        throw new Error("回调坏了");
+      },
+    });
+    const ok = vi.fn();
+    bus.subscribe("*", () => {
+      throw new Error("handler 坏了");
+    });
+    bus.subscribe("*", ok);
+    await expect(bus.publish(backlog())).resolves.toBeTruthy();
+    expect(ok).toHaveBeenCalledTimes(1);
+    expect(err).toHaveBeenCalledTimes(1);
+    err.mockRestore();
+  });
+});

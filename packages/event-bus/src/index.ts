@@ -27,9 +27,25 @@ export interface HandlerErrorInfo {
   subscription: EventType | "*";
 }
 
+export interface QueueOverflowInfo {
+  subscription: EventType | "*";
+  /** 当前排队（含正在处理）的事件数。 */
+  pending: number;
+  limit: number;
+}
+
 export interface EventBusOptions {
   /** handler 抛错或 reject 时调用；默认 console.warn。不会把错误再发成事件，避免循环。 */
   onHandlerError?: (info: HandlerErrorInfo) => void;
+  /** 起始序号，默认 0。重启时由模块 2 传入库里最大 `seq` + 1，避免撞号。 */
+  initialSeq?: number;
+  /**
+   * 单个订阅者排队未处理的事件上限，默认 10000。超过时调用 `onQueueOverflow` 告警，
+   * 事件照常入队、不丢弃（每次从未超限变为超限时告警一次，回落到上限以下后再超会再告警）。
+   */
+  maxQueue?: number;
+  /** 队列超限告警；默认 console.warn。 */
+  onQueueOverflow?: (info: QueueOverflowInfo) => void;
   /** 测试用：注入时间。 */
   now?: () => Date;
   /** 测试用：注入 id 生成。 */
@@ -52,6 +68,8 @@ interface Subscription {
   /** 每个订阅者一条串行队列：同一订阅者按发布顺序收到事件，不同订阅者互不阻塞。 */
   tail: Promise<void>;
   active: boolean;
+  pending: number;
+  overflowed: boolean;
 }
 
 export function createEventBus(options: EventBusOptions = {}): EventBus {
@@ -62,22 +80,51 @@ export function createEventBus(options: EventBusOptions = {}): EventBus {
         `[event-bus] handler 出错（订阅 ${info.subscription}，事件 ${info.event.type} #${info.event.seq}）`,
         info.error,
       ));
+  const onQueueOverflow =
+    options.onQueueOverflow ??
+    ((info: QueueOverflowInfo) =>
+      console.warn(
+        `[event-bus] 订阅 ${info.subscription} 积压 ${info.pending} 条，超过上限 ${info.limit}（事件不丢弃）`,
+      ));
   const now = options.now ?? (() => new Date());
   const newId = options.newId ?? randomUUID;
+  const maxQueue = options.maxQueue ?? 10_000;
+  const initialSeq = options.initialSeq ?? 0;
+  if (!Number.isInteger(initialSeq) || initialSeq < 0) {
+    throw new RangeError(`initialSeq 必须是非负整数，收到 ${initialSeq}`);
+  }
+  if (!Number.isInteger(maxQueue) || maxQueue < 1) {
+    throw new RangeError(`maxQueue 必须是正整数，收到 ${maxQueue}`);
+  }
   const subs: Subscription[] = [];
-  let seq = 0;
+  let seq = initialSeq;
 
   function deliver(sub: Subscription, event: BakaEvent): Promise<void> {
-    sub.tail = sub.tail.then(async () => {
-      if (!sub.active) return;
+    sub.pending += 1;
+    if (sub.pending > maxQueue && !sub.overflowed) {
+      sub.overflowed = true;
       try {
-        await sub.handler(event);
+        onQueueOverflow({ subscription: sub.type, pending: sub.pending, limit: maxQueue });
       } catch (error) {
+        console.error("[event-bus] onQueueOverflow 自身出错", error);
+      }
+    }
+    sub.tail = sub.tail.then(async () => {
+      try {
+        if (!sub.active) return;
         try {
-          onHandlerError({ error, event, subscription: sub.type });
-        } catch {
-          // 错误回调本身出错时吞掉，不影响其他订阅者
+          await sub.handler(event);
+        } catch (error) {
+          try {
+            onHandlerError({ error, event, subscription: sub.type });
+          } catch (cbError) {
+            // 错误回调本身出错：兜底打一条 console.error，不影响其他订阅者
+            console.error("[event-bus] onHandlerError 自身出错", { cbError, original: error });
+          }
         }
+      } finally {
+        sub.pending -= 1;
+        if (sub.pending <= maxQueue) sub.overflowed = false;
       }
     });
     return sub.tail;
@@ -107,6 +154,8 @@ export function createEventBus(options: EventBusOptions = {}): EventBus {
         handler: handler as Handler<BakaEvent>,
         tail: Promise.resolve(),
         active: true,
+        pending: 0,
+        overflowed: false,
       };
       subs.push(sub);
       return () => {
