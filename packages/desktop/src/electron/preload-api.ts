@@ -7,6 +7,7 @@ import {
   type DesktopHighRiskDecision,
   type DesktopPendingHighRisk,
   type DesktopSnapshot,
+  type DesktopSyncState,
   type DesktopUpdate,
   type SupervisorNotifyMessage,
 } from "../shared/api.js";
@@ -61,6 +62,14 @@ export function createDesktopApi(ipc: IpcRendererLike, platform: string): BakaDe
       ipc.on(IPC_CHANNELS.highRiskPendingUpdate, wrapped);
       return () => {
         ipc.removeListener(IPC_CHANNELS.highRiskPendingUpdate, wrapped);
+      };
+    },
+    getSyncState: () => ipc.invoke(IPC_CHANNELS.syncState) as Promise<DesktopSyncState>,
+    onSyncState(listener: (state: DesktopSyncState) => void) {
+      const wrapped = (_event: unknown, state: unknown) => listener(state as DesktopSyncState);
+      ipc.on(IPC_CHANNELS.syncStateUpdate, wrapped);
+      return () => {
+        ipc.removeListener(IPC_CHANNELS.syncStateUpdate, wrapped);
       };
     },
   });
