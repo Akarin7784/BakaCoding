@@ -2100,13 +2100,17 @@ describe("T-041c 高风险判定：删除、改名（isHighRiskDiffFile）", () 
     patch: "",
   });
 
-  it("isDependencyFile / isHighRiskDiffFile：删除的依赖文件按路径算；普通改动、普通改名不算", () => {
+  it("isDependencyFile / isHighRiskDiffFile：删除的依赖文件按路径算；普通改动、带旧路径的普通改名不算", () => {
     expect(isDependencyFile("package.json")).toBe(true);
     expect(isDependencyFile("packages/x/package-lock.json")).toBe(true);
     expect(isDependencyFile("src/a.ts")).toBe(false);
     expect(isHighRiskDiffFile(f("package.json", "deleted"))).toBe(true);
     expect(isHighRiskDiffFile(f("go.sum", "added"))).toBe(true);
-    expect(isHighRiskDiffFile(f("src/renamed.ts", "renamed"))).toBe(false);
+    // 没有 old_path 的改名：看不出旧路径，仍按兜底算（T-065 只收窄带 old_path 的）
+    expect(isHighRiskDiffFile(f("src/renamed.ts", "renamed"))).toBe(true);
+    expect(isHighRiskDiffFile({ ...f("src/renamed.ts", "renamed"), old_path: "src/r.ts" })).toBe(
+      false,
+    );
     expect(isHighRiskDiffFile(f("src/a.ts", "modified"))).toBe(false);
     expect(isHighRiskDiffFile(f("src/a.ts", "deleted"))).toBe(false);
   });
@@ -2155,11 +2159,25 @@ describe("T-041c 高风险判定：删除、改名（isHighRiskDiffFile）", () 
       highRiskEvidence({
         files: [f("src/a.ts", "modified"), f("a/package.json", "added"), f("x/y.ts", "renamed")],
       }),
-    ).toEqual({ reasons: ["dependency_file"], files: ["a/package.json"], files_more: 0 });
+    ).toEqual({
+      reasons: ["dependency_file"],
+      files: [{ path: "a/package.json" }, { path: "x/y.ts" }],
+      files_more: 0,
+    });
     // 改名：旧路径是依赖文件也命中，列的是新路径
     expect(
       highRiskEvidence({ files: [{ ...f("x.json", "renamed"), old_path: "package.json" }] }),
-    ).toEqual({ reasons: ["dependency_file"], files: ["x.json"], files_more: 0 });
+    ).toEqual({
+      reasons: ["dependency_file"],
+      files: [{ path: "x.json", old_path: "package.json" }],
+      files_more: 0,
+    });
+    // 没有旧路径的改名按兜底命中（理由沿用 dependency_file），不带 old_path
+    expect(highRiskEvidence({ files: [f("lib/pkg.json", "renamed")] })).toEqual({
+      reasons: ["dependency_file"],
+      files: [{ path: "lib/pkg.json" }],
+      files_more: 0,
+    });
     expect(highRiskEvidence({ kind: "dependency", files: null })).toEqual({
       reasons: ["dependency_kind", "diff_unavailable"],
       files: [],
@@ -2169,7 +2187,7 @@ describe("T-041c 高风险判定：删除、改名（isHighRiskDiffFile）", () 
     const many = Array.from({ length: 23 }, (_, i) => f(`p${i}/package.json`, "modified"));
     const ev = highRiskEvidence({ files: many });
     expect(ev.files).toHaveLength(HIGH_RISK_FILES_MAX);
-    expect(ev.files[0]).toBe("p0/package.json");
+    expect(ev.files[0]).toEqual({ path: "p0/package.json" });
     expect(ev.files_more).toBe(3);
   });
 
@@ -2280,8 +2298,8 @@ describe("T-065 改名看旧路径、依赖文件名不区分大小写（isHighR
   it("x.json → package.json：新路径是依赖文件，算高风险", () => {
     expect(isHighRiskDiffFile(r("package.json", "x.json"))).toBe(true);
   });
-  it("改名但没有 old_path、新路径也不是依赖文件：不算高风险", () => {
-    expect(isHighRiskDiffFile(r("lib/pkg.json"))).toBe(false);
+  it("改名但没有 old_path（旧数据）、新路径也不是依赖文件：看不出旧路径，仍算高风险", () => {
+    expect(isHighRiskDiffFile(r("lib/pkg.json"))).toBe(true);
   });
   it("依赖文件名不区分大小写：Package.json、PNPM-LOCK.YAML 算；docs/Package.json.md 不算", () => {
     expect(isHighRiskDiffFile(m("Package.json"))).toBe(true);

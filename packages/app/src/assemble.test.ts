@@ -877,11 +877,12 @@ describe("T-041c judgeHighRiskOnTakeover（N4）", () => {
     }),
   });
 
-  it("删除的 package.json、锁文件都算高风险；普通改动、普通改名不算；diff 出错按高风险", async () => {
+  it("删除的 package.json、锁文件、没有旧路径的改名都算高风险；普通改动不算；diff 出错按高风险", async () => {
     const judge = async (path: string, status: "added" | "modified" | "deleted" | "renamed") =>
       (await judgeHighRiskOnTakeover(diffOf([{ path, status }]), "p")).high_risk;
     expect(await judge("package.json", "deleted")).toBe(true);
-    expect(await judge("src/x.ts", "renamed")).toBe(false);
+    // 没有 old_path 的改名仍按兜底算（T-065）
+    expect(await judge("src/x.ts", "renamed")).toBe(true);
     expect(await judge("sub/yarn.lock", "modified")).toBe(true);
     expect(await judge("apps/web/pnpm-lock.yaml", "added")).toBe(true);
     expect(await judge("src/x.ts", "modified")).toBe(false);
@@ -986,7 +987,7 @@ describe("T-041c 组合根：高风险闸门", () => {
         project_id: "proj-1",
         pr_id: "local-req-1-1",
         reasons: ["dependency_file"],
-        files: ["package.json"],
+        files: [{ path: "package.json" }],
         files_more: 0,
         held_at: expect.any(String),
       },
