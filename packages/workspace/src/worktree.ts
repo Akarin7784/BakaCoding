@@ -10,7 +10,7 @@ export const WORKTREES_DIR = ".bakacoding/worktrees";
 /** 排除整个 .bakacoding/（worktree、数据库等运行数据都在这里），T-078。 */
 const IGNORE_LINE = "/.bakacoding/";
 /** 已等价覆盖整个目录的写法；旧版写的 `/.bakacoding/worktrees/` 不算，需补新行。 */
-const COVERING_LINES = new Set(["/.bakacoding/", ".bakacoding/", "/.bakacoding", ".bakacoding"]);
+const COVERING_LINES = [".bakacoding/", "/.bakacoding", ".bakacoding"];
 const TICKET_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 export interface WorktreeInfo {
@@ -30,10 +30,49 @@ function assertTicket(ticket_id: string): void {
 }
 
 /**
- * 把 `/.bakacoding/` 写进 dir 所在仓库的 .git/info/exclude（T-078）；幂等，旧行保留。
- * dir 不是 git 仓库时返回 false、不抛错；写文件失败照常抛错。导入 / 启动时在建数据库之前调用。
+ * 按 git 读 exclude / .gitignore 的规则归一化一行（T-082）：去掉行尾未转义的空格（`\\ ` 结尾的空格保留），
+ * 行首空格照 git 的语义保留；空行和 `#` 开头的注释行返回 null。
  */
-export async function ensureBakacodingIgnored(dir: string): Promise<boolean> {
+export function normalizeIgnoreLine(line: string): string | null {
+  let end = line.length;
+  let lastSpace = -1;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === " ") {
+      if (lastSpace === -1) lastSpace = i;
+    } else {
+      lastSpace = -1;
+      if (c === "\\") i++; // 转义：下一个字符（包括空格）原样保留
+    }
+  }
+  if (lastSpace !== -1) end = lastSpace;
+  const out = line.slice(0, end);
+  if (out === "" || out.startsWith("#")) return null;
+  return out;
+}
+
+/** 一条要写进 exclude 的规则：`line` 是要追加的写法，`equivalents` 里任一写法已存在也算已有。 */
+export type ExcludeRule = string | { line: string; equivalents?: readonly string[] };
+
+/**
+ * 确保 dir 所在仓库的 `.git/info/exclude` 里有 lines 里的每条规则（T-082）；缺哪条按顺序追加哪条，
+ * 已有的行不动、不重排、不删。是否已存在按 git 语义比较（见 normalizeIgnoreLine）。exclude 文件位置用
+ * `git rev-parse --git-common-dir` 定位，worktree 里调用也写进主仓库。原文件末尾没有换行时先补一个。
+ * dir 不是 git 仓库时返回 false、不抛错；规则为空、含换行或是注释时抛 TypeError；写文件失败照常抛错。
+ */
+export async function ensureExcludeLines(
+  dir: string,
+  lines: readonly ExcludeRule[],
+): Promise<boolean> {
+  const rules = lines.map((r) => {
+    const rule = typeof r === "string" ? { line: r, equivalents: [] } : r;
+    const forms = [rule.line, ...(rule.equivalents ?? [])].map((l) => {
+      const n = /[\r\n]/.test(l) ? null : normalizeIgnoreLine(l);
+      if (n === null) throw new TypeError(`exclude 规则不合法：${JSON.stringify(l)}`);
+      return n;
+    });
+    return { line: rule.line, forms };
+  });
   let commonDir: string;
   try {
     const root = await git(resolve(dir), "rev-parse", "--show-toplevel");
@@ -44,9 +83,29 @@ export async function ensureBakacodingIgnored(dir: string): Promise<boolean> {
   const exclude = join(commonDir, "info", "exclude");
   await mkdir(join(commonDir, "info"), { recursive: true });
   const cur = existsSync(exclude) ? await readFile(exclude, "utf8") : "";
-  if (cur.split(/\r?\n/).some((l) => COVERING_LINES.has(l.trim()))) return true;
-  await appendFile(exclude, `${cur && !cur.endsWith("\n") ? "\n" : ""}${IGNORE_LINE}\n`);
+  const have = new Set(
+    cur.split(/\r?\n/).flatMap((l) => {
+      const n = normalizeIgnoreLine(l);
+      return n === null ? [] : [n];
+    }),
+  );
+  const add: string[] = [];
+  for (const r of rules) {
+    if (r.forms.some((f) => have.has(f))) continue;
+    add.push(r.line);
+    have.add(r.forms[0]!);
+  }
+  if (add.length === 0) return true;
+  await appendFile(exclude, `${cur && !cur.endsWith("\n") ? "\n" : ""}${add.join("\n")}\n`);
   return true;
+}
+
+/**
+ * 把 `/.bakacoding/` 写进 dir 所在仓库的 .git/info/exclude（T-078，T-082 起经 ensureExcludeLines）；
+ * 幂等，旧行保留。dir 不是 git 仓库时返回 false、不抛错；写文件失败照常抛错。导入 / 启动时在建数据库之前调用。
+ */
+export async function ensureBakacodingIgnored(dir: string): Promise<boolean> {
+  return ensureExcludeLines(dir, [{ line: IGNORE_LINE, equivalents: COVERING_LINES }]);
 }
 
 /** 每单 worktree 管理：路径 <repo>/.bakacoding/worktrees/<ticket_id>-r<n>，分支 bakacoding/<ticket_id>-r<n>。 */

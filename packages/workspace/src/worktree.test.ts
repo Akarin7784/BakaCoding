@@ -11,7 +11,12 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ensureBakacodingIgnored, WorktreeManager } from "./worktree.js";
+import {
+  ensureBakacodingIgnored,
+  ensureExcludeLines,
+  normalizeIgnoreLine,
+  WorktreeManager,
+} from "./worktree.js";
 
 let repo: string;
 const git = (...a: string[]) => execFileSync("git", a, { cwd: repo, encoding: "utf8" }).trim();
@@ -83,6 +88,104 @@ describe("WorktreeManager", () => {
       rmSync(plain, { recursive: true, force: true });
     }
   });
+  it("T-082：行首有空格的行按 git 语义不等价，照常补新规则；行尾空格和 CRLF 视为等价", async () => {
+    const exclude = join(repo, ".git/info/exclude");
+    writeFileSync(exclude, " /.bakacoding/\n");
+    expect(await ensureBakacodingIgnored(repo)).toBe(true);
+    expect(readFileSync(exclude, "utf8")).toBe(" /.bakacoding/\n/.bakacoding/\n");
+    mkdirSync(join(repo, ".bakacoding"), { recursive: true });
+    writeFileSync(join(repo, ".bakacoding/bakacoding.db"), "x");
+    expect(git("status", "--porcelain", "--untracked-files=all")).toBe("?? .env");
+    writeFileSync(exclude, "# c\r\n/.bakacoding/   \r\n");
+    expect(await ensureBakacodingIgnored(repo)).toBe(true);
+    expect(readFileSync(exclude, "utf8")).toBe("# c\r\n/.bakacoding/   \r\n");
+  });
+});
+
+describe("normalizeIgnoreLine（T-082）", () => {
+  it("和 git 一样：去行尾未转义空格、保留行首空格、注释和空行为 null", () => {
+    expect(normalizeIgnoreLine("/a/  ")).toBe("/a/");
+    expect(normalizeIgnoreLine("  /a/")).toBe("  /a/");
+    expect(normalizeIgnoreLine("/a\\ ")).toBe("/a\\ ");
+    expect(normalizeIgnoreLine("/a\\  ")).toBe("/a\\ ");
+    expect(normalizeIgnoreLine("# x")).toBeNull();
+    expect(normalizeIgnoreLine("\\#x")).toBe("\\#x");
+    expect(normalizeIgnoreLine("   ")).toBeNull();
+    expect(normalizeIgnoreLine("")).toBeNull();
+  });
+  it("结果和 git check-ignore 一致", () => {
+    const exclude = join(repo, ".git/info/exclude");
+    writeFileSync(exclude, "lead\n x1\ntrail  \n");
+    for (const f of ["lead", "x1", " x1", "trail", "trail "]) writeFileSync(join(repo, f), "");
+    const ignored = (f: string) => {
+      try {
+        execFileSync("git", ["check-ignore", "-q", "--", f], { cwd: repo });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const lines = readFileSync(exclude, "utf8").split("\n").map(normalizeIgnoreLine);
+    for (const f of ["lead", "x1", " x1", "trail", "trail "]) {
+      expect(
+        lines.some((l) => l === f),
+        f,
+      ).toBe(ignored(f));
+    }
+  });
+});
+
+describe("ensureExcludeLines（T-082）", () => {
+  const exclude = () => join(repo, ".git/info/exclude");
+  it("按顺序只追加缺的规则，已有的不动；重复调用不再写", async () => {
+    writeFileSync(exclude(), "/b\n/config/models.json  ");
+    const rules = ["/config/models.json", "/config/pricing.json", "/b"];
+    expect(await ensureExcludeLines(repo, rules)).toBe(true);
+    expect(await ensureExcludeLines(repo, rules)).toBe(true);
+    expect(readFileSync(exclude(), "utf8")).toBe(
+      "/b\n/config/models.json  \n/config/pricing.json\n",
+    );
+    writeFileSync(join(repo, "config-x"), "");
+    mkdirSync(join(repo, "config"), { recursive: true });
+    writeFileSync(join(repo, "config/models.json"), "{}");
+    writeFileSync(join(repo, "config/pricing.json"), "{}");
+    expect(git("status", "--porcelain", "--untracked-files=all").split("\n").sort()).toEqual([
+      "?? .env",
+      "?? config-x",
+    ]);
+  });
+  it("没有 exclude 文件和 info 目录时新建；同一批里重复的规则只写一次", async () => {
+    rmSync(join(repo, ".git/info"), { recursive: true, force: true });
+    expect(await ensureExcludeLines(repo, ["/x", "/x  "])).toBe(true);
+    expect(readFileSync(exclude(), "utf8")).toBe("/x\n");
+  });
+  it("equivalents 里任一写法已存在就不追加", async () => {
+    writeFileSync(exclude(), "x/\n");
+    expect(await ensureExcludeLines(repo, [{ line: "/x/", equivalents: ["x/"] }])).toBe(true);
+    expect(readFileSync(exclude(), "utf8")).toBe("x/\n");
+  });
+  it("在 worktree 里调用写进主仓库的 exclude；非 git 目录返回 false", async () => {
+    const wt = join(repo, ".bakacoding/worktrees/T-1-r0");
+    git("worktree", "add", "-q", "-b", "w", wt);
+    expect(await ensureExcludeLines(wt, ["/y"])).toBe(true);
+    expect(readFileSync(exclude(), "utf8")).toContain("/y\n");
+    const plain = realpathSync(mkdtempSync(join(tmpdir(), "bc-nogit-")));
+    try {
+      expect(await ensureExcludeLines(plain, ["/y"])).toBe(false);
+    } finally {
+      rmSync(plain, { recursive: true, force: true });
+    }
+  });
+  it("规则为空、全是空格、是注释或含换行时抛 TypeError，不写文件", async () => {
+    writeFileSync(exclude(), "");
+    for (const bad of ["", "   ", "# c", "/a\n/b", "/a\r"]) {
+      await expect(ensureExcludeLines(repo, ["/ok", bad])).rejects.toThrow(TypeError);
+    }
+    expect(readFileSync(exclude(), "utf8")).toBe("");
+  });
+});
+
+describe("WorktreeManager（续）", () => {
   it("cleanup 按 ticket 清掉所有轮次，按路径只清一个", async () => {
     const m = await WorktreeManager.open(repo);
     const a = await m.createWorktree("T-1", "HEAD", 0);
