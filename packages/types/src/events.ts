@@ -104,6 +104,7 @@ export const ESCALATION_REASONS = [
   "budget_exceeded", // 模块 8：本单预算用完，不复投，主管直接交给用户
   "internal_error", // 模块 8：评审调用、写轮次记录、读预算出错等内部异常，detail 写 `<阶段>_error: …`；主管直接交给用户，不重拆
   "merged_but", // 模块 9（T-038）：已合入集成分支、之后的收尾出错；单子状态保持 merged，detail 写 `merged_but: …`
+  "high_risk_rejected", // 模块 9（T-041c）：用户拒绝了高风险 PR（依赖类单）；PR 已关，detail 写用户给的原因；主管不重拆
 ] as const;
 export const EscalatedSchema = ev("escalated", {
   reason: z.enum(ESCALATION_REASONS),
