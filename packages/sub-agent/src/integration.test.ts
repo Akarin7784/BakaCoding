@@ -17,10 +17,12 @@ import {
 import { openStorage, type Storage } from "@bakacoding/storage";
 import type { BakaEvent, TicketStatus } from "@bakacoding/types";
 import { randomUUID } from "node:crypto";
-import { WorktreeManager } from "@bakacoding/workspace";
+import { PermissionRegistry, WorktreeManager, type ScopeBus } from "@bakacoding/workspace";
 import {
   createSubAgent,
   eventLogResubmitHistory,
+  storageTicketPermissions,
+  type SubAgent,
   type SubAgentDeps,
   type SubAgentPublish,
   type SubAgentTicket,
@@ -459,5 +461,277 @@ describe("T-039：worktree 根目录的软链接逃逸、重启后从 2 读当�
     expect(t.review).toHaveBeenCalledTimes(1);
     expect(t.runTicket).not.toHaveBeenCalled();
     expect(t.statuses).toEqual([]);
+  });
+});
+
+describe("T-048：权限清单以 2 的需求单记录为准（真 4/5/6/2）", () => {
+  it("首跑按写入范围生成并落库、范围外写被 4 拒绝；评审期间批准的范围写回记录，复投时编码池重建工具也能写", async () => {
+    const base = await git(repo, "rev-parse", "HEAD");
+    const ticket: SubAgentTicket = {
+      ticket_id: "T-48",
+      project_id: "P-1",
+      requirement_id: "R-1",
+      trace_id: "tr-48",
+      span_id: "sp-48",
+      parent_span_id: null,
+      ticket_text: "新建 src/b.ts，并在 docs/b.md 写说明",
+      base_commit: base,
+      // 主管的建议给了 docs/** 写权限，但写入范围只有 src/**：8 生成时降为只读
+      permission_list: [
+        { glob: "**", level: "ro" },
+        { glob: "src/**", level: "rw" },
+        { glob: "docs/**", level: "rw" },
+      ],
+      write_scope: ["src/**"],
+    };
+    // 拆单时需求单记录的 permission_list 写 []，等 8 生成
+    storage.saveTicket({
+      ticket_id: ticket.ticket_id,
+      project_id: ticket.project_id,
+      requirement_id: ticket.requirement_id,
+      created_at: "2026-10-17T08:00:00Z",
+      ticket_text: ticket.ticket_text,
+      decomposition_summary: "拆单摘要",
+      base_commit: base,
+      permission_list: [],
+      context_snippets: [],
+    });
+
+    const write = (id: string, file_path: string, content: string): ChatResponse => ({
+      content: "",
+      tool_calls: [{ id, name: "write", input: { file_path, content } }],
+    });
+    const finish: ChatResponse = {
+      content: '```json\n{"status":"done","summary":"写好了"}\n```',
+      tool_calls: [],
+    };
+    const script: ChatResponse[] = [
+      // 第一轮：src 能写，docs 被拒
+      write("w1", "src/b.ts", "export const TWO = 2;\n"),
+      write("w2", "docs/b.md", "说明\n"),
+      finish,
+      // 第二轮（复投）：批准 docs/** 后再写
+      write("w3", "docs/b.md", "说明\n"),
+      finish,
+    ];
+    const toolResults: string[] = [];
+    const chat = vi.fn(async (req: ChatRequest): Promise<ChatResponse> => {
+      const last = req.messages.at(-1) as { role: string; content?: unknown } | undefined;
+      if (last?.role === "tool") toolResults.push(JSON.stringify(last.content));
+      return script.shift() ?? finish;
+    });
+    const coder = createCoderPool({
+      getConfig: () => ({
+        roles: { coder: { provider: "deepseek", model: "deepseek-flash" } },
+        pipeline: { max_turns: 10 },
+      }),
+      chat,
+      promptTemplate: () => "你是 Flash 编码代理。",
+      architectureConstraints: () => [],
+    });
+    const pr = new LocalPrProvider({
+      store: storage.prStore<PrRecord>(),
+      repo,
+      author: { name: "t", email: "t@t" },
+    });
+    const mgr = await WorktreeManager.open(repo);
+    const permissions = storageTicketPermissions(storage);
+    const holder: { agent?: SubAgent } = {};
+    const listsSeenByReview: unknown[] = [];
+    const warn = vi.fn();
+    const agent = createSubAgent({
+      getConfig: () => ({
+        roles: { coder: { effort: "low", resubmit_effort: ["high"] } },
+        pipeline: { resubmit_limits: { review: 2 } },
+      }),
+      coder,
+      review: async (input) => {
+        listsSeenByReview.push(input.permission_list);
+        if (!input.ctx.is_resubmit) {
+          // T-038 的批准方（这里是替身）批准了 docs/**：8 写回需求单记录
+          await holder.agent!.recordGrantedScope({ ticket_id: "T-48" }, ["docs/**"]);
+          return {
+            verdict: "fail",
+            reasons: [{ category: "incomplete", detail: "docs/b.md 还没写" }],
+            reviewer: "reviewer-1",
+          };
+        }
+        return { verdict: "pass", reasons: [], reviewer: "reviewer-1" };
+      },
+      pr,
+      budgetState: () => ({ daily_exhausted: false }),
+      rounds: { save: (r) => storage.savePrRecord(r) },
+      tickets: { setStatus: () => undefined },
+      resubmitHistory: eventLogResubmitHistory(storage),
+      worktreeRoot: join(repo, ".bakacoding", "worktrees"),
+      worktrees: { create: (id, b, n) => mgr.createWorktree(id, b, n) },
+      submit: vi.fn(),
+      publish: ingest,
+      permissions,
+      logger: { warn },
+    });
+    holder.agent = agent;
+
+    const out = await agent.handle(ticket);
+    expect(out).toMatchObject({ kind: "merge_queued", resubmit_counts: { review: 1 } });
+
+    // 生成时裁掉 docs/** 的写权限并记日志
+    expect(warn.mock.calls.some(([m]) => /T-48 .*docs\/\*\*/.test(String(m)))).toBe(true);
+    expect(listsSeenByReview[0]).toEqual([
+      { glob: "**", level: "ro" },
+      { glob: "src/**", level: "rw" },
+      { glob: "docs/**", level: "ro" },
+    ]);
+    // 第一轮 docs 的写入被 4 拒绝
+    expect(toolResults).toEqual([
+      expect.stringContaining('Created \\"src/b.ts\\"'),
+      expect.stringMatching(/FS_PERMISSION_DENIED: .*docs\/b\.md/),
+      expect.stringContaining('Created \\"docs/b.md\\"'),
+    ]);
+
+    // 2 的需求单记录：批准的范围在末尾，其余列原样
+    const rec = storage.query({ project_id: "P-1", ticket_id: "T-48" })[0]!;
+    expect(rec.permission_list).toEqual([
+      { glob: "**", level: "ro" },
+      { glob: "src/**", level: "rw" },
+      { glob: "docs/**", level: "ro" },
+      { glob: "docs/**", level: "rw" },
+    ]);
+    expect(rec).toMatchObject({
+      created_at: "2026-10-17T08:00:00Z",
+      decomposition_summary: "拆单摘要",
+      ticket_text: ticket.ticket_text,
+    });
+    expect(listsSeenByReview[1]).toEqual(rec.permission_list);
+
+    // 复投那一轮编码池重建工具时用的是记录里的清单：docs/b.md 真写进去并提交了
+    const wt = join(repo, ".bakacoding", "worktrees", "T-48-r0");
+    expect(await readFile(join(wt, "docs", "b.md"), "utf8")).toBe("说明\n");
+    expect(await readFile(join(wt, "src", "b.ts"), "utf8")).toBe("export const TWO = 2;\n");
+    expect(await git(wt, "status", "--porcelain")).toBe("");
+  });
+});
+
+describe("T-048：越界写经 4 申请、批准后写回 2，5 释放登记表后下一轮仍可写（真 4/5/2）", () => {
+  it("第一轮申请 docs/** 被批准并写回；5 结束即 release；复投那一轮不再申请就能写", async () => {
+    const base = await git(repo, "rev-parse", "HEAD");
+    const ticket: SubAgentTicket = {
+      ticket_id: "T-49",
+      project_id: "P-1",
+      requirement_id: "R-1",
+      trace_id: "tr-49",
+      span_id: "sp-49",
+      parent_span_id: null,
+      ticket_text: "改 src，并补 docs",
+      base_commit: base,
+      permission_list: [],
+      write_scope: ["src/**"],
+    };
+    // 总线替身 + T-038 批准方替身：申请 docs/ 下的都批
+    const handlers = new Set<(e: never) => void>();
+    const requested: string[][] = [];
+    const bus: ScopeBus = {
+      async publish(input) {
+        requested.push([...input.payload.requested_scope]);
+        const e = {
+          type: "write_scope_granted",
+          trace_id: input.trace_id,
+          span_id: randomUUID(),
+          parent_span_id: input.span_id,
+          requirement_id: input.requirement_id,
+          ticket_id: input.ticket_id,
+          seq: 1,
+          event_id: randomUUID(),
+          ts: new Date().toISOString(),
+          payload: { request_id: input.payload.request_id, granted_scope: ["docs/**"] },
+        };
+        for (const h of handlers) (h as (x: typeof e) => void)(e);
+        return undefined;
+      },
+      subscribe: ((type: string, h: (e: never) => void) => {
+        if (type !== "write_scope_granted") return () => undefined;
+        handlers.add(h);
+        return () => void handlers.delete(h);
+      }) as ScopeBus["subscribe"],
+    };
+
+    const write = (id: string, file_path: string, content: string): ChatResponse => ({
+      content: "",
+      tool_calls: [{ id, name: "write", input: { file_path, content } }],
+    });
+    const finish: ChatResponse = {
+      content: '```json\n{"status":"done","summary":"好了"}\n```',
+      tool_calls: [],
+    };
+    const script = [
+      write("w1", "docs/a.md", "一\n"),
+      finish,
+      write("w2", "docs/b.md", "二\n"),
+      finish,
+    ];
+    const registry = new PermissionRegistry();
+    const coder = createCoderPool({
+      getConfig: () => ({
+        roles: { coder: { provider: "deepseek", model: "deepseek-flash" } },
+        pipeline: { max_turns: 10 },
+      }),
+      chat: async () => script.shift() ?? finish,
+      promptTemplate: () => "你是 Flash 编码代理。",
+      architectureConstraints: () => [],
+      registry,
+    });
+    const pr = new LocalPrProvider({
+      store: storage.prStore<PrRecord>(),
+      repo,
+      author: { name: "t", email: "t@t" },
+    });
+    const mgr = await WorktreeManager.open(repo);
+    const registryAfterRuns: unknown[] = [];
+    const reviews = ["fail", "pass"] as const;
+    const agent = createSubAgent({
+      getConfig: () => ({
+        roles: { coder: { effort: "low", resubmit_effort: ["high"] } },
+        pipeline: { resubmit_limits: { review: 2 } },
+      }),
+      coder,
+      review: async () => {
+        // 评审时编码池已结束：4 的登记表里这张单已被 5 释放
+        registryAfterRuns.push(registry.get("T-49"));
+        const verdict = reviews[registryAfterRuns.length - 1]!;
+        return verdict === "fail"
+          ? {
+              verdict,
+              reasons: [{ category: "incomplete", detail: "docs/b.md 也要" }],
+              reviewer: "r",
+            }
+          : { verdict, reasons: [], reviewer: "r" };
+      },
+      pr,
+      budgetState: () => ({ daily_exhausted: false }),
+      rounds: { save: (r) => storage.savePrRecord(r) },
+      tickets: { setStatus: () => undefined },
+      resubmitHistory: eventLogResubmitHistory(storage),
+      worktreeRoot: join(repo, ".bakacoding", "worktrees"),
+      worktrees: { create: (id, b, n) => mgr.createWorktree(id, b, n) },
+      submit: vi.fn(),
+      publish: ingest,
+      permissions: storageTicketPermissions(storage),
+      scopeRequests: { bus, timeout_ms: 1000 },
+      logger: { warn: () => undefined },
+    });
+
+    const out = await agent.handle(ticket);
+    expect(out).toMatchObject({ kind: "merge_queued", resubmit_counts: { review: 1 } });
+    expect(requested).toEqual([["docs/a.md"]]); // 只在第一轮申请了一次
+    expect(registryAfterRuns).toEqual([undefined, undefined]);
+    const rec = storage.query({ project_id: "P-1", ticket_id: "T-49" })[0]!;
+    expect(rec.permission_list).toEqual([
+      { glob: "**", level: "ro" },
+      { glob: "src/**", level: "rw" },
+      { glob: "docs/**", level: "rw" },
+    ]);
+    const wt = join(repo, ".bakacoding", "worktrees", "T-49-r0");
+    expect(await readFile(join(wt, "docs", "a.md"), "utf8")).toBe("一\n");
+    expect(await readFile(join(wt, "docs", "b.md"), "utf8")).toBe("二\n");
   });
 });

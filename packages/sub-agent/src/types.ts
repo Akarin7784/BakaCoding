@@ -2,6 +2,7 @@ import type { BudgetState } from "@bakacoding/config-budget";
 import type { CoderPool } from "@bakacoding/coder-pool";
 import type { PrProvider } from "@bakacoding/pr";
 import type { ReviewInput } from "@bakacoding/review-pool";
+import type { ScopeBus } from "@bakacoding/workspace";
 import type {
   Effort,
   EventOf,
@@ -36,10 +37,29 @@ export interface SubAgentTicket {
   ticket_text: string;
   /** 本单 worktree 的基线 commit（建 r0 worktree 用，也报给 9 的 submit） */
   base_commit: string;
-  /** Flash 的权限清单（三级）；T-037 原样使用，按单设计权限留给后续单 */
+  /**
+   * 主管拆单时给的权限清单建议（三级，可为空数组）。T-048 起不直接用它：8 在第一次编码前据此和 `write_scope`
+   * 生成本单清单写进 2 的需求单记录，之后每次调编码池前都从需求单记录读（见 `SubAgentDeps.permissions`）。
+   */
   permission_list: PermissionList;
+  /**
+   * 本单写入范围（glob，与 9 的 `SchedulerTicket.write_scope` 同义）。8 生成的清单只能在这里面给 `rw`，
+   * 超出的条目降为 `ro` 并记日志；不给按整个仓库 `**` 处理（与 9 一致）。
+   */
+  write_scope?: readonly string[];
   /** 项目架构约束；不给就按 project_id 从 deps.architectureConstraints 取 */
   architecture_constraints?: readonly string[];
+}
+
+/**
+ * 本单权限清单的存取（T-048）：以 2 的需求单记录（tickets.permission_list）为准，8 直接读写，不经过 6。
+ * 生产环境注入 `storageTicketPermissions(storage)`；空数组表示 8 还没生成过。
+ */
+export interface TicketPermissionStore {
+  /** 读需求单记录里的权限清单；记录不存在返回 undefined */
+  get(ticket: SubAgentTicket): MaybePromise<PermissionList | undefined>;
+  /** 写回需求单记录（记录不存在时按需求单建一条） */
+  set(ticket: SubAgentTicket, permission_list: PermissionList): MaybePromise<void>;
 }
 
 /** 9 的写状态接口（与 T-035 `TicketStatusStore` 同形）。 */
@@ -143,6 +163,20 @@ export interface SubAgentDeps {
   prRecords?: { get(pr_id: string): MaybePromise<StoredPrRecord | undefined> };
   /** 9 冲突复投 / 重审 / 续跑传入的 ticket 只有 SchedulerTicket 字段，用它补全；不给就查本进程登记过的单 */
   loadTicket?: (ticket_id: string) => MaybePromise<SubAgentTicket | undefined>;
+  /**
+   * 本单权限清单的权威存取（T-048）：注入 `storageTicketPermissions(storage)`，读写 2 的需求单记录。
+   * 每次调编码池（首跑、评审复投、冲突复投、续跑）和评审前都从这里读；记录里还是空的就先生成再写入。
+   * 不给就用进程内存（重启即丢，只适合测试）。
+   */
+  permissions?: TicketPermissionStore;
+  /**
+   * 越界写申请（T-048）：给了就在每次调编码池时带 `scope_requests`（4 的 `ScopeRequestOptions`：本单的
+   * requirement_id 与 trace、这里的 bus 和 timeout_ms），5 原样交给 4 的 `createTools`；不给就不带（越界写直接拒绝）。
+   * 8 只透传、不批：批准方归 T-038。8 包一层 bus，看到本单自己发出的申请被批准时，把 `granted_scope`
+   * 写回需求单记录（同 `recordGrantedScope`），因为 5 在 runTicket 结束时会 release 4 的登记表，批准的范围随之清空。
+   * `registry` 不经过 8：组装时把同一个 `PermissionRegistry` 注入 5 的 `CoderPoolDeps.registry` 即可。
+   */
+  scopeRequests?: { bus: ScopeBus; timeout_ms?: number };
   logger?: { warn(message: string): void };
 }
 
@@ -283,6 +317,13 @@ export interface SubAgent {
   resubmitConflict(req: ConflictResubmitRequest): Promise<SchedulerFacingOutcome>;
   /** 9 的重审入口（基线前进且涉及本单接口或依赖）：同一 PR 再评一次，不计复投 */
   reReview(req: ReReviewRequest): Promise<SchedulerFacingOutcome>;
-  /** 本进程登记过的单所属项目（给 7 的 storageRoundSource 用，T-011 的 listPrRounds 合入前） */
-  projectOf(ticket_id: string): string | undefined;
+  /**
+   * 把批准的写入范围写回需求单记录（T-048）：以 `rw` 追加到本单权限清单末尾（不受写入范围限制，批准即授权），
+   * 返回写回后的清单。之后每次调编码池都从需求单记录读，所以复投时编码池重新 createTools 也不会丢掉已批准的范围。
+   * 谁来批准 scope_requests 归 T-038，8 只提供写回。ticket 可以只带 ticket_id（同 resume 的查找规则）。
+   */
+  recordGrantedScope(
+    ticket: SubAgentTicket | { ticket_id: string },
+    granted_scope: readonly string[],
+  ): Promise<PermissionList>;
 }

@@ -15,7 +15,10 @@ import {
   type SubAgentDeps,
   type SubAgentPublishInput,
   type SubAgentTicket,
+  type TicketPermissionStore,
 } from "./index.js";
+import type { EventOf, PermissionList } from "@bakacoding/types";
+import { requestWriteScope, type ScopeBus } from "@bakacoding/workspace";
 
 const DIFF: Diff = {
   base_sha: "a".repeat(40),
@@ -713,11 +716,9 @@ describe("9 的入口（与 T-035 对齐）", () => {
     ).rejects.toThrow(/pr-other/);
   });
 
-  it("projectOf：登记过的单返回 project_id（给 7 的 storageRoundSource）", async () => {
-    const t = setup({ runs: [done()], reviews: [PASS()] });
-    expect(t.agent.projectOf("T-1")).toBeUndefined();
-    await t.agent.handle(TICKET);
-    expect(t.agent.projectOf("T-1")).toBe("P-1");
+  it("T-048：不再提供 projectOf（7 改用 2 的 listPrRounds）", () => {
+    const t = setup();
+    expect("projectOf" in t.agent).toBe(false);
   });
 });
 
@@ -901,7 +902,6 @@ describe("#40 评审跟进", () => {
     expect(loadTicket).toHaveBeenCalledWith("T-1");
     expect(out.kind).toBe("merge_queued");
     expect(t.runInputs[0]!.prompt).toContain(TICKET.ticket_text);
-    expect(t.agent.projectOf("T-1")).toBe("P-1");
   });
 
   it("冲突复投途中当日预算暂停后续跑：submit 报的是 r1 的基线和轮次，不是 r0；全程不写状态", async () => {
@@ -1193,5 +1193,387 @@ describe("T-039 取消信号", () => {
     const live = new AbortController();
     await t.agent.resume(TICKET, token, { signal: live.signal });
     expect(vi.mocked(t.deps.coder.runTicket).mock.calls[0]![0].signal).toBe(live.signal);
+  });
+});
+
+describe("T-048 每单权限清单（以 2 的需求单记录为准）", () => {
+  /** 需求单记录替身：记下每次读写，读时返回副本。 */
+  function recordStore(initial: PermissionList | undefined = []) {
+    let list = initial?.map((e) => ({ ...e }));
+    const log: string[] = [];
+    const store: TicketPermissionStore = {
+      get: vi.fn((t: SubAgentTicket) => {
+        log.push(`get:${t.ticket_id}`);
+        return list?.map((e) => ({ ...e }));
+      }),
+      set: vi.fn((t: SubAgentTicket, l: PermissionList) => {
+        log.push(`set:${t.ticket_id}`);
+        list = l.map((e) => ({ ...e }));
+      }),
+    };
+    return { store, log, current: () => list };
+  }
+  const SCOPED: SubAgentTicket = {
+    ...TICKET,
+    permission_list: [
+      { glob: "**", level: "ro" },
+      { glob: "src/**", level: "rw" },
+      { glob: "package.json", level: "rw" },
+    ],
+    write_scope: ["src/a/**"],
+  };
+  const conflictReq = (): ConflictResubmitRequest => ({
+    ticket: {
+      ticket_id: "T-1",
+      requirement_id: "R-1",
+      trace_id: "tr-1",
+      span_id: "sp-1",
+      parent_span_id: "sp-0",
+    },
+    round: 1,
+    worktree_path: "/wt/T-1-r1",
+    branch: "bakacoding/T-1-r1",
+    base_commit: "e".repeat(40),
+    conflicted_files: ["src/a.ts"],
+    previous_pr_id: "pr-T-1-1",
+    resubmit_counts: { review: 0, conflict: 1 },
+  });
+
+  it("首跑：记录里是空的 → 按需求单生成、超出写入范围的 rw 降为 ro 并记日志、写进记录；编码池和评审都拿记录里的清单", async () => {
+    const r = recordStore([]);
+    const warn = vi.fn();
+    const t = setup({
+      runs: [done()],
+      reviews: [PASS()],
+      over: { permissions: r.store, logger: { warn } },
+    });
+    await t.agent.handle(SCOPED);
+    const expected = [
+      { glob: "**", level: "ro" },
+      { glob: "src/**", level: "ro" },
+      { glob: "package.json", level: "ro" },
+    ];
+    expect(r.current()).toEqual(expected);
+    expect(t.runInputs[0]!.permission_list).toEqual(expected);
+    expect(t.reviewInputs[0]!.permission_list).toEqual(expected);
+    expect(r.store.set).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toMatch(
+      /\[bakacoding\/sub-agent\] T-1 .*2 条写权限超出写入范围 \[src\/a\/\*\*\].*src\/\*\*, package\.json/,
+    );
+  });
+
+  it("记录里已有非空清单：原样作为权威，不重新生成、不按需求单覆盖", async () => {
+    const stored: PermissionList = [
+      { glob: "**", level: "ro" },
+      { glob: "src/a/**", level: "rw" },
+      { glob: "docs/**", level: "rw" }, // 之前批准的范围（在写入范围外也保留）
+    ];
+    const r = recordStore(stored);
+    const warn = vi.fn();
+    const t = setup({
+      runs: [done()],
+      reviews: [PASS()],
+      over: { permissions: r.store, logger: { warn } },
+    });
+    await t.agent.handle(SCOPED);
+    expect(t.runInputs[0]!.permission_list).toEqual(stored);
+    expect(r.store.set).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("每次调编码池前都重新读记录：评审期间写回的批准范围，复投那一轮编码池就能拿到", async () => {
+    const r = recordStore([]);
+    const holder: { agent?: ReturnType<typeof setup>["agent"] } = {};
+    const t = setup({
+      runs: [done(), done()],
+      reviews: [FAIL(), PASS()],
+      over: {
+        permissions: r.store,
+        logger: { warn: () => undefined },
+        review: vi.fn(async (input: ReviewInput) => {
+          // 模拟 T-038 的批准方在第一轮评审期间批准了 docs/**
+          if (input.ctx.is_resubmit === false)
+            await holder.agent!.recordGrantedScope({ ticket_id: "T-1" }, ["docs/**"]);
+          return input.ctx.is_resubmit ? PASS() : FAIL();
+        }),
+      },
+    });
+    holder.agent = t.agent;
+    await t.agent.handle(SCOPED);
+    expect(t.runInputs).toHaveLength(2);
+    expect(t.runInputs[0]!.permission_list.some((e) => e.glob === "docs/**")).toBe(false);
+    expect(t.runInputs[1]!.permission_list.at(-1)).toEqual({ glob: "docs/**", level: "rw" });
+    // 读在每次 runTicket 之前（首跑、评审复投各一次，评审前各一次）
+    expect(r.log.filter((x) => x === "get:T-1").length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("冲突复投和续跑也从记录读（9 只给 SchedulerTicket，ticket 上的 permission_list 不再生效）", async () => {
+    const r = recordStore([]);
+    const t = setup({
+      runs: [done(), done(), { status: "budget_exceeded", summary: "", changed_files: [] }, done()],
+      reviews: [PASS(), PASS(), PASS()],
+      budget: [{ daily_exhausted: true, ticket_exhausted: false }],
+      over: { permissions: r.store, logger: { warn: () => undefined } },
+    });
+    await t.agent.handle(SCOPED);
+    await t.agent.recordGrantedScope(SCOPED, ["lib/**"]);
+    const authoritative = r.current()!;
+    expect(authoritative.at(-1)).toEqual({ glob: "lib/**", level: "rw" });
+    await t.agent.resubmitConflict(conflictReq());
+    expect(t.runInputs[1]!.permission_list).toEqual(authoritative);
+    const paused = await t.agent.resubmitConflict(conflictReq());
+    if (!("requeue_budget" in paused)) throw new Error("应暂停");
+    expect(t.runInputs[2]!.permission_list).toEqual(authoritative);
+    await t.agent.resume({ ticket_id: "T-1" }, paused.resume);
+    expect(t.runInputs[3]!.permission_list).toEqual(authoritative);
+  });
+
+  it("recordGrantedScope：记录还空时先生成再追加；重复写回幂等；找不到需求单报错；不注入时用进程内存", async () => {
+    const r = recordStore(undefined);
+    const t = setup({ over: { permissions: r.store, logger: { warn: () => undefined } } });
+    const first = await t.agent.recordGrantedScope(SCOPED, ["docs/**"]);
+    expect(first).toEqual([
+      { glob: "**", level: "ro" },
+      { glob: "src/**", level: "ro" },
+      { glob: "package.json", level: "ro" },
+      { glob: "docs/**", level: "rw" },
+    ]);
+    expect(r.current()).toEqual(first);
+    expect(await t.agent.recordGrantedScope({ ticket_id: "T-1" }, ["docs/**"])).toEqual(first);
+    await expect(t.agent.recordGrantedScope({ ticket_id: "T-x" }, ["a"])).rejects.toThrow(/T-x/);
+
+    const mem = setup({ runs: [done()], reviews: [PASS()] });
+    await mem.agent.recordGrantedScope({ ...TICKET, write_scope: ["src/**"] }, ["docs/**"]);
+    await mem.agent.handle({ ...TICKET, write_scope: ["src/**"] });
+    expect(mem.runInputs[0]!.permission_list).toEqual([
+      { glob: "src/**", level: "rw" },
+      { glob: "docs/**", level: "rw" },
+    ]);
+  });
+
+  it("读写记录出错：handle 上报 internal_error（permissions_error），不调编码池", async () => {
+    const t = setup({
+      runs: [done()],
+      over: {
+        permissions: {
+          get: () => {
+            throw new Error("db locked");
+          },
+          set: () => undefined,
+        },
+        logger: { warn: () => undefined },
+      },
+    });
+    const out = await t.agent.handle(SCOPED);
+    expect(out).toMatchObject({ kind: "escalated", reason: "internal_error" });
+    if (out.kind !== "escalated") throw new Error();
+    expect(out.detail).toMatch(/^permissions_error: Error: db locked/);
+    expect(t.deps.coder.runTicket).not.toHaveBeenCalled();
+  });
+});
+
+/** 4 的 ScopeBus 替身：同步投递；approve 决定怎么回复申请（T-038 批准方的替身）。 */
+function scopeBus(approve: (e: EventOf<"write_scope_requested">) => "grant" | "deny" | "ignore") {
+  type G = EventOf<"write_scope_granted">;
+  type D = EventOf<"write_scope_denied">;
+  const granted = new Set<(e: G) => void>();
+  const denied = new Set<(e: D) => void>();
+  const requested: EventOf<"write_scope_requested">[] = [];
+  const meta = { seq: 1, event_id: "e", ts: "2026-10-17T00:00:00Z" };
+  const emitGranted = (e: G) => [...granted].forEach((h) => h(e));
+  const bus: ScopeBus = {
+    async publish(input) {
+      const e = { ...input, ...meta } as EventOf<"write_scope_requested">;
+      requested.push(e);
+      const how = approve(e);
+      const base = {
+        trace_id: e.trace_id,
+        span_id: "sp-r",
+        parent_span_id: e.span_id,
+        requirement_id: e.requirement_id,
+        ticket_id: e.ticket_id,
+        ...meta,
+      };
+      if (how === "grant")
+        emitGranted({
+          ...base,
+          type: "write_scope_granted",
+          payload: { request_id: e.payload.request_id, granted_scope: e.payload.requested_scope },
+        } as G);
+      if (how === "deny")
+        [...denied].forEach((h) =>
+          h({
+            ...base,
+            type: "write_scope_denied",
+            payload: {
+              request_id: e.payload.request_id,
+              requested_scope: e.payload.requested_scope,
+              reason: "不行",
+            },
+          } as D),
+        );
+      return e;
+    },
+    subscribe: ((type: string, h: (e: never) => void) => {
+      const set = (type === "write_scope_granted" ? granted : denied) as Set<(e: never) => void>;
+      set.add(h);
+      return () => void set.delete(h);
+    }) as ScopeBus["subscribe"],
+  };
+  return { bus, requested, emitGranted };
+}
+
+describe("T-048 越界写申请透传与批准写回", () => {
+  const SCOPED: SubAgentTicket = { ...TICKET, permission_list: [], write_scope: ["src/**"] };
+
+  it("不注入 scopeRequests：runTicket 不带 scope_requests", async () => {
+    const t = setup({ runs: [done()], reviews: [PASS()] });
+    await t.agent.handle(SCOPED);
+    expect("scope_requests" in t.runInputs[0]!).toBe(false);
+  });
+
+  it("注入后每次 runTicket 都带本单的 scope_requests；本单申请被批准就写回需求单记录，下一轮清单里有它", async () => {
+    const sb = scopeBus(() => "grant");
+    let calls = 0;
+    const runTicket = vi.fn(async (input: RunTicketInput): Promise<RunTicketResult> => {
+      calls++;
+      expect(input.scope_requests!.ctx).toEqual({
+        requirement_id: "R-1",
+        trace: { trace_id: "tr-1", span_id: "sp-1" },
+      });
+      expect(input.scope_requests!.timeout_ms).toBe(1234);
+      // 模拟 4：第一轮写 docs/x.md 被拒 → 申请 → 批准
+      if (calls === 1) {
+        const d = await requestWriteScope(input.scope_requests!, "T-1", ["docs/x.md"], "要写说明");
+        expect(d).toEqual({ granted: true, granted_scope: ["docs/x.md"] });
+      }
+      return done();
+    });
+    const t = setup({
+      reviews: [FAIL(), PASS()],
+      over: {
+        coder: { runTicket },
+        scopeRequests: { bus: sb.bus, timeout_ms: 1234 },
+        logger: { warn: () => undefined },
+      },
+    });
+    const out = await t.agent.handle(SCOPED);
+    expect(out.kind).toBe("merge_queued");
+    expect(sb.requested).toHaveLength(1);
+    const second = runTicket.mock.calls[1]![0].permission_list;
+    expect(second.at(-1)).toEqual({ glob: "docs/x.md", level: "rw" });
+    // 评审第二轮拿到的也是写回后的清单
+    expect(t.reviewInputs[1]!.permission_list).toEqual(second);
+    // recordGrantedScope 读回同一份（幂等，不重复追加）
+    expect(await t.agent.recordGrantedScope({ ticket_id: "T-1" }, ["docs/x.md"])).toEqual(second);
+  });
+
+  it("只写回本单本次运行自己发出的申请：别的单、别的 request_id、被拒绝的都不写", async () => {
+    const sb = scopeBus((e) => (e.payload.requested_scope[0] === "deny/me" ? "deny" : "ignore"));
+    const runTicket = vi.fn(async (input: RunTicketInput): Promise<RunTicketResult> => {
+      const sr = input.scope_requests!;
+      expect(await requestWriteScope(sr, "T-1", ["deny/me"], "x")).toMatchObject({
+        granted: false,
+      });
+      // 4 在等这条申请时，总线上来了别人的批准
+      const waiting = requestWriteScope(
+        { ...sr, timeout_ms: 20, newId: () => "req-mine" },
+        "T-1",
+        ["a/b"],
+        "x",
+      );
+      const base = {
+        trace_id: "t",
+        span_id: "s",
+        parent_span_id: null,
+        requirement_id: "R-1",
+        seq: 1,
+        event_id: "e",
+        ts: "2026-10-17T00:00:00Z",
+        type: "write_scope_granted" as const,
+      };
+      sb.emitGranted({
+        ...base,
+        ticket_id: "T-other",
+        payload: { request_id: "req-mine", granted_scope: ["x/**"] },
+      });
+      sb.emitGranted({
+        ...base,
+        ticket_id: "T-1",
+        payload: { request_id: "req-other", granted_scope: ["y/**"] },
+      });
+      expect(await waiting).toMatchObject({ granted: false });
+      return done();
+    });
+    const t = setup({
+      reviews: [PASS()],
+      over: {
+        coder: { runTicket },
+        scopeRequests: { bus: sb.bus },
+        logger: { warn: () => undefined },
+      },
+    });
+    await t.agent.handle(SCOPED);
+    const list = await t.agent.recordGrantedScope({ ticket_id: "T-1" }, []);
+    expect(list).toEqual([
+      { glob: "**", level: "ro" },
+      { glob: "src/**", level: "rw" },
+    ]);
+  });
+
+  it("批准写回失败只记 warn，不影响 4 拿到批复", async () => {
+    const sb = scopeBus(() => "grant");
+    const warn = vi.fn();
+    const permissions: TicketPermissionStore = {
+      get: () => [{ glob: "src/**", level: "rw" }],
+      set: () => {
+        throw new Error("db gone");
+      },
+    };
+    const runTicket = vi.fn(async (input: RunTicketInput): Promise<RunTicketResult> => {
+      expect(await requestWriteScope(input.scope_requests!, "T-1", ["docs/a"], "x")).toMatchObject({
+        granted: true,
+      });
+      return done();
+    });
+    const t = setup({
+      reviews: [PASS()],
+      over: { coder: { runTicket }, scopeRequests: { bus: sb.bus }, permissions, logger: { warn } },
+    });
+    expect((await t.agent.handle(SCOPED)).kind).toBe("merge_queued");
+    await vi.waitFor(() =>
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringMatching(/T-1 批准的写入范围 docs\/a 写回需求单记录失败.*db gone/),
+      ),
+    );
+  });
+
+  it("不变量：同一单不能同时有两个 runTicket（4 的登记表按 ticket_id 释放）；第二个直接上报，不调编码池", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const runTicket = vi.fn(async (): Promise<RunTicketResult> => {
+      await gate;
+      return done();
+    });
+    const t = setup({
+      reviews: [PASS(), PASS()],
+      over: { coder: { runTicket }, logger: { warn: () => undefined } },
+    });
+    const first = t.agent.handle(SCOPED);
+    await vi.waitFor(() => expect(runTicket).toHaveBeenCalledTimes(1));
+    const second = await t.agent.handle(SCOPED, {
+      worktree: { path: "/wt/T-1-r9", branch: "b" },
+    });
+    expect(second).toMatchObject({ kind: "escalated", reason: "internal_error" });
+    if (second.kind !== "escalated") throw new Error();
+    expect(second.detail).toMatch(/permissions_error: .*已有一个 runTicket 在跑/);
+    expect(runTicket).toHaveBeenCalledTimes(1);
+    release();
+    expect((await first).kind).toBe("merge_queued");
+    // 第一个结束后同一单可以再编码
+    const third = await t.agent.handle(SCOPED);
+    expect(third.kind).toBe("merge_queued");
+    expect(runTicket).toHaveBeenCalledTimes(2);
   });
 });

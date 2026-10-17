@@ -2,10 +2,13 @@ import { realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { defaultIsBudgetExceeded } from "@bakacoding/coder-pool";
 import { CommitPatchError, NoChangesError } from "@bakacoding/pr";
+import type { ScopeBus, ScopeRequestOptions } from "@bakacoding/workspace";
 import type {
   BakaEvent,
   CallCtx,
   Effort,
+  EventOf,
+  PermissionList,
   ReviewReason,
   ReviewResult,
   TicketStatus,
@@ -24,6 +27,11 @@ import type {
   SubAgentOutcome,
   SubAgentTicket,
 } from "./types.js";
+import {
+  appendGrantedScope,
+  generatePermissionList,
+  memoryTicketPermissions,
+} from "./permissions.js";
 
 /** 续跑时接在 feedback 最前面的说明（PD：当日预算用完暂停，第二天同一 worktree 续跑）。 */
 export const BUDGET_RESUME_NOTE =
@@ -34,9 +42,18 @@ export type CoderFailureStatus = "gave_up" | "turn_limit" | "done_no_changes" | 
 
 /** handle 里出异常时所在的阶段，决定上报原因（见 SubAgentEscalationReason）。 */
 export type SubAgentStage =
-  "coding" | "open" | "commit" | "diff" | "budget" | "review" | "round_save" | "submit";
+  | "permissions"
+  | "coding"
+  | "open"
+  | "commit"
+  | "diff"
+  | "budget"
+  | "review"
+  | "round_save"
+  | "submit";
 
 const STAGE_REASON: Record<SubAgentStage, SubAgentEscalationReason> = {
+  permissions: "internal_error",
   coding: "coder_failed",
   open: "github_manual",
   commit: "github_manual",
@@ -184,6 +201,11 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
   const active = new Map<string, RunState>();
   const lastRound = new Map<string, number>();
   const root = realOrResolved(deps.worktreeRoot);
+  const permissionStore = deps.permissions ?? memoryTicketPermissions();
+  /** 每单写回需求单记录的串行链（批准写回与生成不交错；读之前先等它） */
+  const permissionWrites = new Map<string, Promise<void>>();
+  /** 正在 runTicket 的单：4 的登记表按 ticket_id 释放，同一单绝不能同时有两个 runTicket（T-048） */
+  const coding = new Set<string>();
 
   function register(t: SubAgentTicket): void {
     if (!t.ticket_id || !t.project_id) throw new Error("需求单必须带 ticket_id 和 project_id");
@@ -294,6 +316,106 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
     return n;
   }
 
+  /** 读需求单记录；还是空的（拆单时写 []）就按需求单生成、裁掉超出写入范围的写权限（记日志）、写进记录。 */
+  async function readOrGenerate(t: SubAgentTicket): Promise<PermissionList> {
+    const stored = await permissionStore.get(t);
+    if (stored && stored.length > 0) return stored.map((e) => ({ glob: e.glob, level: e.level }));
+    const { permission_list, cut } = generatePermissionList(t);
+    if (cut.length > 0) {
+      const scope = t.write_scope?.length ? t.write_scope.join(", ") : "**";
+      logger.warn(
+        `[bakacoding/sub-agent] ${t.ticket_id} 权限清单里有 ${cut.length} 条写权限超出写入范围 [${scope}]，已降为只读：${cut.map((c) => c.entry.glob).join(", ")}`,
+      );
+    }
+    await permissionStore.set(t, permission_list);
+    return permission_list;
+  }
+
+  /** 排进本单的写回链：前一个写回出错不影响后一个（错误由调用方拿到）。 */
+  function chain<T>(t: SubAgentTicket, job: () => Promise<T>): Promise<T> {
+    const prev = permissionWrites.get(t.ticket_id) ?? Promise.resolve();
+    const run = prev.then(job);
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    permissionWrites.set(t.ticket_id, tail);
+    void tail.then(() => {
+      if (permissionWrites.get(t.ticket_id) === tail) permissionWrites.delete(t.ticket_id);
+    });
+    return run;
+  }
+
+  /**
+   * 本单权威权限清单（T-048）：先等本单还没写完的批准写回，再从 2 的需求单记录读（空就生成并写入）。
+   * 非空就原样用（可能含写回的已批准范围）。
+   */
+  function permissionsFor(t: SubAgentTicket): Promise<PermissionList> {
+    return chain(t, () => readOrGenerate(t));
+  }
+
+  /** 批准的范围以 rw 追加并写回需求单记录。 */
+  function writeBackGrant(t: SubAgentTicket, granted: readonly string[]): Promise<PermissionList> {
+    return chain(t, async () => {
+      const next = appendGrantedScope(await readOrGenerate(t), granted);
+      await permissionStore.set(t, next);
+      return next;
+    });
+  }
+
+  /**
+   * 给 runTicket 的 `scope_requests`（不注入 deps.scopeRequests 就不带）。bus 包一层：记下本次运行发出的
+   * request_id，同一 request_id 的「已批准」到达时先把 granted_scope 排进写回链，再交给 4 的处理函数。
+   */
+  function scopeRequestsFor(t: SubAgentTicket): ScopeRequestOptions | undefined {
+    const sr = deps.scopeRequests;
+    if (!sr) return undefined;
+    const mine = new Set<string>();
+    function subscribe(
+      type: "write_scope_granted",
+      handler: (e: EventOf<"write_scope_granted">) => void,
+    ): () => void;
+    function subscribe(
+      type: "write_scope_denied",
+      handler: (e: EventOf<"write_scope_denied">) => void,
+    ): () => void;
+    function subscribe(
+      type: "write_scope_granted" | "write_scope_denied",
+      handler:
+        | ((e: EventOf<"write_scope_granted">) => void)
+        | ((e: EventOf<"write_scope_denied">) => void),
+    ): () => void {
+      if (type === "write_scope_denied")
+        return sr!.bus.subscribe(type, handler as (e: EventOf<"write_scope_denied">) => void);
+      const onGranted = handler as (e: EventOf<"write_scope_granted">) => void;
+      return sr!.bus.subscribe("write_scope_granted", (e) => {
+        if (e.ticket_id === t.ticket_id && mine.delete(e.payload.request_id)) {
+          writeBackGrant(t, e.payload.granted_scope).catch((err: unknown) =>
+            logger.warn(
+              `[bakacoding/sub-agent] ${t.ticket_id} 批准的写入范围 ${e.payload.granted_scope.join(", ")} 写回需求单记录失败（下一轮会丢）：${String(err)}`,
+            ),
+          );
+        }
+        onGranted(e);
+      });
+    }
+    const bus: ScopeBus = {
+      publish(input) {
+        if (input.ticket_id === t.ticket_id) mine.add(input.payload.request_id);
+        return sr.bus.publish(input);
+      },
+      subscribe,
+    };
+    return {
+      bus,
+      ctx: {
+        requirement_id: t.requirement_id,
+        trace: { trace_id: t.trace_id, span_id: t.span_id },
+      },
+      ...(sr.timeout_ms !== undefined ? { timeout_ms: sr.timeout_ms } : {}),
+    };
+  }
+
   function remember(s: RunState): void {
     active.set(s.ticket.ticket_id, { ...s, counts: { ...s.counts } });
   }
@@ -381,17 +503,33 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
           await say(s.ticket, "dispatch", `${s.announce}（档位 ${effort}）。`);
           s.announce = undefined;
         }
-        s.stage = "coding";
-        const res = await deps.coder.runTicket({
-          ticket: { ticket_id: s.ticket.ticket_id, project_id: s.ticket.project_id },
-          prompt: await prompt(s.ticket),
-          worktree_path: s.worktree_path,
-          permission_list: s.ticket.permission_list,
-          effort,
-          ...(s.feedback !== undefined ? { feedback: s.feedback } : {}),
-          ctx: ctx(s.ticket, s.is_resubmit),
-          ...(s.signal ? { signal: s.signal } : {}),
-        });
+        // 每次调编码池前都从需求单记录读权限清单（首跑、评审复投、冲突复投、续跑）
+        s.stage = "permissions";
+        const ticket_id = s.ticket.ticket_id;
+        if (coding.has(ticket_id))
+          throw new Error(
+            `${ticket_id} 已有一个 runTicket 在跑：4 的权限登记表按 ticket_id 释放，同一单不能同时编码两次`,
+          );
+        coding.add(ticket_id);
+        let res: Awaited<ReturnType<SubAgentDeps["coder"]["runTicket"]>>;
+        try {
+          const permission_list = await permissionsFor(s.ticket);
+          const scope_requests = scopeRequestsFor(s.ticket);
+          s.stage = "coding";
+          res = await deps.coder.runTicket({
+            ticket: { ticket_id, project_id: s.ticket.project_id },
+            prompt: await prompt(s.ticket),
+            worktree_path: s.worktree_path,
+            permission_list,
+            effort,
+            ...(s.feedback !== undefined ? { feedback: s.feedback } : {}),
+            ctx: ctx(s.ticket, s.is_resubmit),
+            ...(s.signal ? { signal: s.signal } : {}),
+            ...(scope_requests ? { scope_requests } : {}),
+          });
+        } finally {
+          coding.delete(ticket_id);
+        }
         throwIfAborted(s.signal);
         if (res.status === "budget_exceeded") return budgetStop(s);
 
@@ -459,6 +597,8 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
           })
         : defaultSummary(s.last);
       let result: ReviewResult;
+      s.stage = "permissions";
+      const permission_list = await permissionsFor(s.ticket);
       s.stage = "review";
       try {
         result = await deps.review({
@@ -468,7 +608,7 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
             architecture_constraints: await constraints(s.ticket),
           },
           pr_id,
-          permission_list: s.ticket.permission_list,
+          permission_list,
           summary,
           ctx: ctx(s.ticket, s.is_resubmit),
           ...(s.signal ? { signal: s.signal } : {}),
@@ -704,8 +844,8 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
       return toScheduler(o);
     },
 
-    projectOf(ticket_id) {
-      return registry.get(ticket_id)?.project_id;
+    async recordGrantedScope(minimal, granted_scope) {
+      return writeBackGrant(await lookup(minimal), granted_scope);
     },
   };
 }
