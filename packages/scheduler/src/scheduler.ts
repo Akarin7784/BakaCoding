@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   INTEGRATION_BRANCH,
+  SyncPartialError,
   type EventContext,
   type MergeResult,
   type SyncChange,
@@ -89,6 +90,26 @@ function rateLimitWait(e: unknown): number | undefined {
     if (typeof x.retry_after_ms === "number" && x.retry_after_ms >= 0) return x.retry_after_ms;
   }
   return undefined;
+}
+
+/** T-042：SyncPartialError 包着真实 cause；限流 / 鉴权判定要看 cause。 */
+function unwrapSyncCause(e: unknown): unknown {
+  if (e instanceof SyncPartialError) return e.cause;
+  if (typeof e === "object" && e !== null && (e as { name?: unknown }).name === "SyncPartialError") {
+    const c = (e as { cause?: unknown }).cause;
+    if (c !== undefined) return c;
+  }
+  return e;
+}
+
+function isSyncPartialError(e: unknown): e is SyncPartialError {
+  return (
+    e instanceof SyncPartialError ||
+    (typeof e === "object" &&
+      e !== null &&
+      (e as { name?: unknown }).name === "SyncPartialError" &&
+      Array.isArray((e as { changes?: unknown }).changes))
+  );
 }
 
 interface MergeLogItem {
@@ -1461,14 +1482,15 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       scheduleSync(syncPollMs);
     } catch (err) {
       syncConsecutiveFailures++;
+      const root = unwrapSyncCause(err);
       const at = new Date(clock.now()).toISOString();
       syncLastError = {
         at,
-        name: errorName(err),
-        message: errorMessage(err).slice(0, 500),
+        name: errorName(root),
+        message: errorMessage(root).slice(0, 500),
       };
       onError(err, "(sync)");
-      const wait = rateLimitWait(err);
+      const wait = rateLimitWait(root);
       if (wait !== undefined) {
         syncConsecutiveRateLimits++;
         noteRateLimit(wait);
@@ -1478,7 +1500,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         );
         // 从不早于 GitHub 给的 retry_after_ms
         scheduleSync(Math.max(wait, exp));
-      } else if (errorName(err) === "GithubAuthError") {
+      } else if (errorName(root) === "GithubAuthError") {
         syncAuthDisabled = true;
         clearSyncTimer();
       } else {
@@ -1494,8 +1516,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   }
 
   // 定时循环调 api.sync（doSync）；显式 sync 也走同一实现
-  async function doSync() {
-    const changes = await requirePr().sync();
+  async function applySyncChangeList(changes: SyncChange[]): Promise<SyncChange[]> {
     const applied: SyncChange[] = [];
     for (const c of changes) {
       const id = prToTicket.get(c.pr_id);
@@ -1522,6 +1543,27 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     if (applied.length) {
       kick();
       kickDispatch();
+    }
+    return applied;
+  }
+
+  async function doSync() {
+    let changes: SyncChange[];
+    let partialCause: unknown | undefined;
+    try {
+      changes = await requirePr().sync();
+    } catch (err) {
+      // T-042：先应用已收集变化，再把 cause 抛给限流 / 鉴权逻辑
+      if (isSyncPartialError(err)) {
+        changes = err.changes;
+        partialCause = err.cause;
+      } else {
+        throw err;
+      }
+    }
+    const applied = await applySyncChangeList(changes);
+    if (partialCause !== undefined) {
+      throw partialCause;
     }
     // 显式 sync 成功：鉴权失败停掉的定时同步可以恢复（Q-3）
     if (syncAuthDisabled) {
