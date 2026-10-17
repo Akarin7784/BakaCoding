@@ -3,17 +3,33 @@ import {
   IPC_CHANNELS,
   type DesktopChatResult,
   type DesktopDecideHighRiskResult,
+  type DesktopExportResult,
+  type DesktopImportResult,
+  type DesktopSettings,
   type DesktopSyncState,
   type DesktopUpdate,
   type SupervisorNotifyMessage,
 } from "../shared/api.js";
 import type { UserMessage } from "@bakacoding/supervisor";
+import path from "node:path";
 import type { BackendHandle } from "./backend.js";
+import { checkProjectDir, repoLockedBy, REPO_LOCKED_REASON } from "./project-import.js";
+import {
+  defaultExportName,
+  envPresence,
+  EXPORT_REASON_MAX,
+  inside,
+  type ProjectSettingsDeps,
+} from "./project-settings-ipc.js";
+import { sanitizeSyncErrorMessage } from "./sync-state.js";
 import type { EventReader } from "./reader.js";
 
-/** 主进程 ipcMain 的最小子集，便于测试注入。 */
+/**
+ * 主进程 ipcMain 的最小子集，便于测试注入。
+ * 和真实 Electron 一样，handler 的第一个参数是 IpcMainInvokeEvent，渲染进程传的参数从第二个起（T-074）。
+ */
 export interface IpcMainLike {
-  handle(channel: string, listener: (...args: unknown[]) => unknown): void;
+  handle(channel: string, listener: (event: unknown, ...args: unknown[]) => unknown): void;
   removeHandler(channel: string): void;
 }
 
@@ -94,11 +110,12 @@ export function serveHighRisk(
   sink: () => UpdateSink | null,
 ): () => void {
   ipc.handle(IPC_CHANNELS.highRiskPending, () => backend.pendingHighRisk());
+  // 第一个参数是 IpcMainInvokeEvent，渲染进程的参数从 args[1] 起（T-074）
   ipc.handle(IPC_CHANNELS.highRiskDecide, async (...args: unknown[]) => {
-    const ticket_id = String(args[0] ?? "");
-    const pr_id = String(args[1] ?? "");
-    const decision = args[2] === "reject" ? "reject" : "release";
-    const detail = typeof args[3] === "string" ? args[3] : undefined;
+    const ticket_id = String(args[1] ?? "");
+    const pr_id = String(args[2] ?? "");
+    const decision = args[3] === "reject" ? "reject" : "release";
+    const detail = typeof args[4] === "string" ? args[4] : undefined;
     const result: DesktopDecideHighRiskResult = await backend.decideHighRisk(
       ticket_id,
       pr_id,
@@ -181,5 +198,72 @@ export function serveSupervisorChat(
   });
   return () => {
     ipc.removeHandler(IPC_CHANNELS.supervisorChat);
+  };
+}
+
+/**
+ * 导入项目 / 导出诊断包 / 只读设置 IPC（T-072）。对话框、userData 写入由 main 注入；
+ * 依赖与辅助函数在 project-settings-ipc.ts。
+ */
+export function serveProjectSettings(ipc: IpcMainLike, deps: ProjectSettingsDeps): () => void {
+  const now = deps.now ?? (() => new Date());
+
+  ipc.handle(IPC_CHANNELS.projectImport, async () => {
+    if (repoLockedBy(deps.argv, deps.env))
+      return { ok: false, reason: REPO_LOCKED_REASON } satisfies DesktopImportResult;
+    const dir = await deps.pickDirectory();
+    if (!dir) return { ok: false, canceled: true } satisfies DesktopImportResult;
+    const check = checkProjectDir(dir, deps.env);
+    if (!check.ok) {
+      return {
+        ok: false,
+        ...(check.missing && { missing: check.missing }),
+        ...(check.reason !== undefined && { reason: check.reason }),
+      } satisfies DesktopImportResult;
+    }
+    const r = await deps.backend.switchTo(path.resolve(dir));
+    if (!r.ok) return { ok: false, reason: r.reason } satisfies DesktopImportResult;
+    deps.saveLastRepo(path.resolve(dir));
+    return { ok: true, project: r.project } satisfies DesktopImportResult;
+  });
+
+  ipc.handle(IPC_CHANNELS.diagnosticsExport, async () => {
+    const at = now();
+    const target = await deps.pickSavePath(path.join(deps.downloadsDir, defaultExportName(at)));
+    if (!target)
+      return { ok: false, canceled: true, reason: "已取消" } satisfies DesktopExportResult;
+    if (inside(target, deps.backend.repoRoot())) {
+      return {
+        ok: false,
+        reason: "不能把诊断包保存到仓库目录里，请换个位置",
+      } satisfies DesktopExportResult;
+    }
+    try {
+      return {
+        ok: true,
+        path: await deps.backend.exportDiagnostics(target, at),
+      } satisfies DesktopExportResult;
+    } catch (e) {
+      const msg = e instanceof Error ? `${e.name}：${e.message}` : String(e);
+      return {
+        ok: false,
+        reason: sanitizeSyncErrorMessage(`导出失败：${msg}`, deps.env, EXPORT_REASON_MAX),
+      } satisfies DesktopExportResult;
+    }
+  });
+
+  ipc.handle(IPC_CHANNELS.settingsGet, () => {
+    const settings: DesktopSettings = {
+      repo: deps.backend.repoRoot() || null,
+      env: envPresence(deps.env),
+      mode: deps.backend.prMode(),
+    };
+    return settings;
+  });
+
+  return () => {
+    ipc.removeHandler(IPC_CHANNELS.projectImport);
+    ipc.removeHandler(IPC_CHANNELS.diagnosticsExport);
+    ipc.removeHandler(IPC_CHANNELS.settingsGet);
   };
 }

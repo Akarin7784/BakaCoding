@@ -27,11 +27,8 @@ import {
 import { BackendSwitcher } from "./backend-switcher.js";
 import type { IpcMainLike } from "./ipc.js";
 import { checkProjectDir, repoLockedBy, REPO_LOCKED_REASON } from "./project-import.js";
-import {
-  envPresence,
-  serveProjectSettings,
-  type ProjectSettingsDeps,
-} from "./project-settings-ipc.js";
+import { serveProjectSettings } from "./ipc.js";
+import { envPresence, type ProjectSettingsDeps } from "./project-settings-ipc.js";
 import { readLastRepo, writeLastRepo } from "./repo-store.js";
 
 const examplePath = fileURLToPath(

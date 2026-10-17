@@ -7,12 +7,12 @@ import { resolveRepoDbPath, startBackend } from "./backend.js";
 import {
   serveBackend,
   serveHighRisk,
+  serveProjectSettings,
   serveReader,
   serveSupervisorChat,
   serveSyncState,
 } from "./ipc.js";
 import { BackendSwitcher } from "./backend-switcher.js";
-import { serveProjectSettings } from "./project-settings-ipc.js";
 import { openEventReader, type EventReader } from "./reader.js";
 import { readLastRepo, writeLastRepo } from "./repo-store.js";
 
