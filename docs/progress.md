@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`e44f4a5` · main 上测试：78 个测试文件、1619 个测试全部通过 · 更新日期：2026-10-18（UTC+8）
+> 上次更新时 main：`d2899c5` · main 上测试：79 个测试文件、1639 个测试全部通过 · 更新日期：2026-10-18（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -137,6 +137,8 @@ flowchart BT
 | T-080 | 文档：README 重写（1.0.0-preview 的 Windows 下载与运行、桌面端用法、环境变量、v1 已知限制、第三方声明 lucide ISC）；`docs/images/` 加三张实机截图（主界面、同步状态行、导出诊断包）；整体设计（md / html）状态句改为 v1 已实现，worktree 排除说明改为 `.git/info/exclude` 排除整个 `/.bakacoding/`；整体设计和模块文档的密钥说明改为只从环境变量读（不读 `config/secrets.local.json`）。只改文档，main `dd266a4`，测试仍为 73 个文件 / 1570 个 | 文档 | 界面与诊断开发 | 已合入 | #89 | `dd266a4` |
 | T-082 | 模块 4：新增通用接口 `ensureExcludeLines(dir, lines)`（经 `@bakacoding/app` 再导出，供 T-081 写 `/config/*.json`）；`ensureBakacodingIgnored` 改为调用它，行为不变；判断规则是否已存在改按 git 语义（行首空格算数、行尾未转义空格不算、CRLF 视同 LF），修掉 `trim()` 把行首空格当成等价的问题；modules.md 同步。main `2a4dba5`，测试 73 个文件 / 1578 个 | 4 | 基础层开发 | 已合入 | #90 | `2a4dba5` |
 | UI-01 | 模块 12 设计 token、主题、字体与基础组件（`docs/ui-design.md` §5、§6，`01b15dd`）：§5.1 浅 / 深两套 OKLCH 颜色 token（danger 红与 accent 蓝分开，错误提示改用 danger）；主题跟随系统 / 浅 / 深，偏好存 localStorage，写到 `<html data-theme>`，设置页加主题切换；字体西文 Inter（随包 latin / latin-ext 子集，OFL）+ Segoe UI Variable / 微软雅黑 UI，正文 14px，代码字体栈；间距、圆角、阴影、动效 token，尊重减少动态效果；按钮只留 primary / secondary / danger 三种（34 / 28 高），danger 只能经确认框的 `DialogDangerButton` 用；补 shadcn 组件 Dialog、DropdownMenu、Tooltip、Toast（sonner）、Tabs、Input、Select、Switch、ScrollArea、Collapsible、Command；`StatusIcon`（9 个状态 → lucide 图标，§5.2）；文案表 `lib/copy.ts`（merged「已合入」、合入 main「已合入 main」、复投「重写」），测试搜 `packages/desktop/src` 不得出现旧叫法；新依赖 `radix-ui`、`sonner`、`cmdk`、`@fontsource-variable/inter`；IPC 与布局不变。main `e44f4a5`，测试 78 个文件 / 1619 个 | 12 | 界面与诊断开发 | 已合入 | #93 | `e44f4a5` |
+| T-095 | 根目录 `pnpm typecheck` 在干净检出上报 TS6310：根脚本是 `tsc -b --noEmit`，而 TypeScript project references 要求被引用项目能写出声明文件，CLI 的 `--noEmit` 会关掉整张依赖图的 emit；最小修复是把根 `typecheck` 改成 `tsc -b`（与 `build` 相同，会写出 dist）。干净检出（`pnpm install`、无先验 build）根目录 typecheck 通过；回滚 `--noEmit` 后 TS6310 复现；`pnpm build` / `test` / `lint` / `format:check` / `pnpm -r typecheck` 不受影响。README 开发者指南同步说明。 | 工具链 / 12 | 界面与诊断开发 | 已合入 | #96 | `fe8207c` |
+| T-093 | 界面：IPC `backend:reload` / `backend:reconnect`（同一仓库停起后端，复用 `BackendSwitcher` 的拆旧 / 组装；只在没有编码、评审、合并队列中的单、也没有主管对话在途时执行，否则排队（只等排队时在途的单，防饿死）、空闲后自动重载；退出时不泄漏新后端；重复请求合并；起不来退只读，原因去掉绝对路径和密钥值；`backend:status` 加可选 `reload` 进度；预算当日已用从台账恢复）；modules.md §12 同步。main `d2899c5`，测试 79 个文件 / 1639 个 | 12 | 界面与诊断开发 | 已合入 | #95 | `d2899c5` |
 | T-084 | 组合根：仓库没准备好时启动报明确原因。新增 `RepoNotReadyError`（`code: "no_commits" \| "no_main"`，`no_main` 带当前分支名 `current`，分离 HEAD 时缺省；`message` 中文、不含路径；code 与 4 的 `checkRepo()`（T-086）一致），经 `@bakacoding/app` 导出；`createDefaultDeps` 最先检查（早于密钥检查，失败时不建总线和 9 / 10）；`integrationTargetHead` 去掉退回检出 HEAD 的一档，集成分支和 main 都没有就抛错，只有 master 的仓库启动即进只读，不再等到第一张单合入才失败；8 / 9 / 10 接口不变，桌面端显示原因留给 UI-03；组合根和桌面端测试的临时仓库改用 `git init -b main`；README 已知限制、modules.md 组合根同步。测试 78 个文件 / 1626 个 | 组合根 | 编排层开发 | 待评审 | — | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。

@@ -1,13 +1,50 @@
 // T-072：一次组装只对应一个仓库。导入项目时拆掉旧后端、在新仓库上重新组装，桌面侧订阅转到新后端。
 import type { Project } from "@bakacoding/config-budget";
 import type { PendingHighRisk } from "@bakacoding/supervisor";
-import type { BackendHandle, NotifyMessage } from "./backend.js";
+import type { BackendHandle, BackendStatus, NotifyMessage } from "./backend.js";
 import { errorDetail, sanitizeSyncErrorMessage, unavailableSyncState } from "./sync-state.js";
 
 export type SwitchResult =
   | { ok: true; project: Project }
   /** switched：新仓库已在运行（只是导入失败），调用方据此记下路径 */
   | { ok: false; reason: string; switched?: true };
+
+/**
+ * `backend:reload` / `backend:reconnect` 的结果（T-093）。
+ * reloaded：同一仓库的后端已停掉并重新起来、进入 live；
+ * queued：排队时有在途单或主管对话在途；只等排队那一刻在途的单（waitingTickets 为其中还没跑完的张数）和在途对话（waitingChat），之后派出的单不等，到时自动重载（结果看 backend:status 的 reload / mode）；
+ * failed：没重载成或没起来，reason 已脱敏（不含绝对路径和密钥值）。
+ */
+export type ReloadResult =
+  | { state: "reloaded" }
+  | { state: "queued"; waitingTickets: number; waitingChat: boolean }
+  | { state: "failed"; reason: string };
+
+export const RELOAD_POLL_MS = 1000;
+export const RELOAD_REASON_MAX = 500;
+
+/**
+ * 重载失败原因脱敏（T-093）：先换掉仓库根和其余绝对路径（Unix、Windows 盘符、UNC），
+ * 再走 sanitizeSyncErrorMessage（密钥值、令牌）并截断。
+ */
+export function sanitizeReloadReason(
+  message: string,
+  repoRoot: string,
+  env: Readonly<Record<string, string | undefined>>,
+  max = RELOAD_REASON_MAX,
+): string {
+  let out = message;
+  if (repoRoot.length > 1) out = out.split(repoRoot).join("<仓库>");
+  out = out
+    .replace(/(?:[A-Za-z]:[\\/]|\\\\)[^\s"'`()（）,，;；]*/g, "<路径>")
+    .replace(/(^|[\s"'`=(（:：])\/[^\s"'`()（）,，;；]+/g, "$1<路径>");
+  return sanitizeSyncErrorMessage(out, env, max);
+}
+
+export interface SwitcherOptions {
+  /** 排队重载时检查在途单的间隔（默认 1000ms，测试注入） */
+  reloadPollMs?: number;
+}
 
 /**
  * 包一层 BackendHandle：IPC 层只拿这个；切换时把 onNotify / onPendingHighRisk 的订阅转到新后端，
@@ -21,12 +58,27 @@ export class BackendSwitcher implements BackendHandle {
   private rendererReady = false;
   private switching = false;
   private readonly swapListeners: Array<() => void> = [];
+  /** 正在停起的那次重载（合并并发请求） */
+  private reloading: Promise<ReloadResult> | null = null;
+  /** 正在停起（与切换项目的 switching 分开） */
+  private restarting = false;
+  /** 正在进行的切换项目（stop() 等它结束） */
+  private switchPromise: Promise<SwitchResult> | null = null;
+  /** 程序退出：之后组装出来的后端一律拆掉、不装上 */
+  private stopped = false;
+  /** 排队中的重载：定时检查，空闲时执行 */
+  private reloadTimer: ReturnType<typeof setInterval> | null = null;
+  /** 排队那一刻在途的 ticket_id：只等它们（之后派的单不等，防饿死） */
+  private waitFor: Set<string> = new Set();
+  private readonly reloadPollMs: number;
 
   constructor(
     private current: BackendHandle,
     private readonly start: (repo: string) => Promise<BackendHandle>,
     private readonly env: Readonly<Record<string, string | undefined>> = {},
+    opts: SwitcherOptions = {},
   ) {
+    this.reloadPollMs = opts.reloadPollMs ?? RELOAD_POLL_MS;
     this.attach();
   }
 
@@ -75,10 +127,35 @@ export class BackendSwitcher implements BackendHandle {
    * 原仓库也没起来 → 只读（如实说明）。新的 live 后调 importProject。
    * 成功时渲染进程会重新加载、再调 supervisor:ready，所以就绪状态清掉；失败时恢复。
    */
-  async switchTo(repo: string): Promise<SwitchResult> {
-    if (this.switching) return { ok: false, reason: "正在切换项目，请稍候" };
+  switchTo(repo: string): Promise<SwitchResult> {
+    if (this.stopped) return Promise.resolve({ ok: false, reason: "程序正在退出" });
+    if (this.switching) return Promise.resolve({ ok: false, reason: "正在切换项目，请稍候" });
+    if (this.restarting || this.reloading || this.reloadTimer)
+      return Promise.resolve({ ok: false, reason: "正在等待重载后端，完成后再切换项目" });
     const busy = this.current.busyCount();
-    if (busy > 0) return { ok: false, reason: `还有 ${busy} 张单在进行中，完成后再切换项目` };
+    if (busy > 0)
+      return Promise.resolve({
+        ok: false,
+        reason: `还有 ${busy} 张单在进行中，完成后再切换项目`,
+      });
+    const p = this.doSwitch(repo).finally(() => {
+      this.switchPromise = null;
+    });
+    this.switchPromise = p;
+    return p;
+  }
+
+  /** 退出中组装出来的后端：拆掉，不装上 */
+  private async discard(handle: BackendHandle | null): Promise<void> {
+    try {
+      await handle?.stop();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  private async doSwitch(repo: string): Promise<SwitchResult> {
+    const quitting: SwitchResult = { ok: false, reason: "程序正在退出" };
     this.switching = true;
     const oldRepo = this.current.repoRoot();
     const wasReady = this.rendererReady;
@@ -86,11 +163,19 @@ export class BackendSwitcher implements BackendHandle {
     try {
       await this.teardown();
       const next = await this.tryStart(repo);
+      if (this.stopped) {
+        await this.discard(next.handle);
+        return quitting;
+      }
       if (next.handle && next.handle.status().mode === "live") {
         this.install(next.handle);
       } else {
         await next.handle?.stop();
         const back = await this.tryStart(oldRepo);
+        if (this.stopped) {
+          await this.discard(back.handle);
+          return quitting;
+        }
         if (back.handle && back.handle.status().mode === "live") {
           this.install(back.handle);
           this.restoreReady(wasReady);
@@ -125,8 +210,134 @@ export class BackendSwitcher implements BackendHandle {
     }
   }
 
-  status() {
-    return this.current.status();
+  /**
+   * 重载（T-093）：同一仓库的后端停掉再起来，复用切换流程的拆旧 / 组装。
+   * - 只读：直接重新组装（只读横幅的「重新连接」也走这里）。
+   * - live 且没有在途单、没有主管对话在途：立即停起。
+   * - 否则排队，返回 queued：快照此刻在途的 ticket_id，只等它们跑完和在途对话结束（之后派的单不等，
+   *   正常拆旧 + 重启后 takeOver 接手）。不提供「立即重载」。
+   * - 重复请求合并：排队中再调返回 queued（不再起计时器、不改快照）；停起中再调拿到同一个结果。
+   * - 起不来：装只读占位后端，原因脱敏。预算当日已用额度在台账（模块 2 的库）里，重建后照常读出。
+   * - 退出（stop）之后：拒绝；停起中退出，新组装的后端会被拆掉、不装上。
+   */
+  reload(): Promise<ReloadResult> {
+    if (this.stopped) return Promise.resolve({ state: "failed", reason: "程序正在退出" });
+    if (this.reloading) return this.reloading;
+    if (this.switching)
+      return Promise.resolve({ state: "failed", reason: "正在切换项目，请稍候再重载" });
+    if (this.reloadTimer) return Promise.resolve(this.queuedResult());
+    const live = this.current.status().mode === "live";
+    const ids = live ? this.current.runningTicketIds() : [];
+    const chat = live ? this.current.chatInFlight() : false;
+    if (ids.length > 0 || chat) {
+      this.waitFor = new Set(ids);
+      this.reloadTimer = setInterval(() => this.checkQueuedReload(), this.reloadPollMs);
+      this.reloadTimer.unref?.();
+      return Promise.resolve(this.queuedResult());
+    }
+    return this.runReload();
+  }
+
+  /** 只读横幅的「重新连接」（T-093）：与 reload 同一条路径；只读时没有在途单，直接重新组装。 */
+  reconnect(): Promise<ReloadResult> {
+    return this.reload();
+  }
+
+  /** 排队快照里还没跑完的单数与对话是否在途；只读后端两者都按空闲 */
+  private waiting(): { tickets: number; chat: boolean } {
+    if (this.current.status().mode !== "live") return { tickets: 0, chat: false };
+    const now = new Set(this.current.runningTicketIds());
+    let tickets = 0;
+    for (const id of this.waitFor) if (now.has(id)) tickets++;
+    return { tickets, chat: this.current.chatInFlight() };
+  }
+
+  private queuedResult(): ReloadResult {
+    let w = { tickets: 0, chat: false };
+    try {
+      w = this.waiting();
+    } catch {
+      /* ignore */
+    }
+    return { state: "queued", waitingTickets: w.tickets, waitingChat: w.chat };
+  }
+
+  private checkQueuedReload(): void {
+    if (this.stopped) {
+      this.clearReloadTimer();
+      return;
+    }
+    if (this.reloading || this.switching) return;
+    let w: { tickets: number; chat: boolean };
+    try {
+      w = this.waiting();
+    } catch {
+      return;
+    }
+    if (w.tickets > 0 || w.chat) return;
+    void this.runReload();
+  }
+
+  private clearReloadTimer(): void {
+    if (this.reloadTimer) clearInterval(this.reloadTimer);
+    this.reloadTimer = null;
+    this.waitFor = new Set();
+  }
+
+  private runReload(): Promise<ReloadResult> {
+    this.clearReloadTimer();
+    const p = this.doReload().finally(() => {
+      this.reloading = null;
+    });
+    this.reloading = p;
+    return p;
+  }
+
+  private async doReload(): Promise<ReloadResult> {
+    this.restarting = true;
+    const repo = this.current.repoRoot();
+    const wasReady = this.rendererReady;
+    try {
+      try {
+        await this.teardown();
+      } catch {
+        /* 拆旧失败也继续尝试重新组装 */
+      }
+      const next = await this.tryStart(repo);
+      if (this.stopped) {
+        await this.discard(next.handle);
+        return { state: "failed", reason: "程序正在退出" };
+      }
+      if (next.handle && next.handle.status().mode === "live") {
+        this.install(next.handle);
+        this.restoreReady(wasReady);
+        return { state: "reloaded" };
+      }
+      await this.discard(next.handle);
+      const why = sanitizeReloadReason(next.why, repo, this.env);
+      this.install(readonlyBackend(repo, `重载后端失败（${why}）`));
+      this.restoreReady(wasReady);
+      return {
+        state: "failed",
+        reason: sanitizeReloadReason(`后端没能重新启动（${why}），现在是只读模式`, repo, this.env),
+      };
+    } finally {
+      this.restarting = false;
+    }
+  }
+
+  status(): BackendStatus {
+    const st = this.current.status();
+    if (this.reloading) return { ...st, reload: { state: "running" } };
+    if (this.reloadTimer) {
+      const q = this.queuedResult();
+      if (q.state === "queued")
+        return {
+          ...st,
+          reload: { state: "queued", waitingTickets: q.waitingTickets, waitingChat: q.waitingChat },
+        };
+    }
+    return st;
   }
   markRendererReady() {
     this.rendererReady = true;
@@ -168,6 +379,15 @@ export class BackendSwitcher implements BackendHandle {
   busyCount() {
     return this.current.busyCount();
   }
+  runningCount() {
+    return this.current.runningCount();
+  }
+  runningTicketIds() {
+    return this.current.runningTicketIds();
+  }
+  chatInFlight() {
+    return this.current.chatInFlight();
+  }
   importCurrentRepo() {
     return this.current.importCurrentRepo();
   }
@@ -177,7 +397,12 @@ export class BackendSwitcher implements BackendHandle {
   exportDiagnostics(target: string, now?: Date) {
     return this.current.exportDiagnostics(target, now);
   }
+  /** 退出：先清排队，再等进行中的重载 / 切换结束（它们见 stopped 不装新后端），最后拆当前后端 */
   async stop() {
+    this.stopped = true;
+    this.clearReloadTimer();
+    await this.reloading?.catch(() => undefined);
+    await this.switchPromise?.catch(() => undefined);
     for (const off of this.offs.splice(0)) off();
     await this.current.stop();
   }
@@ -204,6 +429,9 @@ export function readonlyBackend(repo: string, reason: string): BackendHandle {
     repoRoot: () => repo,
     prMode: () => "local",
     busyCount: () => 0,
+    runningCount: () => 0,
+    runningTicketIds: () => [],
+    chatInFlight: () => false,
     importCurrentRepo: unavailable,
     exportDiagnostics: unavailable,
     stop: async () => {},
