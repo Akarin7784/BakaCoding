@@ -2,6 +2,7 @@ import { ChevronDown, ChevronRight, PanelRight } from "lucide-react";
 import { AgentIcon } from "./AgentIcon";
 import { Button } from "./ui/button";
 import type {
+  EscalationView,
   FlashCallSummary,
   GroupMessageEvent,
   GroupMessageKind,
@@ -14,6 +15,14 @@ const KIND_LABEL: Record<GroupMessageKind, string> = {
   review_verdict: "评审结论",
   resubmit: "复投记录",
   escalation: "上报",
+};
+
+const ESCALATION_REASON: Record<EscalationView["reason"], string> = {
+  review_limit: "评审复投超限",
+  conflict_limit: "冲突复投超限",
+  scope_lock_failed: "写入范围锁定失败",
+  resplit_limit: "重新拆单超限",
+  github_manual: "需人工处理 GitHub",
 };
 
 function FlashCalls({ ids, calls }: { ids: string[]; calls: Record<string, FlashCallSummary> }) {
@@ -81,6 +90,20 @@ export function ProjectGroup({
           <PanelRight strokeWidth={1.5} />
         </Button>
       </header>
+      {view.escalations.length > 0 && (
+        <ul
+          role="alert"
+          aria-label="需要人工介入"
+          className="border-b border-border px-4 py-2 text-sm"
+        >
+          {view.escalations.map((e) => (
+            <li key={e.event_id} data-testid="escalation">
+              需要人工介入 · {e.ticket_id ?? e.requirement_id} · {ESCALATION_REASON[e.reason]}
+              {e.detail ? `：${e.detail}` : ""}
+            </li>
+          ))}
+        </ul>
+      )}
       <div className="flex-1 overflow-y-auto px-4 py-2">
         {view.requirements.length === 0 && (
           <p className="py-8 text-center text-sm text-muted-foreground">还没有需求</p>

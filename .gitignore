@@ -31,3 +31,6 @@ Thumbs.db
 .bakacoding/worktrees/
 dist-electron/
 dist-renderer/
+
+# Electron ABI 版原生模块（pnpm --filter @bakacoding/desktop rebuild:electron 生成）
+packages/desktop/native/

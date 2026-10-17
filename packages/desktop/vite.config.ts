@@ -9,10 +9,25 @@ export default defineConfig({
     react(),
     tailwindcss(),
     electron({
-      main: { entry: "src/electron/main.ts", vite: { build: { outDir: "dist-electron" } } },
+      main: {
+        entry: "src/electron/main.ts",
+        vite: {
+          build: {
+            outDir: "dist-electron",
+            // 原生模块不打包，运行时从 node_modules 加载，.node 用 nativeBinding 指定。
+            rolldownOptions: { external: ["better-sqlite3"] },
+          },
+        },
+      },
       preload: {
         input: "src/electron/preload.ts",
-        vite: { build: { outDir: "dist-electron" } },
+        vite: {
+          build: {
+            outDir: "dist-electron",
+            // 插件产出的 preload 是 CommonJS，用 .cjs 扩展名，才能在 sandbox 下加载。
+            rolldownOptions: { output: { entryFileNames: "preload.cjs" } },
+          },
+        },
       },
     }),
   ],
