@@ -19,7 +19,7 @@
 - `pnpm build`：tsc 类型构建（根目录 `tsc -b` 会走到）
 - `pnpm build:app`：vite 打包渲染进程到 `dist-renderer/`，主进程和 preload（`preload.cjs`）到 `dist-electron/`
 - `pnpm dev`：开发模式（需要 Electron 二进制；pnpm 10 默认不跑 electron 的安装脚本，需要时执行 `node node_modules/electron/install.js`）
-- `pnpm package:win`（先 `pnpm build:app`）：打 Windows x64 免安装 zip 到 `release/win32/`；`pnpm package:linux` 打 Linux 目录版（冒烟用）。用 better-sqlite3 12.12.0 官方 electron-v148 预编译包，见 `scripts/package-app.mjs`（T-073）。
+- `pnpm package:win`（先 `pnpm build:app`）：打 Windows x64 免安装 zip 到 `release/win32/`；`pnpm package:linux` 打 Linux 目录版（冒烟用）。用 better-sqlite3 12.12.0 官方 electron-v148 预编译包（下载按 SHA256 校验），见 `scripts/package-app.mjs`（T-073）。electron-builder、resedit 是本包 devDependency；Windows exe 的版本信息用 resedit 写（不需要 wine），有 `build/icon.ico` 时一并换图标。
 - `pnpm rebuild:electron`：用 `@electron/rebuild` 为当前 Electron 版本另编一份 better-sqlite3，放到 `native/electron/better_sqlite3.node`（已 gitignore），主进程通过 `nativeBinding` 加载。不就地重编，也不放进 postinstall：better-sqlite3 在 pnpm 下只有一份，被模块 2 和 Node 下的 vitest 共用。
   - better-sqlite3 已升到 12.x（T-026），在 Electron 44.9.0 下能编过并正常加载；T-027 实测窗口能显示真实库的数据（#22 里 ABI 报错的已知问题已解决）。
   - T-073 起 `electron` 固定为 43.8.0（ABI 148）：better-sqlite3 还没有 Electron 44（ABI 149）的预编译包，Windows 版不能从 Linux 交叉编译，开发和打包用同一个 Electron；上游出了再升。
