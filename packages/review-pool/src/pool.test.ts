@@ -645,7 +645,7 @@ describe("signal 透传给 1 的 call()（T-044）", () => {
 });
 
 describe("7-7 review_backlog", () => {
-  it("排队数或容量变化时发，公共字段取自 ctx，不重复发相同值", async () => {
+  it("排队数或容量变化时发，requirement_id/ticket_id 为 null、trace 新开，不重复发相同值（T-066）", async () => {
     const t = setup({ manual: true });
     const p1 = t.pool.review(input("T-K"));
     const p2 = t.pool.review(input("T-L"));
@@ -656,12 +656,13 @@ describe("7-7 review_backlog", () => {
     ]);
     expect(t.events[0]).toMatchObject({
       type: "review_backlog",
-      requirement_id: "R-1",
-      ticket_id: "T-K",
-      trace_id: "tr",
-      span_id: "sp-T-K",
+      requirement_id: null,
+      ticket_id: null,
       parent_span_id: null,
     });
+    expect(t.events[0]!.trace_id).not.toBe("tr");
+    expect(t.events[0]!.span_id).not.toBe("sp-T-K");
+    expect(t.events[1]!.trace_id).not.toBe(t.events[0]!.trace_id);
     // 容量变化（成员减到 1 个）也会体现在下一次事件里
     t.setConfig(cfg(["reviewer-1"], 2));
     t.gates[0]!(PASS);
@@ -674,6 +675,14 @@ describe("7-7 review_backlog", () => {
       { pending: 1, capacity: 2 },
       { pending: 0, capacity: 2 },
     ]);
+  });
+  it("反向：事件不得带上本单的 requirement_id / ticket_id", async () => {
+    const t = setup();
+    await t.pool.review(input("T-K2"));
+    for (const e of t.events) {
+      expect(e.requirement_id, JSON.stringify(e)).toBeNull();
+      expect(e.ticket_id, JSON.stringify(e)).toBeNull();
+    }
   });
   it("CI 直接判不过的单也计入积压并回落", async () => {
     const t = setup();
