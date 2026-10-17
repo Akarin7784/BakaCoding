@@ -130,6 +130,7 @@ describe("preload 暴露的只读 API", () => {
       "onSyncState",
       "onUpdate",
       "platform",
+      "supervisorChat",
     ]);
     expect(Object.isFrozen(api)).toBe(true);
     expect(typeof api.getSnapshot).toBe("function");
