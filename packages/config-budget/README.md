@@ -49,3 +49,13 @@
 - `architecture_constraints`：给了非空数组时加一节「## 项目架构约束」，放在 `{{input}}` 前面（没有占位符就接在末尾），供 7 带上与 5 公共前缀同一份的项目约束。`coder` 不用传，5 自己拼。
 - 约束里字面的 `{{input}}` 会先反复去掉直到不再变化（`{{in{{input}}put}}` 也去干净），免得 7 替换占位符时把不可信输入塞进约束这一节。
 - `dir` 可指向自定义模板目录；`logger` 接收警告（默认 `console`）。未知角色或读不到文件报 `PromptTemplateError`。
+
+## 脱敏与凭据检查（T-059）
+
+- `redact(text, "light" | "full")`：light 遮 key / token / Bearer / env 密钥 / 邮箱 / 私钥 / URL 凭据；full 另遮 home 路径、IP、内网主机名。所有规则都是线性的（重复次数有上限，或改成逐段扫描），10 万字符的输入在 500ms 内。
+  - `url_credentials` 与 `isCredentialUrl` 同一套判定，只遮凭据那一段（userinfo、`?` / `#` 之后；解析不了的遮 `://` 之后全部）。
+  - `ghp_` / `gho_` / `ghu_` / `ghs_` / `ghr_`、`github_pat_`、`glpat-` 不管前面紧挨着什么都遮。
+  - 邮箱本地部分最长 64，域名每段最长 63、最多 16 段；内网主机名最多 16 段，更长的从匹配处往前整条遮掉。
+  - 私钥只有 BEGIN 没有 END 时遮到文末。
+- `isCredentialUrl(s)`：字符串是不是（或里面有没有）带凭据的 URL，宁可误拒不漏放。模块 2 的 prStore 拒写调它。
+- `CREDENTIAL_CASES`：2、3、11 共用的用例表，见 `src/credential-cases.ts`。假 token 运行时拼出，源码里没有完整 token。

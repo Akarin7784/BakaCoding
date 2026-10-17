@@ -111,6 +111,7 @@ flowchart BT
 | T-050 | 模块 12：需求单上显示 `ticket_warning`（项目群顶部「需求单提示」、PR 行提示图标，`write_scope_defaulted` / `fields_invalid` 配中文文案，不认识的代码原样显示，项目对不上的进「未归属」）；`isMergedBut` 同时认 `reason === "merged_but"` 和旧的 `detail` 前缀；顺带收窄 T-056 的 `fields` 断言、补按时间范围导出 | 12 | 界面与诊断开发 | 已合入 | #60 | `f056254` |
 | T-061 | 模块 9 合并循环丢触发：循环体退出后、收尾前进来的触发（如 `sync()` 返回后立刻 `submit`）会丢，单子停在 `merge_queued`；改为运行中被触发置标记、收尾时补跑一轮，选单跳过后台任务进行中的单（不再从队里拿掉） | 9 | 执行层开发 | 已合入 | #61 | `11bf642` |
 | T-058 | 模块 2：prStore 凭据检查收窄，`ssh://git@`、`https://user@` 放行；`user:token@`（含 `%3A`、无斜杠、嵌在文字里）、像 token 或长串十六进制 / base64 的用户名（任何 scheme）、查询参数和 `#` 片段里的 token 照样整条拒写；顺带 T-057 的三个小点（正常读到后清掉警告记录、`warn` 抛错不影响读取、注释归位）；`closed_by` 早已在 `PR_STRUCTURAL_FIELDS` 里，补一条测试锁住，接口不变 | 2 | 基础层开发 | 已合入 | #58 | `adc43ba` |
+| T-059 | 模块 3：带凭据 URL 的判断抽成模块 3 导出的 `isCredentialUrl`，2 的 prStore 拒写和 `redact` 的 `url_credentials` 规则共用，两边和 11 跑同一份 `CREDENTIAL_CASES`；`ghp_` / `github_pat_` / `glpat-` 任何位置都遮；`redact` 去掉平方级回溯（邮箱、内网主机名、env 变量名、私钥、IPv6 加上限或改线性扫描），超长主机名照样遮；接口新增 `isCredentialUrl`、`credentialUrlRanges`、`CREDENTIAL_CASES` | 3 | 基础层开发 | 待评审 | #? | |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
