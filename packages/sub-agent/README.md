@@ -5,6 +5,7 @@
 ```ts
 import {
   createSubAgent,
+  eventLogGrantedScopes,
   eventLogResubmitHistory,
   storageTicketPermissions,
 } from "@bakacoding/sub-agent";
@@ -23,6 +24,7 @@ const subAgent = createSubAgent({
   submit: (input) => scheduler.submit(input), // 模块 9
   publish: (e) => bus.publish(e), // 模块 0
   permissions: storageTicketPermissions(storage), // 每单权限清单以 2 的需求单记录为准（T-048）
+  grantedScopes: eventLogGrantedScopes(storage), // 已批准范围的持久来源：读回清单重新裁剪时保留它们
   scopeRequests: { bus }, // 可选：越界写申请透传给 5/4，批准的范围写回需求单记录（批准方归 T-038）
 });
 

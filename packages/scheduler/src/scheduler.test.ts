@@ -15,6 +15,7 @@ import {
   globToRegExp,
   globsOverlap,
   inExclusiveZone,
+  isUnsafeScope,
   MAX_BRACE_EXPANSIONS,
   matchesAny,
   sampleOf,
@@ -1686,6 +1687,47 @@ describe("T-048 写入范围 glob：花括号与独占区域", () => {
     d.pending.get("T-3")!.resolve({ kind: "escalated", pr_id: null });
     await settle(s);
     expect(d.handled).toEqual(["T-1", "T-3", "T-2", "T-4"]);
+  });
+});
+
+describe("#47 安全修复：写入范围里的 .. / . / 绝对路径", () => {
+  it("不安全的写入范围与任何范围都算重叠，也算落在独占区域", () => {
+    const unsafe = [
+      "src/../**",
+      "src/*/../../a",
+      "src/{a,../x}",
+      "src/./a.ts",
+      "./src/**",
+      "src//a.ts",
+      "/etc/**",
+      "C:/x",
+      "~/x",
+      "src\\..\\x",
+      "src/{.,a}/x",
+    ];
+    for (const g of unsafe) {
+      expect(isUnsafeScope(g), g).toBe(true);
+      expect(globsOverlap(g, "lib/a.ts"), g).toBe(true);
+      expect(globsOverlap("lib/a.ts", g), g).toBe(true);
+      expect(inExclusiveZone(g, DEFAULT_EXCLUSIVE_ZONES), g).toBe(true);
+    }
+    expect(globsOverlap("src/../**", "lib/a.ts")).toBe(true);
+    for (const g of ["src/**", "src/{a,b}.ts", "lib/", ".github/**"])
+      expect(isUnsafeScope(g), g).toBe(false);
+    expect(globsOverlap("src/**", "lib/a.ts")).toBe(false);
+  });
+
+  it("D15. 调度：写入范围 src/../** 的单与 lib/a.ts 的单不同时派", async () => {
+    const h = harness();
+    const d = withHandle(h);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { write_scope: ["lib/a.ts"] }));
+    await s.enqueue(ticket("T-2", { write_scope: ["src/../**"] }));
+    await settle(s);
+    expect(d.handled).toEqual(["T-1"]);
+    d.pending.get("T-1")!.resolve({ kind: "escalated", pr_id: null });
+    await settle(s);
+    expect(d.handled).toEqual(["T-1", "T-2"]);
   });
 });
 

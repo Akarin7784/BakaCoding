@@ -29,8 +29,11 @@ import type {
 } from "./types.js";
 import {
   appendGrantedScope,
+  clampPermissionList,
   generatePermissionList,
+  isUnsafeGlob,
   memoryTicketPermissions,
+  type GeneratedPermissions,
 } from "./permissions.js";
 
 /** 续跑时接在 feedback 最前面的说明（PD：当日预算用完暂停，第二天同一 worktree 续跑）。 */
@@ -204,6 +207,8 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
   const permissionStore = deps.permissions ?? memoryTicketPermissions();
   /** 每单写回需求单记录的串行链（批准写回与生成不交错；读之前先等它） */
   const permissionWrites = new Map<string, Promise<void>>();
+  /** 本进程写回过的已批准范围（读回时不按写入范围裁掉；跨重启靠 deps.grantedScopes） */
+  const grantedHere = new Map<string, Set<string>>();
   /** 正在 runTicket 的单：4 的登记表按 ticket_id 释放，同一单绝不能同时有两个 runTicket（T-048） */
   const coding = new Set<string>();
 
@@ -316,19 +321,39 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
     return n;
   }
 
-  /** 读需求单记录；还是空的（拆单时写 []）就按需求单生成、裁掉超出写入范围的写权限（记日志）、写进记录。 */
+  function logClamp(t: SubAgentTicket, r: GeneratedPermissions, when: string): void {
+    if (r.ignored_scope.length > 0)
+      logger.warn(
+        `[bakacoding/sub-agent] ${t.ticket_id} 写入范围里有不安全的条目（含 .. / . / 绝对路径等），按不匹配任何东西处理：${r.ignored_scope.join(", ")}`,
+      );
+    if (r.cut.length === 0) return;
+    const scope = t.write_scope?.length ? t.write_scope.join(", ") : "**";
+    logger.warn(
+      `[bakacoding/sub-agent] ${t.ticket_id} ${when}权限清单里有 ${r.cut.length} 条写权限超出写入范围 [${scope}] 或不安全，已降为只读：${r.cut.map((c) => `${c.entry.glob}（${c.reason}）`).join(", ")}`,
+    );
+  }
+
+  async function grantedFor(t: SubAgentTicket): Promise<string[]> {
+    const durable = (await deps.grantedScopes?.(t.ticket_id)) ?? [];
+    return [...durable, ...(grantedHere.get(t.ticket_id) ?? [])];
+  }
+
+  /**
+   * 读需求单记录；还是空的（拆单时写 []）就按需求单生成、裁掉超出写入范围的写权限（记日志）、写进记录。
+   * 非空时也按「写入范围 ∪ 已批准范围」重新裁剪（#47：记录可能是修复前生成的、或被别处写过），有改动就写回记录。
+   */
   async function readOrGenerate(t: SubAgentTicket): Promise<PermissionList> {
     const stored = await permissionStore.get(t);
-    if (stored && stored.length > 0) return stored.map((e) => ({ glob: e.glob, level: e.level }));
-    const { permission_list, cut } = generatePermissionList(t);
-    if (cut.length > 0) {
-      const scope = t.write_scope?.length ? t.write_scope.join(", ") : "**";
-      logger.warn(
-        `[bakacoding/sub-agent] ${t.ticket_id} 权限清单里有 ${cut.length} 条写权限超出写入范围 [${scope}]，已降为只读：${cut.map((c) => c.entry.glob).join(", ")}`,
-      );
+    if (stored && stored.length > 0) {
+      const r = clampPermissionList(stored, t.write_scope, await grantedFor(t));
+      logClamp(t, r, "需求单记录里的");
+      if (r.cut.length > 0) await permissionStore.set(t, r.permission_list);
+      return r.permission_list;
     }
-    await permissionStore.set(t, permission_list);
-    return permission_list;
+    const r = generatePermissionList(t);
+    logClamp(t, r, "");
+    await permissionStore.set(t, r.permission_list);
+    return r.permission_list;
   }
 
   /** 排进本单的写回链：前一个写回出错不影响后一个（错误由调用方拿到）。 */
@@ -356,6 +381,15 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
 
   /** 批准的范围以 rw 追加并写回需求单记录。 */
   function writeBackGrant(t: SubAgentTicket, granted: readonly string[]): Promise<PermissionList> {
+    const unsafe = granted.filter(isUnsafeGlob);
+    if (unsafe.length > 0)
+      logger.warn(
+        `[bakacoding/sub-agent] ${t.ticket_id} 批准的写入范围里有不安全的 glob，不写回：${unsafe.join(", ")}`,
+      );
+    granted = granted.filter((g) => !isUnsafeGlob(g));
+    let mine = grantedHere.get(t.ticket_id);
+    if (!mine) grantedHere.set(t.ticket_id, (mine = new Set()));
+    for (const g of granted) mine.add(g);
     return chain(t, async () => {
       const next = appendGrantedScope(await readOrGenerate(t), granted);
       await permissionStore.set(t, next);

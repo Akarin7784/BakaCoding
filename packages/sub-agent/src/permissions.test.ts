@@ -6,6 +6,9 @@ import { openStorage, type Storage } from "@bakacoding/storage";
 import { permissionFor } from "@bakacoding/workspace";
 import {
   appendGrantedScope,
+  clampPermissionList,
+  eventLogGrantedScopes,
+  isUnsafeGlob,
   generatePermissionList,
   globWithinScope,
   memoryTicketPermissions,
@@ -36,7 +39,6 @@ describe("globWithinScope（写入范围包含判断，T-048）", () => {
       ["src/**/*.ts", ["src/**"]],
       ["src/a/b.ts", ["lib/**", "src/a/**"]],
       ["anything/**", ["**"]],
-      ["./src/a.ts", ["src/**"]],
       ["src/a.ts", ["src/{a,b}.ts"]],
     ];
     const no: Array<[string, string[]]> = [
@@ -48,9 +50,125 @@ describe("globWithinScope（写入范围包含判断，T-048）", () => {
       ["src/**/*.ts", ["src/*/*.ts"]],
       ["src/{a,b}.ts", ["src/a.ts"]],
       ["src/a.ts", []],
+      ["./src/a.ts", ["src/**"]], // `.` 段一律不安全（#47 修复）
     ];
     for (const [g, s] of yes) expect(globWithinScope(g, s), `${g} ⊆ ${s.join(",")}`).toBe(true);
     for (const [g, s] of no) expect(globWithinScope(g, s), `${g} ⊆ ${s.join(",")}`).toBe(false);
+  });
+});
+
+describe("#47 安全修复：.. / . / 绝对路径等不能逃出写入范围", () => {
+  const ESCAPES = [
+    "src/../**",
+    "src/*/../../a",
+    "src/**/../../a",
+    "src/{a,../../x}",
+    "src/**/..",
+    "src//..",
+    "src/./a.ts",
+    "./src/a.ts",
+    "src/",
+    "src//a.ts",
+    "/src/a.ts",
+    "/etc/**",
+    "C:/src/**",
+    "c:src",
+    "src\\..\\x",
+    "src\\a.ts",
+    "~/x",
+    "!src/a.ts",
+    "#src",
+    "src/{a,b/c}",
+    "src/{a,.}/x",
+    "src/@(a|..)/x",
+    "src/+(a|b/c)",
+    "src/a..b",
+    "",
+  ];
+
+  it("isUnsafeGlob 认出所有逃逸写法；正常写法不受影响", () => {
+    for (const g of ESCAPES) expect(isUnsafeGlob(g), JSON.stringify(g)).toBe(true);
+    for (const g of [
+      "src/**",
+      "src/*.ts",
+      "src/{a,b}.ts",
+      "**",
+      "a/b/c.ts",
+      ".github/**",
+      "src/.env.example",
+    ])
+      expect(isUnsafeGlob(g), g).toBe(false);
+  });
+
+  it("写入范围 src/** 时，这些 glob 都不算在范围内；写入范围不写（**）时也一样", () => {
+    for (const g of ESCAPES) {
+      expect(globWithinScope(g, ["src/**"]), JSON.stringify(g)).toBe(false);
+      expect(globWithinScope(g, ["**"]), JSON.stringify(g)).toBe(false);
+    }
+  });
+
+  it("生成时：评审点名的 5 种写法全部降为只读（reason: unsafe_glob），模块 4 判定下范围外一个都写不了", () => {
+    const named = ["src/../**", "src/*/../../a", "src/**/../../a", "src/{a,../../x}", "src/**/.."];
+    const { permission_list, cut } = generatePermissionList({
+      permission_list: [
+        { glob: "src/**", level: "rw" },
+        ...named.map((glob) => ({ glob, level: "rw" as const })),
+      ],
+      write_scope: ["src/**"],
+    });
+    expect(permission_list).toEqual([
+      { glob: "src/**", level: "rw" },
+      ...named.map((glob) => ({ glob, level: "ro" })),
+    ]);
+    expect(cut.map((c) => [c.entry.glob, c.reason])).toEqual(named.map((g) => [g, "unsafe_glob"]));
+    for (const p of ["a", "package.json", "x", "lib/b.ts"])
+      expect(permissionFor(permission_list, p), p).not.toBe("rw");
+    // 降为 ro 的条目照样参与匹配（后条覆盖前条），只会让更多路径变成只读，不会多出写权限
+    expect(permissionFor(permission_list, "src/a.ts")).toBe("ro");
+    // 没写写入范围也照样裁
+    expect(
+      generatePermissionList({ permission_list: [{ glob: "src/../**", level: "rw" }] })
+        .permission_list,
+    ).toEqual([{ glob: "src/../**", level: "ro" }]);
+  });
+
+  it("写入范围里的不安全条目不匹配任何东西（报在 ignored_scope），默认提议里的那条也降为只读", () => {
+    const r = generatePermissionList({ permission_list: [], write_scope: ["../**", "src/**"] });
+    expect(r.ignored_scope).toEqual(["../**"]);
+    expect(r.permission_list).toEqual([
+      { glob: "**", level: "ro" },
+      { glob: "../**", level: "ro" },
+      { glob: "src/**", level: "rw" },
+    ]);
+    const all = generatePermissionList({
+      permission_list: [{ glob: "src/a.ts", level: "rw" }],
+      write_scope: ["src/../**"],
+    });
+    expect(all.permission_list).toEqual([{ glob: "src/a.ts", level: "ro" }]);
+    expect(globWithinScope("src/a.ts", ["/src/**", "src/./**"])).toBe(false);
+  });
+
+  it("clampPermissionList：非空清单按写入范围重查，已批准范围保留；不安全的批准范围不算", () => {
+    const stored = [
+      { glob: "**", level: "ro" as const },
+      { glob: "src/**", level: "rw" as const },
+      { glob: "src/../**", level: "rw" as const }, // 修复前生成的逃逸条目
+      { glob: "docs/**", level: "rw" as const }, // 批准过的
+      { glob: "lib/**", level: "rw" as const }, // 没批准过
+    ];
+    const r = clampPermissionList(stored, ["src/**"], ["docs/**", "../**"]);
+    expect(r.permission_list).toEqual([
+      { glob: "**", level: "ro" },
+      { glob: "src/**", level: "rw" },
+      { glob: "src/../**", level: "ro" },
+      { glob: "docs/**", level: "rw" },
+      { glob: "lib/**", level: "ro" },
+    ]);
+    expect(r.cut.map((c) => c.reason)).toEqual(["unsafe_glob", "outside_write_scope"]);
+  });
+
+  it("appendGrantedScope 不追加不安全的 glob", () => {
+    expect(appendGrantedScope([], ["../x", "docs/**"])).toEqual([{ glob: "docs/**", level: "rw" }]);
   });
 });
 
@@ -131,6 +249,22 @@ describe("appendGrantedScope（T-048）", () => {
     });
     // 不改入参
     expect(base).toHaveLength(2);
+  });
+});
+
+describe("eventLogGrantedScopes", () => {
+  it("取本单所有 write_scope_granted 的 granted_scope 之并，别的单不算", () => {
+    const ev = (ticket_id: string, granted_scope: string[]) =>
+      ({
+        type: "write_scope_granted",
+        ticket_id,
+        payload: { request_id: "r", granted_scope },
+      }) as never;
+    const queryEvents = (f: { ticket_id?: string }) =>
+      [ev("T-1", ["docs/**"]), ev("T-2", ["x/**"]), ev("T-1", ["docs/**", "a.ts"])].filter(
+        (e: { ticket_id: string }) => e.ticket_id === f.ticket_id,
+      );
+    expect(eventLogGrantedScopes({ queryEvents })("T-1")).toEqual(["docs/**", "a.ts"]);
   });
 });
 

@@ -157,11 +157,25 @@ function overlapFrom(a: string[], i: number, b: string[], j: number): boolean {
 }
 
 /**
+ * 写入范围 glob 是否可能逃出仓库路径的正常形状（#47 安全修复）：花括号展开前后任一处有 `..` / `.` 段、
+ * `/` 开头、盘符、`~` 开头，或含 `..`。这样的范围在写入范围锁里按「与所有范围重叠」处理，在独占区域判断里按落在独占区域处理。
+ */
+export function isUnsafeScope(glob: string): boolean {
+  const g = glob.replace(/\\/g, "/");
+  if (g.includes("..")) return true;
+  if (/^[/~]/.test(g) || /^[A-Za-z]:/.test(g)) return true;
+  return expandBraces(g).some((x) =>
+    x.split("/").some((seg, i, all) => seg === "." || (seg === "" && i > 0 && i < all.length - 1)),
+  );
+}
+
+/**
  * 两个写入范围 glob 是否可能匹配同一个路径（T-039 写入范围锁用）。按段比较，`**` 可匹配零段或多段；
  * 同一段两边都带 `*` / `?` 时保守地算能匹配（宁可少并发，也不放两张写同一文件的单同时编码）。
- * 花括号先展开（T-048）：`src/{a,b}.ts` 与 `src/a.ts` 重叠。
+ * 花括号先展开（T-048）：`src/{a,b}.ts` 与 `src/a.ts` 重叠。任一边不安全（`isUnsafeScope`，如 `src/../**`）就算重叠。
  */
 export function globsOverlap(a: string, b: string): boolean {
+  if (isUnsafeScope(a) || isUnsafeScope(b)) return true;
   const as = expandBraces(a).map(normalizeGlob);
   const bs = expandBraces(b).map(normalizeGlob);
   return as.some((x) => bs.some((y) => overlapFrom(x, 0, y, 0)));
@@ -195,6 +209,7 @@ const isBareWildcard = (seg: string): boolean => /^\*+$/.test(seg);
  *    否则所有目录范围都会变独占；区域末段本身带通配（`*.d.ts`、`*.lock`）的仍只按代表路径判断。
  */
 export function inExclusiveZone(glob: string, zones: readonly string[]): boolean {
+  if (isUnsafeScope(glob)) return true;
   if (samplesOf(glob).some((p) => matchesAny(p, zones))) return true;
   const zoneTails = zones.flatMap((z) =>
     expandBraces(z).map((zz) => ({ zone: zz, tail: normalizeGlob(zz).at(-1) ?? "" })),

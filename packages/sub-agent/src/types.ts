@@ -177,6 +177,13 @@ export interface SubAgentDeps {
    * `registry` 不经过 8：组装时把同一个 `PermissionRegistry` 注入 5 的 `CoderPoolDeps.registry` 即可。
    */
   scopeRequests?: { bus: ScopeBus; timeout_ms?: number };
+  /**
+   * 本单已批准的写入范围的持久来源（T-048 #47 修复）：每次读回需求单记录都会按写入范围重新裁剪，
+   * 落在「写入范围 ∪ 已批准范围」里的 `rw` 才保留。注入 `eventLogGrantedScopes(storage)`（2 的事件日志里本单的
+   * `write_scope_granted`）。本进程经 `recordGrantedScope` / scopeRequests 写回的范围另记在内存里，总会保留；
+   * 不注入时重启后只认写入范围，没有对应事件的批准范围会被降为只读。
+   */
+  grantedScopes?: (ticket_id: string) => MaybePromise<readonly string[]>;
   logger?: { warn(message: string): void };
 }
 

@@ -1259,11 +1259,11 @@ describe("T-048 每单权限清单（以 2 的需求单记录为准）", () => {
     expect(r.store.set).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0]![0]).toMatch(
-      /\[bakacoding\/sub-agent\] T-1 .*2 条写权限超出写入范围 \[src\/a\/\*\*\].*src\/\*\*, package\.json/,
+      /\[bakacoding\/sub-agent\] T-1 .*2 条写权限超出写入范围 \[src\/a\/\*\*\].*src\/\*\*（outside_write_scope）, package\.json/,
     );
   });
 
-  it("记录里已有非空清单：原样作为权威，不重新生成、不按需求单覆盖", async () => {
+  it("记录里已有非空清单：作为权威，不按需求单重新生成；已批准的范围（grantedScopes）保留", async () => {
     const stored: PermissionList = [
       { glob: "**", level: "ro" },
       { glob: "src/a/**", level: "rw" },
@@ -1274,12 +1274,70 @@ describe("T-048 每单权限清单（以 2 的需求单记录为准）", () => {
     const t = setup({
       runs: [done()],
       reviews: [PASS()],
-      over: { permissions: r.store, logger: { warn } },
+      over: { permissions: r.store, logger: { warn }, grantedScopes: () => ["docs/**"] },
     });
     await t.agent.handle(SCOPED);
     expect(t.runInputs[0]!.permission_list).toEqual(stored);
     expect(r.store.set).not.toHaveBeenCalled();
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("#47：记录里的非空清单带逃逸 / 范围外的 rw 时重查降为只读、记日志、写回记录；批准过的范围保留", async () => {
+    const r = recordStore([
+      { glob: "**", level: "ro" },
+      { glob: "src/a/**", level: "rw" },
+      { glob: "src/a/../../**", level: "rw" }, // 修复前生成的逃逸条目
+      { glob: "lib/**", level: "rw" }, // 范围外、没有批准记录
+      { glob: "docs/**", level: "rw" }, // 事件日志里批准过
+    ]);
+    const warn = vi.fn();
+    const t = setup({
+      runs: [done()],
+      reviews: [PASS()],
+      over: { permissions: r.store, logger: { warn }, grantedScopes: () => ["docs/**"] },
+    });
+    await t.agent.handle(SCOPED);
+    const fixed = [
+      { glob: "**", level: "ro" },
+      { glob: "src/a/**", level: "rw" },
+      { glob: "src/a/../../**", level: "ro" },
+      { glob: "lib/**", level: "ro" },
+      { glob: "docs/**", level: "rw" },
+    ];
+    expect(t.runInputs[0]!.permission_list).toEqual(fixed);
+    expect(r.current()).toEqual(fixed);
+    expect(r.store.set).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /需求单记录里的权限清单里有 2 条.*src\/a\/\.\.\/\.\.\/\*\*（unsafe_glob）, lib\/\*\*（outside_write_scope）/,
+      ),
+    );
+  });
+
+  it("#47：本进程 recordGrantedScope 写回的范围不用 grantedScopes 也保留；不安全的批准范围不写回", async () => {
+    const r = recordStore([]);
+    const warn = vi.fn();
+    const t = setup({
+      runs: [done()],
+      reviews: [PASS()],
+      over: { permissions: r.store, logger: { warn } },
+    });
+    const list = await t.agent.recordGrantedScope(SCOPED, ["docs/**", "src/../../**"]);
+    expect(list.at(-1)).toEqual({ glob: "docs/**", level: "rw" });
+    expect(list.some((e) => e.glob.includes(".."))).toBe(false);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringMatching(/不安全的 glob，不写回：src\/\.\.\/\.\.\/\*\*/),
+    );
+    await t.agent.handle(SCOPED);
+    expect(t.runInputs[0]!.permission_list.at(-1)).toEqual({ glob: "docs/**", level: "rw" });
+    // 换一个新实例（模拟重启）且不注入 grantedScopes：没有持久的批准记录，docs/** 降为只读
+    const fresh = setup({
+      runs: [done()],
+      reviews: [PASS()],
+      over: { permissions: r.store, logger: { warn: () => undefined } },
+    });
+    await fresh.agent.handle(SCOPED);
+    expect(fresh.runInputs[0]!.permission_list.at(-1)).toEqual({ glob: "docs/**", level: "ro" });
   });
 
   it("每次调编码池前都重新读记录：评审期间写回的批准范围，复投那一轮编码池就能拿到", async () => {

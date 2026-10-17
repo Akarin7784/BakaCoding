@@ -25,5 +25,6 @@ export {
   samplesOf,
   expandBraces,
   inExclusiveZone,
+  isUnsafeScope,
   MAX_BRACE_EXPANSIONS,
 } from "./glob.js";
