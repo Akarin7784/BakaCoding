@@ -15,5 +15,9 @@ export {
   type WriterLock,
   type WriterLockPayload,
 } from "./writer-lock.js";
-// T-078：桌面端在建数据库之前写 .git/info/exclude（desktop 不直接依赖 4）
-export { ensureBakacodingIgnored } from "@bakacoding/workspace";
+// T-078：桌面端在建数据库之前写 .git/info/exclude（desktop 不直接依赖 4）；T-082 加通用的 ensureExcludeLines
+export {
+  ensureBakacodingIgnored,
+  ensureExcludeLines,
+  type ExcludeRule,
+} from "@bakacoding/workspace";
