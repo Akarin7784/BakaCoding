@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`9db2a1f` · main 上测试：28 个测试文件、374 个测试全部通过 · 更新日期：2026-10-17（UTC+8）
+> 上次更新时 main：`83464f8` · main 上测试：28 个测试文件、374 个测试全部通过 · 更新日期：2026-10-17（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -38,15 +38,15 @@ flowchart BT
   classDef done fill:#dcfce7,stroke:#16a34a,color:#14532d
 
   class M0,M2,M5,M6,M7,M11,M12,T done
-  class M1,M3,M4 doing
-  class M8,M9,M10 todo
+  class M1,M3,M4,M8,M9 doing
+  class M10 todo
 ```
 
 图例：绿色 = 已完成，黄色 = 进行中，灰色 = 未开始。
 
 - 0 事件总线：T-003 已合入。总线的 `initialSeq` 和订阅队列上限随 T-005（模块 2）在 #19 合入，记在 T-005 名下。
 - 共享类型包不算 13 个功能模块之一，单列出来。
-- 8、9、10（编排层）的第二批需求单还没拆，所以显示未开始。
+- 8、9、10（编排层）的第二批需求单已拆（T-035～T-042）：8、9 有单在开发，算进行中；10 的单还没开工，算未开始。
 
 ## 需求单
 
@@ -57,7 +57,7 @@ flowchart BT
 | T-001 | 共享类型：事件、权限清单、LedgerStore 与 zod schema | 共享类型包 | 基础层开发 | 已合入 | #3 | `56cfaca` |
 | T-002 | 读配置与读密钥接口（getConfig / validate / getSecret），补齐示例配置 | 3 | 基础层开发 | 已合入 | #5 | `adf612a` |
 | T-003 | 事件总线 publish / subscribe | 0 | 基础层开发 | 已合入 | #13 | `ea51630` |
-| T-004 | 模型接入层 call / capabilities / rateLimitState | 1 | 基础层开发 | 待评审 | #39 | — |
+| T-004 | 模型接入层 call / capabilities / rateLimitState；多轮 `chat()`、可选 `signal`、超预算抛 `BudgetExceededError` | 1 | 基础层开发 | 待评审 | #39 | — |
 | T-005 | SQLite（WAL）与事件落库；另含总线 `initialSeq`、订阅队列上限、`DiagnosticsSource` 移入 types、modules.md 公共字段措辞 | 2 | 基础层开发 | 已合入 | #19 | `95cd3f3` |
 | T-006 | 预算台账 recordCost / budgetState | 3 | 基础层开发 | 已合入 | #23 | `14c1698` |
 | T-007 | 脱敏函数 redact（light / full） | 3 | 基础层开发 | 已合入 | #6 | `4f20ce0` |
@@ -87,9 +87,18 @@ flowchart BT
 | T-033 | 桌面界面跟进：项目列表改用存储 `listProjects()`（不再从事件收集项目 id）；需求单标题去掉行尾 `\r`（#29 评审意见） | 12 | 界面与诊断开发 | 已合入 | #33 | `59a38d5` |
 | T-034 | 模块 5/7 跟进：编码池改用模块 4 的 `FILE_TOOL_DEFINITIONS` / `createTools`（参数 `file_path` / `include`），`changed_files` 读 `file_path`，前缀快照重生成；评审池复投成员记录可持久化（`createRoundAssignmentStore` 读 2 的 PR 轮次 `reviewer`）；不可信标签转义的归一化改为 NFKD 后去掉组合符号（拦 `<` + U+0338 / `≮`） | 5、7 | 执行层开发 | 已合入 | #36 | `9db2a1f` |
 | T-036 | 共享类型：`escalated` 上报原因加 `coder_failed`、`budget_exceeded`；桌面界面 `ESCALATION_REASON` 补两条显示文字 | 共享类型包、12 | 编排层开发 | 已合入 | #34 | `29c1d4f` |
+| T-035 | 模块 9 合并队列：注入 `eventContext`、`merge_blocked` 上报、限流按 `retry_after_ms` 重排（超 3 次上报）、冲突复投最多 2 次、`sync()` 结果写回 TicketStatus、每日预算停派、按依赖顺序合并、反压限流、两类复投分开计数、合并成功发 `interface_changed` | 9 | 编排层开发 | 开发中 | — | — |
+| T-037 | 模块 8 副 Agent 主流程 `handle(ticket)`：三级权限、编码池结果处理（`coder_failed` / `budget_exceeded` 上报）、开 PR 与评审、复投、轮次写 `reviewer`、群消息 | 8 | 编排层开发 | 开发中 | — | — |
+| T-038 | 模块 8 补充：中途权限申请审批、订阅 `interface_changed`、依赖类单标高风险 | 8 | 编排层开发 | 未开始 | — | — |
+| T-039 | 模块 9 调度器：入队与依赖排序、写入范围锁与独占区、写入范围申请回复、编码槽位、闲时 `deferred`（读 T-035 的反压信号） | 9 | 编排层开发 | 未开始 | — | — |
+| T-040 | 模块 10 主管：`chat` / `split`（接口声明必填、决策记忆、项目创建告知用户） | 10 | 编排层开发 | 未开始 | — | — |
+| T-041 | 模块 10 上报处理（重拆最多 2 次，`budget_exceeded` 直接交用户）与高风险 PR 裁决 | 10 | 编排层开发 | 未开始 | — | — |
+| T-042 | 模块 10 集成分支审查与合入 main、主管待办指标 | 10 | 编排层开发 | 未开始 | — | — |
 | T-043 | 不可信文本包装与转义：评审池的需求单 / 摘要 / 架构约束 / diff 与编码池 feedback 统一包进带 nonce 的 `untrusted` 区块；转义前做 NFKC、忽略零宽字符和软连字符；共用函数放 `@bakacoding/types`；nonce 不进编码池公共前缀 | 5、7 | 执行层开发 | 已合入 | #35 | `876cac0` |
+| T-044 | 模块 5/7 把 `signal` 透传给模型调用 | 5、7 | 执行层开发 | 未开始 | — | — |
+| T-045 | 模块 7 `storageRoundSource` 改用 `listPrRounds(ticket_id)` | 7 | 执行层开发 | 未开始 | — | — |
 
-8、9、10（编排层开发）的第二批需求单还没拆。
+编排层第二批需求单为 T-035～T-042；T-044、T-045 是执行层跟进单。
 
 ### 不对应需求单的 PR
 
