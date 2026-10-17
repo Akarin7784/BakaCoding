@@ -64,7 +64,7 @@ export interface BackendStatus {
    * 重载进度（T-093，只由 BackendSwitcher 填）：queued = 等在途单跑完，waitingTickets 为当前在途单数；
    * running = 正在停起后端。没有重载在排队 / 进行时不出现。
    */
-  reload?: { state: "queued"; waitingTickets: number } | { state: "running" };
+  reload?: { state: "queued"; waitingTickets: number; waitingChat: boolean } | { state: "running" };
 }
 
 export interface NotifyMessage {
@@ -130,6 +130,10 @@ export interface BackendHandle {
    * ∪ 等裁决的高风险单，按 ticket_id 去重。pending（还没派单）不算：重载后它们按新配置派单。
    */
   runningCount(): number;
+  /** 同上口径的 ticket_id 列表（T-093：排队时快照，只等这些单） */
+  runningTicketIds(): string[];
+  /** 主管对话在途（T-093）：串行队列里还有没结束的 chat()（含它触发的拆单派单）；在途时重载排队 */
+  chatInFlight(): boolean;
   /** 用本后端的总线调 3 的 importProject（发 project_created）；只读抛错（T-072） */
   importCurrentRepo(): Promise<Project>;
   /** 用 11 的 exportPackage 导出当前仓库项目最近 24 小时的诊断包，复制到 target（T-072） */
@@ -246,6 +250,17 @@ export const RELOAD_BLOCKING_STATUSES: ReadonlySet<string> = new Set([
   "merge_queued",
   "conflict",
 ]);
+
+/** 重载前的在途 ticket_id（T-093）：见 BackendHandle.runningCount。 */
+export function runningIds(
+  tickets: readonly { ticket_id: string; status?: string | null }[],
+  pendingHighRiskIds: readonly string[],
+): string[] {
+  const ids = new Set<string>(pendingHighRiskIds);
+  for (const t of tickets)
+    if (t.status && RELOAD_BLOCKING_STATUSES.has(t.status)) ids.add(t.ticket_id);
+  return [...ids];
+}
 
 /** 重载前的在途计数（T-093）：见 BackendHandle.runningCount。 */
 export function countRunning(
@@ -503,6 +518,14 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
     busyCount(): number {
       if (!storage || !app) return 0;
       return countBusy(
+        storage.listTickets(),
+        readPending().map((h) => h.ticket_id),
+      );
+    },
+    chatInFlight: () => chatQueue.pending() > 0,
+    runningTicketIds(): string[] {
+      if (!storage || !app) return [];
+      return runningIds(
         storage.listTickets(),
         readPending().map((h) => h.ticket_id),
       );

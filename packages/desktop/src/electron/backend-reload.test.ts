@@ -32,7 +32,11 @@ afterEach(async () => {
 
 function fake(repo: string, opts: { mode?: BackendMode; reason?: string; running?: number } = {}) {
   const buf = new NotifyBuffer(200);
-  const state = { running: opts.running ?? 0 };
+  const state: { running: number; chat: boolean; ids?: string[] } = {
+    running: opts.running ?? 0,
+    chat: false,
+  };
+  const ids = () => state.ids ?? Array.from({ length: state.running }, (_, i) => `T${i}`);
   const stop = vi.fn(async () => {});
   const handle = {
     status: () => ({
@@ -43,7 +47,9 @@ function fake(repo: string, opts: { mode?: BackendMode; reason?: string; running
     onNotify: (l: Parameters<BackendHandle["onNotify"]>[0]) => buf.onNotify(l),
     onPendingHighRisk: () => () => {},
     busyCount: () => state.running,
-    runningCount: () => state.running,
+    runningCount: () => ids().length,
+    runningTicketIds: () => ids(),
+    chatInFlight: () => state.chat,
     repoRoot: () => repo,
     stop,
   } as unknown as BackendHandle;
@@ -112,19 +118,105 @@ describe("BackendSwitcher.reload（T-093）", () => {
     const next = fake("/r");
     const start = vi.fn(async () => next.handle);
     const sw = make(old.handle, start);
-    await expect(sw.reload()).resolves.toEqual({ state: "queued", waitingTickets: 2 });
-    expect(sw.status().reload).toEqual({ state: "queued", waitingTickets: 2 });
+    await expect(sw.reload()).resolves.toEqual({
+      state: "queued",
+      waitingTickets: 2,
+      waitingChat: false,
+    });
+    expect(sw.status().reload).toEqual({ state: "queued", waitingTickets: 2, waitingChat: false });
     await new Promise((r) => setTimeout(r, 30));
     expect(start).not.toHaveBeenCalled();
     expect(old.stop).not.toHaveBeenCalled();
     old.state.running = 1;
     await new Promise((r) => setTimeout(r, 30));
-    expect(sw.status().reload).toEqual({ state: "queued", waitingTickets: 1 });
+    expect(sw.status().reload).toEqual({ state: "queued", waitingTickets: 1, waitingChat: false });
     expect(start).not.toHaveBeenCalled();
     old.state.running = 0;
     await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1));
     await vi.waitFor(() => expect(sw.status()).toEqual({ mode: "live" }));
     expect(old.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("主管对话在途：排队（waitingChat=true、waitingTickets=0）；对话结束才重载", async () => {
+    const old = fake("/r");
+    old.state.chat = true;
+    const start = vi.fn(async () => fake("/r").handle);
+    const sw = make(old.handle, start);
+    await expect(sw.reload()).resolves.toEqual({
+      state: "queued",
+      waitingTickets: 0,
+      waitingChat: true,
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(sw.status().reload).toEqual({ state: "queued", waitingTickets: 0, waitingChat: true });
+    expect(start).not.toHaveBeenCalled();
+    old.state.chat = false;
+    await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+  });
+
+  it("防饿死：排队后新派的单不等，排队时那几张跑完就重载", async () => {
+    const old = fake("/r");
+    old.state.ids = ["A", "B"];
+    const start = vi.fn(async () => fake("/r").handle);
+    const sw = make(old.handle, start);
+    expect(await sw.reload()).toEqual({ state: "queued", waitingTickets: 2, waitingChat: false });
+    old.state.ids = ["B", "C"];
+    await new Promise((r) => setTimeout(r, 30));
+    expect(sw.status().reload).toEqual({ state: "queued", waitingTickets: 1, waitingChat: false });
+    expect(start).not.toHaveBeenCalled();
+    old.state.ids = ["C", "D"];
+    await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+  });
+
+  it("退出时重载正在进行：等它结束，新组装的后端被拆掉、不装上", async () => {
+    const old = fake("/r");
+    const next = fake("/r");
+    let release!: (h: BackendHandle) => void;
+    const start = vi.fn(() => new Promise<BackendHandle>((r) => (release = r)));
+    const sw = new BackendSwitcher(old.handle, start, {}, { reloadPollMs: 5 });
+    const swapped = vi.fn();
+    sw.onSwap(swapped);
+    const p = sw.reload();
+    await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+    let stopDone = false;
+    const stopping = sw.stop().then(() => (stopDone = true));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(stopDone).toBe(false);
+    release(next.handle);
+    await stopping;
+    expect(await p).toEqual({ state: "failed", reason: "程序正在退出" });
+    expect(next.stop).toHaveBeenCalledTimes(1);
+    expect(swapped).not.toHaveBeenCalled();
+    expect(await sw.reload()).toEqual({ state: "failed", reason: "程序正在退出" });
+  });
+
+  it("退出时重载在排队：清掉排队，之后空闲也不再组装", async () => {
+    const old = fake("/r", { running: 1 });
+    const start = vi.fn(async () => fake("/r").handle);
+    const sw = new BackendSwitcher(old.handle, start, {}, { reloadPollMs: 5 });
+    await sw.reload();
+    await sw.stop();
+    expect(old.stop).toHaveBeenCalledTimes(1);
+    old.state.running = 0;
+    await new Promise((r) => setTimeout(r, 40));
+    expect(start).not.toHaveBeenCalled();
+    expect(sw.status().reload).toBeUndefined();
+  });
+
+  it("退出时切换项目正在进行：新仓库的后端被拆掉、不装上", async () => {
+    const old = fake("/a");
+    const next = fake("/b");
+    let release!: (h: BackendHandle) => void;
+    const start = vi.fn(() => new Promise<BackendHandle>((r) => (release = r)));
+    const sw = new BackendSwitcher(old.handle, start, {}, { reloadPollMs: 5 });
+    const p = sw.switchTo("/b");
+    await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+    const stopping = sw.stop();
+    release(next.handle);
+    await stopping;
+    expect((await p).ok).toBe(false);
+    expect(next.stop).toHaveBeenCalledTimes(1);
+    expect(sw.repoRoot()).toBe("/a");
   });
 
   it("排队中切换项目被拒绝", async () => {
@@ -142,8 +234,8 @@ describe("BackendSwitcher.reload（T-093）", () => {
     const sw = make(old.handle, start);
     const a = await sw.reload();
     const b = await sw.reload();
-    expect(a).toEqual({ state: "queued", waitingTickets: 1 });
-    expect(b).toEqual({ state: "queued", waitingTickets: 1 });
+    expect(a).toEqual({ state: "queued", waitingTickets: 1, waitingChat: false });
+    expect(b).toEqual({ state: "queued", waitingTickets: 1, waitingChat: false });
     old.state.running = 0;
     await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1));
     await new Promise((r) => setTimeout(r, 40));
@@ -228,7 +320,12 @@ describe("serveBackendReload（T-093）", () => {
     const secret = "sk-ipc-secret-abcdefghijk";
     const { ipc, handlers } = fakeIpc();
     const sw = {
-      reload: vi.fn(async () => ({ state: "queued" as const, waitingTickets: 3 })),
+      reload: vi.fn(async () => ({
+        state: "queued" as const,
+        waitingTickets: 3,
+        waitingChat: false,
+      })),
+      repoRoot: () => "/home/eva/p",
       reconnect: vi.fn(async () => {
         throw new Error(`x ${secret}`);
       }),
@@ -237,6 +334,7 @@ describe("serveBackendReload（T-093）", () => {
     await expect(handlers.get(IPC_CHANNELS.backendReload)!({})).resolves.toEqual({
       state: "queued",
       waitingTickets: 3,
+      waitingChat: false,
     });
     const r = (await handlers.get(IPC_CHANNELS.backendReconnect)!({})) as {
       state: string;
@@ -311,6 +409,83 @@ describe("重载后预算当日已用额度从台账恢复（T-093，真实组�
     expect(deps).toHaveLength(2);
     const after = (await deps[1]!.deps.budget.budgetState()).spent_today_micro_usd;
     expect(after).toBe(before);
+  });
+});
+
+describe("主管对话在途时重载排队，不中止对话（T-093，真实组装）", () => {
+  async function liveWithDeferredChat() {
+    const root = mkdtempSync(join(tmpdir(), "bc-reload-chat-"));
+    dirs.push(root);
+    execFileSync("git", ["init", "-b", "main"], { cwd: root });
+    execFileSync("git", ["config", "user.email", "t@test"], { cwd: root });
+    execFileSync("git", ["config", "user.name", "t"], { cwd: root });
+    writeFileSync(join(root, "README.md"), "x\n");
+    execFileSync("git", ["add", "."], { cwd: root });
+    execFileSync("git", ["commit", "-m", "init"], { cwd: root });
+    mkdirSync(join(root, "config"), { recursive: true });
+    copyFileSync(examplePath, join(root, "config", "models.json"));
+    const pending: Array<{ resolve: (v: unknown) => void; reject: (e: unknown) => void }> = [];
+    let assembled = 0;
+    const start = (r: string) =>
+      startBackend({
+        argv: ["node", "app"],
+        env: { DEEPSEEK_API_KEY: "sk-t093-chat" },
+        cwd: r,
+        lastRepo: r,
+        pricingPath,
+        logger: { warn: () => {} },
+        onAssembled: (app) => {
+          assembled++;
+          // 10 的 chat() 换成手动控制的 Promise（模拟主管思考 / 拆单派单还没返回）
+          (app.supervisor as { chat: unknown }).chat = () =>
+            new Promise((resolve, reject) => pending.push({ resolve, reject }));
+        },
+      });
+    const first = await start(root);
+    const stopSpy = vi.spyOn(first, "stop");
+    const sw = new BackendSwitcher(first, start, {}, { reloadPollMs: 5 });
+    switchers.push(sw);
+    return { sw, pending, stopSpy, assembled: () => assembled };
+  }
+
+  it("对话进行中请求重载：排队；对话不被中止、拿到回复；回复之后才拆旧并重载", async () => {
+    const { sw, pending, stopSpy, assembled } = await liveWithDeferredChat();
+    const chat = sw.supervisorChat({ text: "拆个单" });
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    await expect(sw.reload()).resolves.toEqual({
+      state: "queued",
+      waitingTickets: 0,
+      waitingChat: true,
+    });
+    await new Promise((r) => setTimeout(r, 40));
+    expect(stopSpy).not.toHaveBeenCalled();
+    expect(assembled()).toBe(1);
+    expect(sw.status()).toMatchObject({
+      mode: "live",
+      reload: { state: "queued", waitingChat: true },
+    });
+    const reply = { text: "好的", kind: "answer" };
+    let stoppedBeforeReply = true;
+    void chat.then(() => (stoppedBeforeReply = stopSpy.mock.calls.length > 0));
+    pending[0]!.resolve(reply);
+    await expect(chat).resolves.toEqual({ ok: true, reply });
+    expect(stoppedBeforeReply).toBe(false);
+    await vi.waitFor(() => expect(assembled()).toBe(2));
+    await vi.waitFor(() => expect(sw.status().reload).toBeUndefined());
+    expect(stopSpy).toHaveBeenCalledTimes(1);
+    expect(sw.status().mode).toBe("live");
+  });
+
+  it("对话失败也释放：失败结果照常返回，排队的重载随后执行", async () => {
+    const { sw, pending, assembled } = await liveWithDeferredChat();
+    const chat = sw.supervisorChat({ text: "hi" });
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    expect((await sw.reload()).state).toBe("queued");
+    pending[0]!.reject(new Error("QUOTA"));
+    const r = await chat;
+    expect(r.ok).toBe(false);
+    await vi.waitFor(() => expect(assembled()).toBe(2));
+    expect(sw.status().mode).toBe("live");
   });
 });
 

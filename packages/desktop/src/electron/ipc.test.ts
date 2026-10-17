@@ -82,7 +82,11 @@ function fakeBackend(over: Partial<BackendHandle> = {}): BackendHandle {
     exportDiagnostics: vi.fn(async (t: string) => t),
     switchTo: vi.fn(async () => ({ ok: false as const, reason: "x" })),
     // T-093：BackendSwitcher 的 reload / reconnect
-    reload: vi.fn(async () => ({ state: "queued" as const, waitingTickets: 2 })),
+    reload: vi.fn(async () => ({
+      state: "queued" as const,
+      waitingTickets: 2,
+      waitingChat: false,
+    })),
     reconnect: vi.fn(async () => ({ state: "reloaded" as const })),
     ...over,
   };
@@ -250,7 +254,11 @@ describe("handler 参数：第一个是 event，渲染进程参数从第二个�
     });
     await expect(api.getSettings()).resolves.toMatchObject({ repo: "/repo", mode: "local" });
     // T-093：重载 / 重新连接（无参数）
-    await expect(api.reloadBackend()).resolves.toEqual({ state: "queued", waitingTickets: 2 });
+    await expect(api.reloadBackend()).resolves.toEqual({
+      state: "queued",
+      waitingTickets: 2,
+      waitingChat: false,
+    });
     await expect(api.reconnectBackend()).resolves.toEqual({ state: "reloaded" });
     // 以 IPC_CHANNELS 为准：新增 invoke 通道而这里没往返、或主进程没注册，都会失败
     expect([...seen].sort()).toEqual(INVOKE_CHANNELS);

@@ -189,16 +189,23 @@ export function serveSyncState(
  */
 export function serveBackendReload(
   ipc: IpcMainLike,
-  switcher: Pick<BackendSwitcher, "reload" | "reconnect">,
+  switcher: Pick<BackendSwitcher, "reload" | "reconnect" | "repoRoot">,
   env: Readonly<Record<string, string | undefined>> = {},
 ): () => void {
+  const safeRepoRoot = (): string => {
+    try {
+      return switcher.repoRoot();
+    } catch {
+      return "";
+    }
+  };
   const safely = async (fn: () => Promise<DesktopReloadResult>): Promise<DesktopReloadResult> => {
     try {
       return await fn();
     } catch (e) {
       return {
         state: "failed",
-        reason: sanitizeReloadReason(errorDetail(e), "", env, RELOAD_REASON_MAX),
+        reason: sanitizeReloadReason(errorDetail(e), safeRepoRoot(), env, RELOAD_REASON_MAX),
       };
     }
   };

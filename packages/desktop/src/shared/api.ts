@@ -114,7 +114,7 @@ export interface DesktopBackendStatus {
     ingest_failures: number;
   };
   /** 重载进度（T-093）：queued = 等 waitingTickets 张在途单跑完；running = 正在停起。没有就不出现。 */
-  reload?: { state: "queued"; waitingTickets: number } | { state: "running" };
+  reload?: { state: "queued"; waitingTickets: number; waitingChat: boolean } | { state: "running" };
 }
 
 /**
@@ -124,7 +124,7 @@ export interface DesktopBackendStatus {
  */
 export type DesktopReloadResult =
   | { state: "reloaded" }
-  | { state: "queued"; waitingTickets: number }
+  | { state: "queued"; waitingTickets: number; waitingChat: boolean }
   | { state: "failed"; reason: string };
 
 export interface SupervisorNotifyMessage {
