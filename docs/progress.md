@@ -127,6 +127,7 @@ flowchart BT
 | T-070 | 模块 10：高风险待裁决不计入主管待办（去掉与 9 `pending_pr_limit` 的反压双计） | 10 | 编排层开发 | 已合入 | #75 | `61716e3` |
 | T-071 | 模块 12：桌面端接入主管对话，新增 IPC `supervisor:chat` 转给 10 的 `chat()`；渲染全部 5 种回复（answer / ask_project / decision_saved / dispatched / split_failed）；只读 / 未接线 / chat() 抛错返回 ok:false，原因脱敏 + 截断后显示；等待中禁用发送，一次只发一条 | 12 | 界面与诊断开发 | 已合入 | #79 | `3305a79` |
 | T-072 | 模块 12：导入项目入口（检查 config/models.json、config/pricing.json，缺了要明确提示）；「导出」接上 11 诊断包导出（完整脱敏）；只读设置页（当前仓库、环境变量已设 / 未设、本地 / GitHub 模式） | 12 | 界面与诊断开发 | 未开始 | — | — |
+| T-073 | 模块 12 打包：Windows x64 免安装 zip（electron-builder，`package:win` / `package:linux`），版本 1.0.0-preview；`electron` 固定 43.8.0（ABI 148），better-sqlite3 用 12.12.0 官方 electron-v148 预编译包，原生模块 asarUnpack | 12 | 界面与诊断开发 | 待评审 | #80 | — |
 | T-074 | 模块 12：修 IPC handler 参数下标（Electron 第一个参数是 event），high-risk:decide 拿错参数；测试 fake ipc 先传 event，锁住所有带参数的通道 | 12 | 界面与诊断开发 | 已合入 | #81 | `d996617` |
 | T-075 | 桌面 exe 图标（`packages/desktop/build/icon.ico`，16–256 多尺寸，极简机器人） | 12 | 界面与诊断开发 | 已合入 | #83 | `f072c29` |
 
@@ -192,6 +193,8 @@ flowchart BT
 - 已解决（T-066）：7 / 10 发 `review_backlog` / `supervisor_backlog` 时 `requirement_id` / `ticket_id` 为 null，trace 新开。
 - 模块 12（T-067）：测试没锁住脱敏顺序（先把环境变量里的密钥值替换成 `[REDACTED:变量名]`，再跑 `redact(text, "light")`），也没锁住 `serveSyncState` 的 `clearInterval`。定时器要等应用退出才停，关窗口时不停；没有窗口时会跳过，没有危害。不开单。
 - 模块 6（T-069）：响应里没有 `total_count` 时没有测试，代码会在当页停止翻页。不开单。
+- 模块 12（T-073）：桌面端暂用 Electron 43.8.0（better-sqlite3 尚无 Electron 44/ABI 149 预编译），上游出了再升。
+- 模块 12（T-073）：开发用 better-sqlite3 12.11.1，打包用 12.12.0 electron-v148 预编译（lib/ 逐字节相同，仅 SQLite 版本不同）。
 
 ### 不对应需求单的 PR
 
