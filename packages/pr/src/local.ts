@@ -361,6 +361,28 @@ export class LocalPrProvider implements PrProvider {
     const tgt = await this.revParse(cwd, target);
     const ref = `refs/heads/${target}`;
 
+    // T-103：重试幂等。上次已把 head 落到 target、但没来得及记 merged（中断、重启 takeOver 后重合）：
+    // head 已是 target 的祖先就直接记已合入，不再 commit-tree、不动 target（否则非快进会多一个空合并提交）
+    if (
+      (await git(cwd, ["merge-base", "--is-ancestor", head, tgt], { allowCodes: [1] })).code === 0
+    ) {
+      const sha = await mergeCommitContaining(cwd, tgt, head);
+      const base_sha =
+        rec.kind === "integration" && sha !== head
+          ? (await git(cwd, ["merge-base", `${sha}^1`, head])).stdout.trim()
+          : rec.base_sha;
+      await this.store.put({
+        ...rec,
+        base_sha,
+        head_sha: head,
+        status: "merged",
+        merged_into: target,
+        merge_sha: sha,
+        updated_ts: this.now().toISOString(),
+      });
+      return { merged: true, sha, fast_forward: sha === head };
+    }
+
     const isAncestor =
       (await git(cwd, ["merge-base", "--is-ancestor", tgt, head], { allowCodes: [1] })).code === 0;
     let sha: string;
@@ -500,4 +522,22 @@ async function refExists(cwd: string, ref: string): Promise<boolean> {
 
 function cwdOf(rec: PrRecord): string {
   return rec.kind === "ticket" ? rec.worktree_path : rec.repo_path;
+}
+
+/**
+ * head 已被 tgt 包含时，找出把 head 带进 tgt 的那个提交（T-103），与 merge() 正常路径记的 merge_sha 同义：
+ * 沿 tgt 的第一父链往回走，取链上最早一个包含 head 的提交 C（`rev-list --first-parent --ancestry-path head..tgt`
+ * 的最后一行）。C 的第一父就是 head（head 本身在第一父链上，即当时是快进）或 tgt == head 时返回 head；
+ * 否则 C 是合并提交（第一父是合入前的 target，第二父那一侧含 head），返回 C，`C^1..C` 正是本单带进来的改动。
+ */
+async function mergeCommitContaining(cwd: string, tgt: string, head: string): Promise<string> {
+  if (tgt === head) return head;
+  const out = (await git(cwd, ["rev-list", "--first-parent", "--ancestry-path", `${head}..${tgt}`]))
+    .stdout;
+  const last = out.split("\n").filter(Boolean).at(-1);
+  if (!last) return head;
+  const firstParent = (
+    await git(cwd, ["rev-parse", "--verify", `${last}^1^{commit}`])
+  ).stdout.trim();
+  return firstParent === head ? head : last;
 }
