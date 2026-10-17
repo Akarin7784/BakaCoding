@@ -7,7 +7,7 @@
   },
   "scripts": {
     "build": "tsc -b",
-    "typecheck": "tsc -b --noEmit",
+    "typecheck": "tsc -b",
     "lint": "eslint .",
     "clean": "tsc -b --clean",
     "test": "vitest run",
