@@ -2,7 +2,12 @@
 // 渲染进程可以安全地 import type。
 import type { HighRiskDecisionErrorCode, SyncState } from "@bakacoding/scheduler";
 import type { HighRiskFile, HighRiskReason } from "@bakacoding/sub-agent";
-import type { HighRiskDecisionResult, PendingHighRisk } from "@bakacoding/supervisor";
+import type {
+  ChatReply,
+  HighRiskDecisionResult,
+  PendingHighRisk,
+  UserMessage,
+} from "@bakacoding/supervisor";
 import type { BakaEvent, TicketStatus } from "@bakacoding/types";
 
 /** IPC 通道名。 */
@@ -27,6 +32,8 @@ export const IPC_CHANNELS = {
   syncState: "bakacoding:sync:state",
   /** 主进程 → 渲染进程：同步状态有变化时推送（T-067）。 */
   syncStateUpdate: "bakacoding:sync:state-update",
+  /** invoke：主管 1:1 对话，转给 10 的 chat()（T-071）。 */
+  supervisorChat: "bakacoding:supervisor:chat",
 } as const;
 
 /** 界面关心的事件类型；其余事件主进程不下发。 */
@@ -121,6 +128,15 @@ export type DesktopDecideHighRiskResult =
 export type DesktopSyncState =
   ({ available: true } & SyncState) | { available: false; reason: string };
 
+/** 10 的 ChatReply.kind 联合（T-071）。 */
+export type ChatReplyKind = ChatReply["kind"];
+
+/**
+ * `supervisor:chat` 的 IPC 结果（T-071）：成功带 10 原样的 ChatReply；
+ * 只读 / 未接线 / chat() 抛错都是 ok:false，reason 已在主进程脱敏、截到 CHAT_REASON_MAX 字。
+ */
+export type DesktopChatResult = { ok: true; reply: ChatReply } | { ok: false; reason: string };
+
 /** preload 通过 contextBridge 暴露在 window.bakacoding 上的 API。 */
 export interface BakaDesktopApi {
   readonly platform: string;
@@ -146,9 +162,13 @@ export interface BakaDesktopApi {
   getSyncState(): Promise<DesktopSyncState>;
   /** 订阅同步状态变化（T-067）。 */
   onSyncState(listener: (state: DesktopSyncState) => void): () => void;
+  /** 发一条消息给主管（T-071）；失败以 ok:false 返回，不抛过 IPC。 */
+  supervisorChat(message: UserMessage): Promise<DesktopChatResult>;
 }
 
 export type {
+  ChatReply,
+  UserMessage,
   HighRiskDecisionErrorCode,
   HighRiskFile,
   HighRiskReason,

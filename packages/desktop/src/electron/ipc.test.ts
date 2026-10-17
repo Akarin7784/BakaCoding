@@ -13,6 +13,7 @@ import {
   serveBackend,
   serveHighRisk,
   serveReader,
+  serveSupervisorChat,
   serveSyncState,
   type IpcMainLike,
 } from "./ipc.js";
@@ -67,6 +68,10 @@ function fakeBackend(over: Partial<BackendHandle> = {}): BackendHandle {
     onPendingHighRisk: vi.fn(() => () => {}),
     refreshPendingHighRisk: vi.fn(),
     syncState: vi.fn(() => ({ available: false as const, reason: "x" })),
+    supervisorChat: vi.fn(async () => ({
+      ok: true as const,
+      reply: { text: "好的", kind: "answer" as const },
+    })),
     ...over,
   };
   return new Proxy(base as BackendHandle, {
@@ -140,6 +145,14 @@ describe("handler 参数：第一个是 event，渲染进程参数从第二个�
     expect(backend.decideHighRisk).toHaveBeenCalledWith("T-4", "pr-5", "release", undefined);
   });
 
+  it("supervisor:chat：渲染进程传的 UserMessage 原样到后端，event 不会被当成消息", async () => {
+    const { ipc, invoke } = fakeIpcMain();
+    const backend = fakeBackend();
+    serveSupervisorChat(ipc, backend);
+    await invoke(IPC_CHANNELS.supervisorChat, { text: "加个按钮", project_id: "p-1" });
+    expect(backend.supervisorChat).toHaveBeenCalledWith({ text: "加个按钮", project_id: "p-1" });
+  });
+
   it("不带参数的通道在真实调用形状下照常返回（backend:status / supervisor:ready / high-risk:pending）", () => {
     const { ipc, invoke } = fakeIpcMain();
     const backend = fakeBackend();
@@ -162,6 +175,7 @@ describe("handler 参数：第一个是 event，渲染进程参数从第二个�
       serveBackend(ipc, backend, () => null),
       serveHighRisk(ipc, backend, () => null),
       serveSyncState(ipc, backend, () => null, 1000),
+      serveSupervisorChat(ipc, backend),
     ];
     // 渲染进程一侧：ipcRenderer.invoke(channel, ...args) → 主进程 handler(event, ...args)
     const seen = new Set<string>();
@@ -181,6 +195,8 @@ describe("handler 参数：第一个是 event，渲染进程参数从第二个�
     await api.decideHighRisk("T-9", "pr-1", "reject", "不要");
     expect(backend.decideHighRisk).toHaveBeenCalledWith("T-9", "pr-1", "reject", "不要");
     await api.getSyncState();
+    await api.supervisorChat({ text: "hi", project_id: "p-2" });
+    expect(backend.supervisorChat).toHaveBeenCalledWith({ text: "hi", project_id: "p-2" });
     // 新增通道时这里会失败：要么在上面补一条往返，要么说明它不带参数
     expect([...handlers.keys()].sort()).toEqual([...seen].sort());
     for (const s of stops) s();
@@ -266,6 +282,7 @@ describe("preload 暴露的只读 API", () => {
       "onSyncState",
       "onUpdate",
       "platform",
+      "supervisorChat",
     ]);
     expect(Object.isFrozen(api)).toBe(true);
     expect(typeof api.getSnapshot).toBe("function");

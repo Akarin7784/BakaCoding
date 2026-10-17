@@ -3,6 +3,7 @@ import {
   IPC_CHANNELS,
   type BakaDesktopApi,
   type DesktopBackendStatus,
+  type DesktopChatResult,
   type DesktopDecideHighRiskResult,
   type DesktopHighRiskDecision,
   type DesktopPendingHighRisk,
@@ -10,6 +11,7 @@ import {
   type DesktopSyncState,
   type DesktopUpdate,
   type SupervisorNotifyMessage,
+  type UserMessage,
 } from "../shared/api.js";
 
 /** ipcRenderer 的最小子集。 */
@@ -72,5 +74,7 @@ export function createDesktopApi(ipc: IpcRendererLike, platform: string): BakaDe
         ipc.removeListener(IPC_CHANNELS.syncStateUpdate, wrapped);
       };
     },
+    supervisorChat: (message: UserMessage) =>
+      ipc.invoke(IPC_CHANNELS.supervisorChat, message) as Promise<DesktopChatResult>,
   });
 }
