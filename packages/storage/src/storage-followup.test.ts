@@ -277,11 +277,14 @@ describe("T-022 e：prStore 轻脱敏并校验 kind", () => {
     updated_ts: "2026-10-17T00:00:00.000Z",
   };
 
-  it("字段里疑似有密钥时拒绝写入，不改写记录", async () => {
+  it("结构字段原样保留，其余自由文本做轻脱敏", async () => {
     const s = open();
-    const store = s.prStore<PrRecord>();
-    await expect(store.put(base)).rejects.toThrow(/worktree_path 疑似含密钥/);
-    expect(await store.get("pr-1")).toBeUndefined();
+    const store = s.prStore<PrRecord & { note?: string }>();
+    await store.put({ ...base, note: `复投说明，别泄露 ${KEY}` });
+    const got = await store.get("pr-1");
+    expect(got?.worktree_path).toBe(base.worktree_path);
+    expect(got?.note).toBeDefined();
+    expect(got?.note).not.toContain(KEY);
   });
 
   it("带 remote 的单张记录和集成记录写进去读出来完全相等", async () => {

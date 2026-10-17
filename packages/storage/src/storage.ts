@@ -149,6 +149,25 @@ export class StorageSeqConflictError extends Error {
 /** 模块 6 允许的 PR 记录类型。 */
 export const PR_RECORD_KINDS = ["ticket", "integration"] as const;
 
+/** prStore 原样保留、不做脱敏的结构字段；其余字段按自由文本轻脱敏。 */
+export const PR_STRUCTURAL_FIELDS: ReadonlySet<string> = new Set([
+  "pr_id",
+  "kind",
+  "ticket_id",
+  "branch",
+  "base_branch",
+  "base_sha",
+  "head_sha",
+  "status",
+  "merged_into",
+  "merge_sha",
+  "created_ts",
+  "updated_ts",
+  "worktree_path",
+  "repo_path",
+  "remote",
+]);
+
 export interface BusLike {
   subscribe(type: "*", handler: (event: BakaEvent) => void | Promise<void>): () => void;
 }
@@ -304,25 +323,6 @@ export function openStorage(options: StorageOptions): Storage {
       return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, deepRedact(x)])) as T;
     }
     return v;
-  }
-
-  /** 返回第一个会被轻脱敏改写的字段路径，没有返回 null。 */
-  function findRedacted(v: unknown, path = ""): string | null {
-    if (typeof v === "string") return r(v) === v ? null : path || "(根)";
-    if (Array.isArray(v)) {
-      for (let i = 0; i < v.length; i++) {
-        const hit = findRedacted(v[i], `${path}[${i}]`);
-        if (hit !== null) return hit;
-      }
-      return null;
-    }
-    if (v && typeof v === "object") {
-      for (const [k, x] of Object.entries(v)) {
-        const hit = findRedacted(x, path ? `${path}.${k}` : k);
-        if (hit !== null) return hit;
-      }
-    }
-    return null;
   }
 
   // ---------- 语句 ----------
@@ -600,13 +600,12 @@ export function openStorage(options: StorageOptions): Storage {
         `PR 记录 ${record.pr_id} 的 kind 只能是 ${PR_RECORD_KINDS.join(" / ")}，收到 ${record.kind}`,
       );
     }
-    // 轻脱敏只检查不改写：PR 记录全是结构字段（分支、sha、路径、remote），改一个字 6 就对不上，
-    // 所以发现疑似密钥直接拒写，写进去的和读出来的一字不差。
-    const leaked = findRedacted(record);
-    if (leaked !== null) {
-      throw new TypeError(`PR 记录 ${record.pr_id} 的字段 ${leaked} 疑似含密钥，拒绝写入`);
+    // 结构字段（分支、sha、路径、remote 等）原样保留，6 靠它们做 merge / diff / sync，改一个字就对不上；
+    // 其余字段视为自由文本做轻脱敏。
+    const stored: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(record)) {
+      stored[k] = PR_STRUCTURAL_FIELDS.has(k) ? v : deepRedact(v);
     }
-    const stored = record;
     db.prepare(
       `INSERT INTO pr_records (pr_id, kind, record, saved_at) VALUES (?, ?, ?, ?)
        ON CONFLICT(pr_id) DO UPDATE SET kind = excluded.kind, record = excluded.record, saved_at = excluded.saved_at`,
