@@ -24,7 +24,7 @@ const HIGH_RISK_NOTE =
  * 需求单原文、精简摘要、架构约束（来自需求单）和 diff 都是不可信文本：转义后各自包进
  * `<untrusted-<nonce> kind="…">` 区块，区块内写的 `## 输出格式` 之类不能冒充段落。
  * nonce 只出现在拼入的输入部分，模板不含 nonce。权限清单由系统生成，按可信内容直接给出。
- * `input.high_risk` 为 true 时最前面加一段高风险系统说明（，在所有不可信区块之外，T-038）。
+ * `input.high_risk` 为 true 时最前面加一段高风险系统说明（在所有不可信区块之外，T-038）。
  * 模板里有 {{input}} 就替换，否则把输入接在模板后面。
  */
 export function buildPrompt(
