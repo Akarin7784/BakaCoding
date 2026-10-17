@@ -154,7 +154,7 @@ flowchart BT
 | T-101 | 模块 9 / 组合根：`listFiles`、`userMainWorktreeFor` 的 git 调用统一走 repoGit + `gitEnv()` + 超时（T-096 评审跟进）；preview.1 之后 | 9 | 编排层开发 | 待开发 | — | — |
 | T-102 | 模块 8 + 6：`resubmitConflict` / `reReview` 接收 stop 的 signal；模块 6 GitHub 请求加请求级超时（T-096 已知缺口）；preview.1 之后 | 8 / 6 | 编排层开发、执行层开发 | 待开发 | — | — |
 | T-103 | 模块 6：合并重试幂等；preview.1 之前 | 6 | 执行层开发 | 开发中 | — | — |
-| UI-08 | 模块 12 状态与反馈（`docs/ui-design.md` §3、§4.7、§4.8；基于已合入的 UI-02 #103）：只读横幅「只读模式：原因」+ 查看详情（`backend:status` 新增脱敏后的 `error`：错误名 / 信息 / 错误码 / 一层 cause）+ 重新连接（接 T-093 `backend:reconnect`）；只读时输入框、裁决、合入 main、导出禁用并说明；操作结果改右下角 toast（错误不消失、可复制详情）；左栏底部全局状态点 + 状态卡（后端、同步、数据库、待处理、未归属并入）；右面板抽屉改 Radix Dialog（焦点移入 / 困住 / 归还，`--overlay` 遮罩）；窗口按钮留位优先用 Window Controls Overlay；主进程记住主题偏好，启动建窗口前读出，标题栏不闪；`window:theme` 失败原因脱敏 | 12 | 界面与诊断开发 | 待评审 | #PR | — |
+| UI-08 | 模块 12 状态与反馈（`docs/ui-design.md` §3、§4.7、§4.8；基于已合入的 UI-02 #103）：只读横幅「只读模式：原因」+ 查看详情（`backend:status` 新增脱敏后的 `error`：错误名 / 信息 / 错误码 / 一层 cause）+ 重新连接（接 T-093 `backend:reconnect`）；只读时输入框、裁决、合入 main、导出禁用并说明；操作结果改右下角 toast（错误不消失、可复制详情）；左栏底部全局状态点 + 状态卡（后端、同步、数据库、待处理、未归属并入）；右面板抽屉改 Radix Dialog（焦点移入 / 困住 / 归还，`--overlay` 遮罩）；窗口按钮留位优先用 Window Controls Overlay；主进程记住主题偏好，启动建窗口前读出，标题栏不闪；`window:theme` 失败原因脱敏 | 12 | 界面与诊断开发 | 待评审 | #119 | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
