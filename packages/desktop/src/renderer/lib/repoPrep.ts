@@ -123,18 +123,40 @@ export const IDENTITY_LABEL: Record<IdentityField, string> = {
 };
 
 /**
- * 4 的 initialCommit 只接受成对的 identity（name + email 一起写进本仓库 .git/config）。只缺一项时没法只写那一项
- * （要么改 4 的接口，要么桌面自己调 git，都要另行批准），所以只缺一项时不出表单，提示用命令行补上那一项。
+ * 身份表单显示的字段（UI-03b，接 T-108）：缺哪项就只显示哪项，4 只写给了的那几项、只写本仓库 .git/config。
  */
 export function identityFormFields(missing: readonly IdentityField[]): IdentityField[] {
-  return missing.length === 2 ? [...missing] : [];
+  return [...missing];
 }
 
-/** 只缺一项时给用户的命令（只写本仓库）。 */
-export function identityCommand(field: IdentityField): string {
-  return field === "name"
-    ? 'git config user.name "你的名字"'
-    : "git config user.email you@example.com";
+/**
+ * 身份相关失败的固定文案（UI-03b）：不管主进程 reason 是什么都显示这两句；
+ * 不再提示去命令行跑 git config，缺的那项直接在确认框里填。
+ */
+export const IDENTITY_FAILURE_TEXT = {
+  no_identity: "还缺 Git 用户名或邮箱，请在确认框里填上缺的那一项",
+  invalid_identity: "Git 用户名或邮箱格式不对，请检查后再试",
+} as const;
+
+/** 修复失败时显示的原因：身份两种用固定文案，其余用主进程的固定文案 */
+export function fixFailureReason(r: { code: string; reason: string }): string {
+  return r.code === "no_identity" || r.code === "invalid_identity"
+    ? IDENTITY_FAILURE_TEXT[r.code]
+    : r.reason;
+}
+
+/** 只把缺的字段交给主进程；不缺就不传 identity。 */
+export function identityArg(
+  missing: readonly IdentityField[],
+  v: { name: string; email: string },
+): { identity?: { name?: string; email?: string } } {
+  if (missing.length === 0) return {};
+  return {
+    identity: {
+      ...(missing.includes("name") && { name: v.name.trim() }),
+      ...(missing.includes("email") && { email: v.email.trim() }),
+    },
+  };
 }
 
 /** 表单值是否填好（只看显示出来的字段）；邮箱只做最粗的格式检查，细的由主进程 / 4 校验。 */

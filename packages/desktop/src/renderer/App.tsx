@@ -72,8 +72,15 @@ export function App(props: AppProps) {
   const supervisorMessages = props.supervisorMessages ?? (live ? [] : mock.supervisorMessages);
   const highRisk = usePendingHighRisk(api, props.pendingHighRisk ?? []);
   const syncState = useSyncState(api, props.syncState ?? null);
-  const actions = useProjectActions(api, props.onReload);
   const backend = useBackendStatus(api);
+  /** UI-03a：项目准备页（从只读横幅「准备仓库」进来，占内容区；左栏选别的就关掉） */
+  const [prepOpen, setPrepOpen] = useState(false);
+  // UI-03b：导入的文件夹还没准备好时直接进准备页
+  const actions = useProjectActions(api, props.onReload, undefined, () => {
+    setSelection({ kind: "supervisor" });
+    setPrepOpen(true);
+    void backend.refresh();
+  });
   const quitting = useQuitting(api, props.quitting ?? false);
   const backendReadonly = backend.readonly;
   const [reconnecting, setReconnecting] = useState(false);
@@ -81,8 +88,6 @@ export function App(props: AppProps) {
   const inset = useWindowControlsInset(api?.platform);
 
   const [selection, setSelection] = useState<Selection>({ kind: "supervisor" });
-  /** UI-03a：项目准备页（从只读横幅「准备仓库」进来，占内容区；左栏选别的就关掉） */
-  const [prepOpen, setPrepOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [panelTab, setPanelTab] = useState<RightPanelTab>("overview");
   const [lastProjectId, setLastProjectId] = useState<string | undefined>(
@@ -344,6 +349,7 @@ export function App(props: AppProps) {
         onOpenChange={(o) => (o ? openSettings() : actions.closeSettings())}
         settings={actions.settings}
         error={actions.settingsError}
+        {...(api?.secretStatus && { api })}
       />
       <CommandPalette
         open={paletteOpen}
