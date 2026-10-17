@@ -255,6 +255,55 @@ describe("repo:create-main（UI-03a）", () => {
   });
 });
 
+describe("主进程参数校验先于 4（UI-03a）", () => {
+  it("identity 类型不对时根本不调 4；对的只把 name / email 两个字段交给 4（多余字段丢掉）", async () => {
+    const handlers = new Map<string, (...a: unknown[]) => unknown>();
+    const initRepo = vi.fn(async () => {});
+    const initialCommitFn = vi.fn(async () => ({ commit: "c" }));
+    serveRepoFix(
+      { handle: (c, l) => void handlers.set(c, l), removeHandler: () => {} },
+      {
+        repoRoot: () => "/r",
+        reconnect: async () => ({ state: "reloaded" }),
+        fns: { initRepo, initialCommit: initialCommitFn },
+      },
+    );
+    const call = (c: string, a: unknown) => handlers.get(c)!(FAKE_EVENT, a);
+    for (const bad of [{ name: 1, email: "a@b" }, { name: "a" }, "x", ["a", "b"]]) {
+      expect(await call(IPC_CHANNELS.repoInit, { identity: bad })).toMatchObject({
+        code: "invalid_identity",
+      });
+      expect(
+        await call(IPC_CHANNELS.repoInitialCommit, { empty: true, identity: bad }),
+      ).toMatchObject({ code: "invalid_identity" });
+    }
+    expect(initRepo).not.toHaveBeenCalled();
+    expect(initialCommitFn).not.toHaveBeenCalled();
+    await call(IPC_CHANNELS.repoInit, { identity: { ...ID, evil: "--global" } });
+    expect(initRepo).toHaveBeenCalledWith("/r", { identity: ID });
+    await call(IPC_CHANNELS.repoInitialCommit, { files: ["a"], identity: { ...ID, x: 1 } });
+    expect(initialCommitFn).toHaveBeenCalledWith("/r", { files: ["a"], identity: ID });
+  });
+
+  it("files 里有 `..` / 绝对路径时根本不调 4", async () => {
+    const handlers = new Map<string, (...a: unknown[]) => unknown>();
+    const initialCommitFn = vi.fn(async () => ({ commit: "c" }));
+    serveRepoFix(
+      { handle: (c, l) => void handlers.set(c, l), removeHandler: () => {} },
+      {
+        repoRoot: () => "/r",
+        reconnect: async () => ({ state: "reloaded" }),
+        fns: { initialCommit: initialCommitFn },
+      },
+    );
+    for (const files of [["../x"], ["/etc/passwd"], ["C:\\x"], ["a/../../b"]])
+      expect(
+        await handlers.get(IPC_CHANNELS.repoInitialCommit)!(FAKE_EVENT, { files }),
+      ).toMatchObject({ code: "invalid_files" });
+    expect(initialCommitFn).not.toHaveBeenCalled();
+  });
+});
+
 describe("失败文案（UI-03a）", () => {
   it("非 RepoFixError 一律 git_failed 固定文案，不带原始信息和路径", () => {
     expect(repoFixFailure(new Error("fatal: /home/eva/secret"))).toEqual({

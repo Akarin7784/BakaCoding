@@ -278,7 +278,7 @@ export function RepoPrepPage({
           <p data-testid="unstaged-note" className="text-muted-foreground">
             {PREP_COPY.unstagedNote}
           </p>
-          <DialogFooter className="flex-wrap">
+          <DialogFooter className="sticky bottom-0 -mx-6 -mb-6 flex-wrap rounded-b-2xl border-t border-border bg-popover px-6 py-4">
             <Button variant="secondary" disabled={busy} onClick={() => setDialog(null)}>
               {PREP_COPY.cancel}
             </Button>
