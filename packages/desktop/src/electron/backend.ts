@@ -1,15 +1,27 @@
 // T-063：桌面主进程后端——拿写入锁、组装组合根、takeOver；失败则退回只读。
+import { constants as fsConstants } from "node:fs";
+import { copyFile, lstat, mkdtemp, rm, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   acquireWriterLock,
   assemble,
+  isTicketActive,
   createDefaultDeps,
   type App,
   type DefaultDepsHandle,
   type WriterLock,
 } from "@bakacoding/app";
-import { ConfigError, getConfig, type Config } from "@bakacoding/config-budget";
+import {
+  ConfigError,
+  getConfig,
+  importProject as importProjectDefault,
+  type Config,
+  type Project,
+} from "@bakacoding/config-budget";
+import { exportPackage } from "@bakacoding/diagnostics";
+import { GithubPrProvider } from "@bakacoding/pr";
 import { HighRiskDecisionError } from "@bakacoding/scheduler";
 import {
   openStorage,
@@ -24,7 +36,7 @@ import type {
   DesktopSyncState,
 } from "../shared/api.js";
 import { DB_PATH_ENV, DEFAULT_DB_RELATIVE, resolveDbPath } from "./config.js";
-import { runSupervisorChat } from "./supervisor-chat.js";
+import { createSerialQueue, runSupervisorChat } from "./supervisor-chat.js";
 import { toDesktopSyncState, unavailableSyncState } from "./sync-state.js";
 
 /** 仓库路径：`--repo` > BAKACODING_REPO > cwd */
@@ -67,6 +79,12 @@ export interface BackendOptions {
   openStorage?: typeof openStorage;
   getConfig?: (path: string) => Config;
   pricingPath?: string;
+  /** 上次导入的仓库路径（T-072）：优先级低于 `--repo` / BAKACODING_REPO，高于 cwd */
+  lastRepo?: string;
+  /** 测试钩子：组装好之后拿到 App（断言拆除时 10 退订、9 停定时 sync） */
+  onAssembled?: (app: App) => void;
+  /** 测试注入：模块 3 的 importProject */
+  importProject?: typeof importProjectDefault;
 }
 
 export interface BackendHandle {
@@ -91,6 +109,16 @@ export interface BackendHandle {
   refreshPendingHighRisk(): void;
   /** 9 的定时同步状态（T-067）；只读 / 未接线为 available:false；错误信息已脱敏截断 */
   syncState(): DesktopSyncState;
+  /** 当前仓库根目录（T-072） */
+  repoRoot(): string;
+  /** PR 实现：live 时看 app.pr 是不是 GithubPrProvider；只读时没有 provider，按 local（T-072） */
+  prMode(): "local" | "github";
+  /** 进行中的单 ∪ 等裁决的高风险单，按 ticket_id 去重计数（T-072 切换前检查） */
+  busyCount(): number;
+  /** 用本后端的总线调 3 的 importProject（发 project_created）；只读抛错（T-072） */
+  importCurrentRepo(): Promise<Project>;
+  /** 用 11 的 exportPackage 导出当前仓库项目最近 24 小时的诊断包，复制到 target（T-072） */
+  exportDiagnostics(target: string, now?: Date): Promise<string>;
   /** 主管 1:1 对话（T-071）：转给 10 的 chat()；只读 / 抛错为 ok:false，reason 已脱敏截断 */
   supervisorChat(message: UserMessage): Promise<DesktopChatResult>;
   stop(): Promise<void>;
@@ -137,6 +165,7 @@ export function resolveRepoPath(
   argv: readonly string[],
   env: Readonly<Record<string, string | undefined>>,
   cwd: string,
+  lastRepo?: string,
 ): string {
   let fromArg: string | undefined;
   for (let i = 0; i < argv.length; i++) {
@@ -144,7 +173,7 @@ export function resolveRepoPath(
     if (a.startsWith("--repo=")) fromArg = a.slice("--repo=".length);
     else if (a === "--repo" && argv[i + 1] !== undefined) fromArg = argv[i + 1];
   }
-  return path.resolve(cwd, fromArg || env[REPO_ENV] || cwd);
+  return path.resolve(cwd, fromArg || env[REPO_ENV] || lastRepo || cwd);
 }
 
 export function resolveConfigPath(
@@ -177,6 +206,20 @@ export function resolveRepoDbPath(
   if (fromArg) return path.resolve(repoRoot, fromArg);
   if (env[DB_PATH_ENV]) return path.resolve(repoRoot, env[DB_PATH_ENV]!);
   return path.join(repoRoot, DEFAULT_DB_RELATIVE);
+}
+
+/**
+ * 切换项目前的「忙」计数（T-072）：ticket_id 的并集——2 的 listTickets() 里状态不是 merged / escalated 的单
+ * （与 10 的 integrationIdle 同一判定 `isTicketActive`）∪ 10 的 pendingHighRisk() 的单。高风险待裁决的单在库里
+ * 本来就是非终态，取并集避免重复计数。
+ */
+export function countBusy(
+  tickets: readonly { ticket_id: string; status?: string | null }[],
+  pendingHighRiskIds: readonly string[],
+): number {
+  const ids = new Set<string>(pendingHighRiskIds);
+  for (const t of tickets) if (isTicketActive(t.status)) ids.add(t.ticket_id);
+  return ids.size;
 }
 
 function takeOverCounts(r: TakeOverReport): NonNullable<BackendStatus["takeOver"]> {
@@ -215,7 +258,8 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
   const open = opts.openStorage ?? openStorage;
   const loadConfig = opts.getConfig ?? getConfig;
 
-  const repoRoot = resolveRepoPath(argv, env, cwd);
+  const repoRoot = resolveRepoPath(argv, env, cwd, opts.lastRepo);
+  const doImport = opts.importProject ?? importProjectDefault;
   const dbPath = resolveRepoDbPath(argv, env, repoRoot);
   const configPath = resolveConfigPath(argv, env, repoRoot);
 
@@ -253,6 +297,7 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
   let app: App | undefined;
   let takeOver: BackendStatus["takeOver"];
   const busUnsubs: Array<() => void> = [];
+  const chatQueue = createSerialQueue();
 
   const cleanupPartial = (): void => {
     while (busUnsubs.length) {
@@ -320,6 +365,7 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
       });
 
       app = await assemble(depsHandle.deps);
+      opts.onAssembled?.(app);
       takeOver = takeOverCounts(app.takeOver);
       // 上报 / 单级警告（含高风险拒绝未生效）后刷新清单；不新增事件类型
       busUnsubs.push(
@@ -406,14 +452,76 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
         return { available: false, reason: `读取同步状态失败（${name}）` };
       }
     },
+    repoRoot: () => repoRoot,
+    prMode: () => (app?.pr instanceof GithubPrProvider ? "github" : "local"),
+    busyCount(): number {
+      if (!storage || !app) return 0;
+      return countBusy(
+        storage.listTickets(),
+        readPending().map((h) => h.ticket_id),
+      );
+    },
+    async importCurrentRepo(): Promise<Project> {
+      const live = app;
+      if (!live) throw new Error(reason ? `只读模式：${reason}` : "只读模式：后端未接线");
+      return doImport(repoRoot, { publish: (e) => live.bus.publish(e) });
+    },
+    async exportDiagnostics(target: string, now: Date = new Date()): Promise<string> {
+      if (!storage || !app) {
+        throw new Error(reason ? `只读模式：${reason}` : "只读模式：后端未接线");
+      }
+      // 不发事件，只算出当前仓库的 project_id（同一路径同一 id）
+      const project = await doImport(repoRoot);
+      const out_dir = await mkdtemp(path.join(tmpdir(), "bakacoding-diag-"));
+      try {
+        const zip = await exportPackage(
+          {
+            project_id: project.project_id,
+            scope: {
+              kind: "time_range",
+              from: new Date(now.getTime() - 24 * 3600_000).toISOString(),
+              to: now.toISOString(),
+            },
+          },
+          { source: storage.diagnosticsSource(), out_dir, now: () => now },
+        );
+        await copyExclusive(zip, target);
+        return target;
+      } finally {
+        await rm(out_dir, { recursive: true, force: true });
+      }
+    },
     supervisorChat(message: UserMessage): Promise<DesktopChatResult> {
-      const sup = app?.supervisor;
-      return runSupervisorChat(sup ? (m) => sup.chat(m) : undefined, message, env, reason);
+      // 10 的 chat() 有状态（暂存 ask_project 的需求）：主进程串行，前一条回来才处理下一条
+      return chatQueue(() => {
+        const sup = app?.supervisor;
+        return runSupervisorChat(sup ? (m) => sup.chat(m) : undefined, message, env, reason);
+      });
     },
     async stop() {
       cleanupPartial();
+      // 拆完就不再是 live（切换失败时不能还报 live）
+      mode = "readonly";
+      reason = reason ?? "后端已停止";
     },
   };
 }
 
 export { resolveDbPath, DB_PATH_ENV, DEFAULT_DB_RELATIVE };
+
+/**
+ * 复制到 target，不跟随符号链接：用 COPYFILE_EXCL（O_EXCL，目标已存在含悬空链接都失败）。
+ * 目标已存在且是普通文件（保存框里选了覆盖）→ 删掉再 EXCL 复制一次；是链接或别的就报错。
+ */
+export async function copyExclusive(src: string, target: string): Promise<void> {
+  try {
+    await copyFile(src, target, fsConstants.COPYFILE_EXCL);
+    return;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+  }
+  const st = await lstat(target);
+  if (!st.isFile()) throw new Error("保存位置已存在且不是普通文件（可能是符号链接），已拒绝");
+  await unlink(target);
+  await copyFile(src, target, fsConstants.COPYFILE_EXCL);
+}

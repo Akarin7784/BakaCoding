@@ -2,6 +2,7 @@
 export const MODULE_NAME = "@bakacoding/app" as const;
 
 export { assemble, type App, type AppDeps } from "./assemble.js";
+export { countActiveTickets, isTicketActive } from "./active-tickets.js";
 export {
   createDefaultDeps,
   PrNotWiredError,

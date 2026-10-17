@@ -10,6 +10,8 @@ import { SyncStatus } from "./components/SyncStatus";
 import { useDesktopData } from "./data/useDesktopData";
 import { usePendingHighRisk } from "./data/usePendingHighRisk";
 import { useSyncState } from "./data/useSyncState";
+import { useProjectActions } from "./data/useProjectActions";
+import { SettingsPanel } from "./components/SettingsPanel";
 import * as mock from "./mock/data";
 import type {
   EscalationView,
@@ -33,6 +35,8 @@ export interface AppProps {
   syncState?: DesktopSyncState;
   /** 数据来源；默认取 preload 暴露的 window.bakacoding，传 null 强制用假数据。 */
   api?: BakaDesktopApi | null;
+  /** 导入成功后重新加载界面（T-072）；测试注入 */
+  onReload?: () => void;
 }
 
 function dbNotice(db: NonNullable<ReturnType<typeof useDesktopData>>["db"]): string | null {
@@ -52,6 +56,7 @@ export function App(props: AppProps) {
   const supervisorMessages = props.supervisorMessages ?? (live ? [] : mock.supervisorMessages);
   const highRisk = usePendingHighRisk(api, props.pendingHighRisk ?? []);
   const syncState = useSyncState(api, props.syncState ?? null);
+  const actions = useProjectActions(api, props.onReload);
 
   const [selection, setSelection] = useState<Selection>({ kind: "supervisor" });
   const [sidebarOpen, setSidebarOpen] = useState(false); // 默认关闭
@@ -87,6 +92,19 @@ export function App(props: AppProps) {
         </div>
       )}
       {syncState && <SyncStatus state={syncState} />}
+      {actions.notice && (
+        <div
+          role={actions.notice.tone === "error" ? "alert" : "status"}
+          data-testid="action-notice"
+          className={
+            actions.notice.tone === "error"
+              ? "border-b border-border px-4 py-1 text-xs text-accent break-all"
+              : "border-b border-border px-4 py-1 text-xs text-muted-foreground break-all"
+          }
+        >
+          {actions.notice.text}
+        </div>
+      )}
       <div className="flex min-h-0 flex-1">
         <ConversationList
           projects={projects}
@@ -98,21 +116,40 @@ export function App(props: AppProps) {
           <HighRiskPanel items={panelItems} onDecide={highRisk.decide} />
           {selection.kind === "unattributed" ? (
             <UnattributedPanel escalations={unattributed} warnings={unattributedWarnings} />
+          ) : actions.settingsOpen ? (
+            <SettingsPanel
+              settings={actions.settings}
+              error={actions.settingsError}
+              onBack={actions.closeSettings}
+            />
           ) : selection.kind === "supervisor" || !current ? (
             <SupervisorChat
               initial={supervisorMessages}
+              busy={actions.busy}
+              onOpenSettings={() => void actions.openSettings()}
+              onExport={() => void actions.exportDiagnostics()}
+              {...(api && { onImport: () => void actions.importProject() })}
               api={api}
               projectId={
                 selection.kind === "project" ? current?.project.payload.project_id : undefined
               }
             />
           ) : (
-            <ProjectGroup
-              view={current}
-              calls={flashCalls}
-              sidebarOpen={sidebarOpen}
-              onToggleSidebar={() => setSidebarOpen((o) => !o)}
-            />
+            <>
+              <ProjectGroup
+                view={current}
+                calls={flashCalls}
+                sidebarOpen={sidebarOpen}
+                onToggleSidebar={() => setSidebarOpen((o) => !o)}
+              />
+              {/* 选中项目时也能和主管说话，消息带上这个项目（T-072） */}
+              <SupervisorChat
+                compact
+                initial={supervisorMessages}
+                api={api}
+                projectId={current.project.payload.project_id}
+              />
+            </>
           )}
         </div>
         {sidebarOpen && current && selection.kind !== "unattributed" && (

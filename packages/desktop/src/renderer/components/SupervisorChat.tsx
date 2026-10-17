@@ -1,17 +1,13 @@
-import { useRef, useState } from "react";
-import { AlertCircle, Download, Loader2, Send, Settings } from "lucide-react";
-import type { BakaDesktopApi, ChatReply } from "../../shared/api";
+import { useEffect, useState, useSyncExternalStore } from "react";
+import { AlertCircle, Download, FolderOpen, Loader2, Send, Settings } from "lucide-react";
+import type { BakaDesktopApi } from "../../shared/api";
+import { supervisorChatStore, type ChatItem, type ChatStore } from "../data/chatStore";
 import { chatFailureText, chatReplyView, type ChatTone } from "../lib/chat-labels";
 import { cn } from "../lib/utils";
 import { AgentIcon } from "./AgentIcon";
 import { Button } from "./ui/button";
 import { Textarea } from "./ui/textarea";
 import type { SupervisorMessage } from "../mock/types";
-
-type ChatItem =
-  | (SupervisorMessage & { reply?: undefined; failed?: undefined })
-  | { id: string; from: "supervisor"; reply: ChatReply; ts: string; failed?: undefined }
-  | { id: string; from: "system"; failed: string; ts: string; reply?: undefined };
 
 const TONE_CLASS: Record<ChatTone, string> = {
   normal: "text-muted-foreground",
@@ -26,61 +22,105 @@ export interface SupervisorChatProps {
   api?: Pick<BakaDesktopApi, "supervisorChat"> | undefined;
   /** 界面当前选中的项目；有就随消息传给主管 */
   projectId?: string | undefined;
+  /** 对话记录（默认整个窗口共用一份，组件卸载不丢）；测试注入新的 */
+  store?: ChatStore;
+  /** 选中项目时嵌在群聊下方：不显示顶栏 */
+  compact?: boolean;
+  /** 导入项目（T-072）；没有就不显示按钮 */
+  onImport?: () => void;
+  /** 打开只读设置页（T-072） */
+  onOpenSettings?: () => void;
+  /** 导出诊断包（T-072） */
+  onExport?: () => void;
+  /** 导入 / 导出进行中：对应按钮禁用 */
+  busy?: "import" | "export" | null;
 }
 
 /** 主管 1:1：唯一可输入的地方。一次只发一条（chat 有状态），等上一条回来才能再发。 */
-export function SupervisorChat({ initial, api, projectId }: SupervisorChatProps) {
-  const [messages, setMessages] = useState<ChatItem[]>(initial);
+export function SupervisorChat({
+  initial,
+  api,
+  projectId,
+  store = supervisorChatStore,
+  compact = false,
+  onImport,
+  onOpenSettings,
+  onExport,
+  busy = null,
+}: SupervisorChatProps) {
+  useEffect(() => store.seed(initial), [store, initial]);
+  const { items: messages, pending } = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const [draft, setDraft] = useState("");
-  const [pending, setPending] = useState(false);
-  const inflight = useRef(false);
-  const seq = useRef(0);
-  const nextId = (p: string) => `${p}${initial.length + seq.current++}`;
   const now = () => new Date().toISOString();
 
   const send = async () => {
     const text = draft.trim();
-    if (!text || inflight.current) return;
-    setMessages((m) => [...m, { id: nextId("u"), from: "user", content: text, ts: now() }]);
+    // 等待状态在 store 里：组件卸载重挂也挡得住重复发送（主进程另有串行）
+    if (!text || store.getSnapshot().pending) return;
+    store.append({ id: store.nextId("u"), from: "user", content: text, ts: now() });
     setDraft("");
     if (!api?.supervisorChat) return;
-    inflight.current = true;
-    setPending(true);
+    if (!store.begin()) return;
     let item: ChatItem;
     try {
       const r = await api.supervisorChat({ text, ...(projectId && { project_id: projectId }) });
       item = r.ok
-        ? { id: nextId("s"), from: "supervisor", reply: r.reply, ts: now() }
-        : { id: nextId("e"), from: "system", failed: chatFailureText(r.reason), ts: now() };
+        ? { id: store.nextId("s"), from: "supervisor", reply: r.reply, ts: now() }
+        : { id: store.nextId("e"), from: "system", failed: chatFailureText(r.reason), ts: now() };
     } catch {
       // IPC 本身被拒：错误对象可能带主进程路径等，不原样显示
       item = {
-        id: nextId("e"),
+        id: store.nextId("e"),
         from: "system",
         failed: chatFailureText("和主进程通信失败，请重试"),
         ts: now(),
       };
     } finally {
-      inflight.current = false;
-      setPending(false);
+      store.end();
     }
-    setMessages((m) => [...m, item]);
+    store.append(item);
   };
 
   return (
-    <section aria-label="主管对话" className="flex min-w-0 flex-1 flex-col">
-      <header className="flex items-center gap-2 border-b border-border px-4 py-2">
-        <AgentIcon supervisor />
-        <span className="flex-1 text-sm font-medium">主管</span>
-        <Button variant="ghost" size="sm" aria-label="设置">
-          <Settings strokeWidth={1.5} />
-          设置
-        </Button>
-        <Button variant="ghost" size="sm" aria-label="导出诊断包">
-          <Download strokeWidth={1.5} />
-          导出
-        </Button>
-      </header>
+    <section
+      aria-label="主管对话"
+      className={cn(
+        "flex min-w-0 flex-col",
+        compact ? "h-64 shrink-0 border-t border-border" : "flex-1",
+      )}
+    >
+      {!compact && (
+        <header className="flex items-center gap-2 border-b border-border px-4 py-2">
+          <AgentIcon supervisor />
+          <span className="flex-1 text-sm font-medium">主管</span>
+          {onImport && (
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-label="导入项目"
+              disabled={busy !== null}
+              onClick={onImport}
+            >
+              <FolderOpen strokeWidth={1.5} />
+              {busy === "import" ? "导入中…" : "导入项目"}
+            </Button>
+          )}
+          <Button variant="ghost" size="sm" aria-label="设置" onClick={onOpenSettings}>
+            <Settings strokeWidth={1.5} />
+            设置
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label="导出诊断包"
+            disabled={busy !== null}
+            onClick={onExport}
+          >
+            <Download strokeWidth={1.5} />
+            {busy === "export" ? "导出中…" : "导出"}
+          </Button>
+        </header>
+      )}
       <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
         {messages.map((m) => {
           if (m.failed !== undefined) {

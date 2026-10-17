@@ -8,6 +8,7 @@ import type {
   PendingHighRisk,
   UserMessage,
 } from "@bakacoding/supervisor";
+import type { Project } from "@bakacoding/config-budget";
 import type { BakaEvent, TicketStatus } from "@bakacoding/types";
 
 /** IPC 通道名。 */
@@ -34,6 +35,12 @@ export const IPC_CHANNELS = {
   syncStateUpdate: "bakacoding:sync:state-update",
   /** invoke：主管 1:1 对话，转给 10 的 chat()（T-071）。 */
   supervisorChat: "bakacoding:supervisor:chat",
+  /** invoke：选目录导入项目，切换后端到该仓库（T-072）。 */
+  projectImport: "bakacoding:project:import",
+  /** invoke：选保存路径，导出最近 24 小时诊断包（T-072）。 */
+  diagnosticsExport: "bakacoding:diagnostics:export",
+  /** invoke：只读设置（仓库、环境变量是否已设、本地 / GitHub 模式）（T-072）。 */
+  settingsGet: "bakacoding:settings:get",
 } as const;
 
 /** 界面关心的事件类型；其余事件主进程不下发。 */
@@ -136,6 +143,22 @@ export type ChatReplyKind = ChatReply["kind"];
  * 只读 / 未接线 / chat() 抛错都是 ok:false，reason 已在主进程脱敏、截到 CHAT_REASON_MAX 字。
  */
 export type DesktopChatResult = { ok: true; reply: ChatReply } | { ok: false; reason: string };
+/** `project:import` 结果（T-072）：project 原样取自 3 的 importProject；note 为补充说明（如在用 BAKACODING_CONFIG）。 */
+export type DesktopImportResult =
+  | { ok: true; project: Project; note?: string }
+  | { ok: false; canceled?: true; missing?: string[]; reason?: string };
+
+/** `diagnostics:export` 结果（T-072）；reason 已脱敏截断。 */
+export type DesktopExportResult =
+  { ok: true; path: string } | { ok: false; canceled?: true; reason: string };
+
+/** `settings:get` 结果（T-072）：环境变量只给名字和是否已设，绝不给值。 */
+export interface DesktopSettings {
+  repo: string | null;
+  env: { name: string; set: boolean }[];
+  /** readonly：后端只读（没有 PR 实现，不显示成 local） */
+  mode: "local" | "github" | "readonly";
+}
 
 /** preload 通过 contextBridge 暴露在 window.bakacoding 上的 API。 */
 export interface BakaDesktopApi {
@@ -164,11 +187,18 @@ export interface BakaDesktopApi {
   onSyncState(listener: (state: DesktopSyncState) => void): () => void;
   /** 发一条消息给主管（T-071）；失败以 ok:false 返回，不抛过 IPC。 */
   supervisorChat(message: UserMessage): Promise<DesktopChatResult>;
+  /** 选目录导入项目（T-072）。 */
+  importProject(): Promise<DesktopImportResult>;
+  /** 导出诊断包（T-072）。 */
+  exportDiagnostics(): Promise<DesktopExportResult>;
+  /** 只读设置（T-072）。 */
+  getSettings(): Promise<DesktopSettings>;
 }
 
 export type {
   ChatReply,
   UserMessage,
+  Project,
   HighRiskDecisionErrorCode,
   HighRiskFile,
   HighRiskReason,

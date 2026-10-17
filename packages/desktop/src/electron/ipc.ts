@@ -3,11 +3,26 @@ import {
   IPC_CHANNELS,
   type DesktopChatResult,
   type DesktopDecideHighRiskResult,
+  type DesktopExportResult,
+  type DesktopImportResult,
+  type DesktopSettings,
   type DesktopSyncState,
   type DesktopUpdate,
   type SupervisorNotifyMessage,
 } from "../shared/api.js";
+import type { UserMessage } from "@bakacoding/supervisor";
+import path from "node:path";
 import type { BackendHandle } from "./backend.js";
+import { checkProjectDir, repoLockedBy, REPO_LOCKED_REASON } from "./project-import.js";
+import {
+  defaultExportName,
+  envPresence,
+  EXPORT_REASON_MAX,
+  inside,
+  isSymlinkTarget,
+  type ProjectSettingsDeps,
+} from "./project-settings-ipc.js";
+import { sanitizeErrorName, sanitizeSyncErrorMessage } from "./sync-state.js";
 import type { EventReader } from "./reader.js";
 
 /**
@@ -163,11 +178,7 @@ export function serveSyncState(
 }
 
 /** 把渲染进程传来的参数收成 10 的 UserMessage；text 不是字符串时给空串（由后端判空）。 */
-export function toUserMessage(arg: unknown): {
-  text: string;
-  project_id?: string;
-  message_id?: string;
-} {
+export function toUserMessage(arg: unknown): UserMessage {
   const o = (typeof arg === "object" && arg !== null ? arg : {}) as Record<string, unknown>;
   return {
     text: typeof o.text === "string" ? o.text : "",
@@ -188,5 +199,86 @@ export function serveSupervisorChat(
   });
   return () => {
     ipc.removeHandler(IPC_CHANNELS.supervisorChat);
+  };
+}
+
+/**
+ * 导入项目 / 导出诊断包 / 只读设置 IPC（T-072）。对话框、userData 写入由 main 注入；
+ * 依赖与辅助函数在 project-settings-ipc.ts。
+ */
+export function serveProjectSettings(ipc: IpcMainLike, deps: ProjectSettingsDeps): () => void {
+  const now = deps.now ?? (() => new Date());
+
+  ipc.handle(IPC_CHANNELS.projectImport, async () => {
+    if (repoLockedBy(deps.argv, deps.env))
+      return { ok: false, reason: REPO_LOCKED_REASON } satisfies DesktopImportResult;
+    const dir = await deps.pickDirectory();
+    if (!dir) return { ok: false, canceled: true } satisfies DesktopImportResult;
+    const check = checkProjectDir(dir, deps.env, deps.argv);
+    if (!check.ok) {
+      return {
+        ok: false,
+        ...(check.missing && { missing: check.missing }),
+        ...(check.reason !== undefined && { reason: check.reason }),
+      } satisfies DesktopImportResult;
+    }
+    const r = await deps.backend.switchTo(path.resolve(dir));
+    if (!r.ok) {
+      // 新后端已经在跑、只是 importProject 失败：记下的路径要和实际运行的仓库一致
+      if (r.switched) deps.saveLastRepo(path.resolve(dir));
+      return { ok: false, reason: r.reason } satisfies DesktopImportResult;
+    }
+    deps.saveLastRepo(path.resolve(dir));
+    return {
+      ok: true,
+      project: r.project,
+      ...(check.note !== undefined && { note: check.note }),
+    } satisfies DesktopImportResult;
+  });
+
+  ipc.handle(IPC_CHANNELS.diagnosticsExport, async () => {
+    const at = now();
+    const target = await deps.pickSavePath(path.join(deps.downloadsDir, defaultExportName(at)));
+    if (!target)
+      return { ok: false, canceled: true, reason: "已取消" } satisfies DesktopExportResult;
+    if (isSymlinkTarget(target)) {
+      return {
+        ok: false,
+        reason: "保存位置是符号链接，请换个位置",
+      } satisfies DesktopExportResult;
+    }
+    if (inside(target, deps.backend.repoRoot())) {
+      return {
+        ok: false,
+        reason: "不能把诊断包保存到仓库目录里，请换个位置",
+      } satisfies DesktopExportResult;
+    }
+    try {
+      return {
+        ok: true,
+        path: await deps.backend.exportDiagnostics(target, at),
+      } satisfies DesktopExportResult;
+    } catch (e) {
+      const msg = e instanceof Error ? `${sanitizeErrorName(e.name)}：${e.message}` : String(e);
+      return {
+        ok: false,
+        reason: sanitizeSyncErrorMessage(`导出失败：${msg}`, deps.env, EXPORT_REASON_MAX),
+      } satisfies DesktopExportResult;
+    }
+  });
+
+  ipc.handle(IPC_CHANNELS.settingsGet, () => {
+    const settings: DesktopSettings = {
+      repo: deps.backend.repoRoot() || null,
+      env: envPresence(deps.env),
+      mode: deps.backend.status().mode === "readonly" ? "readonly" : deps.backend.prMode(),
+    };
+    return settings;
+  });
+
+  return () => {
+    ipc.removeHandler(IPC_CHANNELS.projectImport);
+    ipc.removeHandler(IPC_CHANNELS.diagnosticsExport);
+    ipc.removeHandler(IPC_CHANNELS.settingsGet);
   };
 }

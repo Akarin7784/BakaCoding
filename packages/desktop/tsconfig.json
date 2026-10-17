@@ -25,6 +25,12 @@
     },
     {
       "path": "../supervisor"
+    },
+    {
+      "path": "../diagnostics"
+    },
+    {
+      "path": "../pr"
     }
   ],
   "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]

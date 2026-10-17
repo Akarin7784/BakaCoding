@@ -1,7 +1,7 @@
 // T-071：主管 1:1 对话的主进程侧——把 10 的 chat() 包成不抛过 IPC 的结果，失败原因脱敏截断。
 import type { ChatReply, UserMessage } from "@bakacoding/supervisor";
 import type { DesktopChatResult } from "../shared/api.js";
-import { sanitizeSyncErrorMessage } from "./sync-state.js";
+import { sanitizeErrorName, sanitizeSyncErrorMessage } from "./sync-state.js";
 
 /** ok:false 时 reason 的上限（与同步错误同一套脱敏：先换密钥值，再 light，最后截断）。 */
 export const CHAT_REASON_MAX = 2000;
@@ -43,8 +43,24 @@ export async function runSupervisorChat(
     const reply = await chat({ ...message, text });
     return { ok: true, reply };
   } catch (e) {
-    const name = e instanceof Error ? e.name : "Error";
+    const name = sanitizeErrorName(e instanceof Error ? e.name : "Error");
     const msg = e instanceof Error ? e.message : String(e);
     return { ok: false, reason: sanitizeChatReason(`主管回复失败（${name}）：${msg}`, env) };
   }
+}
+
+/**
+ * 串行队列（T-072）：10 的 chat() 有状态，主进程里前一条回来才调下一条；
+ * 渲染进程卸载 / 重挂丢了自己的防重入也不会并发。前一条失败不影响后一条。
+ */
+export function createSerialQueue(): <T>(task: () => Promise<T>) => Promise<T> {
+  let chain: Promise<unknown> = Promise.resolve();
+  return <T>(task: () => Promise<T>): Promise<T> => {
+    const run = chain.then(task);
+    chain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  };
 }

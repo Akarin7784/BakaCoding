@@ -13,11 +13,13 @@ import * as ipcModule from "./ipc.js";
 import {
   serveBackend,
   serveHighRisk,
+  serveProjectSettings,
   serveReader,
   serveSupervisorChat,
   serveSyncState,
   type IpcMainLike,
 } from "./ipc.js";
+import type { ProjectSettingsDeps } from "./project-settings-ipc.js";
 import { createDesktopApi, type IpcRendererLike } from "./preload-api.js";
 import type { EventReader } from "./reader.js";
 
@@ -73,6 +75,11 @@ function fakeBackend(over: Partial<BackendHandle> = {}): BackendHandle {
       ok: true as const,
       reply: { text: "好的", kind: "answer" as const },
     })),
+    // T-072：serveProjectSettings 用到的成员（BackendSwitcher 的 switchTo 也放进来）
+    repoRoot: vi.fn(() => "/repo"),
+    prMode: vi.fn(() => "local" as const),
+    exportDiagnostics: vi.fn(async (t: string) => t),
+    switchTo: vi.fn(async () => ({ ok: false as const, reason: "x" })),
     ...over,
   };
   return new Proxy(base as BackendHandle, {
@@ -104,6 +111,16 @@ const SERVE: Record<string, (ipc: IpcMainLike, backend: BackendHandle) => () => 
   serveHighRisk: (ipc, backend) => serveHighRisk(ipc, backend, () => null),
   serveSyncState: (ipc, backend) => serveSyncState(ipc, backend, () => null, 1000),
   serveSupervisorChat: (ipc, backend) => serveSupervisorChat(ipc, backend),
+  serveProjectSettings: (ipc, backend) =>
+    serveProjectSettings(ipc, {
+      backend: backend as unknown as ProjectSettingsDeps["backend"],
+      argv: [],
+      env: {},
+      pickDirectory: async () => null,
+      pickSavePath: async () => null,
+      downloadsDir: "/dl",
+      saveLastRepo: () => {},
+    }),
 };
 function wireAll(ipc: IpcMainLike, backend: BackendHandle): Array<() => void> {
   vi.useFakeTimers();
@@ -218,6 +235,14 @@ describe("handler 参数：第一个是 event，渲染进程参数从第二个�
     await api.getSyncState();
     await api.supervisorChat({ text: "hi", project_id: "p-2" });
     expect(backend.supervisorChat).toHaveBeenCalledWith({ text: "hi", project_id: "p-2" });
+    // T-072：三个无参数通道（主进程自己弹对话框；这里对话框取消）
+    await expect(api.importProject()).resolves.toEqual({ ok: false, canceled: true });
+    await expect(api.exportDiagnostics()).resolves.toEqual({
+      ok: false,
+      canceled: true,
+      reason: "已取消",
+    });
+    await expect(api.getSettings()).resolves.toMatchObject({ repo: "/repo", mode: "local" });
     // 以 IPC_CHANNELS 为准：新增 invoke 通道而这里没往返、或主进程没注册，都会失败
     expect([...seen].sort()).toEqual(INVOKE_CHANNELS);
     expect([...handlers.keys()].sort()).toEqual(INVOKE_CHANNELS);
@@ -333,10 +358,13 @@ describe("preload 暴露的只读 API", () => {
     const api = createDesktopApi(fakeIpc(), "linux");
     expect(Object.keys(api).sort()).toEqual([
       "decideHighRisk",
+      "exportDiagnostics",
       "getBackendStatus",
       "getPendingHighRisk",
+      "getSettings",
       "getSnapshot",
       "getSyncState",
+      "importProject",
       "markSupervisorReady",
       "onPendingHighRisk",
       "onSupervisorNotify",

@@ -3,9 +3,11 @@ import type { ChatReply, UserMessage } from "@bakacoding/supervisor";
 import { IPC_CHANNELS, type DesktopChatResult } from "../shared/api.js";
 import { serveSupervisorChat, type IpcMainLike } from "./ipc.js";
 import { createDesktopApi, type IpcRendererLike } from "./preload-api.js";
-import { CHAT_REASON_MAX, runSupervisorChat } from "./supervisor-chat.js";
+import { redact } from "@bakacoding/config-budget";
+import { CHAT_REASON_MAX, createSerialQueue, runSupervisorChat } from "./supervisor-chat.js";
 
-const SECRET = "sk-test-0123456789abcdef";
+// light 规则认不出的假值：只有「环境变量值替换」这一步能遮掉它
+const SECRET = "plainvalue-QwErTy-778899";
 const env = { DEEPSEEK_API_KEY: SECRET, HOME: "/home/x" };
 
 const replies: ChatReply[] = [
@@ -84,14 +86,17 @@ describe("supervisor:chat IPC（T-071）", () => {
 
   it("chat() 抛错：ok:false，reason 带错误名和信息，密钥值被替换且截断", async () => {
     const chat = vi.fn(async () => {
-      const e = new Error(`401 Authorization: Bearer ${SECRET} ${"x".repeat(5000)}`);
-      e.name = "BudgetExhaustedError";
+      const e = new Error(`upstream rejected key ${SECRET} ${"x".repeat(5000)}`);
+      e.name = "Budget<script>ExhaustedError";
       throw e;
     });
     const r = await runSupervisorChat(chat, { text: "hi" }, env, undefined);
     expect(r.ok).toBe(false);
     if (r.ok) return;
-    expect(r.reason).toContain("BudgetExhaustedError");
+    expect(redact(SECRET, "light").text).toBe(SECRET);
+    expect(r.reason).toContain("BudgetscriptExhaustedError");
+    expect(r.reason).not.toContain("<script>");
+    expect(r.reason).toContain("[REDACTED:DEEPSEEK_API_KEY]");
     expect(r.reason).not.toContain(SECRET);
     expect(r.reason.length).toBeLessThanOrEqual(CHAT_REASON_MAX + 1);
   });
@@ -108,5 +113,48 @@ describe("supervisor:chat IPC（T-071）", () => {
       reply: replies[0],
     });
     expect(ipc.invoke).toHaveBeenCalledWith(IPC_CHANNELS.supervisorChat, { text: "hi" });
+  });
+
+  it("截断按码点，不拆代理对", async () => {
+    const chat = vi.fn(async () => {
+      throw new Error("😀".repeat(CHAT_REASON_MAX + 10));
+    });
+    const r = await runSupervisorChat(chat, { text: "hi" }, {}, undefined);
+    if (r.ok) throw new Error("expected failure");
+    expect(r.reason.endsWith("…")).toBe(true);
+    expect(Array.from(r.reason)).toHaveLength(CHAT_REASON_MAX + 1);
+    expect(r.reason).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+  });
+
+  it("主进程串行（T-072）：两条并发，第二条等第一条回来才调 chat()", async () => {
+    const q = createSerialQueue();
+    const order: string[] = [];
+    let release!: () => void;
+    const first = q(
+      () =>
+        new Promise<string>((r) => {
+          order.push("start-1");
+          release = () => {
+            order.push("end-1");
+            r("1");
+          };
+        }),
+    );
+    const second = q(async () => {
+      order.push("start-2");
+      return "2";
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(order).toEqual(["start-1"]);
+    release();
+    await expect(first).resolves.toBe("1");
+    await expect(second).resolves.toBe("2");
+    expect(order).toEqual(["start-1", "end-1", "start-2"]);
+    // 前一条失败不挡后一条
+    const bad = q(async () => {
+      throw new Error("x");
+    });
+    await expect(bad).rejects.toThrow("x");
+    await expect(q(async () => "ok")).resolves.toBe("ok");
   });
 });

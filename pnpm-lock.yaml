@@ -107,6 +107,12 @@ importers:
       '@bakacoding/config-budget':
         specifier: workspace:*
         version: link:../config-budget
+      '@bakacoding/diagnostics':
+        specifier: workspace:*
+        version: link:../diagnostics
+      '@bakacoding/pr':
+        specifier: workspace:*
+        version: link:../pr
       '@bakacoding/scheduler':
         specifier: workspace:*
         version: link:../scheduler

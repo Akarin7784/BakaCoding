@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChatReply, DesktopChatResult, UserMessage } from "../../shared/api";
 import { chatReplyView } from "../lib/chat-labels";
+import { ChatStore } from "../data/chatStore";
 import { SupervisorChat } from "./SupervisorChat";
 
 afterEach(cleanup);
@@ -36,7 +37,14 @@ function type(text: string) {
 describe("SupervisorChat 接 supervisor:chat（T-071）", () => {
   it.each(replies)("渲染 $kind", async (reply) => {
     const supervisorChat = vi.fn(async (): Promise<DesktopChatResult> => ({ ok: true, reply }));
-    render(<SupervisorChat initial={[]} api={{ supervisorChat }} projectId="P-1" />);
+    render(
+      <SupervisorChat
+        store={new ChatStore()}
+        initial={[]}
+        api={{ supervisorChat }}
+        projectId="P-1"
+      />,
+    );
     type("做个登录页");
     const el = await screen.findByTestId("chat-reply");
     expect(el.dataset.kind).toBe(reply.kind);
@@ -59,7 +67,7 @@ describe("SupervisorChat 接 supervisor:chat（T-071）", () => {
     const supervisorChat = vi.fn(
       (_m: UserMessage) => new Promise<DesktopChatResult>((r) => (resolve = r)), // eslint-disable-line @typescript-eslint/no-unused-vars
     );
-    render(<SupervisorChat initial={[]} api={{ supervisorChat }} />);
+    render(<SupervisorChat store={new ChatStore()} initial={[]} api={{ supervisorChat }} />);
     type("第一条");
     expect(await screen.findByTestId("chat-pending")).toBeTruthy();
     expect((screen.getByLabelText("发送") as HTMLButtonElement).disabled).toBe(true);
@@ -79,7 +87,7 @@ describe("SupervisorChat 接 supervisor:chat（T-071）", () => {
       ok: false,
       reason: "只读模式：缺少环境变量 DEEPSEEK_API_KEY",
     }));
-    render(<SupervisorChat initial={[]} api={{ supervisorChat }} />);
+    render(<SupervisorChat store={new ChatStore()} initial={[]} api={{ supervisorChat }} />);
     type("hi");
     expect((await screen.findByRole("alert")).textContent).toBe(
       "发送失败：只读模式：缺少环境变量 DEEPSEEK_API_KEY",
@@ -91,7 +99,7 @@ describe("SupervisorChat 接 supervisor:chat（T-071）", () => {
     const supervisorChat = vi.fn(async (): Promise<DesktopChatResult> => {
       throw new Error(`Error invoking remote method: Bearer ${secret}`);
     });
-    render(<SupervisorChat initial={[]} api={{ supervisorChat }} />);
+    render(<SupervisorChat store={new ChatStore()} initial={[]} api={{ supervisorChat }} />);
     type("hi");
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toBe("发送失败：和主进程通信失败，请重试");
@@ -100,9 +108,29 @@ describe("SupervisorChat 接 supervisor:chat（T-071）", () => {
   });
 
   it("没有 api（假数据）时只追加到本地", () => {
-    render(<SupervisorChat initial={[]} />);
+    render(<SupervisorChat store={new ChatStore()} initial={[]} />);
     type("本地消息");
     expect(screen.getByText("本地消息")).toBeTruthy();
     expect(screen.queryByTestId("chat-pending")).toBeNull();
+  });
+
+  it("等待中卸载再挂上（切面板）：历史还在、仍在等待、不能再发（T-072）", async () => {
+    let resolve!: (r: DesktopChatResult) => void;
+    const supervisorChat = vi.fn(() => new Promise<DesktopChatResult>((r) => (resolve = r)));
+    const store = new ChatStore();
+    const first = render(<SupervisorChat store={store} initial={[]} api={{ supervisorChat }} />);
+    type("第一条");
+    expect(await screen.findByTestId("chat-pending")).toBeTruthy();
+    first.unmount();
+    render(<SupervisorChat store={store} initial={[]} api={{ supervisorChat }} projectId="P-9" />);
+    expect(screen.getByText("第一条")).toBeTruthy();
+    expect(screen.getByTestId("chat-pending")).toBeTruthy();
+    type("第二条");
+    expect(supervisorChat).toHaveBeenCalledTimes(1);
+    await act(async () => resolve({ ok: true, reply: replies[0]! }));
+    expect((await screen.findByTestId("chat-reply")).dataset.kind).toBe("answer");
+    fireEvent.click(screen.getByLabelText("发送"));
+    expect(supervisorChat).toHaveBeenCalledTimes(2);
+    expect(supervisorChat.mock.calls[1]).toEqual([{ text: "第二条", project_id: "P-9" }]);
   });
 });
