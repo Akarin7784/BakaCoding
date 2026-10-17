@@ -133,6 +133,10 @@ interface PendingInterface {
   sha: string;
   files: string[];
   changed: ChangedInterface[];
+  /** 已经发出去（补发成功）（T-112） */
+  published?: boolean;
+  /** 合入后清理已排上、本单有 merge_followup 标记：补发成功时 clear（T-112） */
+  clearOnSend?: boolean;
 }
 
 interface Entry {
@@ -645,7 +649,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     sha: string,
     files: string[],
     logSha: string = sha,
-  ): Promise<void> {
+  ): Promise<PendingInterface> {
     const changed = (e.ticket.interfaces ?? []).filter((i) => files.includes(i.file));
     mergeLog.push({
       ticket_id: e.ticket.ticket_id,
@@ -656,15 +660,56 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     const p: PendingInterface = { e, pr_id, sha, files, changed };
     try {
       await publishInterfaceChanged(p);
+      p.published = true;
+      return p;
     } catch (err) {
       const key = `${e.ticket.ticket_id}@${sha}`;
-      if (pendingInterface.has(key)) {
+      const queued = pendingInterface.get(key);
+      if (queued) {
         onError(err, e.ticket.ticket_id);
-        return;
+        return queued;
       }
       pendingInterface.set(key, p);
       await reportMergedBut(e, err, "interface_changed_unsent: ");
+      return p;
     }
+  }
+
+  /**
+   * 写 merge_followup 标记（T-112），在写 merged 之前。没注入算成功；写失败报 merged_but 并返回 false，
+   * 调用方不写 merged（库里仍是 merge_queued，重启后 takeOver 接回重新 merge，6 的合并重试幂等，T-103）。
+   */
+  async function markFollowup(e: Entry, pr_id: string, sha: string): Promise<boolean> {
+    if (!deps.mergeFollowup) return true;
+    try {
+      await deps.mergeFollowup.mark(e.ticket.ticket_id, { pr_id, merge_sha: sha });
+      return true;
+    } catch (err) {
+      await reportMergedBut(e, err, "merge_followup_unsaved: ");
+      return false;
+    }
+  }
+
+  /** 清 merge_followup 标记（T-112）；失败只调 onError，下次启动会再补发一次（至多重复一次）。 */
+  async function clearFollowup(e: Entry): Promise<void> {
+    if (!deps.mergeFollowup) return;
+    try {
+      await deps.mergeFollowup.clear(e.ticket.ticket_id);
+    } catch (err) {
+      onError(err, e.ticket.ticket_id);
+    }
+  }
+
+  /**
+   * interface_changed 已发出、合入后清理已排上之后才清标记（T-112）。没发出去的（在待补发列表里）等补发成功再清。
+   */
+  async function settleFollowup(p: PendingInterface): Promise<boolean> {
+    if (p.published) {
+      await clearFollowup(p.e);
+      return true;
+    }
+    p.clearOnSend = true;
+    return false;
   }
 
   /** 重试待补发的 interface_changed；成功即移出，不另发事件；失败只调 onError，留到下次。 */
@@ -676,6 +721,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         try {
           await publishInterfaceChanged(p);
           pendingInterface.delete(key);
+          p.published = true;
+          if (p.clearOnSend) await clearFollowup(p.e);
         } catch (err) {
           onError(err, p.e.ticket.ticket_id);
         }
@@ -692,10 +739,14 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   async function onMerged(e: Entry, pr_id: string, sha: string): Promise<void> {
     removeFromQueue(e.ticket.ticket_id);
     e.status = "merged";
-    try {
-      await setStatus(e, "merged");
-    } catch (err) {
-      await reportMergedBut(e, err);
+    // T-112：先写 merge_followup 标记再写 merged，库里不会有「merged 却没标记」的单；标记写失败就不写 merged
+    const marked = await markFollowup(e, pr_id, sha);
+    if (marked) {
+      try {
+        await setStatus(e, "merged");
+      } catch (err) {
+        await reportMergedBut(e, err);
+      }
     }
     record(e, pr_id, {
       conflict: e.conflicted,
@@ -716,8 +767,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     // T-112：取 diff 放在写完 merged、saveMergeResult 之后；被 stop() 中止时原样抛（不发 interface_changed、
     // 不报 merged_but），已写的 merged 和合并结果保留
     const files = await changedFiles(pr_id);
-    await announceMerge(e, pr_id, sha, files);
+    const p = await announceMerge(e, pr_id, sha, files);
     scheduleMergedCleanup(e);
+    if (marked) await settleFollowup(p);
   }
 
   /**
@@ -1462,14 +1514,20 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   async function applyManualMerge(e: Entry, pr_id: string, merge_sha?: string): Promise<void> {
     removeFromQueue(e.ticket.ticket_id);
     e.status = "merged";
-    try {
-      await setStatus(e, "merged");
-    } catch (err) {
-      await reportMergedBut(e, err);
+    const valid = !!merge_sha && SHA_RE.test(merge_sha);
+    // T-112：合法 merge_sha（要发 interface_changed）时先写 merge_followup 标记再写 merged；写失败不写 merged
+    const marked = valid ? await markFollowup(e, pr_id, merge_sha!) : false;
+    if (marked || !valid) {
+      try {
+        await setStatus(e, "merged");
+      } catch (err) {
+        await reportMergedBut(e, err);
+      }
     }
     const files = await changedFiles(pr_id);
-    if (merge_sha && SHA_RE.test(merge_sha)) {
-      await announceMerge(e, pr_id, merge_sha, files, "");
+    let p: PendingInterface | undefined;
+    if (valid) {
+      p = await announceMerge(e, pr_id, merge_sha!, files, "");
     } else {
       mergeLog.push({
         ticket_id: e.ticket.ticket_id,
@@ -1485,6 +1543,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       );
     }
     scheduleMergedCleanup(e);
+    if (p && marked) await settleFollowup(p);
   }
 
   /** 用户手动关闭：6 已发 escalated(github_manual)，9 只改状态。 */
@@ -1920,6 +1979,31 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       queue.push(ticket.ticket_id);
       kick(); // 只触发合并循环，不触发派单
       return "adopted";
+    },
+    async recoverMergeFollowup(ticket, info) {
+      const id = ticket.ticket_id;
+      let e = entries.get(id);
+      if (e && e.status !== "merged")
+        throw new Error(`recoverMergeFollowup ${id}：单在 9 里是 ${e.status}，不是 merged`);
+      if (!e) {
+        e = newEntry(ticket);
+        e.status = "merged";
+        e.dispatched = true;
+        e.pr_id = info.pr_id;
+        entries.set(id, e);
+      }
+      prToTicket.set(info.pr_id, id);
+      let files: string[];
+      try {
+        files = (await requirePr().diff(info.pr_id, prOpts())).files.map((f) => f.path);
+      } catch (err) {
+        // 标记留着，下次启动再补
+        onError(err, id);
+        return "failed";
+      }
+      const p = await announceMerge(e, info.pr_id, info.merge_sha, files, "");
+      scheduleMergedCleanup(e);
+      return (await settleFollowup(p)) ? "emitted" : "failed";
     },
     eventContext,
     mergeResult: (pr_id) => results.get(pr_id),

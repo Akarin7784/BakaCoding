@@ -22,6 +22,7 @@ import {
   type DispatchOutcome,
   HighRiskDecisionError,
   type HighRiskHeldInfo,
+  type MergeFollowup,
   isStalePrError,
   type ReReviewRequest,
   type Scheduler,
@@ -3824,5 +3825,219 @@ describe("T-112 9 调 6 被 stop() 中止：原样抛 signal.reason，不写失�
     expect(s.status("T-1")).toBe("pending");
     expect(calls.some((c) => c.method === "merge")).toBe(false);
     expect(escalations(h)).toEqual([]);
+  });
+});
+
+// ---------------- T-112：merge_followup 标记与重启补做 ----------------
+
+/** 模拟 2 的需求单 fields.merge_followup：跨「重启」（多个 harness / 调度器实例）共用。 */
+function followupStore(order?: string[]) {
+  const marks = new Map<string, MergeFollowup>();
+  const state = { failMark: false };
+  return {
+    marks,
+    state,
+    store: {
+      mark: (id: string, info: MergeFollowup) => {
+        if (state.failMark) throw new Error("写标记失败");
+        order?.push(`mark:${id}`);
+        marks.set(id, { ...info });
+      },
+      clear: (id: string) => {
+        order?.push(`clear:${id}`);
+        marks.delete(id);
+      },
+    },
+  };
+}
+
+/** 按顺序记下 mark / clear 和状态写入。 */
+function orderedHarness(order: string[]) {
+  const h = harness();
+  const inner = h.deps.tickets.setStatus;
+  h.deps.tickets = {
+    setStatus: (t, s) => {
+      order.push(`status:${t}:${s}`);
+      return inner(t, s);
+    },
+  };
+  return h;
+}
+
+/** 模拟 10 的 takeOver：对带标记的 merged 单调 recoverMergeFollowup（在 adopt / enqueue 之后）。 */
+async function takeOverFollowups(s: Scheduler, marks: Map<string, MergeFollowup>) {
+  const out: Array<[string, string]> = [];
+  for (const [id, info] of [...marks])
+    out.push([id, await s.recoverMergeFollowup(ticket(id), info)]);
+  return out;
+}
+
+const ifaceEvents = (h: Harness) => h.published.filter((e) => e.type === "interface_changed");
+
+describe("T-112 merge_followup：写入顺序与清除时机", () => {
+  it("合并成功：先写标记再写 merged；发完 interface_changed、排上清理后才清标记", async () => {
+    const order: string[] = [];
+    const h = orderedHarness(order);
+    const f = followupStore(order);
+    h.deps.mergeFollowup = f.store;
+    h.deps.worktrees.cleanupMerged = (id) => {
+      order.push(`cleanupMerged:${id}`);
+      return { errors: [] } as never;
+    };
+    h.deps.bus.publish = ((orig) => (e: Parameters<typeof orig>[0]) => {
+      if (e.type === "interface_changed") order.push(`interface_changed:${e.ticket_id}`);
+      return orig(e);
+    })(h.deps.bus.publish);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("a") });
+    await s.idle();
+    expect(order.filter((o) => o.includes("T-1") && !/merge_queued|pending/.test(o))).toEqual([
+      "mark:T-1",
+      "status:T-1:merged",
+      "interface_changed:T-1",
+      "cleanupMerged:T-1",
+      "clear:T-1",
+    ]);
+    expect(f.marks.size).toBe(0);
+  });
+
+  it("手动合入（sync 报 merged、merge_sha 合法）同样先写标记再写 merged，发完再清", async () => {
+    const order: string[] = [];
+    const h = orderedHarness(order);
+    const f = followupStore(order);
+    h.deps.mergeFollowup = f.store;
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { depends_on: ["T-X"] }));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("a") });
+    h.syncChanges.push({ pr_id: "pr-1", from: "open", to: "merged", merge_sha: SHA("c") });
+    await s.sync();
+    const i = order.indexOf("mark:T-1");
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf("status:T-1:merged")).toBeGreaterThan(i);
+    expect(order.at(-1)).toBe("clear:T-1");
+    expect(ifaceEvents(h)).toHaveLength(1);
+  });
+
+  it("写标记失败：不写 merged（库里仍是 merge_queued，重启后靠 T-103 幂等重合），报 merged_but", async () => {
+    const order: string[] = [];
+    const h = orderedHarness(order);
+    const f = followupStore(order);
+    f.state.failMark = true;
+    h.deps.mergeFollowup = f.store;
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("a") });
+    await s.idle();
+    expect(order).not.toContain("status:T-1:merged");
+    expect(h.statuses.at(-1)).toEqual(["T-1", "merge_queued"]);
+    expect(escalations(h).map((e) => e.payload)).toEqual([
+      expect.objectContaining({
+        reason: "merged_but",
+        detail: expect.stringContaining("merge_followup_unsaved: 写标记失败"),
+      }),
+    ]);
+  });
+
+  it("interface_changed 没发出去（进待补发）：标记留着，补发成功才清", async () => {
+    const h = harness();
+    const f = followupStore();
+    h.deps.mergeFollowup = f.store;
+    let fail = true;
+    const orig = h.deps.bus.publish;
+    h.deps.bus.publish = (e) => {
+      if (e.type === "interface_changed" && fail) throw new Error("总线坏了");
+      return orig(e);
+    };
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("a") });
+    await s.idle();
+    expect(s.status("T-1")).toBe("merged");
+    expect(f.marks.has("T-1")).toBe(true);
+    fail = false;
+    await s.sync();
+    expect(ifaceEvents(h)).toHaveLength(1);
+    expect(f.marks.has("T-1")).toBe(false);
+  });
+});
+
+describe("T-112 merge_followup：重启补做", () => {
+  /** 第一次运行：合入后取 diff 被 stop() 中止，留下标记 */
+  async function abortedRun(f: ReturnType<typeof followupStore>) {
+    const h = harness();
+    h.deps.mergeFollowup = f.store;
+    const calls = signalPr(h, { diff: (signal) => untilAbort(signal) });
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("a") });
+    await vi.waitFor(() => expect(calls.some((c) => c.method === "diff")).toBe(true));
+    await s.stop();
+    expect(h.statuses.at(-1)).toEqual(["T-1", "merged"]);
+    return h;
+  }
+
+  /** 模拟重启：新的调度器，takeOver 对带标记的单补做 */
+  async function restart(
+    f: ReturnType<typeof followupStore>,
+    over: (h: Harness) => void = () => {},
+  ) {
+    const h = harness();
+    h.deps.mergeFollowup = f.store;
+    h.diffs.set("pr-1", ["src/a.ts"]);
+    over(h);
+    const s = await started(h);
+    // 一张在途单受这次合并影响
+    await s.enqueue(ticket("T-2", { write_scope: ["src/**"], depends_on: ["T-X"] }));
+    const results = await takeOverFollowups(s, f.marks);
+    await s.stop();
+    return { h, results };
+  }
+
+  it("中止后重启：interface_changed 恰好补发一次（base_commit 是合并 sha，受影响单算全），标记清掉", async () => {
+    const f = followupStore();
+    const h1 = await abortedRun(f);
+    expect(ifaceEvents(h1)).toEqual([]);
+    expect(f.marks.get("T-1")).toEqual({ pr_id: "pr-1", merge_sha: SHA("f") });
+    const r = await restart(f);
+    expect(r.results).toEqual([["T-1", "emitted"]]);
+    expect(ifaceEvents(r.h)).toHaveLength(1);
+    expect(ifaceEvents(r.h)[0]!.payload).toMatchObject({
+      pr_id: "pr-1",
+      base_commit: SHA("f"),
+      affected_ticket_ids: ["T-2"],
+    });
+    expect(f.marks.size).toBe(0);
+  });
+
+  it("重启两次：总共只补发一次", async () => {
+    const f = followupStore();
+    const h1 = await abortedRun(f);
+    const r1 = await restart(f);
+    const r2 = await restart(f);
+    expect(r2.results).toEqual([]);
+    expect(ifaceEvents(h1).length + ifaceEvents(r1.h).length + ifaceEvents(r2.h).length).toBe(1);
+  });
+
+  it("补做时取 diff 又失败：不发事件、标记留着；下次启动再补，仍只发一次", async () => {
+    const f = followupStore();
+    await abortedRun(f);
+    const r1 = await restart(f, (h) => h.diffFails.add("pr-1"));
+    expect(r1.results).toEqual([["T-1", "failed"]]);
+    expect(ifaceEvents(r1.h)).toEqual([]);
+    expect(f.marks.has("T-1")).toBe(true);
+    const r2 = await restart(f);
+    expect(r2.results).toEqual([["T-1", "emitted"]]);
+    expect(ifaceEvents(r2.h)).toHaveLength(1);
+    expect(f.marks.size).toBe(0);
+  });
+
+  it("单已在 9 里且不是 merged：拒绝补做", async () => {
+    const h = harness();
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await expect(
+      s.recoverMergeFollowup(ticket("T-1"), { pr_id: "pr-1", merge_sha: SHA("f") }),
+    ).rejects.toThrow(/不是 merged/);
   });
 });
