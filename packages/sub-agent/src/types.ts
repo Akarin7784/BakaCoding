@@ -98,7 +98,20 @@ export interface SubAgentDeps {
   /** 3 的 budgetState(ticket_id)：编码池报 budget_exceeded 时据此区分当日预算和本单预算 */
   budgetState: (ticket_id: string) => MaybePromise<Pick<BudgetState, "daily_exhausted" | "ticket">>;
   rounds: RoundStore;
+  /**
+   * 写 TicketStatus。归属（#40 评审）：8 只在 `handle` / handle 模式的 `resume` 里写 `merge_queued` 及之前的状态
+   * （coding / resubmitting / in_review / pending / escalated，`merge_queued` 在调 submit 之前写）；
+   * 进合并队列之后的状态（含冲突复投、重审期间）全部由 9 写，8 不写。
+   */
   tickets: TicketStatusStore;
+  /**
+   * 评审复投计数的历史来源（跨重启）：返回本单已发生的评审复投次数（含编码池失败那几次）。
+   * 用 `eventLogResubmitHistory(storage)` 从 2 的事件日志数：8 每计一次评审复投恰好发一条
+   * `group_message(kind: "resubmit", sender: "sub_agent")`。冲突复投数由 9 计并传入。
+   */
+  resubmitHistory: (ticket_id: string) => MaybePromise<{ review: number }>;
+  /** 4 的 worktree 根目录（`<repo>/.bakacoding/worktrees`）：传进来的 worktree 路径必须在它下面 */
+  worktreeRoot: string;
   /** 不给 options.worktree 时用它建 r0 worktree */
   worktrees?: SubAgentWorktrees;
   /** 9 的 submit：handle / resume 评审通过后调用。冲突复投和重审的结果由 9 自己放回队列，不调它 */
@@ -117,7 +130,12 @@ export interface SubAgentDeps {
   }) => MaybePromise<string>;
   /** 识别评审时模型报的预算耗尽；默认看 error.code === "BUDGET_EXCEEDED" */
   isBudgetExceeded?: (error: unknown) => boolean;
-  /** 9 冲突复投 / 重审传入的 ticket 只有 SchedulerTicket 字段，用它补全；不给就查本进程登记过的单 */
+  /**
+   * 冲突复投时求新 worktree 的基线 sha（如 `git rev-parse HEAD`，在编码前调用）。不给就用 9 传来的 `base_commit`；
+   * 9 传的是分支名时 submit 的 base_commit 会认不出，建议注入或让 9 直接传 sha。
+   */
+  resolveBase?: (worktree_path: string) => MaybePromise<string>;
+  /** 9 冲突复投 / 重审 / 续跑传入的 ticket 只有 SchedulerTicket 字段，用它补全；不给就查本进程登记过的单 */
   loadTicket?: (ticket_id: string) => MaybePromise<SubAgentTicket | undefined>;
   logger?: { warn(message: string): void };
 }
@@ -135,9 +153,23 @@ export interface ResumeToken {
   feedback?: string;
   /** 暂停那一轮是不是复投（决定 is_resubmit 和 status） */
   is_resubmit: boolean;
-  /** 暂停在 review 阶段时，上一次编码池的结果（写精简摘要用） */
+  /** 暂停在 review 阶段时，上一次编码池的总结和 diff 里的改动文件（写精简摘要用） */
   last?: { summary: string; changed_files: string[] };
+  /** 这一轮 worktree 的基线 commit（submit 报给 9，避免 9 误判基线前进） */
+  base_commit: string;
+  /** 这一轮 worktree 的轮次 n（路径 …/<ticket_id>-r<n>；submit 的 round 报它） */
+  worktree_round: number;
+  /** 暂停时所在入口：handle（续跑通过后调 submit、写状态）/ conflict / rereview（只返回结果，不写状态） */
+  mode?: "handle" | "conflict" | "rereview";
 }
+
+/**
+ * 8 发的上报原因。`review_limit` / `coder_failed` / `budget_exceeded` 是正常超限；handle 里遇到未分类的异常时
+ * 也上报（不让单子卡在 coding）：6 / 9 的调用出错记 `github_manual`，评审或写轮次出错记 `review_limit`，
+ * 编码池抛错记 `coder_failed`，读预算出错记 `budget_exceeded`，`detail` 写 `<阶段>_error: <name>: <message>`。
+ */
+export type SubAgentEscalationReason =
+  "review_limit" | "coder_failed" | "budget_exceeded" | "github_manual";
 
 export type SubAgentOutcome =
   /** 评审通过，已调 9 的 submit（冲突复投 / 重审不调） */
@@ -151,7 +183,7 @@ export type SubAgentOutcome =
   /** 已发 escalated（reason 同事件） */
   | {
       kind: "escalated";
-      reason: "review_limit" | "coder_failed" | "budget_exceeded";
+      reason: SubAgentEscalationReason;
       detail?: string;
       pr_id: string | null;
       resubmit_counts: ResubmitCounts;
@@ -160,8 +192,12 @@ export type SubAgentOutcome =
   | { kind: "requeue_budget"; resume: ResumeToken };
 
 export interface HandleOptions {
-  /** 9 已建好的 worktree；不给就由 8 用 deps.worktrees 从 base_commit 建 r0 */
+  /** 9 已建好的 worktree；不给就由 8 用 deps.worktrees 从 base_commit 建 r0。路径须在 worktreeRoot 下 */
   worktree?: { path: string; branch: string };
+  /** 重启后接着跑：沿用已开的 PR（不再 open） */
+  pr_id?: string;
+  /** 给定 worktree 的轮次 n；不给就从路径末尾 `-r<n>` 解析，解析不出按 0 */
+  worktree_round?: number;
 }
 
 // ---- 与 T-035（模块 9，尚未合入）对齐的入口：同形的结构类型，8 不依赖 9 的包 ----
@@ -189,6 +225,9 @@ export interface ReReviewRequest {
   ticket: SchedulerTicketLike;
   pr_id: string;
   merged_since: Array<{ ticket_id: string; sha: string; files: string[] }>;
+  /** T-035 后续提交新增：基线不明时为 true，带目标分支 HEAD（8 目前只透传进摘要） */
+  base_unknown?: boolean;
+  target_head?: string;
 }
 
 /**
@@ -203,8 +242,14 @@ export type SchedulerFacingOutcome =
 export interface SubAgent {
   /** 主流程：编码 → 提交 → 开 PR → 评审 → 复投 / 上报 / 进合并队列 */
   handle(ticket: SubAgentTicket, options?: HandleOptions): Promise<SubAgentOutcome>;
-  /** 当日预算重置后续跑（同一 worktree，保留已有改动，不计复投） */
-  resume(ticket: SubAgentTicket, token: ResumeToken): Promise<SubAgentOutcome>;
+  /**
+   * 当日预算重置后续跑（同一 worktree，保留已有改动，不计复投）。ticket 可以只带 ticket_id（9 只有 SchedulerTicket）：
+   * 先查本进程登记过的单，再用 deps.loadTicket 补全，都没有就报错。评审通过一律调 9 的 submit。
+   */
+  resume(
+    ticket: SubAgentTicket | { ticket_id: string },
+    token: ResumeToken,
+  ): Promise<SubAgentOutcome>;
   /** 9 的冲突复投入口：新 worktree、新 PR，冲突文件作 feedback；冲突计数由 9 给 */
   resubmitConflict(req: ConflictResubmitRequest): Promise<SchedulerFacingOutcome>;
   /** 9 的重审入口（基线前进且涉及本单接口或依赖）：同一 PR 再评一次，不计复投 */

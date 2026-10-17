@@ -15,9 +15,17 @@ import {
   type ModelCall,
 } from "@bakacoding/review-pool";
 import { openStorage, type Storage } from "@bakacoding/storage";
-import type { TicketStatus } from "@bakacoding/types";
+import type { BakaEvent, TicketStatus } from "@bakacoding/types";
+import { randomUUID } from "node:crypto";
 import { WorktreeManager } from "@bakacoding/workspace";
-import { createSubAgent, type SubAgent, type SubAgentTicket } from "./index.js";
+import {
+  createSubAgent,
+  eventLogResubmitHistory,
+  type SubAgent,
+  type SubAgentDeps,
+  type SubAgentPublish,
+  type SubAgentTicket,
+} from "./index.js";
 
 const run = promisify(execFile);
 const ENV = {
@@ -54,6 +62,16 @@ afterEach(async () => {
   storage.close();
   await rm(root, { recursive: true, force: true });
 });
+
+/** 总线替身：直接落 2 的事件日志（seq / event_id / ts 由这里补）。 */
+function ingest(e: Parameters<SubAgentPublish>[0]): void {
+  storage.ingest({
+    ...e,
+    seq: storage.nextSeq(),
+    event_id: randomUUID(),
+    ts: new Date().toISOString(),
+  } as BakaEvent);
+}
 
 describe("8 接真实的 4/5/6/7/2（模型和 9 用替身）", () => {
   it("评审不过一次后通过：worktree 里真提交、轮次和 reviewer 落库、7 重启后从轮次记录找回原成员", async () => {
@@ -176,9 +194,14 @@ describe("8 接真实的 4/5/6/7/2（模型和 9 用替身）", () => {
         list: (id) => storage.query({ project_id: "P-1", ticket_id: id })[0]?.rounds ?? [],
       },
       tickets: { setStatus: (_id, s) => void statuses.push(s) },
+      resubmitHistory: eventLogResubmitHistory(storage),
+      worktreeRoot: join(repo, ".bakacoding", "worktrees"),
       worktrees: { create: (id, b, n) => mgr.createWorktree(id, b, n) },
       submit,
-      publish: (e) => void events.push(e),
+      publish: (e) => {
+        events.push(e);
+        ingest(e);
+      },
     });
     holder.agent = agent;
 
@@ -232,5 +255,81 @@ describe("8 接真实的 4/5/6/7/2（模型和 9 用替身）", () => {
       }),
     );
     expect(events.length).toBeGreaterThan(0);
+  });
+});
+
+describe("评审复投计数跨重启（2 的事件日志）", () => {
+  it("进程重启后新建的 8 从事件日志恢复计数，再失败一次就超限上报，不会无限复投", async () => {
+    const root = join(repo, ".bakacoding", "worktrees");
+    const wt = join(root, "T-2-r0");
+    const ticket: SubAgentTicket = {
+      ticket_id: "T-2",
+      project_id: "P-1",
+      requirement_id: "R-1",
+      trace_id: "tr-2",
+      span_id: "sp-2",
+      parent_span_id: null,
+      ticket_text: "随便改点什么",
+      base_commit: "c".repeat(40),
+      permission_list: [{ glob: "src/**", level: "rw" }],
+    };
+    const gaveUp = { status: "gave_up" as const, summary: "做不完", changed_files: [] };
+    const make = (runTicket: SubAgentDeps["coder"]["runTicket"]) => {
+      const statuses: TicketStatus[] = [];
+      const agent = createSubAgent({
+        getConfig: () => ({
+          roles: { coder: { effort: "low", resubmit_effort: ["low", "high", "high"] } },
+          pipeline: { resubmit_limits: { review: 2 } },
+        }),
+        coder: { runTicket },
+        review: async () => ({ verdict: "pass", reasons: [], reviewer: "reviewer-1" }),
+        pr: {
+          open: async () => "pr-T-2",
+          commitWorktree: async () => "d".repeat(40),
+          diff: async () => ({ base_sha: "a".repeat(40), head_sha: "b".repeat(40), files: [] }),
+        },
+        budgetState: () => ({ daily_exhausted: false }),
+        rounds: { save: (r) => storage.savePrRecord(r) },
+        tickets: { setStatus: (_id, s) => void statuses.push(s) },
+        resubmitHistory: eventLogResubmitHistory(storage),
+        worktreeRoot: root,
+        submit: vi.fn(),
+        publish: ingest,
+      });
+      return { agent, statuses };
+    };
+
+    // 第一次进程：gave_up 两次（计 2 次复投），第三次编码时进程「挂掉」（runTicket 永不返回）
+    let calls = 0;
+    const first = make(() =>
+      ++calls <= 2 ? Promise.resolve(gaveUp) : new Promise(() => undefined),
+    );
+    void first.agent.handle(ticket, { worktree: { path: wt, branch: "bakacoding/T-2-r0" } });
+    await vi.waitFor(() => expect(calls).toBe(3));
+    expect(eventLogResubmitHistory(storage)("T-2")).toEqual({ review: 2 });
+
+    // 重启：新的 8，同一个存储
+    const runs: string[] = [];
+    const second = make(async (input) => {
+      runs.push(input.effort);
+      return gaveUp;
+    });
+    const out = await second.agent.handle(ticket, {
+      worktree: { path: wt, branch: "bakacoding/T-2-r0" },
+    });
+    expect(out).toMatchObject({
+      kind: "escalated",
+      reason: "coder_failed",
+      detail: "gave_up",
+      resubmit_counts: { review: 2, conflict: 0 },
+    });
+    expect(runs).toEqual(["high"]); // 重启后只再跑一次，档位按第 2 次复投
+    expect(second.statuses).toEqual(["resubmitting", "escalated"]);
+    const escalated = storage.queryEvents({ ticket_id: "T-2", types: ["escalated"] });
+    expect(escalated).toHaveLength(1);
+    expect(escalated[0]!.type === "escalated" && escalated[0]!.payload.resubmit_counts).toEqual({
+      review: 2,
+      conflict: 0,
+    });
   });
 });

@@ -5,6 +5,8 @@ import type { ReviewInput } from "@bakacoding/review-pool";
 import type { Diff, ReviewResult, RoundRecord, TicketStatus } from "@bakacoding/types";
 import {
   BUDGET_RESUME_NOTE,
+  type ConflictResubmitRequest,
+  type ResumeToken,
   createSubAgent,
   effortFor,
   reasonsToFeedback,
@@ -96,7 +98,7 @@ function setup(
     }),
     diff: vi.fn(async () => DIFF),
   };
-  const submit = vi.fn();
+  const submit = vi.fn(() => void order.push("submit"));
   const deps: SubAgentDeps = {
     getConfig: () => opts.config ?? CFG,
     coder: {
@@ -130,7 +132,14 @@ function setup(
       };
     }),
     rounds: { save: (r) => void rounds.push(structuredClone(r)) },
-    tickets: { setStatus: (_id, s) => void statuses.push(s) },
+    tickets: {
+      setStatus: (_id, s) => {
+        statuses.push(s);
+        order.push(`status:${s}`);
+      },
+    },
+    resubmitHistory: () => ({ review: 0 }),
+    worktreeRoot: "/wt",
     worktrees: {
       create: (id, _base, n) => ({ path: `/wt/${id}-r${n}`, branch: `bakacoding/${id}-r${n}` }),
     },
@@ -170,7 +179,13 @@ describe("handle 主流程", () => {
       resubmit_counts: { review: 0, conflict: 0 },
       reviewer: "reviewer-1",
     });
-    expect(t.order).toEqual(["open", "commit"]); // 6 要求提交前先有 PR 记录
+    // 6 要求提交前先有 PR 记录；merge_queued 在 submit 之前写，之后 8 不再写状态
+    expect(t.order.filter((x) => !x.startsWith("status:") || x === "status:merge_queued")).toEqual([
+      "open",
+      "commit",
+      "status:merge_queued",
+      "submit",
+    ]);
     expect(t.pr.open).toHaveBeenCalledWith("T-1", "/wt/T-1-r0", "bakacoding/T-1-r0");
     expect(t.statuses).toEqual(["coding", "in_review", "merge_queued"]);
 
@@ -216,7 +231,7 @@ describe("handle 主流程", () => {
       ticket_id: "T-1",
       pr_id: "pr-T-1-1",
       worktree_path: "/wt/T-1-r0",
-      round: 1,
+      round: 0, // worktree 轮次 r0
       review_resubmits: 0,
       base_commit: TICKET.base_commit,
     });
@@ -236,10 +251,11 @@ describe("handle 主流程", () => {
   it("用 9 给的 worktree，不再自己建", async () => {
     const create = vi.fn();
     const t = setup({ runs: [done()], reviews: [PASS()], over: { worktrees: { create } } });
-    await t.agent.handle(TICKET, { worktree: { path: "/x/T-1-r0", branch: "b/T-1" } });
+    await t.agent.handle(TICKET, { worktree: { path: "/wt/x/T-1-r2", branch: "b/T-1" } });
     expect(create).not.toHaveBeenCalled();
-    expect(t.runInputs[0]!.worktree_path).toBe("/x/T-1-r0");
-    expect(t.pr.open).toHaveBeenCalledWith("T-1", "/x/T-1-r0", "b/T-1");
+    expect(t.runInputs[0]!.worktree_path).toBe("/wt/x/T-1-r2");
+    expect(t.pr.open).toHaveBeenCalledWith("T-1", "/wt/x/T-1-r2", "b/T-1");
+    expect(t.submit).toHaveBeenCalledWith(expect.objectContaining({ round: 2 })); // 从路径 -r<n> 解析
   });
 
   it("需求单缺 ticket_id 或 project_id 直接报错", async () => {
@@ -271,7 +287,12 @@ describe("评审不过与复投", () => {
       resubmit_counts: { review: 1, conflict: 0 },
     });
     expect(t.pr.open).toHaveBeenCalledTimes(1);
-    expect(t.order).toEqual(["open", "commit", "commit"]);
+    expect(t.order.filter((x) => !x.startsWith("status:"))).toEqual([
+      "open",
+      "commit",
+      "commit",
+      "submit",
+    ]);
     const second = t.runInputs[1]!;
     expect(second.feedback).toBe(reasonsToFeedback(fail.reasons));
     expect(JSON.parse(second.feedback!)).toEqual(fail.reasons);
@@ -294,7 +315,7 @@ describe("评审不过与复投", () => {
     expect(t.rounds[0]!.fail_reasons).toEqual(["incomplete (src/a.ts:3): bar 没导出"]);
     expect(t.rounds[1]!.review_comments).toBe(second.feedback);
     expect(t.submit).toHaveBeenCalledWith(
-      expect.objectContaining({ round: 2, review_resubmits: 1 }),
+      expect.objectContaining({ round: 0, review_resubmits: 1 }),
     );
     expect(t.kinds()).toEqual([
       "dispatch",
@@ -419,7 +440,7 @@ describe("编码池没交出改动", () => {
     expect(t.runInputs[1]!.feedback).toBe("T-1 提交失败：HOOK_NO");
   });
 
-  it("其他提交错误（如 WorktreeMismatchError）直接抛出", async () => {
+  it("其他提交错误（如 WorktreeMismatchError）：handle 里上报 github_manual，detail 带错误，状态不停在 coding", async () => {
     const t = setup({
       runs: [done()],
       over: {
@@ -432,7 +453,11 @@ describe("编码池没交出改动", () => {
         },
       },
     });
-    await expect(t.agent.handle(TICKET)).rejects.toThrow("WorktreeMismatch");
+    const out = await t.agent.handle(TICKET);
+    expect(out).toMatchObject({ kind: "escalated", reason: "github_manual", pr_id: "pr-x" });
+    if (out.kind !== "escalated") throw new Error();
+    expect(out.detail).toBe("commit_error: Error: WorktreeMismatch");
+    expect(t.statuses.at(-1)).toBe("escalated");
   });
 });
 
@@ -527,9 +552,15 @@ describe("预算", () => {
     expect(t.rounds).toHaveLength(1);
   });
 
-  it("评审抛非预算错误：原样抛出", async () => {
+  it("评审抛非预算错误：handle 里上报 review_limit，detail 带错误", async () => {
     const t = setup({ runs: [done()], reviews: [new Error("boom")] });
-    await expect(t.agent.handle(TICKET)).rejects.toThrow("boom");
+    const out = await t.agent.handle(TICKET);
+    expect(out).toMatchObject({
+      kind: "escalated",
+      reason: "review_limit",
+      detail: "review_error: Error: boom",
+    });
+    expect(t.statuses.at(-1)).toBe("escalated");
   });
 
   it("续跑凭据单号不符：报错", async () => {
@@ -537,8 +568,10 @@ describe("预算", () => {
     await expect(
       t.agent.resume(TICKET, {
         ticket_id: "T-9",
-        worktree_path: "/w",
+        worktree_path: "/wt/T-9-r0",
         branch: "b",
+        base_commit: "c".repeat(40),
+        worktree_round: 0,
         pr_id: null,
         resubmit_counts: { review: 0, conflict: 0 },
         phase: "coding",
@@ -629,7 +662,7 @@ describe("9 的入口（与 T-035 对齐）", () => {
         parent_span_id: null,
       },
       round: 1,
-      worktree_path: "/w",
+      worktree_path: "/wt/T-7-r1",
       branch: "b",
       base_commit: "main",
       conflicted_files: [],
@@ -684,5 +717,283 @@ describe("9 的入口（与 T-035 对齐）", () => {
     expect(t.agent.projectOf("T-1")).toBeUndefined();
     await t.agent.handle(TICKET);
     expect(t.agent.projectOf("T-1")).toBe("P-1");
+  });
+});
+
+describe("#40 评审跟进", () => {
+  const conflictReq = (over: Partial<ConflictResubmitRequest> = {}): ConflictResubmitRequest => ({
+    ticket: {
+      ticket_id: "T-1",
+      requirement_id: "R-1",
+      trace_id: "tr-1",
+      span_id: "sp-1",
+      parent_span_id: "sp-0",
+    },
+    round: 1,
+    worktree_path: "/wt/T-1-r1",
+    branch: "bakacoding/T-1-r1",
+    base_commit: "e".repeat(40),
+    conflicted_files: ["src/a.ts"],
+    previous_pr_id: "pr-T-1-1",
+    resubmit_counts: { review: 0, conflict: 1 },
+    ...over,
+  });
+
+  it("状态归属：冲突复投与重审期间 8 不写任何状态（含上报），只在 handle 里写到 merge_queued", async () => {
+    const t = setup({
+      config: { ...CFG, pipeline: { resubmit_limits: { review: 1 } } },
+      runs: [done(), done(), done()],
+      reviews: [PASS(), FAIL(), FAIL(), PASS(), FAIL()],
+    });
+    await t.agent.handle(TICKET);
+    const afterHandle = t.statuses.length;
+    expect(t.statuses.at(-1)).toBe("merge_queued");
+    // 冲突复投：评审不过 → 复投 → 再不过超限上报，全程不写状态
+    expect(await t.agent.resubmitConflict(conflictReq())).toEqual({
+      escalated: true,
+      pr_id: "pr-T-1-2",
+    });
+    expect(t.events.some((e) => e.type === "escalated")).toBe(true);
+    expect(t.statuses.length).toBe(afterHandle);
+  });
+
+  it("重审期间不写状态", async () => {
+    const t = setup({ runs: [done()], reviews: [PASS(), PASS()] });
+    await t.agent.handle(TICKET);
+    const n = t.statuses.length;
+    await t.agent.reReview({ ticket: conflictReq().ticket, pr_id: "pr-T-1-1", merged_since: [] });
+    expect(t.statuses.length).toBe(n);
+  });
+
+  it("改动文件以 6 的 diff 为准：群消息和评审摘要都不用编码池自报的 changed_files", async () => {
+    const t = setup({ runs: [done("改好了", ["src/fake.ts"])], reviews: [PASS()] });
+    await t.agent.handle(TICKET);
+    expect(t.reviewInputs[0]!.summary).toContain("src/a.ts");
+    expect(t.reviewInputs[0]!.summary).not.toContain("src/fake.ts");
+    const report = t.events.find((e) => e.type === "group_message" && e.payload.kind === "report");
+    expect(JSON.stringify(report)).toContain("src/a.ts");
+    expect(JSON.stringify(report)).not.toContain("src/fake.ts");
+  });
+
+  it.each([
+    ["open", "github_manual", /^open_error: GithubError \[422\]: No commits between/],
+    ["submit", "github_manual", /^submit_error: Error: 队列满/],
+    ["diff", "github_manual", /^diff_error: Error: diff 坏了/],
+    ["round_save", "review_limit", /^round_save_error: Error: 写库失败/],
+  ] as const)(
+    "handle 里 %s 抛未知异常：上报 %s，detail 带错误，不停在 coding",
+    async (where, reason, re) => {
+      const err = (m: string) =>
+        Object.assign(new Error(m), where === "open" ? { name: "GithubError", status: 422 } : {});
+      const over: Partial<SubAgentDeps> = {};
+      const base = {
+        open: async () => "pr-1",
+        commitWorktree: async () => "d".repeat(40),
+        diff: async () => DIFF,
+      };
+      if (where === "open")
+        over.pr = {
+          ...base,
+          open: async () => {
+            throw err("No commits between bakacoding/integration and b");
+          },
+        };
+      if (where === "diff")
+        over.pr = {
+          ...base,
+          diff: async () => {
+            throw err("diff 坏了");
+          },
+        };
+      if (where === "submit")
+        over.submit = () => {
+          throw err("队列满");
+        };
+      if (where === "round_save")
+        over.rounds = {
+          save: () => {
+            throw err("写库失败");
+          },
+        };
+      const t = setup({ runs: [done()], reviews: [PASS()], over });
+      const out = await t.agent.handle(TICKET);
+      expect(out).toMatchObject({ kind: "escalated", reason });
+      if (out.kind !== "escalated") throw new Error();
+      expect(out.detail).toMatch(re);
+      expect(t.statuses.at(-1)).toBe("escalated");
+      expect(t.events.find((e) => e.type === "escalated")!.payload).toMatchObject({
+        reason,
+        detail: out.detail,
+      });
+    },
+  );
+
+  it("编码池抛异常：上报 coder_failed；冲突复投里的异常照常抛给 9", async () => {
+    const t = setup({ runs: [] });
+    const out = await t.agent.handle(TICKET);
+    expect(out).toMatchObject({
+      kind: "escalated",
+      reason: "coder_failed",
+      detail: "coding_error: Error: 编码脚本用完",
+    });
+    await expect(t.agent.resubmitConflict(conflictReq())).rejects.toThrow("编码脚本用完");
+  });
+
+  it("worktree 路径必须在 worktreeRoot 下：handle / resume / resubmitConflict 都拒绝越界路径", async () => {
+    const t = setup({ runs: [done()], reviews: [PASS()] });
+    await expect(
+      t.agent.handle(TICKET, { worktree: { path: "/etc/T-1-r0", branch: "b" } }),
+    ).rejects.toThrow(/worktree 根目录/);
+    await expect(
+      t.agent.handle(TICKET, { worktree: { path: "/wt/../etc/x", branch: "b" } }),
+    ).rejects.toThrow(/worktree 根目录/);
+    await expect(
+      t.agent.handle(TICKET, { worktree: { path: "/wt", branch: "b" } }),
+    ).rejects.toThrow(/worktree 根目录/);
+    await expect(
+      t.agent.resubmitConflict(conflictReq({ worktree_path: "/tmp/T-1-r1" })),
+    ).rejects.toThrow(/worktree 根目录/);
+    const token: ResumeToken = {
+      ticket_id: "T-1",
+      worktree_path: "/home/x/T-1-r0",
+      branch: "b",
+      base_commit: TICKET.base_commit,
+      worktree_round: 0,
+      pr_id: null,
+      resubmit_counts: { review: 0, conflict: 0 },
+      phase: "coding",
+      is_resubmit: false,
+    };
+    await expect(t.agent.resume(TICKET, token)).rejects.toThrow(/worktree 根目录/);
+    expect(t.deps.coder.runTicket).not.toHaveBeenCalled();
+    expect(t.statuses).toEqual([]);
+  });
+
+  it("resume 只收 ticket_id：从 loadTicket 补全；补不全就报清楚的错", async () => {
+    const token: ResumeToken = {
+      ticket_id: "T-1",
+      worktree_path: "/wt/T-1-r0",
+      branch: "bakacoding/T-1-r0",
+      base_commit: TICKET.base_commit,
+      worktree_round: 0,
+      pr_id: null,
+      resubmit_counts: { review: 0, conflict: 0 },
+      phase: "coding",
+      is_resubmit: false,
+    };
+    const bare = setup();
+    await expect(bare.agent.resume({ ticket_id: "T-1" }, token)).rejects.toThrow(
+      /找不到需求单 T-1.*loadTicket/,
+    );
+    const loadTicket = vi.fn(() => TICKET);
+    const t = setup({ runs: [done()], reviews: [PASS()], over: { loadTicket } });
+    const out = await t.agent.resume(conflictReq().ticket, token);
+    expect(loadTicket).toHaveBeenCalledWith("T-1");
+    expect(out.kind).toBe("merge_queued");
+    expect(t.runInputs[0]!.prompt).toContain(TICKET.ticket_text);
+    expect(t.agent.projectOf("T-1")).toBe("P-1");
+  });
+
+  it("冲突复投途中当日预算暂停后续跑：submit 报的是 r1 的基线和轮次，不是 r0；全程不写状态", async () => {
+    const resolveBase = vi.fn(() => "f".repeat(40));
+    const t = setup({
+      runs: [done(), { status: "budget_exceeded", summary: "", changed_files: [] }, done()],
+      reviews: [PASS(), PASS()],
+      budget: [{ daily_exhausted: true }],
+      over: { resolveBase },
+    });
+    await t.agent.handle(TICKET);
+    expect(t.submit).toHaveBeenLastCalledWith(
+      expect.objectContaining({ round: 0, base_commit: TICKET.base_commit }),
+    );
+    const n = t.statuses.length;
+    const paused = await t.agent.resubmitConflict(
+      conflictReq({ base_commit: "bakacoding/integration" }),
+    );
+    if (!("requeue_budget" in paused)) throw new Error("应暂停");
+    expect(resolveBase).toHaveBeenCalledWith("/wt/T-1-r1");
+    expect(paused.resume).toMatchObject({
+      mode: "conflict",
+      worktree_round: 1,
+      base_commit: "f".repeat(40),
+    });
+    const out = await t.agent.resume({ ticket_id: "T-1" }, paused.resume);
+    expect(out.kind).toBe("merge_queued");
+    expect(t.submit).toHaveBeenCalledTimes(2);
+    expect(t.submit).toHaveBeenLastCalledWith({
+      ticket_id: "T-1",
+      pr_id: "pr-T-1-2",
+      worktree_path: "/wt/T-1-r1",
+      round: 1,
+      review_resubmits: 0,
+      base_commit: "f".repeat(40),
+    });
+    expect(t.statuses.length).toBe(n); // 冲突复投、续跑都不写状态（9 写 pending / merge_queued）
+  });
+
+  it("没注入 resolveBase 时冲突复投用 9 传来的 base_commit", async () => {
+    const t = setup({
+      runs: [done(), { status: "budget_exceeded", summary: "", changed_files: [] }, done()],
+      reviews: [PASS(), PASS()],
+      budget: [{ daily_exhausted: true }],
+    });
+    await t.agent.handle(TICKET);
+    const paused = await t.agent.resubmitConflict(conflictReq());
+    if (!("requeue_budget" in paused)) throw new Error("应暂停");
+    await t.agent.resume(TICKET, paused.resume);
+    expect(t.submit).toHaveBeenLastCalledWith(
+      expect.objectContaining({ base_commit: "e".repeat(40), round: 1 }),
+    );
+  });
+
+  it("handle 模式的续跑：submit 报原 worktree 的基线与轮次", async () => {
+    const t = setup({
+      runs: [{ status: "budget_exceeded", summary: "", changed_files: [] }, done()],
+      reviews: [PASS()],
+      budget: [{ daily_exhausted: true }],
+    });
+    const out = await t.agent.handle(TICKET, { worktree: { path: "/wt/T-1-r3", branch: "b3" } });
+    if (out.kind !== "requeue_budget") throw new Error();
+    await t.agent.resume({ ticket_id: "T-1" }, out.resume);
+    expect(t.submit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        round: 3,
+        base_commit: TICKET.base_commit,
+        worktree_path: "/wt/T-1-r3",
+      }),
+    );
+  });
+
+  it("评审复投计数跨重启：新 createSubAgent 从 resubmitHistory 恢复，超限照样上报", async () => {
+    const t = setup({
+      runs: [done()],
+      reviews: [FAIL()],
+      over: { resubmitHistory: () => ({ review: 3 }) },
+    });
+    const out = await t.agent.handle(TICKET, {
+      worktree: { path: "/wt/T-1-r0", branch: "b" },
+      pr_id: "pr-old",
+    });
+    expect(out).toMatchObject({
+      kind: "escalated",
+      reason: "review_limit",
+      pr_id: "pr-old",
+      resubmit_counts: { review: 3, conflict: 0 },
+    });
+    expect(t.pr.open).not.toHaveBeenCalled();
+    expect(t.runInputs[0]!.effort).toBe("high"); // 第 3 次复投的档位
+    expect(t.runInputs[0]!.ctx.is_resubmit).toBe(true);
+    expect(t.statuses[0]).toBe("resubmitting");
+  });
+
+  it("每计一次评审复投恰好发一条 kind=resubmit 的群消息（计数靠它跨重启）", async () => {
+    const t = setup({
+      runs: [{ status: "gave_up", summary: "a", changed_files: [] }, done(), done()],
+      reviews: [FAIL(), PASS()],
+      commits: ["ok", "ok"],
+    });
+    const out = await t.agent.handle(TICKET);
+    expect(out).toMatchObject({ resubmit_counts: { review: 2 } });
+    expect(t.kinds().filter((k) => k === "resubmit")).toHaveLength(2);
   });
 });

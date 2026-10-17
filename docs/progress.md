@@ -88,7 +88,7 @@ flowchart BT
 | T-034 | 模块 5/7 跟进：编码池改用模块 4 的 `FILE_TOOL_DEFINITIONS` / `createTools`（参数 `file_path` / `include`），`changed_files` 读 `file_path`，前缀快照重生成；评审池复投成员记录可持久化（`createRoundAssignmentStore` 读 2 的 PR 轮次 `reviewer`）；不可信标签转义的归一化改为 NFKD 后去掉组合符号（拦 `<` + U+0338 / `≮`） | 5、7 | 执行层开发 | 已合入 | #36 | `9db2a1f` |
 | T-036 | 共享类型：`escalated` 上报原因加 `coder_failed`、`budget_exceeded`；桌面界面 `ESCALATION_REASON` 补两条显示文字 | 共享类型包、12 | 编排层开发 | 已合入 | #34 | `29c1d4f` |
 | T-035 | 模块 9 合并队列：注入 `eventContext`、`merge_blocked` 上报、限流按 `retry_after_ms` 重排（超 3 次上报）、冲突复投最多 2 次、`sync()` 结果写回 TicketStatus、每日预算停派、按依赖顺序合并、反压限流、两类复投分开计数、合并成功发 `interface_changed` | 9 | 编排层开发 | 开发中 | — | — |
-| T-037 | 模块 8 副 Agent 主流程 `handle(ticket)`：三级权限、编码池结果处理（`coder_failed` / `budget_exceeded` 上报）、开 PR 与评审、复投、轮次写 `reviewer`、群消息 | 8 | 编排层开发 | 待评审 | — | — |
+| T-037 | 模块 8 副 Agent 主流程 `handle(ticket)`：使用单子的 permission_list、编码池结果处理（`coder_failed` / `budget_exceeded` 上报）、开 PR 与评审、复投、轮次写 `reviewer`、群消息 | 8 | 编排层开发 | 待评审 | — | — |
 | T-038 | 模块 8 补充：中途权限申请审批、订阅 `interface_changed`、依赖类单标高风险 | 8 | 编排层开发 | 未开始 | — | — |
 | T-039 | 模块 9 调度器：入队与依赖排序、写入范围锁与独占区、写入范围申请回复、编码槽位、闲时 `deferred`（读 T-035 的反压信号） | 9 | 编排层开发 | 未开始 | — | — |
 | T-040 | 模块 10 主管：`chat` / `split`（接口声明必填、决策记忆、项目创建告知用户） | 10 | 编排层开发 | 未开始 | — | — |
