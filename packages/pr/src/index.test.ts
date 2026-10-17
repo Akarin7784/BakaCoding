@@ -4,7 +4,13 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PrStatusSchema } from "@bakacoding/types";
 import { chmod } from "node:fs/promises";
-import { createPrProvider, InMemoryPrStore, LocalPrProvider, PrNotFoundError } from "./index.js";
+import {
+  createPrProvider,
+  ExpectedHeadMismatchError,
+  InMemoryPrStore,
+  LocalPrProvider,
+  PrNotFoundError,
+} from "./index.js";
 import { git } from "./git.js";
 
 const ENV = {
@@ -229,5 +235,31 @@ describe("createPrProvider（本地分支）", () => {
   it("有 token 但没有 origin：本地实现", async () => {
     const p = await createPrProvider({ store, repo, getSecret: () => "x" });
     expect(p.kind).toBe("local");
+  });
+});
+
+describe("T-066 merge expected_head（本地）", () => {
+  it("expected_head 一致：合并成功", async () => {
+    const wt = await worktree("feat/eh-ok");
+    await writeFile(join(wt, "eh.txt"), "ok\n");
+    await commitAll(wt, "eh");
+    const head = (await git(wt, ["rev-parse", "HEAD"])).stdout.trim();
+    const id = await pr.open("T-eh1", wt, "feat/eh-ok");
+    const r = await pr.merge(id, "main", { expected_head: head });
+    expect(r).toMatchObject({ merged: true, sha: head });
+  });
+  it("expected_head 不一致：抛 ExpectedHeadMismatchError，不动 main", async () => {
+    const wt = await worktree("feat/eh-bad");
+    await writeFile(join(wt, "eh2.txt"), "bad\n");
+    await commitAll(wt, "eh2");
+    const mainBefore = (await git(repo, ["rev-parse", "main"])).stdout.trim();
+    const id = await pr.open("T-eh2", wt, "feat/eh-bad");
+    const err = (await pr
+      .merge(id, "main", { expected_head: "f".repeat(40) })
+      .catch((e: unknown) => e)) as ExpectedHeadMismatchError;
+    expect(err).toBeInstanceOf(ExpectedHeadMismatchError);
+    expect(err.code).toBe("expected_head_mismatch");
+    expect((await git(repo, ["rev-parse", "main"])).stdout.trim()).toBe(mainBefore);
+    expect((await store.get(id))?.status).toBe("open");
   });
 });

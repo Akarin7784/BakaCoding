@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EscalatedSchema } from "@bakacoding/types";
 import {
   createPrProvider,
+  ExpectedHeadMismatchError,
   GithubAuthError,
   GithubBranchDivergedError,
   GithubRateLimitError,
@@ -14,6 +15,8 @@ import {
   INTEGRATION_BRANCH,
   LocalPrProvider,
   parseGithubRemote,
+  PrAlreadyMergedError,
+  SyncPartialError,
   type EscalatedInput,
   type PrRecord,
 } from "./index.js";
@@ -59,6 +62,14 @@ class FakeGithub {
   /** 按 "METHOD path 前缀" 覆盖响应 */
   override: ((method: string, path: string) => Response | undefined) | undefined;
   checkRuns: unknown[] = [];
+  /** commit status API 的 statuses 列表（T-066） */
+  commitStatuses: {
+    context: string;
+    state: string;
+    target_url?: string | null;
+  }[] = [];
+  /** check-runs 每页条数，默认 100；测翻页时可改小 */
+  checkRunsPageSize = 100;
 
   fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = new URL(String(input));
@@ -141,8 +152,23 @@ class FakeGithub {
       if (b.state === "closed") p.state = "closed";
       return json(view(p));
     }
-    if (method === "GET" && /^\/commits\/[0-9a-f]+\/check-runs$/.test(path))
-      return json({ total_count: this.checkRuns.length, check_runs: this.checkRuns });
+    if (method === "GET" && /^\/commits\/[0-9a-f]+\/check-runs$/.test(path)) {
+      const page = Math.max(1, Number(url.searchParams.get("page") ?? "1") || 1);
+      const per = Math.min(
+        this.checkRunsPageSize,
+        Math.max(1, Number(url.searchParams.get("per_page") ?? "100") || 100),
+      );
+      const start = (page - 1) * per;
+      const slice = this.checkRuns.slice(start, start + per);
+      return json({ total_count: this.checkRuns.length, check_runs: slice });
+    }
+    if (method === "GET" && /^\/commits\/[0-9a-f]+\/status$/.test(path)) {
+      return json({
+        state: "success",
+        total_count: this.commitStatuses.length,
+        statuses: this.commitStatuses,
+      });
+    }
     return json({ message: "Not Found" }, 404);
   };
 }
@@ -440,7 +466,10 @@ describe("checks", () => {
       { name: "deploy", status: "completed", conclusion: "failure" },
     ]);
     const head = await rev(repo, INTEGRATION_BRANCH);
-    expect(gh.calls.at(-1)!.path).toBe(`/commits/${head}/check-runs?per_page=100`);
+    expect(gh.calls.at(-1)!.path).toBe(`/commits/${head}/status`);
+    expect(gh.calls.some((c) => c.path === `/commits/${head}/check-runs?per_page=100&page=1`)).toBe(
+      true,
+    );
   });
 });
 
@@ -780,13 +809,19 @@ describe("评审读 CI 用 push 之后的 head sha", () => {
     await pr.openIntegration();
     const { wt, id, sha, branch } = await ticketPr("T-27");
     await pr.checks(id);
-    expect(gh.calls.at(-1)!.path).toBe(`/commits/${sha}/check-runs?per_page=100`);
+    expect(gh.calls.some((c) => c.path === `/commits/${sha}/check-runs?per_page=100&page=1`)).toBe(
+      true,
+    );
+    expect(gh.calls.at(-1)!.path).toBe(`/commits/${sha}/status`);
     expect(await rev(bare, `refs/heads/${branch}`)).toBe(sha);
 
     await writeFile(join(wt, "T-27b.txt"), "b\n");
     const sha2 = await pr.commitWorktree("T-27", wt);
     await pr.checks(id);
-    expect(gh.calls.at(-1)!.path).toBe(`/commits/${sha2}/check-runs?per_page=100`);
+    expect(gh.calls.some((c) => c.path === `/commits/${sha2}/check-runs?per_page=100&page=1`)).toBe(
+      true,
+    );
+    expect(gh.calls.at(-1)!.path).toBe(`/commits/${sha2}/status`);
   });
 
   it("上次 push 失败、远程落后：checks 先补推本单分支（并补开 PR）再按新 sha 查；补推失败就抛错，不拿远程没有的 sha 去查", async () => {
@@ -806,7 +841,10 @@ describe("评审读 CI 用 push 之后的 head sha", () => {
     await git(repo, ["remote", "set-url", "origin", bare]);
     await pr.checks(id);
     expect(await rev(bare, `refs/heads/${branch}`)).toBe(local);
-    expect(gh.calls.at(-1)!.path).toBe(`/commits/${local}/check-runs?per_page=100`);
+    expect(
+      gh.calls.some((c) => c.path === `/commits/${local}/check-runs?per_page=100&page=1`),
+    ).toBe(true);
+    expect(gh.calls.at(-1)!.path).toBe(`/commits/${local}/status`);
     expect((await store.get(id))?.remote).toBeDefined();
   });
 });
@@ -937,5 +975,190 @@ describe("GitHub merge 返回 409", () => {
     expect(JSON.stringify(r)).toContain("Head branch was modified.");
     expect((await store.get(id))?.status).toBe("open");
     expect(events).toEqual([]);
+  });
+});
+
+describe("T-066 sync 中途出错仍带回已收集变化（B1）", () => {
+  it("第一条已同步为 merged 后第二条限流：抛 SyncPartialError，带上已收集变化", async () => {
+    await integrationAhead();
+    const iid = await pr.openIntegration();
+    const { id: id2 } = await ticketPr("T-66a");
+    gh.pulls[0]!.state = "closed";
+    gh.pulls[0]!.merged = true;
+    gh.pulls[0]!.merge_commit_sha = "a".repeat(40);
+    let n = 0;
+    gh.override = (method, path) => {
+      if (method === "GET" && /^\/pulls\/\d+$/.test(path)) {
+        n++;
+        if (n >= 2) return new Response("{}", { status: 403, headers: { "retry-after": "2" } });
+      }
+      return undefined;
+    };
+    const err = (await pr.sync().catch((e: unknown) => e)) as SyncPartialError;
+    expect(err).toBeInstanceOf(SyncPartialError);
+    expect(err.changes).toEqual([
+      { pr_id: iid, from: "open", to: "merged", merge_sha: "a".repeat(40) },
+    ]);
+    expect(err.cause).toBeInstanceOf(GithubRateLimitError);
+    expect((await store.get(iid))?.status).toBe("merged");
+    // id2 仍 open（第二条请求失败）
+    expect((await store.get(id2))?.status).toBe("open");
+  });
+
+  it("反向：丢掉已收集变化时本用例失败（changes 必须非空）", async () => {
+    await integrationAhead();
+    await pr.openIntegration();
+    const { id: id2 } = await ticketPr("T-66b");
+    void id2;
+    gh.pulls[0]!.state = "closed";
+    gh.pulls[0]!.merged = true;
+    gh.pulls[0]!.merge_commit_sha = "b".repeat(40);
+    let n = 0;
+    gh.override = (method, path) => {
+      if (method === "GET" && /^\/pulls\/\d+$/.test(path)) {
+        n++;
+        if (n >= 2) return new Response("{}", { status: 500 });
+      }
+      return undefined;
+    };
+    const err = (await pr.sync().catch((e: unknown) => e)) as SyncPartialError;
+    expect(err).toBeInstanceOf(SyncPartialError);
+    expect(err.changes.length).toBeGreaterThan(0);
+  });
+
+  it("中途出错但尚未收集到变化：抛原始错误，不是 SyncPartialError", async () => {
+    await integrationAhead();
+    await pr.openIntegration();
+    gh.override = (method, path) =>
+      method === "GET" && /^\/pulls\/\d+$/.test(path)
+        ? new Response("{}", { status: 403, headers: { "retry-after": "1" } })
+        : undefined;
+    const err = await pr.sync().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(GithubRateLimitError);
+    expect(err).not.toBeInstanceOf(SyncPartialError);
+  });
+});
+
+describe("T-066 close PATCH 失败时 GET 远程（B4）", () => {
+  it("远程已合入：PATCH 失败后 GET，本地改回 merged，抛 PrAlreadyMergedError", async () => {
+    const { branch, id } = await ticketPr("T-66c", { from: "main" });
+    const pull = gh.pulls.find((p) => p.head === branch)!;
+    pull.merged = true;
+    pull.state = "closed";
+    pull.merge_commit_sha = "c".repeat(40);
+    // FakeGithub PATCH on merged returns 422
+    await expect(pr.close(id, "拒绝")).rejects.toBeInstanceOf(PrAlreadyMergedError);
+    const rec = await store.get(id);
+    expect(rec).toMatchObject({ status: "merged", merge_sha: "c".repeat(40) });
+    expect(rec).not.toHaveProperty("closed_by");
+    expect(gh.calls.some((c) => c.method === "PATCH")).toBe(true);
+    expect(gh.calls.some((c) => c.method === "GET" && c.path === `/pulls/${pull.number}`)).toBe(
+      true,
+    );
+  });
+
+  it("远程仍 open：PATCH 500 后本地保持 closed，抛 API 错（可重试）", async () => {
+    const { id } = await ticketPr("T-66d", { from: "main" });
+    gh.override = (method) =>
+      method === "PATCH" ? new Response("{}", { status: 500 }) : undefined;
+    await expect(pr.close(id, "r")).rejects.toThrow(/500/);
+    expect(await store.get(id)).toMatchObject({ status: "closed", closed_by: "bakacoding" });
+  });
+
+  it("反向：远程已合入却把本地留成 closed 时本用例失败", async () => {
+    const { branch, id } = await ticketPr("T-66e", { from: "main" });
+    const pull = gh.pulls.find((p) => p.head === branch)!;
+    pull.merged = true;
+    pull.state = "closed";
+    pull.merge_commit_sha = "d".repeat(40);
+    await pr.close(id, "x").catch(() => undefined);
+    expect((await store.get(id))?.status).not.toBe("closed");
+    expect((await store.get(id))?.status).toBe("merged");
+  });
+});
+
+describe("T-066 merge expected_head（C1）", () => {
+  it("expected_head 与当前 HEAD 一致：合并成功，GitHub merge 带该 sha", async () => {
+    await pr.openIntegration();
+    const { id, sha } = await ticketPr("T-66f");
+    const r = await pr.merge(id, INTEGRATION_BRANCH, { expected_head: sha });
+    expect(r).toMatchObject({ merged: true });
+    const mergeCall = gh.calls.find((c) => c.method === "PUT" && c.path.endsWith("/merge"))!;
+    expect(mergeCall.body).toMatchObject({ sha });
+  });
+
+  it("expected_head 不一致：抛 ExpectedHeadMismatchError，不调 merge API", async () => {
+    await pr.openIntegration();
+    const { id } = await ticketPr("T-66g");
+    const fake = "e".repeat(40);
+    const n = gh.calls.length;
+    const err = (await pr
+      .merge(id, INTEGRATION_BRANCH, { expected_head: fake })
+      .catch((e: unknown) => e)) as ExpectedHeadMismatchError;
+    expect(err).toBeInstanceOf(ExpectedHeadMismatchError);
+    expect(err.code).toBe("expected_head_mismatch");
+    expect(err.expected).toBe(fake);
+    expect(err.actual).toMatch(/^[0-9a-f]{40}$/);
+    expect(gh.calls.slice(n).some((c) => c.method === "PUT" && c.path.endsWith("/merge"))).toBe(
+      false,
+    );
+    expect((await store.get(id))?.status).toBe("open");
+  });
+});
+
+describe("T-066 checks 翻页 + commit status（C2）", () => {
+  it("check-runs 超过一页（>100）时翻页拉齐，并合并 commit status", async () => {
+    await integrationAhead();
+    const iid = await pr.openIntegration();
+    gh.checkRuns = Array.from({ length: 101 }, (_, i) => ({
+      name: `run-${i}`,
+      status: "completed",
+      conclusion: i === 100 ? "failure" : "success",
+    }));
+    gh.commitStatuses = [
+      { context: "deploy/staging", state: "success", target_url: "https://ci/1" },
+      { context: "codecov", state: "pending" },
+      { context: "old-ci", state: "error" },
+    ];
+    const res = await pr.checks(iid);
+    expect(res).toHaveLength(104); // 101 check-runs + 3 statuses
+    expect(res[100]).toMatchObject({
+      name: "run-100",
+      status: "completed",
+      conclusion: "failure",
+    });
+    expect(res.find((r) => r.name === "deploy/staging")).toMatchObject({
+      status: "completed",
+      conclusion: "success",
+      url: "https://ci/1",
+    });
+    expect(res.find((r) => r.name === "codecov")).toMatchObject({
+      status: "queued",
+      conclusion: null,
+    });
+    expect(res.find((r) => r.name === "old-ci")).toMatchObject({
+      status: "completed",
+      conclusion: "failure",
+    });
+    const head = await rev(repo, INTEGRATION_BRANCH);
+    const pages = gh.calls.filter((c) => c.path.startsWith(`/commits/${head}/check-runs`));
+    expect(pages.map((c) => c.path)).toEqual([
+      `/commits/${head}/check-runs?per_page=100&page=1`,
+      `/commits/${head}/check-runs?per_page=100&page=2`,
+    ]);
+    expect(gh.calls.some((c) => c.path === `/commits/${head}/status`)).toBe(true);
+  });
+
+  it("反向：只读第一页会漏掉第 101 条 check-run", async () => {
+    await integrationAhead();
+    const iid = await pr.openIntegration();
+    gh.checkRuns = Array.from({ length: 101 }, (_, i) => ({
+      name: `p-${i}`,
+      status: "completed",
+      conclusion: "success",
+    }));
+    const res = await pr.checks(iid);
+    expect(res.filter((r) => r.name.startsWith("p-"))).toHaveLength(101);
+    expect(res.some((r) => r.name === "p-100")).toBe(true);
   });
 });
