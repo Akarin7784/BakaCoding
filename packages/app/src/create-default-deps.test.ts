@@ -1,10 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ConfigError, getConfig } from "@bakacoding/config-budget";
 import { openStorage, type Storage } from "@bakacoding/storage";
+import { WorktreeManager, WORKTREES_DIR } from "@bakacoding/workspace";
 import { afterEach, describe, expect, it } from "vitest";
 import { assemble, type App } from "./assemble.js";
 import {
@@ -187,6 +188,28 @@ describe("createDefaultDeps（T-063）", () => {
     // 编码池注入的就是这一份：释放后登记表清空
     handle.registry.release("T-reg");
     expect(handle.registry.get("T-reg")).toBeUndefined();
+  });
+
+  it("deps.repoRoot 取 worktrees 解析出的仓库根（不是调用方传的目录原样）", async () => {
+    const { root, db } = gitRepo();
+    // 故意从仓库子目录启动：4 的 WorktreeManager 会解析成仓库根（--show-toplevel，真实路径），
+    // deps.repoRoot 必须是它；组合根漏传这一行时 deps.repoRoot 为 undefined，本条变红
+    const sub = join(root, "sub", "dir");
+    mkdirSync(sub, { recursive: true });
+    const storage = openDb(db);
+    const config = getConfig(examplePath);
+    const handle = await createDefaultDeps(config, storage, {
+      repoRoot: sub,
+      notifyUser: () => {},
+      pricingPath,
+      env,
+      logger: { warn: () => {} },
+    });
+    disposers.push(handle.dispose);
+    const expected = (await WorktreeManager.open(sub)).repoRoot;
+    expect(expected).toBe(realpathSync(root));
+    expect(handle.deps.repoRoot).toBe(expected);
+    expect(handle.deps.worktreeRoot).toBe(join(expected, WORKTREES_DIR));
   });
 });
 

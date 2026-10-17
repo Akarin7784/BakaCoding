@@ -240,6 +240,9 @@ importers:
       '@bakacoding/types':
         specifier: workspace:*
         version: link:../types
+      '@bakacoding/workspace':
+        specifier: workspace:*
+        version: link:../workspace
     devDependencies:
       '@types/node':
         specifier: ^20.19.43
