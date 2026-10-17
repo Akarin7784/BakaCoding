@@ -367,7 +367,7 @@ graph BT
   - **全局状态点**：左栏底部齿轮旁。灰 = 空闲；强调色呼吸 = 有单在 coding / in_review / re_reviewing / resubmitting / merge_queued；红 = 需要你处理（只读、数据库打不开、同步鉴权停 / 失败 / 限流、待裁决高风险、conflict / escalated 的单、未归属上报）。点开状态卡：需要处理的事、后端模式、在跑张数、数据库路径、同步状态、未归属上报数（原左栏「未归属」入口并到这里）。
   - **右面板抽屉**（窗口 < 1200）：改用 Radix Dialog（`role="dialog"`，打开时焦点移入、Tab 困在抽屉里，关上后焦点回到标题栏开关），底下一层 `--overlay` 淡遮罩。停靠模式不变。
   - **窗口按钮留位**：优先用 `navigator.windowControlsOverlay.getTitlebarAreaRect()`（`geometrychange` 时重算），取不到时退回固定值（右 138 / 左 76）。
-  - **启动不闪**：`window:theme` 成功后主进程把偏好写到 userData 的 `window-theme.json`；下次启动在建窗口前同步读出、设 `nativeTheme.themeSource`，标题栏叠层颜色和窗口底色一开始就对。`window:theme` 失败时 `reason` 一律是固定文案「主题设置失败」，不传任何原始错误内容（T-105，取代 UI-08 的脱敏透传）。
+  - **启动不闪**：`window:theme` 成功后主进程把偏好写到 userData 的 `window-theme.json`（T-105：同目录临时文件 + `rename` 原子写，失败删临时文件、旧文件不动）；下次启动在建窗口前同步读出、设 `nativeTheme.themeSource`，标题栏叠层颜色和窗口底色一开始就对。`window:theme` 失败时 `reason` 一律是固定文案「主题设置失败」，不传任何原始错误内容（T-105，取代 UI-08 的脱敏透传）。
 - **依赖**：3（项目导入）、`@bakacoding/app`（组合根）及各模块的接口。
 - **对应章节**：PD §15、§16。
 - **配置字段**：设计中没有专用字段；设置入口编辑模块 3 的配置。

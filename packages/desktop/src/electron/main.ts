@@ -150,7 +150,6 @@ if (!gotLock) {
       },
       applyTitleBar,
       saveTheme: (source) => writeSavedTheme(userData, source),
-      env: process.env,
     });
     // 跟随系统时系统切深浅色，标题栏按钮颜色跟着变
     const onNativeTheme = () => applyTitleBar(nativeTheme.shouldUseDarkColors);

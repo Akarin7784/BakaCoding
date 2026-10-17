@@ -1,4 +1,4 @@
-// UI-08 主进程部分：只读详情的错误整理、主题偏好落盘（启动不闪）、window:theme 失败原因脱敏。
+// UI-08 主进程部分：只读详情的错误整理、主题偏好落盘（启动不闪）、window:theme 失败只回固定文案（T-105）。
 import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { IPC_CHANNELS } from "../shared/api";
 import { startBackend } from "./backend";
 import { backendErrorDetail } from "./backend-error";
-import { serveWindowTheme, type IpcMainLike } from "./ipc";
+import { serveWindowTheme, WINDOW_THEME_FAILED, type IpcMainLike } from "./ipc";
 import { readSavedTheme, THEME_STORE_FILE, writeSavedTheme } from "./theme-store";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -133,7 +133,7 @@ function fakeIpc() {
   return { ipc, call: (...a: unknown[]) => handlers.get(IPC_CHANNELS.windowTheme)!({}, ...a) };
 }
 
-describe("window:theme：记住偏好、失败原因脱敏", () => {
+describe("window:theme：记住偏好、失败只回固定文案", () => {
   it("成功后调 saveTheme；saveTheme 抛错不算失败", () => {
     const { ipc, call } = fakeIpc();
     const saveTheme = vi.fn(() => {
@@ -152,23 +152,22 @@ describe("window:theme：记住偏好、失败原因脱敏", () => {
     expect(saveTheme).not.toHaveBeenCalled();
   });
 
-  it("失败原因换掉密钥值、令牌，并截断", () => {
+  it("T-105：失败时只回固定文案，密钥值、令牌、原始错误一概不带", () => {
     const { ipc, call } = fakeIpc();
     const secret = "planted-theme-secret-ABCDEF";
     serveWindowTheme(ipc, {
       setThemeSource: () => true,
       applyTitleBar: () => {
         throw new Error(
-          `overlay failed ${secret} https://user:ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@github.com ${"x".repeat(2000)}`,
+          `overlay failed ${secret} https://user:ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@github.com /home/eva/repo ${"x".repeat(2000)}`,
         );
       },
-      env: { DEEPSEEK_API_KEY: secret },
     });
     const r = call("dark") as { ok: false; reason: string };
-    expect(r.ok).toBe(false);
+    expect(r).toEqual({ ok: false, reason: WINDOW_THEME_FAILED });
     expect(r.reason).not.toContain(secret);
-    expect(r.reason).toContain("[REDACTED:DEEPSEEK_API_KEY]");
     expect(r.reason).not.toContain("ghp_aaaa");
-    expect(Array.from(r.reason).length).toBeLessThanOrEqual(501);
+    expect(r.reason).not.toContain("overlay failed");
+    expect(r.reason).not.toContain("/home/eva");
   });
 });
