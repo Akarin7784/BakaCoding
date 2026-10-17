@@ -117,6 +117,7 @@ export class LocalPrProvider implements PrProvider {
       try {
         await git(worktree_path, ["commit", "-m", `${ticket_id}: apply patch`], {
           env: this.identityEnv(),
+          timeoutMs: 0,
         });
       } catch (err) {
         // 提交失败（含 hook 拒绝）：撤回补丁，不留提交，错误信息带上 hook 输出
@@ -162,6 +163,7 @@ export class LocalPrProvider implements PrProvider {
     try {
       await git(worktree_path, ["commit", "-q", "-m", `${ticket_id}: apply worktree changes`], {
         env: this.identityEnv(),
+        timeoutMs: 0,
       });
     } catch (err) {
       // 提交失败（含 hook 拒绝）：撤回暂存，工作区文件原样保留
