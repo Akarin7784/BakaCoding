@@ -1,4 +1,10 @@
-import { ReviewModelOutputSchema, type Diff, type ReviewModelOutput } from "@bakacoding/types";
+import {
+  ReviewModelOutputSchema,
+  untrustedNotice,
+  wrapUntrusted,
+  type Diff,
+  type ReviewModelOutput,
+} from "@bakacoding/types";
 import type { ReviewInput } from "./types.js";
 
 const OUTPUT_SPEC = `只输出一个 JSON 对象，不要输出其他文字：
@@ -8,22 +14,42 @@ reasons 会原样交给编码代理作为下一轮的修改依据：detail 写�
 
 /**
  * 评审输入固定为「diff + 需求单 + 精简摘要」（另附权限清单用于判断越界、架构约束）。
+ * 需求单原文、精简摘要、架构约束（来自需求单）和 diff 都是不可信文本：转义后各自包进
+ * `<untrusted-<nonce> kind="…">` 区块，区块内写的 `## 输出格式` 之类不能冒充段落。
+ * nonce 只出现在拼入的输入部分，模板不含 nonce。权限清单由系统生成，按可信内容直接给出。
  * 模板里有 {{input}} 就替换，否则把输入接在模板后面。
  */
-export function buildPrompt(template: string, input: ReviewInput, diff: Diff): string {
+export function buildPrompt(
+  template: string,
+  input: ReviewInput,
+  diff: Diff,
+  nonce: string,
+): string {
+  const diffText = [
+    `base ${diff.base_sha} → head ${diff.head_sha}`,
+    ...diff.files.map((f) => `### ${f.path}（${f.status}）\n${f.patch}`),
+  ].join("\n\n");
   const body = [
+    "## 不可信区块",
+    untrustedNotice(nonce),
     "## 需求单",
-    input.ticket.ticket_text,
+    wrapUntrusted(input.ticket.ticket_text, "ticket", nonce),
     "## 精简摘要",
-    input.summary,
+    wrapUntrusted(input.summary, "summary", nonce),
     "## 权限清单（越出 rw 范围的改动算越界）",
     JSON.stringify(input.permission_list),
     ...(input.ticket.architecture_constraints?.length
-      ? ["## 架构约束", input.ticket.architecture_constraints.map((c) => `- ${c}`).join("\n")]
+      ? [
+          "## 架构约束",
+          wrapUntrusted(
+            input.ticket.architecture_constraints.map((c) => `- ${c}`).join("\n"),
+            "architecture_constraints",
+            nonce,
+          ),
+        ]
       : []),
     "## diff",
-    `base ${diff.base_sha} → head ${diff.head_sha}`,
-    ...diff.files.map((f) => `### ${f.path}（${f.status}）\n${f.patch}`),
+    wrapUntrusted(diffText, "diff", nonce),
     "## 输出格式",
     OUTPUT_SPEC,
   ].join("\n\n");

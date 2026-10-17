@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   buildSystemPrefix,
   buildTicketMessage,
@@ -51,6 +51,8 @@ function renderResult(r: ToolResult): string {
 export function createCoderPool(deps: CoderPoolDeps): CoderPool {
   const isBudgetExceeded = deps.isBudgetExceeded ?? defaultIsBudgetExceeded;
   const maxFeedback = deps.maxFeedbackChars ?? DEFAULT_MAX_FEEDBACK_CHARS;
+  // 本池的不可信区块标签 nonce：创建时随机生成，池内不变；只出现在需求单之后，不进公共前缀
+  const nonce = randomBytes(8).toString("hex");
   // 按项目缓存公共前缀，键是模板 + 架构约束的内容哈希：内容没变就复用同一个字符串
   // （逐字节相同，保住前缀缓存）；模板或约束变了就重拼
   const prefixes = new Map<string, { hash: string; system: string }>();
@@ -80,7 +82,10 @@ export function createCoderPool(deps: CoderPoolDeps): CoderPool {
       permission_list: input.permission_list,
     });
     const messages: ChatMessage[] = [
-      { role: "user", content: buildTicketMessage(input.prompt, input.feedback, maxFeedback) },
+      {
+        role: "user",
+        content: buildTicketMessage(input.prompt, input.feedback, maxFeedback, nonce),
+      },
     ];
     const changed: string[] = [];
     const ctx = { ...input.ctx, role: "coder" as const };

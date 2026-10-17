@@ -9,3 +9,4 @@ export * from "./ticket.js";
 export * from "./pr.js";
 export * from "./review.js";
 export * from "./diagnostics.js";
+export * from "./untrusted.js";
