@@ -165,7 +165,11 @@ graph BT
 
 ### 11. 诊断包导出
 - **职责**：按单张需求单、一个需求或某个时间段导出（一个包只放一个项目，按时间段导出须选项目）；zip 内含 JSONL 和原始文件；导出前调用 3 的脱敏函数做完整脱敏并附脱敏报告；默认只带 diff 和上下文片段；结果标签和重放格式；可选的 `eval_task` 段：只有标记进评测集的单必须填测试名列表和运行命令，由用户在导出界面人工补填，存在诊断包的 `eval_task` 段里，2 不额外采集（v1 不跑测试），GitHub CI check 里有测试名时预填作参考；可导出为 SWE-bench 风格 JSONL（SWE-bench 实例格式含 `FAIL_TO_PASS`、`PASS_TO_PASS` 等字段：https://github.com/SWE-bench/SWE-bench ）。统计评审精度（判不过门槛待实测的依据）。用于排查问题和离线分析，不是验收。
-- **对外接口（草案）**：`export({ project_id, scope: ticket | requirement | time_range, include_full_repo }) → zip_path`；schema `bakacoding-diag/v1`（含可选 `eval_task`）；`toSweBenchJsonl(package) → jsonl`。
+- **对外接口（草案）**：`export(options, deps) → zip_path`，`options = { project_id, scope, include_full_repo }`；schema `bakacoding-diag/v1`（含可选 `eval_task`）；`toSweBenchJsonl(package) → jsonl`。
+  - `scope` 是按 `kind` 区分的联合类型：`ticket` / `requirement` / `time_range`；`time_range` 两端都包含，用 ISO 8601 UTC 时间。
+  - 数据源通过 `deps` 注入：接口 `DiagnosticsSource` 定义在 `@bakacoding/types`（与 `LedgerStore` 放在一起），模块 2 写适配器实现，不为诊断单独加查询接口。
+  - 人工补填的 `eval_task` 由 `deps.eval_tasks` 传入，它是外部读入的数据，不算导出选项。
+  - v1 按项目过滤由数据源负责，事件不加 `project_id`；多项目共用一个库时再单独提。
 - **依赖**：2、3（可与编排层并行开发）。
 - **对应章节**：PD §14、§18。
 - **配置字段**：`diagnostics.retention_days`（间接）。
