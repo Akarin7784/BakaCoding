@@ -21,3 +21,12 @@ export {
   ensureExcludeLines,
   type ExcludeRule,
 } from "@bakacoding/workspace";
+// T-087：设置页保存模型配置（desktop 不直接依赖 3）
+export {
+  findSecretLikeValues,
+  validate as validateConfig,
+  writeConfig,
+  WRITABLE_CONFIG_FILE,
+  type WriteConfigOptions,
+  type WriteConfigResult,
+} from "@bakacoding/config-budget";
