@@ -4,15 +4,19 @@
  * 写法：`<untrusted-<nonce> kind="<kind>">\n…\n</untrusted-<nonce>>`。nonce 由各池在创建时随机生成，
  * 只出现在需求单之后的部分，不进编码池的公共前缀。
  *
- * 转义：在「归一化视图」上找标签开头——逐码点做 NFKC，并去掉零宽字符
+ * 转义：在「归一化视图」上找标签开头——逐码点做 NFKD 后去掉所有组合符号（`\p{M}`），并去掉零宽字符
  * （U+200B..U+200D、U+2060、U+FEFF）和软连字符 U+00AD——命中 `<`、`</`（含空白）后跟
  * `untrusted` / `untrusted-*` 或旧的 `feedback` 标签名时，只把原文里产生那个 `<` 的码点
- * （`<`、全角 `＜`、小号 `﹤` 等）换成 `&lt;`，其余原文一字不改。这样所有 nonce 的标签（包括猜测的）
+ * （`<`、全角 `＜`、小号 `﹤`、预组合的 `≮` U+226E 等）换成 `&lt;`，其余原文一字不改。
+ * 去掉组合符号是为了拦住 `<` + U+0338（显示成 `≮`）这类在 `<` 后面挂组合字符的写法。这样所有 nonce 的标签（包括猜测的）
  * 和旧写法都不能提前闭合或嵌套区块。西里尔字母等同形字不处理。
  */
 
 /** 归一化时忽略的码点：零宽空格 / 非连接符 / 连接符、词连接符、BOM、软连字符。 */
 const IGNORED = new Set([0x200b, 0x200c, 0x200d, 0x2060, 0xfeff, 0x00ad]);
+
+/** 组合符号（Mn / Mc / Me），归一化视图里去掉。 */
+const MARK = /\p{M}/u;
 
 /** 归一化视图上的标签开头：`<` 后可有空白和 `/`，再跟受保护的标签名（整词）。 */
 const TAG_START = /<(?=\s*\/?\s*(?:untrusted(?:-[\w-]*)?|feedback)(?![\w-]))/gi;
@@ -29,7 +33,8 @@ export function escapeUntrusted(text: string): string {
     const start = i;
     i += cp.length;
     if (IGNORED.has(cp.codePointAt(0)!)) continue;
-    for (const ch of cp.normalize("NFKC")) {
+    for (const ch of cp.normalize("NFKD")) {
+      if (MARK.test(ch)) continue;
       view += ch;
       for (let k = 0; k < ch.length; k++) origin.push([start, i]);
     }
