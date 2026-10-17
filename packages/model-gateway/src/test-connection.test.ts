@@ -57,6 +57,7 @@ function setup(
   const events: CallCompletedInput[] = [];
   const bodies: Record<string, unknown>[] = [];
   const warnings: string[] = [];
+  const sleeps: number[] = [];
   const holds: { ticket_id: string | null; amount_micro_usd: number; released: number }[] = [];
   const queue = [...(o.responses ?? [ok()])];
   let now = Date.parse("2026-10-17T12:00:00Z");
@@ -94,12 +95,12 @@ function setup(
     clock: {
       now: () => now,
       random: () => 0,
-      sleep: async () => {},
+      sleep: async (ms: number) => void sleeps.push(ms),
       setTimer: () => () => {},
     },
     onWarning: (w) => warnings.push(w.message),
   });
-  return { gw, events, bodies, warnings, holds, reserve, fetchFn, sent };
+  return { gw, events, bodies, warnings, holds, reserve, fetchFn, sent, sleeps };
 }
 
 describe("testConnection", () => {
@@ -225,7 +226,7 @@ describe("testConnection", () => {
     expect(JSON.stringify(s.events)).not.toContain(KEY.slice(-12));
   });
 
-  it("429 会记入全局退避状态：之后 rateLimitState 显示该模型在退避中", async () => {
+  it("429 只记入共享退避状态：rateLimitState 显示该模型在退避中", async () => {
     const s = setup({
       responses: [
         new Response(JSON.stringify({ error: { type: "rate_limit_error", message: "slow" } }), {
@@ -276,6 +277,26 @@ describe("testConnection", () => {
       s.gw.testConnection({ provider: "deepseek" }, { signal: ac.signal }),
     ).rejects.toMatchObject({ name: "AbortError" });
     expect(s.fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("429 不阻塞后续请求：退避期内再测一次照常发出，不等待", async () => {
+    const s = setup({
+      responses: [
+        new Response(JSON.stringify({ error: { type: "rate_limit_error", message: "slow" } }), {
+          status: 429,
+          headers: { "content-type": "application/json", "retry-after": "30" },
+        }),
+        ok(),
+      ],
+    });
+    expect(await s.gw.testConnection({ provider: "deepseek" })).toMatchObject({
+      reason: "rate_limited",
+    });
+    const target = { provider: "deepseek", model: "deepseek-flash" };
+    expect(s.gw.rateLimitState(target).models[0]).toMatchObject({ limited: true });
+    expect(await s.gw.testConnection({ provider: "deepseek" })).toMatchObject({ ok: true });
+    expect(s.fetchFn).toHaveBeenCalledTimes(2);
+    expect(s.sleeps).toEqual([]);
   });
 
   it("请求途中取消 → 抛 AbortError；只发过一次请求，记一条 ABORTED 台账，释放预占", async () => {
