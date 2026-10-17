@@ -37,8 +37,8 @@ flowchart BT
   classDef doing fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef done fill:#dcfce7,stroke:#16a34a,color:#14532d
 
-  class M0,M2,M11,M12,T done
-  class M3,M4,M6 doing
+  class M0,M11,M12,T done
+  class M2,M3,M4,M6 doing
   class M1,M5,M7,M8,M9,M10 todo
 ```
 
@@ -75,6 +75,7 @@ flowchart BT
 | T-019 | 界面假数据改用 @bakacoding/types；诊断包排除 .env、diff_file 与 zip 条目一致 | 12、11 | 界面与诊断开发 | 已合入 | #14 | `c3afa67` |
 | T-020 | requirement_id 允许为 null（仅项目级事件） | 共享类型包 | 基础层开发 | 已合入 | #15 | `038b91e` |
 | T-021 | 诊断包 .env 规则收紧，schema 升到 v1.1；界面假数据 `req-none` 换成 null | 11、12 | 界面与诊断开发 | 已合入 | #16 | `e35e38e` |
+| T-022 | 存储层跟进：毫秒时间列、`events.seq` 唯一、落库失败可见、IMMEDIATE 事务、prStore 脱敏与 kind 校验、需求归属不被群消息覆盖、limit 校验 | 2 | 基础层开发 | 待评审 | #20 | — |
 
 8、9、10（编排层开发）的第二批需求单还没拆。
 
