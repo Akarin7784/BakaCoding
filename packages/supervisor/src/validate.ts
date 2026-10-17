@@ -2,14 +2,21 @@
 import { isUnsafeGlob } from "@bakacoding/workspace";
 import type { TicketOrigin, TicketValidationError } from "./types.js";
 
-/** glob 特殊字符：含这些字符的条目不当作字面路径（不做「裸目录」判断）。 */
-const GLOB_CHARS = /[*?[\]{}()!+@]/;
+/**
+ * glob 特殊字符 `* ? [ ] { } ( ) ! + @`：含这些字符的条目不当作字面路径（不做「裸目录」判断），
+ * 第一段含这些字符的写入范围按「可能写到整个仓库」处理。在 10 里自己定义，不从 4 引；
+ * 必须与 4 的 SCOPE_WILDCARD（T-054）、8 的 SCOPE_REQUEST_WILDCARD（T-053）同一字符集，
+ * 由 validate.charset.test.ts 守着。只在包内导出给测试用，不进 index.ts。
+ */
+export const GLOB_CHARS = /[*?[\]{}()!+@]/;
 
-/** 整仓范围：每段都是 `**`，或最后一段是 `*` 且前面都是 `**`（`**`、`**\/*`、`**\/**`）。 */
-function isWholeRepo(glob: string): boolean {
-  const segs = glob.split("/");
-  if (!segs.includes("**")) return false;
-  return segs.every((s, i) => s === "**" || (i === segs.length - 1 && s === "*"));
+/**
+ * 第一段不是字面量（含 `* ? [ ] { } ( ) ! + @`）的范围：`**`、`**\/*`、`*`、`{**,x}`、`?(**)`、`[!_]**` 等，
+ * 第一段就能匹配任意顶层目录，等于可能写到整个仓库。split 单判无效；manual / test 单按整仓 `**` 处理。
+ * v1 不给 `**\/package.json` 这类写法开白名单。
+ */
+function firstSegmentNotLiteral(glob: string): boolean {
+  return GLOB_CHARS.test(glob.split("/")[0] ?? "");
 }
 
 export interface ValidateWriteScopeOptions {
@@ -20,8 +27,8 @@ export interface ValidateWriteScopeOptions {
 
 /**
  * 校验一张单的写入范围。
- * - split 单：必填非空；整仓 `**` 无效；
- * - manual / test 单：不给或给整仓 `**` 都按 `["**"]`，`defaulted: true`（调用方发 ticket_warning）；
+ * - split 单：必填非空；第一段不是字面量（整仓 `**`、`*`、`{**,x}` 等）无效；
+ * - manual / test 单：不给，或任一条第一段不是字面量，都按 `["**"]`，`defaulted: true`（调用方发 ticket_warning）；
  * - 两者都不许：以 `/` 结尾、`isUnsafeGlob` 为真、写成裸目录名（应写 `dir/**`）。
  */
 export function validateWriteScope(
@@ -55,13 +62,14 @@ export function validateWriteScope(
         entry,
         message: "不安全的写入范围（含 ..、绝对路径、空段、! 或 # 开头等）",
       });
-    } else if (isWholeRepo(entry)) {
+    } else if (firstSegmentNotLiteral(entry)) {
       if (manual) whole = true;
       else
         errors.push({
           code: "write_scope_whole_repo",
           entry,
-          message: "拆单不能给整个仓库，写出具体目录或文件（如 `lib/**`）",
+          message:
+            "写入范围的第一段必须是字面的目录名或文件名（不能含 * ? [ ] { } ( ) ! + @），否则可能覆盖整个仓库；写出具体目录或文件（如 `lib/**`）",
         });
     } else if (!GLOB_CHARS.test(entry) && opts.isDirectory?.(entry)) {
       errors.push({

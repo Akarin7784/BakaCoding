@@ -1,5 +1,5 @@
 import type { StoredTicket } from "@bakacoding/storage";
-import type { CallCtx, EventOf } from "@bakacoding/types";
+import { EventSchema, type CallCtx, type EventOf } from "@bakacoding/types";
 import { describe, expect, it, vi } from "vitest";
 import {
   createSupervisor,
@@ -171,6 +171,47 @@ describe("validateWriteScope", () => {
     for (const s of ["../x/**", "/abs/**", "a//b", "~/x", "!lib/**", "src/./a", "C:/x", "a\\b"])
       expect(codes(s), s).toBe("write_scope_unsafe");
     for (const s of ["**", "**/*", "**/**"]) expect(codes(s), s).toBe("write_scope_whole_repo");
+  });
+  it("第一段必须是字面量：第一段含 * ? [ ] { } ( ) ! + @ 的 split 范围都判整仓无效", () => {
+    const bad = [
+      "{**,x}",
+      "{x,**}/**",
+      "**/*.*",
+      "**/?*",
+      "**/[a-z]*",
+      "*/**",
+      "*",
+      "?(**)",
+      "[!_]**",
+      "**",
+      "**/*",
+      "**/**",
+      "**/package.json",
+      "+(a|b)/**",
+      "@(lib)/**",
+      "*.ts",
+    ];
+    for (const s of bad) {
+      const r = validateWriteScope(["lib/**", s], { origin: "split" });
+      expect(r.ok, s).toBe(false);
+      if (!r.ok)
+        expect(
+          r.errors.map((e) => [e.code, e.entry]),
+          s,
+        ).toEqual([["write_scope_whole_repo", s]]);
+    }
+    // 第一段字面量、后面带通配的照常合法
+    for (const s of ["lib/**", "lib/*.ts", "src/{a,b}/**", "lib/[id]/page.tsx", "a.ts"])
+      expect(validateWriteScope([s], { origin: "split" }).ok, s).toBe(true);
+  });
+  it("manual / test：任一条第一段不是字面量都按整仓 ** 并标 defaulted", () => {
+    for (const origin of ["manual", "test"] as const)
+      for (const s of ["*", "{x,**}/**", "?(**)", "[!_]**", "**/package.json", "*/**"])
+        expect(validateWriteScope(["lib/**", s], { origin }), s).toEqual({
+          ok: true,
+          scope: ["**"],
+          defaulted: true,
+        });
   });
   it("裸目录要给 isDirectory 才判，带通配的不判", () => {
     const isDirectory = (p: string) => p === "lib" || p === "lib/[id]";
@@ -480,6 +521,21 @@ describe("createManualTicket", () => {
     expect(t.published.filter((e) => e.type === "ticket_warning")).toHaveLength(1);
   });
 
+  it("第一段不是字面量的范围按整仓 ** 派单并发 write_scope_defaulted", async () => {
+    const t = setup();
+    const tk = await t.sup.createManualTicket({
+      project_id: "demo-1234",
+      ticket_text: "x",
+      origin: "manual",
+      write_scope: ["lib/**", "*/src/**"],
+    });
+    expect(tk.write_scope).toEqual(["**"]);
+    expect(t.rows.get(tk.ticket_id)!.fields).toMatchObject({ write_scope: ["**"] });
+    expect(t.published.filter((e) => e.type === "ticket_warning")).toMatchObject([
+      { ticket_id: tk.ticket_id, payload: { code: "write_scope_defaulted" } },
+    ]);
+  });
+
   it("不合法直接报错且没有副作用", async () => {
     const t = setup();
     const bad = [
@@ -551,6 +607,61 @@ describe("loadTicket", () => {
     expect(warns).toHaveLength(3);
     expect(warns[0]).toMatch(/old-1 没有结构化字段.*需要重拆或人工处理/);
     expect(warns[1]).toMatch(/old-2 结构化字段不合格式/);
+    // 每张都经注入的 publish 发 ticket_warning(fields_invalid)，事件过 schema
+    const tw = t.published.filter((e) => e.type === "ticket_warning");
+    expect(tw.map((e) => e.ticket_id)).toEqual(["old-1", "old-2", "old-3"]);
+    for (const e of tw) {
+      expect(EventSchema.parse({ ...e, seq: 1 })).toMatchObject({
+        requirement_id: "req-old",
+        payload: { project_id: "demo-1234", code: "fields_invalid" },
+      });
+      expect(e.payload.detail).toMatch(/需要重拆或人工处理/);
+    }
+  });
+
+  it("写入范围按来源复查不过（split 单存了 ** / 第一段通配 / 尾斜杠）：同损坏处理，发 fields_invalid", async () => {
+    const t = setup({ outputs: [splitOut([ticketJson()])] });
+    const r = await t.sup.split({ project_id: "demo-1234", text: "x" });
+    const tk = r.tickets[0]!;
+    const row = t.rows.get(tk.ticket_id)!;
+    const warns: string[] = [];
+    t.deps.logger = { warn: (m) => warns.push(m) };
+    const sup = createSupervisor(t.deps);
+    for (const bad of [["**"], ["*/x/**"], ["lib/"]]) {
+      t.rows.set(tk.ticket_id, { ...row, fields: { ...row.fields, write_scope: bad } });
+      expect(await sup.loadTicket(tk.ticket_id), bad[0]).toBeUndefined();
+    }
+    expect(warns).toHaveLength(3);
+    expect(warns[0]).toMatch(/写入范围复查不过（write_scope_whole_repo \*\*）/);
+    const tw = t.published.filter((e) => e.type === "ticket_warning");
+    expect(tw).toHaveLength(3);
+    // 字段能解出 trace 时沿用本单的 trace
+    expect(tw[0]).toMatchObject({
+      trace_id: tk.trace_id,
+      parent_span_id: tk.span_id,
+      payload: { code: "fields_invalid" },
+    });
+  });
+
+  it("manual 单存的 ** 照常还原；publish 抛错也只记警告、返回 undefined", async () => {
+    const t = setup();
+    const tk = await t.sup.createManualTicket({
+      project_id: "demo-1234",
+      ticket_text: "x",
+      origin: "manual",
+    });
+    expect((await t.sup.loadTicket(tk.ticket_id))?.write_scope).toEqual(["**"]);
+    const row = t.rows.get(tk.ticket_id)!;
+    t.rows.set(tk.ticket_id, { ...row, fields: { ...row.fields, origin: "split" } });
+    const warns: string[] = [];
+    t.deps.logger = { warn: (m) => warns.push(m) };
+    t.deps.publish = () => {
+      throw new Error("总线挂了");
+    };
+    const sup = createSupervisor(t.deps);
+    expect(await sup.loadTicket(tk.ticket_id)).toBeUndefined();
+    expect(warns).toHaveLength(2);
+    expect(warns[1]).toMatch(/发 ticket_warning\(fields_invalid\) 失败/);
   });
 
   it("8 回写权限清单（saveTicket 不带 fields）不冲掉结构化字段", async () => {
@@ -686,6 +797,22 @@ describe("chat", () => {
       expect(t.prompts[1]).toContain('kind="requirement">\n加个登录页\n');
     });
 
+    it("回复没提到任何项目（「第一个吧」）：不认领，再问一次，暂存需求保留", async () => {
+      const t = setup({ projects, outputs: [req, splitOut([ticketJson()])] });
+      await t.sup.chat({ text: "加个登录页" });
+      for (const text of ["第一个吧", "随便"]) {
+        const r = await t.sup.chat({ text });
+        expect(r.kind, text).toBe("ask_project");
+        expect(r.text, text).toContain("没认出是哪个项目");
+        expect(r.text, text).toContain("「官网」");
+      }
+      expect(t.prompts).toHaveLength(1); // 不调模型
+      expect(t.enqueued).toEqual([]);
+      const r2 = await t.sup.chat({ text: "应用" });
+      expect(r2).toMatchObject({ kind: "dispatched", project_id: "app-1" });
+      expect(t.prompts[1]).toContain('kind="requirement">\n加个登录页\n');
+    });
+
     it("提到多个项目但界面传了 project_id：以 project_id 为准", async () => {
       const answer = JSON.stringify({ intent: "answer", reply: "收到", decision: null });
       const t = setup({ projects, outputs: [req, splitOut([ticketJson()]), answer] });
@@ -748,6 +875,37 @@ describe("chat", () => {
     const b = await t.sup.chat({ text: "官网加页脚" });
     expect(b).toMatchObject({ kind: "dispatched", project_id: "web-2" });
     expect(b.text).toContain("按项目「官网」处理");
+  });
+
+  it("ASCII 项目名按词边界匹配，非 ASCII 名按子串", async () => {
+    const projects = [
+      { project_id: "p-ui", name: "ui" },
+      { project_id: "p-web", name: "官网" },
+    ];
+    // 「rebuild」里的 ui 不算提到项目 ui
+    const t = setup({ projects, outputs: [req] });
+    expect((await t.sup.chat({ text: "rebuild the login page" })).kind).toBe("ask_project");
+    for (const [text, pid] of [
+      ["fix the UI login page", "p-ui"],
+      ["ui加个登录页", "p-ui"],
+      ["在ui里加登录", "p-ui"],
+      ["给官网加登录页", "p-web"],
+      ["p-ui: add login", "p-ui"],
+    ] as const) {
+      const u = setup({ projects, outputs: [req, splitOut([ticketJson()])] });
+      expect(await u.sup.chat({ text }), text).toMatchObject({
+        kind: "dispatched",
+        project_id: pid,
+      });
+    }
+    // 追问后的回复同样按词边界：「guide」不认领 ui
+    const v = setup({ projects, outputs: [req, splitOut([ticketJson()])] });
+    await v.sup.chat({ text: "加个登录页" });
+    expect((await v.sup.chat({ text: "see the guide" })).kind).toBe("ask_project");
+    expect(await v.sup.chat({ text: "UI" })).toMatchObject({
+      kind: "dispatched",
+      project_id: "p-ui",
+    });
   });
 
   it("原文同时提到两个项目：算没说清，追问", async () => {

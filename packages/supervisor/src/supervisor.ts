@@ -24,7 +24,7 @@ import {
   type TicketValidationError,
   type UserMessage,
 } from "./types.js";
-import { decodeFields, encodeFields } from "./fields.js";
+import { decodeFields, encodeFields, type StoredFields } from "./fields.js";
 import { directoryChecker, findCycle, topoOrder, validateWriteScope } from "./validate.js";
 
 /** 拆单 3 次都不合法（包内用，chat 据此回 split_failed）。 */
@@ -51,13 +51,30 @@ function meaningful(text: string): boolean {
   return text.replace(/[\p{P}\p{S}\s]/gu, "").replace(FILLER, "").length >= 2;
 }
 
-/** 从用户原文里去掉认领用的项目名和 project_id（忽略大小写），再去掉首尾标点空白。 */
+/**
+ * 项目名 / id 在原文里的匹配：纯 ASCII 的按词边界匹配（`ui` 不匹配 `rebuild`），含非 ASCII 字符的（如中文名）按子串匹配。
+ * 忽略大小写；少于 2 个字符的不匹配。
+ */
+function tokenRegExp(token: string): RegExp | undefined {
+  if (token.length < 2) return undefined;
+  const esc = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // eslint-disable-next-line no-control-regex
+  return /^[\x00-\x7f]+$/.test(token)
+    ? new RegExp(`(?<![A-Za-z0-9_])${esc}(?![A-Za-z0-9_])`, "gi")
+    : new RegExp(esc, "gi");
+}
+
+function mentionsToken(text: string, token: string): boolean {
+  const re = tokenRegExp(token);
+  return re ? re.test(text) : false;
+}
+
+/** 从用户原文里去掉认领用的项目名和 project_id，再去掉首尾标点空白。 */
 function stripProject(text: string, project: { project_id: string; name: string }): string {
   let out = text;
   for (const token of [project.project_id, project.name]) {
-    if (token.length < 2) continue;
-    const re = new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
-    out = out.replace(re, " ");
+    const re = tokenRegExp(token);
+    if (re) out = out.replace(re, " ");
   }
   return out.replace(/^[\p{P}\p{S}\s]+|[\p{P}\p{S}\s]+$/gu, "").replace(/\s{2,}/g, " ");
 }
@@ -112,12 +129,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
 
   /** 原文里字面提到的全部项目（项目名或 id，忽略大小写） */
   function mentionedAll(text: string, list: ProjectInfo[]): ProjectInfo[] {
-    const t = text.toLowerCase();
-    return list.filter(
-      (p) =>
-        t.includes(p.project_id.toLowerCase()) ||
-        (p.name.length >= 2 && t.includes(p.name.toLowerCase())),
-    );
+    return list.filter((p) => mentionsToken(text, p.project_id) || mentionsToken(text, p.name));
   }
 
   async function callModel(prompt: string, requirement_id: string, trace: Trace): Promise<string> {
@@ -480,18 +492,48 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   }
 
   /**
-   * 从 2 还原单子。`fields` 为 null（旧数据、库里损坏）或不合格式时返回 undefined 并记警告：
-   * 不按整仓 `**` 兜底续跑（那等于把写权限放宽到整个仓库），交给调用方按「单不存在」处理（8 会报错、9 转上报）。
+   * 从 2 还原单子。`fields` 为 null（旧数据、库里损坏）、不合格式，或写入范围按本单来源（split / manual / test）复查不过时：
+   * 发 `ticket_warning(fields_invalid)`、记警告并返回 undefined。不按整仓 `**` 兜底续跑（那等于把写权限放宽到整个仓库），
+   * 交给调用方按「单不存在」处理（8 会报错、9 转上报）。
    */
   async function loadTicket(ticket_id: string): Promise<SubAgentTicket | undefined> {
     const row = deps.storage.getTicket(ticket_id);
     if (!row) return undefined;
     const f = decodeFields(row.fields);
-    if (!f.ok) {
-      logger.warn(`单 ${ticket_id} ${f.reason}，不能续跑，需要重拆或人工处理`);
+    let reason: string | undefined;
+    if (!f.ok) reason = f.reason;
+    else {
+      const ws = validateWriteScope(f.fields.write_scope, { origin: f.fields.origin });
+      if (!ws.ok)
+        reason = `写入范围复查不过（${ws.errors.map((e) => `${e.code}${e.entry ? ` ${e.entry}` : ""}`).join("；")}）`;
+    }
+    if (reason !== undefined) {
+      logger.warn(`单 ${ticket_id} ${reason}，不能续跑，需要重拆或人工处理`);
+      const trace = f.ok
+        ? f.fields.trace
+        : { trace_id: row.requirement_id, span_id: newId(), parent_span_id: null };
+      try {
+        await deps.publish({
+          type: "ticket_warning",
+          event_id: newId(),
+          ts: nowIso(),
+          trace_id: trace.trace_id,
+          span_id: newId(),
+          parent_span_id: trace.span_id,
+          requirement_id: row.requirement_id,
+          ticket_id: row.ticket_id,
+          payload: {
+            project_id: row.project_id,
+            code: "fields_invalid",
+            detail: `${reason}，不能续跑，需要重拆或人工处理`.slice(0, 500),
+          },
+        });
+      } catch (err) {
+        logger.warn(`单 ${ticket_id} 发 ticket_warning(fields_invalid) 失败`, err);
+      }
       return undefined;
     }
-    const { trace, write_scope, kind } = f.fields;
+    const { trace, write_scope, kind } = (f as { ok: true; fields: StoredFields }).fields;
     return {
       ticket_id: row.ticket_id,
       project_id: row.project_id,
@@ -578,7 +620,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     const list = projects();
     const explicit = msg.project_id ? list.find((p) => p.project_id === msg.project_id) : undefined;
     // 有暂存需求时：界面传的 project_id 优先；否则原文里恰好提到一个项目才认领，
-    // 提到多个项目就再问一次（暂存的需求保留，什么都不丢）
+    // 提到多个项目或一个都没提到就再问一次（暂存的需求保留，什么都不丢）
     let named = explicit;
     if (pending && !explicit) {
       const hits = mentionedAll(msg.text, list);
@@ -587,6 +629,13 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
           ...askProject(list),
           text: `这条回复里提到了不止一个项目（${hits.map((h) => `「${h.name}」`).join("、")}），刚才那条需求要放到哪个项目？只回一个项目名即可。`,
         };
+      }
+      if (hits.length === 0) {
+        // 没认出项目（如「第一个吧」）：暂存的需求保留，再问一次
+        const ask = askProject(list);
+        return list.length === 0
+          ? ask
+          : { ...ask, text: `没认出是哪个项目。刚才那条需求要放到哪个项目？${ask.text}` };
       }
       named = hits[0];
     }

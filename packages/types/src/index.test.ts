@@ -224,7 +224,7 @@ describe("EventSchema", () => {
     expect(EventSchema.parse(ev)).toEqual(ev);
   });
   it("ticket_warning：ticket_id 必填，code 只认 TICKET_WARNING_CODES（T-040）", () => {
-    expect(TICKET_WARNING_CODES).toEqual(["write_scope_defaulted"]);
+    expect(TICKET_WARNING_CODES).toEqual(["write_scope_defaulted", "fields_invalid"]);
     const tw = {
       ...common,
       ticket_id: "req-1-1",
@@ -233,6 +233,9 @@ describe("EventSchema", () => {
     };
     expect(EventSchema.parse(tw)).toEqual(tw);
     expect(EventSchema.safeParse({ ...tw, ticket_id: null }).success).toBe(false);
+    expect(
+      EventSchema.safeParse({ ...tw, payload: { ...tw.payload, code: "fields_invalid" } }).success,
+    ).toBe(true);
     expect(
       EventSchema.safeParse({ ...tw, payload: { ...tw.payload, code: "other" } }).success,
     ).toBe(false);
