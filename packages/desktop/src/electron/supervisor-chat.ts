@@ -51,14 +51,23 @@ export async function runSupervisorChat(
  * 串行队列（T-072）：10 的 chat() 有状态，主进程里前一条回来才调下一条；
  * 渲染进程卸载 / 重挂丢了自己的防重入也不会并发。前一条失败不影响后一条。
  */
-export function createSerialQueue(): <T>(task: () => Promise<T>) => Promise<T> {
+export interface SerialQueue {
+  <T>(task: () => Promise<T>): Promise<T>;
+  /** 已提交、还没结束（成功或失败）的任务数（T-093：主管对话在途时重载要排队） */
+  pending(): number;
+}
+
+export function createSerialQueue(): SerialQueue {
   let chain: Promise<unknown> = Promise.resolve();
-  return <T>(task: () => Promise<T>): Promise<T> => {
+  let pending = 0;
+  const q = <T>(task: () => Promise<T>): Promise<T> => {
+    pending++;
     const run = chain.then(task);
-    chain = run.then(
-      () => undefined,
-      () => undefined,
-    );
+    const done = (): void => {
+      pending--;
+    };
+    chain = run.then(done, done);
     return run;
   };
+  return Object.assign(q, { pending: () => pending });
 }
