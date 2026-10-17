@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`4bb0a33` · main 上测试：68 个测试文件、1532 个测试全部通过 · 更新日期：2026-10-18（UTC+8）
+> 上次更新时 main：`b4a3745` · main 上测试：72 个测试文件、1547 个测试全部通过 · 更新日期：2026-10-18（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -130,7 +130,7 @@ flowchart BT
 | T-073 | 模块 12 打包：Windows x64 免安装 zip（electron-builder，`package:win` / `package:linux`），版本 1.0.0-preview；`electron` 固定 43.8.0（ABI 148），better-sqlite3 用 12.12.0 官方 electron-v148 预编译包，原生模块 asarUnpack | 12 | 界面与诊断开发 | 已合入 | #80 | `46d7a2d` |
 | T-074 | 模块 12：修 IPC handler 参数下标（Electron 第一个参数是 event），high-risk:decide 拿错参数；测试 fake ipc 先传 event，锁住所有带参数的通道 | 12 | 界面与诊断开发 | 已合入 | #81 | `d996617` |
 | T-075 | 桌面 exe 图标（`packages/desktop/build/icon.ico`，16–256 多尺寸，极简机器人） | 12 | 界面与诊断开发 | 已合入 | #83 | `f072c29` |
-| T-077 | 模块 12 界面小修：报错前缀只出现一次、不露出 `Error：`（主进程 `errorDetail`、界面 `failureText`，兼容 Electron remote method 包装）；只读时导出先拒绝、不弹保存框；设置页标题和项目群 / 未归属的「只读」标签只在后端只读时显示 | 12 | 界面与诊断开发 | 待评审 | #84 | — |
+| T-077 | 模块 12 界面小修：报错前缀只出现一次、不露出 `Error：`（主进程 `errorDetail`、界面 `failureText`，兼容 Electron remote method 包装）；只读时导出先拒绝、不弹保存框；设置页标题和项目群 / 未归属的「只读」标签只在后端只读时显示 | 12 | 界面与诊断开发 | 已合入 | #84 | `b4a3745` |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
