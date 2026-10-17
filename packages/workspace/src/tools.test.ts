@@ -77,7 +77,9 @@ describe("read / write / edit", () => {
       "(Showing lines 1-1 of 2. Use offset=2 to continue.)",
     );
     expect(err(await t.read({ file_path: "src/a.ts", offset: 9 })).code).toBe("FS_NOT_FOUND");
-    expect(err(await t.read({ file_path: "" })).message).toBe("file_path must be a non-empty string");
+    expect(err(await t.read({ file_path: "" })).message).toBe(
+      "file_path must be a non-empty string",
+    );
     expect(err(await t.read({ file_path: "nope.ts" })).code).toBe("FS_NOT_FOUND");
     expect(err(await t.read("src/a.ts")).code).toBe("FS_INVALID_INPUT");
   });
@@ -91,9 +93,9 @@ describe("read / write / edit", () => {
       code: "FS_NOT_OBSERVED",
       message: 'cannot modify "src/a.ts": file has not been read — read the file, then retry',
     });
-    expect(err(await t.edit({ file_path: "src/a.ts", old_string: "1", new_string: "3" })).code).toBe(
-      "FS_NOT_OBSERVED",
-    );
+    expect(
+      err(await t.edit({ file_path: "src/a.ts", old_string: "1", new_string: "3" })).code,
+    ).toBe("FS_NOT_OBSERVED");
     expect(readWs("src/a.ts")).toBe(A_TS);
     ok(await t.read({ file_path: "src/a.ts" }));
     ok(await t.write({ file_path: "src/a.ts", content: "y\n" }));
@@ -109,15 +111,20 @@ describe("read / write / edit", () => {
     const e = err(await t.edit({ file_path: "src/a.ts", old_string: "changed", new_string: "z" }));
     expect(e).toEqual({
       code: "FS_STALE_VERSION",
-      message: 'cannot edit "src/a.ts": file changed since it was read — re-read the file, then retry',
+      message:
+        'cannot edit "src/a.ts": file changed since it was read — re-read the file, then retry',
     });
-    expect(err(await t.write({ file_path: "src/a.ts", content: "z" })).code).toBe("FS_STALE_VERSION");
+    expect(err(await t.write({ file_path: "src/a.ts", content: "z" })).code).toBe(
+      "FS_STALE_VERSION",
+    );
     expect(readWs("src/a.ts")).toBe("changed\n");
   });
 
   it("另一套工具（另一张单）的已读记录不互通", async () => {
     ok(await tools().read({ file_path: "src/a.ts" }));
-    expect(err(await tools().write({ file_path: "src/a.ts", content: "x" })).code).toBe("FS_NOT_OBSERVED");
+    expect(err(await tools().write({ file_path: "src/a.ts", content: "x" })).code).toBe(
+      "FS_NOT_OBSERVED",
+    );
   });
 
   it("edit：未找到、多处匹配、replace_all，失败时文件不动，替换串不做 $ 展开", async () => {
@@ -139,9 +146,11 @@ describe("read / write / edit", () => {
     });
     expect(readWs("m.txt")).toBe("foo\nfoo\nbar\n");
     ok(await t.edit({ file_path: "m.txt", old_string: "bar", new_string: "$&$1" }));
-    expect(ok(await t.edit({ file_path: "m.txt", old_string: "foo", new_string: "q", replace_all: true }))).toBe(
-      'Edited "m.txt": replaced 2 occurrences',
-    );
+    expect(
+      ok(
+        await t.edit({ file_path: "m.txt", old_string: "foo", new_string: "q", replace_all: true }),
+      ),
+    ).toBe('Edited "m.txt": replaced 2 occurrences');
     expect(readWs("m.txt")).toBe("q\nq\n$&$1\n");
   });
 
@@ -163,10 +172,17 @@ describe("read / write / edit", () => {
 describe("外层硬边界", () => {
   it("../ 穿越被拒，工作区外文件不动", async () => {
     const t = tools();
-    const paths = ["../outside/secret.txt", "src/../../outside/secret.txt", "..", "..\\outside\\secret.txt"];
+    const paths = [
+      "../outside/secret.txt",
+      "src/../../outside/secret.txt",
+      "..",
+      "..\\outside\\secret.txt",
+    ];
     for (const p of paths) {
       expect(err(await t.read({ file_path: p })).code).toBe("FS_OUTSIDE_WORKSPACE");
-      expect(err(await t.write({ file_path: p, content: "pwned" })).code).toBe("FS_OUTSIDE_WORKSPACE");
+      expect(err(await t.write({ file_path: p, content: "pwned" })).code).toBe(
+        "FS_OUTSIDE_WORKSPACE",
+      );
       expect(err(await t.edit({ file_path: p, old_string: "TOP", new_string: "x" })).code).toBe(
         "FS_OUTSIDE_WORKSPACE",
       );
@@ -175,13 +191,21 @@ describe("外层硬边界", () => {
       "FS_OUTSIDE_WORKSPACE",
     );
     expect(err(await t.glob({ pattern: "*", path: ".." })).code).toBe("FS_OUTSIDE_WORKSPACE");
-    expect(err(await t.grep({ pattern: "SECRET", path: "../outside" })).code).toBe("FS_OUTSIDE_WORKSPACE");
+    expect(err(await t.grep({ pattern: "SECRET", path: "../outside" })).code).toBe(
+      "FS_OUTSIDE_WORKSPACE",
+    );
     outsideUntouched();
   });
 
   it("绝对路径一律拒绝（含指向工作区内的绝对路径、Windows 盘符）", async () => {
     const t = tools();
-    const paths = [join(outside, "secret.txt"), join(ws, "src/a.ts"), "/etc/passwd", "C:\\Windows\\x", "C:/x"];
+    const paths = [
+      join(outside, "secret.txt"),
+      join(ws, "src/a.ts"),
+      "/etc/passwd",
+      "C:\\Windows\\x",
+      "C:/x",
+    ];
     for (const p of paths) {
       expect(err(await t.read({ file_path: p })).code).toBe("FS_OUTSIDE_WORKSPACE");
     }
@@ -196,10 +220,12 @@ describe("外层硬边界", () => {
     symlinkSync(join(outside, "secret.txt"), join(ws, "link.txt"));
     const t = tools();
     expect(err(await t.read({ file_path: "link.txt" })).code).toBe("FS_OUTSIDE_WORKSPACE");
-    expect(err(await t.write({ file_path: "link.txt", content: "pwned" })).code).toBe("FS_OUTSIDE_WORKSPACE");
-    expect(err(await t.edit({ file_path: "link.txt", old_string: "TOP", new_string: "x" })).code).toBe(
+    expect(err(await t.write({ file_path: "link.txt", content: "pwned" })).code).toBe(
       "FS_OUTSIDE_WORKSPACE",
     );
+    expect(
+      err(await t.edit({ file_path: "link.txt", old_string: "TOP", new_string: "x" })).code,
+    ).toBe("FS_OUTSIDE_WORKSPACE");
     expect(ok(await t.glob({ pattern: "*.txt" }))).toBe("No files found");
     expect(ok(await t.grep({ pattern: "SECRET" }))).toBe("No matches found");
     outsideUntouched();
@@ -208,7 +234,9 @@ describe("外层硬边界", () => {
   it("中间目录是指向工作区外的符号链接：读、写、新建都拒", async () => {
     symlinkSync(outside, join(ws, "src", "out"));
     const t = tools();
-    expect(err(await t.read({ file_path: "src/out/secret.txt" })).code).toBe("FS_OUTSIDE_WORKSPACE");
+    expect(err(await t.read({ file_path: "src/out/secret.txt" })).code).toBe(
+      "FS_OUTSIDE_WORKSPACE",
+    );
     expect(err(await t.write({ file_path: "src/out/new.txt", content: "x" })).code).toBe(
       "FS_OUTSIDE_WORKSPACE",
     );
@@ -224,7 +252,9 @@ describe("外层硬边界", () => {
   it("悬空符号链接不能借道在外面新建文件", async () => {
     symlinkSync(join(outside, "new.txt"), join(ws, "dangling.txt"));
     const t = tools();
-    expect(err(await t.write({ file_path: "dangling.txt", content: "x" })).code).toBe("FS_OUTSIDE_WORKSPACE");
+    expect(err(await t.write({ file_path: "dangling.txt", content: "x" })).code).toBe(
+      "FS_OUTSIDE_WORKSPACE",
+    );
     outsideUntouched();
   });
 
@@ -235,7 +265,9 @@ describe("外层硬边界", () => {
       { glob: "src/**", level: "ro" },
     ]);
     expect(ok(await t.read({ file_path: "alias.ts" }))).toContain("1: const a = 1;");
-    expect(err(await t.write({ file_path: "alias.ts", content: "x" })).code).toBe("FS_PERMISSION_DENIED");
+    expect(err(await t.write({ file_path: "alias.ts", content: "x" })).code).toBe(
+      "FS_PERMISSION_DENIED",
+    );
     expect(readWs("src/a.ts")).toBe(A_TS);
   });
 
@@ -246,7 +278,16 @@ describe("外层硬边界", () => {
     writeFileSync(join(ws, ".git", "config"), "[core]\n");
     symlinkSync(join(ws, ".env"), join(ws, "env-alias.txt"));
     const t = tools();
-    const paths = [".env", ".ENV.local", ".envrc", "sub/.env.production", ".git/config", "id_rsa", "certs/server.pem", "env-alias.txt"];
+    const paths = [
+      ".env",
+      ".ENV.local",
+      ".envrc",
+      "sub/.env.production",
+      ".git/config",
+      "id_rsa",
+      "certs/server.pem",
+      "env-alias.txt",
+    ];
     for (const p of paths) {
       expect(err(await t.read({ file_path: p })).code).toBe("FS_PROTECTED_PATH");
       expect(err(await t.write({ file_path: p, content: "x" })).code).toBe("FS_PROTECTED_PATH");
@@ -279,13 +320,19 @@ describe("权限清单", () => {
       { glob: "docs/**", level: "rw" },
     ]);
     ok(await t.read({ file_path: "src/a.ts" }));
-    expect(err(await t.write({ file_path: "src/a.ts", content: "x" })).code).toBe("FS_PERMISSION_DENIED");
-    expect(err(await t.edit({ file_path: "src/a.ts", old_string: "1", new_string: "9" })).code).toBe(
+    expect(err(await t.write({ file_path: "src/a.ts", content: "x" })).code).toBe(
       "FS_PERMISSION_DENIED",
     );
+    expect(
+      err(await t.edit({ file_path: "src/a.ts", old_string: "1", new_string: "9" })).code,
+    ).toBe("FS_PERMISSION_DENIED");
     expect(err(await t.read({ file_path: "README.md" })).code).toBe("FS_PERMISSION_DENIED");
-    expect(err(await t.write({ file_path: "README.md", content: "x" })).code).toBe("FS_PERMISSION_DENIED");
-    expect(err(await t.write({ file_path: "new.ts", content: "x" })).code).toBe("FS_PERMISSION_DENIED");
+    expect(err(await t.write({ file_path: "README.md", content: "x" })).code).toBe(
+      "FS_PERMISSION_DENIED",
+    );
+    expect(err(await t.write({ file_path: "new.ts", content: "x" })).code).toBe(
+      "FS_PERMISSION_DENIED",
+    );
     ok(await t.write({ file_path: "docs/x.md", content: "ok\n" }));
     expect(readWs("src/a.ts")).toBe(A_TS);
     expect(readWs("README.md")).toBe("readme\n");
@@ -295,7 +342,9 @@ describe("权限清单", () => {
   it("空权限清单什么都做不了", async () => {
     const t = tools([]);
     expect(err(await t.read({ file_path: "src/a.ts" })).code).toBe("FS_PERMISSION_DENIED");
-    expect(err(await t.write({ file_path: "x.ts", content: "x" })).code).toBe("FS_PERMISSION_DENIED");
+    expect(err(await t.write({ file_path: "x.ts", content: "x" })).code).toBe(
+      "FS_PERMISSION_DENIED",
+    );
     expect(ok(await t.glob({ pattern: "*" }))).toBe("No files found");
   });
 });
@@ -317,8 +366,12 @@ describe("glob / grep", () => {
     expect(ok(await t.grep({ pattern: "const a" }))).toBe(
       "src/a.ts\n  1: const a = 1;\n\nsrc/c.js\n  1: const a = 3;",
     );
-    expect(ok(await t.grep({ pattern: "const a", include: "*.js" }))).toBe("src/c.js\n  1: const a = 3;");
-    expect(ok(await t.grep({ pattern: "b =", path: "src/a.ts" }))).toBe("src/a.ts\n  2: const b = 2;");
+    expect(ok(await t.grep({ pattern: "const a", include: "*.js" }))).toBe(
+      "src/c.js\n  1: const a = 3;",
+    );
+    expect(ok(await t.grep({ pattern: "b =", path: "src/a.ts" }))).toBe(
+      "src/a.ts\n  2: const b = 2;",
+    );
     expect(err(await t.grep({ pattern: "(" })).code).toBe("FS_INVALID_INPUT");
   });
 });

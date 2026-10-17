@@ -15,7 +15,8 @@ import {
 } from "./guard.js";
 
 /** 与 5 的 `ToolResult` 同形：失败带 FS_* 错误码，原样交还模型。 */
-export type ToolResult = { ok: true; output: string } | { ok: false; code: string; message: string };
+export type ToolResult =
+  { ok: true; output: string } | { ok: false; code: string; message: string };
 
 export const FILE_TOOL_NAMES = ["read", "write", "edit", "glob", "grep"] as const;
 export type FileToolName = (typeof FILE_TOOL_NAMES)[number];
@@ -421,7 +422,8 @@ export function createTools(opts: CreateToolsOptions): FileTools {
       if (!s.isFile()) {
         throw new FsToolError(`"${target.display}" is not a regular file`, "FS_NOT_A_FILE");
       }
-      if (seen === undefined) throw new FsToolError(NOT_OBSERVED(target.display), "FS_NOT_OBSERVED");
+      if (seen === undefined)
+        throw new FsToolError(NOT_OBSERVED(target.display), "FS_NOT_OBSERVED");
       if ((await versionOf(target.abs)) !== seen) throw staleWrite(target.display);
       mode = s.mode;
     } else if (seen !== undefined) {
@@ -476,10 +478,7 @@ export function createTools(opts: CreateToolsOptions): FileTools {
     }
     const n = countOccurrences(lf, oldLf);
     if (n === 0) {
-      throw new FsToolError(
-        `old_string was not found in "${target.display}"`,
-        "FS_EDIT_NOT_FOUND",
-      );
+      throw new FsToolError(`old_string was not found in "${target.display}"`, "FS_EDIT_NOT_FOUND");
     }
     if (n > 1 && !replaceAll) {
       throw new FsToolError(
@@ -529,7 +528,9 @@ export function createTools(opts: CreateToolsOptions): FileTools {
     }
     hits.sort((a, b) => b.mtime - a.mtime || (a.rel < b.rel ? -1 : 1));
     if (hits.length === 0) {
-      return capped ? `No files found (search stopped after ${WALK_LIMIT} entries)` : "No files found";
+      return capped
+        ? `No files found (search stopped after ${WALK_LIMIT} entries)`
+        : "No files found";
     }
     const notes: string[] = [];
     if (hits.length > GLOB_LIMIT) {
@@ -537,7 +538,8 @@ export function createTools(opts: CreateToolsOptions): FileTools {
         `(Showing first ${GLOB_LIMIT} of ${hits.length} files. Narrow the pattern or path to see more.)`,
       );
     }
-    if (capped) notes.push(`(Search stopped after ${WALK_LIMIT} entries; results may be incomplete.)`);
+    if (capped)
+      notes.push(`(Search stopped after ${WALK_LIMIT} entries; results may be incomplete.)`);
     const shown = hits.slice(0, GLOB_LIMIT).map((h) => h.rel);
     return [shown.join("\n"), ...notes].join("\n\n");
   });
@@ -619,7 +621,8 @@ export function createTools(opts: CreateToolsOptions): FileTools {
         `(Showing first ${GREP_LIMIT} matches. Narrow the pattern, path or include to see more.)`,
       );
     }
-    if (capped) notes.push(`(Search stopped after ${WALK_LIMIT} entries; results may be incomplete.)`);
+    if (capped)
+      notes.push(`(Search stopped after ${WALK_LIMIT} entries; results may be incomplete.)`);
     return [groups.join("\n\n"), ...notes].join("\n\n");
   });
 

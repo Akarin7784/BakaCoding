@@ -28,6 +28,11 @@ export interface RoundRecord {
   fail_reasons: string[];
   /** 复投时带回的评审意见。 */
   review_comments?: string;
+  /**
+   * 这一轮由谁评审（T-010）：评审组成员 id、`"supervisor"`，或 `null`（未指定）。
+   * 结构字段，存储原样往返、不脱敏、不校验成员是否存在；旧记录没有这个字段，读出来是 `null`。
+   */
+  reviewer?: string | null;
 }
 
 export interface DiagMergeResult {

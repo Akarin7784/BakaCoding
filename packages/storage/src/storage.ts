@@ -41,7 +41,7 @@ export interface StorageOptions {
   now?: () => Date;
   /**
    * better-sqlite3 原生模块路径（`better_sqlite3.node`）。桌面端在 Electron 里用按 Electron ABI 编译的那份，
-   * 见 `scripts/build-electron-sqlite.mjs`；不传则用 Node 默认的那份。
+   * 见 `packages/desktop/scripts/rebuild-electron.mjs`；不传则用 Node 默认的那份。
    */
   nativeBinding?: string;
 }
@@ -103,6 +103,12 @@ export interface TicketInput {
 /** savePrRecord 的入参：一轮 PR 记录。同一单同一轮重复保存会覆盖（幂等）。 */
 export interface PrRoundInput extends RoundRecord {
   ticket_id: string;
+}
+
+/** listProjects 的一行：`created_at` 为「项目已创建」事件里的 ISO 时间。 */
+export interface ProjectRow {
+  project_id: string;
+  created_at: string;
 }
 
 export interface Decision {
@@ -265,6 +271,8 @@ export interface Storage {
     ts?: string;
   }): Decision;
   listDecisions(project_id: string): Decision[];
+  /** 所有已创建的项目（T-010），按创建时间先后排序（同一时刻按 project_id）。 */
+  listProjects(): ProjectRow[];
   groupMessages(project_id: string, requirement_id?: string): GroupMessageRow[];
   backlogMetrics(
     kind: "review_backlog" | "supervisor_backlog",
@@ -298,6 +306,7 @@ export type ReadonlyStorage = Pick<
   | "queryEvents"
   | "query"
   | "listDecisions"
+  | "listProjects"
   | "groupMessages"
   | "backlogMetrics"
   | "diagnosticsSource"
@@ -703,11 +712,18 @@ function open(options: StorageOptions, ro: boolean): Storage {
   });
 
   const savePrRecord = write("savePrRecord", (input: PrRoundInput) => {
-    const { ticket_id, ...round } = input;
+    const { ticket_id, reviewer, ...rest } = input;
+    if (reviewer !== undefined && reviewer !== null && typeof reviewer !== "string") {
+      throw new TypeError(
+        `PR 记录 ${ticket_id} 第 ${input.round} 轮的 reviewer 只能是字符串或 null`,
+      );
+    }
+    // reviewer 是结构字段：原样保存，不进轻脱敏（成员 id / "supervisor" / null）。
+    const round = { ...(deepRedact(rest) as typeof rest), reviewer: reviewer ?? null };
     db.prepare(
       `INSERT INTO pr_rounds (ticket_id, round, record, saved_at) VALUES (?, ?, ?, ?)
        ON CONFLICT(ticket_id, round) DO UPDATE SET record = excluded.record, saved_at = excluded.saved_at`,
-    ).run(ticket_id, round.round, JSON.stringify(deepRedact(round)), now().toISOString());
+    ).run(ticket_id, round.round, JSON.stringify(round), now().toISOString());
   });
 
   const putPrRecord = write("prStore().put", (record: PrRecordLike) => {
@@ -818,9 +834,11 @@ function open(options: StorageOptions, ro: boolean): Storage {
         ticket_text: row.ticket_text as string,
         base_commit: row.base_commit as string,
         permission_list: JSON.parse(row.permission_list as string) as PermissionList,
-        rounds: (roundsStmt.all(row.ticket_id) as { record: string }[]).map(
-          (x) => JSON.parse(x.record) as RoundRecord,
-        ),
+        rounds: (roundsStmt.all(row.ticket_id) as { record: string }[]).map((x) => {
+          const r = JSON.parse(x.record) as RoundRecord;
+          // T-010 之前的旧记录没有 reviewer，统一读成 null。
+          return { ...r, reviewer: r.reviewer ?? null };
+        }),
         context_snippets: JSON.parse(row.context_snippets as string) as RawFile[],
         marked_for_eval_set: row.in_eval === 1,
       };
@@ -975,6 +993,11 @@ function open(options: StorageOptions, ro: boolean): Storage {
     saveMergeResult,
     query,
     saveDecision,
+    listProjects() {
+      return db
+        .prepare("SELECT project_id, created_at FROM projects ORDER BY created_at, project_id")
+        .all() as ProjectRow[];
+    },
     listDecisions(project_id) {
       return db
         .prepare(

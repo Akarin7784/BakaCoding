@@ -86,7 +86,8 @@ export async function resolveInWorkspace(
   if (typeof input !== "string" || input.length === 0) {
     throw new FsToolError(`${field} must be a non-empty string`, "FS_INVALID_INPUT");
   }
-  if (input.includes("\0")) throw new FsToolError(`${field} contains a NUL byte`, "FS_INVALID_INPUT");
+  if (input.includes("\0"))
+    throw new FsToolError(`${field} contains a NUL byte`, "FS_INVALID_INPUT");
   const slashed = input.replace(/\\/g, "/");
   if (isAbsolute(input) || slashed.startsWith("/") || /^[A-Za-z]:/.test(slashed)) {
     throw outside(input);

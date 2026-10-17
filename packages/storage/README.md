@@ -13,7 +13,7 @@ storage.health(); // { ok, lease_lost, closed, ingest_failures, last_failure? }
 // 注入：模块 3 用 storage.ledger（LedgerStore），模块 11 用 storage.diagnosticsSource()（DiagnosticsSource）
 ```
 
-- **只读打开**：`openStorageReadonly({ path, nativeBinding? })` 给界面等读方用：库文件必须已存在（不会新建），不跑迁移，不拿也不动写入者租约，协调服务在写的时候也能读。库版本比代码旧时报错让先用写入方打开一次完成升级，比代码新时报错让升级 BakaCoding。返回对象只有读方法（含 `maxSeq()`、`diagnosticsSource()`），运行时调写方法抛 `StorageReadonlyError`。`nativeBinding`（两个打开函数都支持）指向另编的 `better_sqlite3.node`，如桌面端为 Electron 编的那份。
+- **只读打开**：`openStorageReadonly({ path, nativeBinding? })` 给界面等读方用：库文件必须已存在（不会新建），不跑迁移，不拿也不动写入者租约，协调服务在写的时候也能读。库版本比代码旧时报错让先用写入方打开一次完成升级，比代码新时报错让升级 BakaCoding。返回对象只有读方法（含 `maxSeq()`、`diagnosticsSource()`），运行时调写方法抛 `StorageReadonlyError`。库版本只在打开时检查一次：会话中途写入方升级了库，只读连接不会察觉，需要重新打开。`nativeBinding`（两个打开函数都支持）指向另编的 `better_sqlite3.node`，如桌面端为 Electron 编的那份。
 - **单一写入者**：打开时抢租约（默认 30 秒，持有期间自动续），别人持有未过期的租约时抛 `StorageLeaseError`；每次写入都确认租约还在自己手里，被接管后再写也抛这个错。拿租约和所有写入都用 `BEGIN IMMEDIATE`，两个进程同时打开时按 `busy_timeout`（5 秒）排队等写锁，不会中途报 `SQLITE_BUSY`。`close()` 释放租约。
 - **落库失败可见**：经 `attach` 落库失败（租约丢了、seq 冲突、事件不合法）时调用 `onError`（默认 `console.error`），并计入 `health()`：`ok` 变成 `false`，`ingest_failures` 加一，`last_failure` 记下事件和原因；租约丢失另有 `lease_lost`。
 - **seq 唯一**：`events.seq` 有唯一索引；同一个 `event_id` 重放照常幂等，不同事件占同一个 seq 抛 `StorageSeqConflictError`。
@@ -25,3 +25,4 @@ storage.health(); // { ok, lease_lost, closed, ingest_failures, last_failure? }
 - **时间**：时间列另存一份 UTC 毫秒数（`ts_ms`、`created_at_ms`），时间范围、排序和清理截止点都按毫秒比较，带不带毫秒都不会排错；时间参数不合法报 `RangeError`。`queryEvents` 的 `limit` 必须是正整数。
 - **保留期**：`purgeExpired()` 把超过 `retention_days` 的调用的提示词和输出清掉，只留统计和输出前 200 字的摘要（查出来 `prompt` 为空串、`output` 为摘要）；`markForEvalSet(ticket_id)` 的单永久保留。
 - **表结构升级**：`src/schema.sql.ts` 按 `PRAGMA user_version` 依次执行，只加不改；v2（T-022）给旧库加毫秒列并回填，加 `events.seq` 唯一索引（旧库若已有重复 seq，升级会失败并停在 v1，不会悄悄丢数据）。
+- **项目列表与轮次评审人（T-010）**：`listProjects()`（写入方和只读连接都有）返回 `{ project_id, created_at }[]`，按创建时间排序。PR 轮次记录可带 `reviewer`（评审组成员 id、`"supervisor"` 或 `null`），结构字段原样往返、不脱敏、不校验成员；旧记录读出 `null`。
