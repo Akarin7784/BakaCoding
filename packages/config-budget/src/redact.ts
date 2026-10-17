@@ -98,7 +98,19 @@ function redactEmails(text: string): { text: string; count: number } {
     while (e > at + 1 && (text[e - 1] === "." || text[e - 1] === "-")) e--;
     const domain = text.slice(at + 1, e);
     const dot = domain.lastIndexOf(".");
-    if (s < at && dot > 0 && EMAIL_TLD.test(domain.slice(dot + 1))) {
+    let ok = dot > 0 && EMAIL_TLD.test(domain.slice(dot + 1));
+    if (!ok && dot > 0) {
+      // 最后一段像 `com-2`：取开头连续的字母，至少 2 个且后面紧跟 `-` 就截在字母后面
+      // （和 main 上 `\b` 的效果一致），`eva@example.com-2` → `[REDACTED:email]-2`。
+      const tldStart = at + 1 + dot + 1;
+      let k = tldStart;
+      while (k < e && /[A-Za-z]/.test(text[k]!)) k++;
+      if (k - tldStart >= 2 && text[k] === "-") {
+        e = k;
+        ok = true;
+      }
+    }
+    if (s < at && ok) {
       ranges.push([s, e]);
       floor = e;
     } else {

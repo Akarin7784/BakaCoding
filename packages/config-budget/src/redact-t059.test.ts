@@ -20,6 +20,7 @@ const INPUTS: Array<[string, () => string]> = [
   ["Bearer 后接空白", () => `Bearer${" ".repeat(100_000)}`],
   ["ghp_ 反复", () => "ghp_".repeat(25_000)],
   ["a@b. 反复", () => "a@b.".repeat(25_000)],
+  ["a@b.c- 反复", () => "a@b.c-".repeat(16_667)],
 ];
 
 describe("redact 10 万字符输入（T-059）", () => {
@@ -102,5 +103,18 @@ describe("邮箱不设长度上限（#63 评审）", () => {
   it("full：超过 16 段的内网域名邮箱不留 .internal 后缀", () => {
     const r = redact(`eva@${labels(17)}.internal:80`, "full");
     expect(r.text).toBe("[REDACTED:email]:80");
+  });
+});
+
+describe("邮箱后面紧跟 - 时截在顶级域名后（#63 复审）", () => {
+  it.each([
+    ["eva@example.com-2", "[REDACTED:email]-2"],
+    ["eva@example.com-based", "[REDACTED:email]-based"],
+    ["report-eva@corp.com-2026.txt", "[REDACTED:email]"],
+    ["eva@example.co-uk.org", "[REDACTED:email]"],
+  ])("%s", (input, out) => {
+    for (const level of ["light", "full"] as const) {
+      expect(redact(input, level).text).toBe(out);
+    }
   });
 });
