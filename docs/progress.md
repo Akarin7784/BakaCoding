@@ -150,7 +150,6 @@ flowchart BT
 - 模块 9（T-041c，Q-6）：GitHub 上手动合并 / 关闭被扣的 PR 要等 9 的 `sync()` 才生效，现在没有定时 `sync()`（另开单）。
 - 模块 8 / 组合根（T-041c）：6 的 DiffFile 没有旧路径，改名的文件一律按高风险（T-065 收窄）；重启补判取 diff 出错也按高风险，可能误扣。
 - 模块 10（T-041c）：高风险通知「同一 PR 只通知一次」、待裁决清单 `pendingHighRisk()` 都只在进程内，重启后重新通知一次。
-- 模块 8（T-041c 发现）：`DEPENDENCY_MANIFEST_GLOBS` 里 `pnpm-lock.yaml` 只匹配仓库根目录（没有 `**/pnpm-lock.yaml`），嵌套目录里的 pnpm 锁文件不算依赖文件（未改，留给 types 的维护方定）。
 - 组合根（T-041a → T-041b）：依赖已上报（未被取代）或 `fields_invalid` 的单，T-041b 起重启时进 `held`、通知用户一次；依赖接管失败（`failed`）的单仍不进 `held`，9 不认识它，依赖它的单会一直 `waiting`。
 - 模块 9（T-041a）：`adopt` 接回的单复投数是估的：评审复投数从 0 记起（9 只用它报上报的 `resubmit_counts`，8 的复投上限按事件日志算），冲突复投数按 worktree 轮次估。
 - 组合根（T-041a）：`fields_invalid` 的「只通知一次」只在同一进程内去重；每次重启都会再发一条 `ticket_warning(fields_invalid)`，跨重启去重由桌面端做（T-062，按单号 + 警告码去重）。
