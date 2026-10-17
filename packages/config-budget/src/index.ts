@@ -1,3 +1,6 @@
 // 模块 3 占位，接口见 docs/modules.md「3.」一节。
 export const MODULE_ID = 3 as const;
 export const MODULE_NAME = "@bakacoding/config-budget" as const;
+export * from "./config.js";
+export * from "./redact.js";
+export * from "./pricing.js";
