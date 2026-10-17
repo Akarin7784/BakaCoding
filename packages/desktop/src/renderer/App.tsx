@@ -129,14 +129,27 @@ export function App(props: AppProps) {
               onOpenSettings={() => void actions.openSettings()}
               onExport={() => void actions.exportDiagnostics()}
               {...(api && { onImport: () => void actions.importProject() })}
+              api={api}
+              projectId={
+                selection.kind === "project" ? current?.project.payload.project_id : undefined
+              }
             />
           ) : (
-            <ProjectGroup
-              view={current}
-              calls={flashCalls}
-              sidebarOpen={sidebarOpen}
-              onToggleSidebar={() => setSidebarOpen((o) => !o)}
-            />
+            <>
+              <ProjectGroup
+                view={current}
+                calls={flashCalls}
+                sidebarOpen={sidebarOpen}
+                onToggleSidebar={() => setSidebarOpen((o) => !o)}
+              />
+              {/* 选中项目时也能和主管说话，消息带上这个项目（T-072） */}
+              <SupervisorChat
+                compact
+                initial={supervisorMessages}
+                api={api}
+                projectId={current.project.payload.project_id}
+              />
+            </>
           )}
         </div>
         {sidebarOpen && current && selection.kind !== "unattributed" && (

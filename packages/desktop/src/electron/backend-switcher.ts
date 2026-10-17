@@ -130,6 +130,9 @@ export class BackendSwitcher implements BackendHandle {
   importCurrentRepo() {
     return this.current.importCurrentRepo();
   }
+  supervisorChat(message: Parameters<BackendHandle["supervisorChat"]>[0]) {
+    return this.current.supervisorChat(message);
+  }
   exportDiagnostics(target: string, now?: Date) {
     return this.current.exportDiagnostics(target, now);
   }

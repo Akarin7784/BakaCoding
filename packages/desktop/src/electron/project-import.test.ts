@@ -18,6 +18,7 @@ import { openStorageReadonly } from "@bakacoding/storage";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { IPC_CHANNELS, type DesktopSettings } from "../shared/api.js";
 import {
+  countBusy,
   resolveRepoPath,
   startBackend,
   type BackendHandle,
@@ -184,22 +185,70 @@ describe("BackendSwitcher 重新组装（T-072）", () => {
     expect(existsSync(join(a, ".bakacoding"))).toBe(true);
   });
 
-  it("有进行中的单 / 等裁决的高风险单：拒绝切换，不拆旧后端", async () => {
+  function busyFake(tickets: { ticket_id: string; status?: string }[], pendingHR: string[]) {
     const stop = vi.fn(async () => {});
     const fake = {
-      busyCount: () => 3,
+      busyCount: () => countBusy(tickets, pendingHR),
       stop,
       onNotify: () => () => {},
       onPendingHighRisk: () => () => {},
     } as unknown as BackendHandle;
     const start = vi.fn();
-    const sw = new BackendSwitcher(fake, start);
+    return { sw: new BackendSwitcher(fake, start), stop, start };
+  }
+
+  it("只有进行中的单（无高风险待裁决）：拒绝切换，N = 进行中单数，不拆旧后端", async () => {
+    const { sw, stop, start } = busyFake(
+      [
+        { ticket_id: "T-1", status: "coding" },
+        { ticket_id: "T-2", status: "merge_queued" },
+        { ticket_id: "T-3", status: "merged" },
+        { ticket_id: "T-4" },
+      ],
+      [],
+    );
     await expect(sw.switchTo("/x")).resolves.toEqual({
       ok: false,
       reason: "还有 3 张单在进行中，完成后再切换项目",
     });
     expect(stop).not.toHaveBeenCalled();
     expect(start).not.toHaveBeenCalled();
+  });
+
+  it("只有高风险待裁决（库里没有进行中的单）：拒绝切换，N = 待裁决单数", async () => {
+    // 高风险单在库里本是非终态；这里让 listTickets 里没有它们，专门走 pendingHighRisk 这一路
+    const { sw, stop, start } = busyFake(
+      [{ ticket_id: "T-9", status: "escalated" }],
+      ["T-5", "T-6"],
+    );
+    await expect(sw.switchTo("/x")).resolves.toEqual({
+      ok: false,
+      reason: "还有 2 张单在进行中，完成后再切换项目",
+    });
+    expect(stop).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it("同一张单既在进行中又在等高风险裁决：只算 1 张", async () => {
+    const { sw, stop } = busyFake([{ ticket_id: "T-1", status: "in_review" }], ["T-1"]);
+    await expect(sw.switchTo("/x")).resolves.toEqual({
+      ok: false,
+      reason: "还有 1 张单在进行中，完成后再切换项目",
+    });
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  it("countBusy：并集计数；全部终态且无待裁决为 0", () => {
+    expect(countBusy([{ ticket_id: "A", status: "coding" }], ["B"])).toBe(2);
+    expect(
+      countBusy(
+        [
+          { ticket_id: "A", status: "merged" },
+          { ticket_id: "B", status: "escalated" },
+        ],
+        [],
+      ),
+    ).toBe(0);
   });
 
   it("新仓库没进 live：回到原仓库并返回原因", async () => {
@@ -246,7 +295,8 @@ describe("导出诊断包（T-072）", () => {
     const entries = readZip(readFileSync(target));
     const all = entries.map((x) => x.data.toString("utf8")).join("\n");
     expect(p.project_id).toBeTruthy();
-    expect(all).toContain("project_created");
+    // 项目名（含密钥值）确实进了包，并被 11 遮掉
+    expect(all).toContain("[REDACTED:github_token]");
     expect(all).not.toContain(FAKE_GH);
     expect(all).not.toContain(FAKE_DS);
   });

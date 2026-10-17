@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   acquireWriterLock,
   assemble,
+  isTicketActive,
   createDefaultDeps,
   type App,
   type DefaultDepsHandle,
@@ -20,7 +21,6 @@ import {
 } from "@bakacoding/config-budget";
 import { exportPackage } from "@bakacoding/diagnostics";
 import { GithubPrProvider } from "@bakacoding/pr";
-import { TERMINAL_TICKET_STATUSES } from "@bakacoding/types";
 import { HighRiskDecisionError } from "@bakacoding/scheduler";
 import {
   openStorage,
@@ -28,9 +28,14 @@ import {
   type Storage,
   type StorageHealth,
 } from "@bakacoding/storage";
-import type { PendingHighRisk, TakeOverReport } from "@bakacoding/supervisor";
-import type { DesktopDecideHighRiskResult, DesktopSyncState } from "../shared/api.js";
+import type { PendingHighRisk, TakeOverReport, UserMessage } from "@bakacoding/supervisor";
+import type {
+  DesktopChatResult,
+  DesktopDecideHighRiskResult,
+  DesktopSyncState,
+} from "../shared/api.js";
 import { DB_PATH_ENV, DEFAULT_DB_RELATIVE, resolveDbPath } from "./config.js";
+import { createSerialQueue, runSupervisorChat } from "./supervisor-chat.js";
 import { toDesktopSyncState, unavailableSyncState } from "./sync-state.js";
 
 /** 仓库路径：`--repo` > BAKACODING_REPO > cwd */
@@ -105,12 +110,14 @@ export interface BackendHandle {
   repoRoot(): string;
   /** PR 实现：live 时看 app.pr 是不是 GithubPrProvider；只读时没有 provider，按 local（T-072） */
   prMode(): "local" | "github";
-  /** 进行中（非终态）的单 + 等裁决的高风险单，按 ticket_id 去重（T-072 切换前检查） */
+  /** 进行中的单 ∪ 等裁决的高风险单，按 ticket_id 去重计数（T-072 切换前检查） */
   busyCount(): number;
   /** 用本后端的总线调 3 的 importProject（发 project_created）；只读抛错（T-072） */
   importCurrentRepo(): Promise<Project>;
   /** 用 11 的 exportPackage 导出当前仓库项目最近 24 小时的诊断包，复制到 target（T-072） */
   exportDiagnostics(target: string, now?: Date): Promise<string>;
+  /** 主管 1:1 对话（T-071）：转给 10 的 chat()；只读 / 抛错为 ok:false，reason 已脱敏截断 */
+  supervisorChat(message: UserMessage): Promise<DesktopChatResult>;
   stop(): Promise<void>;
 }
 
@@ -198,6 +205,20 @@ export function resolveRepoDbPath(
   return path.join(repoRoot, DEFAULT_DB_RELATIVE);
 }
 
+/**
+ * 切换项目前的「忙」计数（T-072）：ticket_id 的并集——2 的 listTickets() 里状态不是 merged / escalated 的单
+ * （与 10 的 integrationIdle 同一判定 `isTicketActive`）∪ 10 的 pendingHighRisk() 的单。高风险待裁决的单在库里
+ * 本来就是非终态，取并集避免重复计数。
+ */
+export function countBusy(
+  tickets: readonly { ticket_id: string; status?: string | null }[],
+  pendingHighRiskIds: readonly string[],
+): number {
+  const ids = new Set<string>(pendingHighRiskIds);
+  for (const t of tickets) if (isTicketActive(t.status)) ids.add(t.ticket_id);
+  return ids.size;
+}
+
 function takeOverCounts(r: TakeOverReport): NonNullable<BackendStatus["takeOver"]> {
   return {
     enqueued: r.enqueued.length,
@@ -273,6 +294,7 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
   let app: App | undefined;
   let takeOver: BackendStatus["takeOver"];
   const busUnsubs: Array<() => void> = [];
+  const chatQueue = createSerialQueue();
 
   const cleanupPartial = (): void => {
     while (busUnsubs.length) {
@@ -430,12 +452,10 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
     prMode: () => (app?.pr instanceof GithubPrProvider ? "github" : "local"),
     busyCount(): number {
       if (!storage || !app) return 0;
-      const ids = new Set<string>();
-      const terminal = TERMINAL_TICKET_STATUSES as readonly string[];
-      for (const t of storage.listTickets())
-        if (!terminal.includes(t.status ?? "pending")) ids.add(t.ticket_id);
-      for (const h of readPending()) ids.add(h.ticket_id);
-      return ids.size;
+      return countBusy(
+        storage.listTickets(),
+        readPending().map((h) => h.ticket_id),
+      );
     },
     async importCurrentRepo(): Promise<Project> {
       const live = app;
@@ -466,6 +486,13 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
       } finally {
         await rm(out_dir, { recursive: true, force: true });
       }
+    },
+    supervisorChat(message: UserMessage): Promise<DesktopChatResult> {
+      // 10 的 chat() 有状态（暂存 ask_project 的需求）：主进程串行，前一条回来才处理下一条
+      return chatQueue(() => {
+        const sup = app?.supervisor;
+        return runSupervisorChat(sup ? (m) => sup.chat(m) : undefined, message, env, reason);
+      });
     },
     async stop() {
       cleanupPartial();

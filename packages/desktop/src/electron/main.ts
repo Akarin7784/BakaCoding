@@ -4,7 +4,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme } from "electron";
 import { resolveRepoDbPath, startBackend } from "./backend.js";
-import { serveBackend, serveHighRisk, serveReader, serveSyncState } from "./ipc.js";
+import {
+  serveBackend,
+  serveHighRisk,
+  serveReader,
+  serveSupervisorChat,
+  serveSyncState,
+} from "./ipc.js";
 import { BackendSwitcher } from "./backend-switcher.js";
 import { serveProjectSettings } from "./project-settings-ipc.js";
 import { openEventReader, type EventReader } from "./reader.js";
@@ -118,6 +124,7 @@ if (!gotLock) {
         return r.canceled || !r.filePath ? null : r.filePath;
       },
     });
+    const stopSupervisorChat = serveSupervisorChat(ipcMain, backend);
 
     app.on("will-quit", () => {
       stopReader();
@@ -125,6 +132,7 @@ if (!gotLock) {
       stopHighRisk();
       stopSyncState();
       stopProjectSettings();
+      stopSupervisorChat();
       reader.close();
       void backend.stop();
     });

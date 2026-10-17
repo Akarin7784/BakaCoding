@@ -25,11 +25,13 @@ describe("桌面界面壳子", () => {
     expect(screen.getByText("新需求")).toBeTruthy();
   });
 
-  it("项目群只读：没有输入框，话题可折叠，Flash 调用默认折叠", () => {
+  it("项目群只读：群里没有输入框（下方是主管对话，T-072），话题可折叠，Flash 调用默认折叠", () => {
     render(<App />);
     openProject();
-    expect(screen.getByRole("region", { name: "项目群" })).toBeTruthy();
-    expect(screen.queryByRole("textbox")).toBeNull();
+    const group = screen.getByRole("region", { name: "项目群" });
+    expect(group.querySelector("textarea")).toBeNull();
+    expect(screen.getAllByRole("textbox")).toHaveLength(1);
+    expect(screen.getByLabelText("发给主管")).toBeTruthy();
     expect(document.getElementById("topic-req-1")?.tagName).toBe("DETAILS");
     const calls = screen.getAllByTestId("flash-calls");
     expect(calls.length).toBeGreaterThan(0);

@@ -1,5 +1,6 @@
 // T-041a：组合根。把 0 事件总线、2 存储、3 配置 / 预算、6 PR 与编排层 8 / 9 / 10 装到同一条总线上，并做重启接管。
 // 不是功能模块：在编排层之上、12 之下（modules.md「组合根」一节）。
+import { isTicketActive } from "./active-tickets.js";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname } from "node:path";
@@ -329,10 +330,7 @@ export async function assemble(deps: AppDeps): Promise<App> {
   /** T-042：9 里没有非终态单 → 可自动审集成分支 */
   function integrationIdle(): boolean {
     // scheduler.snapshot 若有更准；这里用 2 的状态（与 takeOver 一致）
-    return !storage.listTickets().some((r) => {
-      const s = r.status ?? "pending";
-      return s !== "merged" && s !== "escalated";
-    });
+    return !storage.listTickets().some((r) => isTicketActive(r.status));
   }
 
   /** T-042 C3：用户仓库是否正检出 main（本地模式合 main 会动工作区） */

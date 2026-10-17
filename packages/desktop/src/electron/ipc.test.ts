@@ -120,16 +120,20 @@ describe("preload 暴露的只读 API", () => {
     const api = createDesktopApi(fakeIpc(), "linux");
     expect(Object.keys(api).sort()).toEqual([
       "decideHighRisk",
+      "exportDiagnostics",
       "getBackendStatus",
       "getPendingHighRisk",
+      "getSettings",
       "getSnapshot",
       "getSyncState",
+      "importProject",
       "markSupervisorReady",
       "onPendingHighRisk",
       "onSupervisorNotify",
       "onSyncState",
       "onUpdate",
       "platform",
+      "supervisorChat",
     ]);
     expect(Object.isFrozen(api)).toBe(true);
     expect(typeof api.getSnapshot).toBe("function");

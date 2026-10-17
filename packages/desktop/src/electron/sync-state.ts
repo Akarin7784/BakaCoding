@@ -30,10 +30,12 @@ export function sanitizeSyncErrorMessage(
     out = out.split(value).join(`[REDACTED:${name}]`);
   }
   out = redact(out, "light").text;
-  return out.length > max ? `${out.slice(0, max)}…` : out;
+  // 按码点截断，不拆代理对
+  const cps = Array.from(out);
+  return cps.length > max ? `${cps.slice(0, max).join("")}…` : out;
 }
 
-function sanitizeErrorName(name: string): string {
+export function sanitizeErrorName(name: string): string {
   const cleaned = name.replace(/[^A-Za-z0-9_$.]/g, "").slice(0, ERROR_NAME_MAX);
   return cleaned || "Error";
 }

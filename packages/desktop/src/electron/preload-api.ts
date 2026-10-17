@@ -3,6 +3,7 @@ import {
   IPC_CHANNELS,
   type BakaDesktopApi,
   type DesktopBackendStatus,
+  type DesktopChatResult,
   type DesktopDecideHighRiskResult,
   type DesktopExportResult,
   type DesktopImportResult,
@@ -13,6 +14,7 @@ import {
   type DesktopSyncState,
   type DesktopUpdate,
   type SupervisorNotifyMessage,
+  type UserMessage,
 } from "../shared/api.js";
 
 /** ipcRenderer 的最小子集。 */
@@ -79,5 +81,7 @@ export function createDesktopApi(ipc: IpcRendererLike, platform: string): BakaDe
     exportDiagnostics: () =>
       ipc.invoke(IPC_CHANNELS.diagnosticsExport) as Promise<DesktopExportResult>,
     getSettings: () => ipc.invoke(IPC_CHANNELS.settingsGet) as Promise<DesktopSettings>,
+    supervisorChat: (message: UserMessage) =>
+      ipc.invoke(IPC_CHANNELS.supervisorChat, message) as Promise<DesktopChatResult>,
   });
 }

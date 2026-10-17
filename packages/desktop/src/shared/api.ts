@@ -2,7 +2,12 @@
 // 渲染进程可以安全地 import type。
 import type { HighRiskDecisionErrorCode, SyncState } from "@bakacoding/scheduler";
 import type { HighRiskFile, HighRiskReason } from "@bakacoding/sub-agent";
-import type { HighRiskDecisionResult, PendingHighRisk } from "@bakacoding/supervisor";
+import type {
+  ChatReply,
+  HighRiskDecisionResult,
+  PendingHighRisk,
+  UserMessage,
+} from "@bakacoding/supervisor";
 import type { Project } from "@bakacoding/config-budget";
 import type { BakaEvent, TicketStatus } from "@bakacoding/types";
 
@@ -28,6 +33,8 @@ export const IPC_CHANNELS = {
   syncState: "bakacoding:sync:state",
   /** 主进程 → 渲染进程：同步状态有变化时推送（T-067）。 */
   syncStateUpdate: "bakacoding:sync:state-update",
+  /** invoke：主管 1:1 对话，转给 10 的 chat()（T-071）。 */
+  supervisorChat: "bakacoding:supervisor:chat",
   /** invoke：选目录导入项目，切换后端到该仓库（T-072）。 */
   projectImport: "bakacoding:project:import",
   /** invoke：选保存路径，导出最近 24 小时诊断包（T-072）。 */
@@ -128,6 +135,14 @@ export type DesktopDecideHighRiskResult =
 export type DesktopSyncState =
   ({ available: true } & SyncState) | { available: false; reason: string };
 
+/** 10 的 ChatReply.kind 联合（T-071）。 */
+export type ChatReplyKind = ChatReply["kind"];
+
+/**
+ * `supervisor:chat` 的 IPC 结果（T-071）：成功带 10 原样的 ChatReply；
+ * 只读 / 未接线 / chat() 抛错都是 ok:false，reason 已在主进程脱敏、截到 CHAT_REASON_MAX 字。
+ */
+export type DesktopChatResult = { ok: true; reply: ChatReply } | { ok: false; reason: string };
 /** `project:import` 结果（T-072）：project 原样取自 3 的 importProject。 */
 export type DesktopImportResult =
   | { ok: true; project: Project }
@@ -169,6 +184,8 @@ export interface BakaDesktopApi {
   getSyncState(): Promise<DesktopSyncState>;
   /** 订阅同步状态变化（T-067）。 */
   onSyncState(listener: (state: DesktopSyncState) => void): () => void;
+  /** 发一条消息给主管（T-071）；失败以 ok:false 返回，不抛过 IPC。 */
+  supervisorChat(message: UserMessage): Promise<DesktopChatResult>;
   /** 选目录导入项目（T-072）。 */
   importProject(): Promise<DesktopImportResult>;
   /** 导出诊断包（T-072）。 */
@@ -178,6 +195,8 @@ export interface BakaDesktopApi {
 }
 
 export type {
+  ChatReply,
+  UserMessage,
   Project,
   HighRiskDecisionErrorCode,
   HighRiskFile,

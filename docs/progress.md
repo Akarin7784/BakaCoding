@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`3404aab` · main 上测试：63 个测试文件、1444 个测试全部通过 · 更新日期：2026-10-18（UTC+8）
+> 上次更新时 main：`3305a79` · main 上测试：65 个测试文件、1464 个测试全部通过 · 更新日期：2026-10-18（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -39,7 +39,7 @@ flowchart BT
 
   class M0,M1,M2,M3,M4,M5,M6,M7,M8,M9,M11,T done
   class M10 done
-  class M12 done
+  class M12 doing
 ```
 
 图例：绿色 = 已完成，黄色 = 进行中，灰色 = 未开始。
@@ -125,6 +125,8 @@ flowchart BT
 | T-068 | 模块 3：`redact` 10 万字符输入的耗时上限从 500ms 放宽到 2s（和 T-062 诊断用例一致）；以 main 旧正则为基准的邮箱随机对比提高比对下限（≥320），另按含 2 个及以上 `.`（≥140）、含 `-`（≥75）分开计数各设下限 | 3 | 基础层开发 | 已合入 | #77 | `37a99b3` |
 | T-069 | 模块 6：check-runs 翻页以 total_count 为准，不再遇到本页不足 100 条就停 | 6 | 执行层开发 | 已合入 | #76 | `4e518fd` |
 | T-070 | 模块 10：高风险待裁决不计入主管待办（去掉与 9 `pending_pr_limit` 的反压双计） | 10 | 编排层开发 | 已合入 | #75 | `61716e3` |
+| T-071 | 模块 12：桌面端接入主管对话，新增 IPC `supervisor:chat` 转给 10 的 `chat()`；渲染全部 5 种回复（answer / ask_project / decision_saved / dispatched / split_failed）；只读 / 未接线 / chat() 抛错返回 ok:false，原因脱敏 + 截断后显示；等待中禁用发送，一次只发一条 | 12 | 界面与诊断开发 | 已合入 | #79 | `3305a79` |
+| T-072 | 模块 12：导入项目（`project:import`：git 仓库 + config/models.json / pricing.json 检查，3 的 validate / loadPricing 校验；忙时拒绝；拆旧后端、在新仓库重新组装、3 的 importProject 发 project_created；路径记在 userData）；「导出」接 11 诊断包（`diagnostics:export`，最近 24 小时，默认存到下载目录）；只读设置页（`settings:get`）；选中项目时也能和主管对话并带 project_id；对话记录移出组件、主进程串行 chat()；T-071 评审跟进（脱敏测试、错误名过滤、按码点截断） | 12 | 界面与诊断开发 | 待评审 | #PR | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
