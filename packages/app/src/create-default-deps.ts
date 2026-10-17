@@ -27,6 +27,7 @@ import {
   gitEnv,
   PermissionRegistry,
   REPO_GIT_TIMEOUT_MS,
+  withGitWriteLock,
   WorktreeManager,
   WORKTREES_DIR,
 } from "@bakacoding/workspace";
@@ -289,6 +290,8 @@ export async function createDefaultDeps(
         store,
         repo: worktrees.repoRoot,
         baseBranch: BASE_BRANCH,
+        // T-094：合并落到 target 那段与合入后清理、建 / 删 worktree 共用 4 的进程内 git 写锁
+        gitWriteLock: (fn) => withGitWriteLock(worktrees.repoRoot, fn),
         publish,
         eventContext,
         // 缺 GITHUB_TOKEN → createPrProvider 走本地模式，不抛
@@ -307,8 +310,12 @@ export async function createDefaultDeps(
     worktrees: {
       create: (ticket_id, base, round) => worktrees.createWorktree(ticket_id, base, round),
       cleanup: (path) => worktrees.cleanup(path),
+      // T-094：合入后清理；另认 origin/<目标分支>（GitHub 模式本地集成分支可能没快进），只读不删远程
+      cleanupMerged: (ticket_id, merged_into) =>
+        worktrees.cleanupMerged(ticket_id, { merged_into, remote: "origin" }),
     },
     worktreeRoot,
+    repoRoot: worktrees.repoRoot,
     targetHead: () => integrationTargetHead(worktrees.repoRoot, BASE_BRANCH),
     notifyUser: opts.notifyUser,
     listFiles: async (_project_id, commit) => {

@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -22,7 +23,15 @@ export interface LocalPrProviderOptions {
   now?: () => Date;
   /** 集成分支所在仓库（任一 worktree 路径均可）；openIntegration 需要 */
   repo?: string;
+  /**
+   * 进程内 git 写锁（T-094）：组合根注入 4 的 `(fn) => withGitWriteLock(repo, fn)`；merge 把结果落到 target
+   * （ff-only / update-ref）那段在锁里跑，与合入后清理、建 / 删 worktree 串行。6 不依赖 4，不注入时不加锁。
+   */
+  gitWriteLock?: GitWriteLock;
 }
+
+export type GitWriteLock = <T>(fn: () => Promise<T>) => Promise<T>;
+const NO_LOCK: GitWriteLock = (fn) => fn();
 
 export class PrNotFoundError extends Error {
   constructor(pr_id: string) {
@@ -84,6 +93,7 @@ export class LocalPrProvider implements PrProvider {
   private readonly author: { name: string; email: string };
   private readonly now: () => Date;
   private readonly repo: string | undefined;
+  private readonly gitWriteLock: GitWriteLock;
   private seq = 0;
   /** 串行化 openIntegration，避免并发调用建出两条记录 */
   private integrationLock: Promise<unknown> = Promise.resolve();
@@ -96,6 +106,7 @@ export class LocalPrProvider implements PrProvider {
     this.author = opts.author ?? { name: "BakaCoding", email: "bakacoding@localhost" };
     this.now = opts.now ?? (() => new Date());
     this.repo = opts.repo;
+    this.gitWriteLock = opts.gitWriteLock ?? NO_LOCK;
   }
 
   private identityEnv(): NodeJS.ProcessEnv {
@@ -117,6 +128,7 @@ export class LocalPrProvider implements PrProvider {
       try {
         await git(worktree_path, ["commit", "-m", `${ticket_id}: apply patch`], {
           env: this.identityEnv(),
+          timeoutMs: 0,
         });
       } catch (err) {
         // 提交失败（含 hook 拒绝）：撤回补丁，不留提交，错误信息带上 hook 输出
@@ -162,6 +174,7 @@ export class LocalPrProvider implements PrProvider {
     try {
       await git(worktree_path, ["commit", "-q", "-m", `${ticket_id}: apply worktree changes`], {
         env: this.identityEnv(),
+        timeoutMs: 0,
       });
     } catch (err) {
       // 提交失败（含 hook 拒绝）：撤回暂存，工作区文件原样保留
@@ -254,14 +267,27 @@ export class LocalPrProvider implements PrProvider {
 
   async diff(pr_id: string): Promise<Diff> {
     const rec = await this.mustGet(pr_id);
-    const cwd = cwdOf(rec);
     const live = rec.status === "open" || rec.status === "conflict";
-    const head = live ? await this.revParse(cwd, rec.branch) : rec.head_sha;
+    // T-094：已结束的单张 PR，worktree 可能已被合入后清理删掉，改在主仓库里算（提交对象仍在）
+    let cwd = cwdOf(rec);
+    if (!live && rec.kind === "ticket" && !existsSync(cwd) && this.repo) cwd = this.repo;
+    let head = live ? await this.revParse(cwd, rec.branch) : rec.head_sha;
     // 集成分支会一直前进：未结束时 base 也现算
-    const base =
+    let base =
       live && rec.kind === "integration"
         ? (await git(cwd, ["merge-base", rec.base_branch, head])).stdout.trim()
         : rec.base_sha;
+    // T-094：已合入但记录的 base / head 提交取不到（分支删掉后对象不可达、被 gc）时，
+    // 改用记录的合并提交，算 <merge>^1..<merge>；合并提交也取不到就照旧由 git 报错
+    if (
+      rec.status === "merged" &&
+      rec.merge_sha &&
+      !((await this.hasCommit(cwd, base)) && (await this.hasCommit(cwd, head))) &&
+      (await this.hasCommit(cwd, `${rec.merge_sha}^1`))
+    ) {
+      base = await this.revParse(cwd, `${rec.merge_sha}^1`);
+      head = await this.revParse(cwd, rec.merge_sha);
+    }
     const range = [base, head];
     const ns = (await git(cwd, ["diff", "-M", "--name-status", "-z", ...range])).stdout;
     const num = (await git(cwd, ["diff", "-M", "--numstat", "-z", ...range])).stdout;
@@ -371,24 +397,33 @@ export class LocalPrProvider implements PrProvider {
       ).stdout.trim();
       ff = false;
     }
-    const wt = await this.findCheckout(cwd, ref);
-    if (wt) {
-      const dirty = (await git(wt, ["status", "--porcelain", "--untracked-files=no"])).stdout;
-      if (dirty.trim()) {
-        return { merged: false, conflict: false, reason: "target_dirty", worktree_path: wt };
-      }
-      try {
-        await git(wt, ["merge", "--ff-only", "-q", sha]);
-      } catch (err) {
-        // 未跟踪文件会被覆盖：视同 target_dirty，记录状态不变
-        if (err instanceof GitError && /untracked working tree files/.test(err.stderr)) {
-          return { merged: false, conflict: false, reason: "target_dirty", worktree_path: wt };
+    // T-094：落到 target 这段持 git 写锁（在 mergeLock 之内；清理只拿写锁、不拿 mergeLock，不会死锁）
+    const landed = await this.gitWriteLock(async () => {
+      const wt = await this.findCheckout(cwd, ref);
+      if (wt) {
+        const dirty = (await git(wt, ["status", "--porcelain", "--untracked-files=no"])).stdout;
+        if (dirty.trim()) return { worktree_path: wt };
+        try {
+          await git(wt, ["merge", "--ff-only", "-q", sha]);
+        } catch (err) {
+          // 未跟踪文件会被覆盖：视同 target_dirty，记录状态不变
+          if (err instanceof GitError && /untracked working tree files/.test(err.stderr)) {
+            return { worktree_path: wt };
+          }
+          throw err;
         }
-        throw err;
+      } else {
+        await git(cwd, ["update-ref", ref, sha, tgt]);
       }
-    } else {
-      await git(cwd, ["update-ref", ref, sha, tgt]);
-    }
+      return undefined;
+    });
+    if (landed)
+      return {
+        merged: false,
+        conflict: false,
+        reason: "target_dirty",
+        worktree_path: landed.worktree_path,
+      };
     // 集成记录合并后冻结：base_sha 记为合并时的 merge-base，之后 diff 用记录值
     const base_sha =
       rec.kind === "integration"
@@ -446,6 +481,12 @@ export class LocalPrProvider implements PrProvider {
     const r = await this.store.get(pr_id);
     if (!r) throw new PrNotFoundError(pr_id);
     return assertPrRecord(r);
+  }
+
+  private async hasCommit(cwd: string, rev: string): Promise<boolean> {
+    return (
+      (await git(cwd, ["cat-file", "-e", `${rev}^{commit}`], { allowCodes: [1, 128] })).code === 0
+    );
   }
 
   private async revParse(cwd: string, rev: string): Promise<string> {

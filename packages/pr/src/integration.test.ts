@@ -393,3 +393,89 @@ describe("T-076 本地模式：合入默认集成分支前补建（从基线分�
     expect(await store.get(t.pr_id)).toMatchObject({ status: "open" });
   });
 });
+
+describe("T-094：合入后 worktree / 分支被清理仍能取 diff", () => {
+  it("删掉 worktree 和分支后，在主仓库按记录的 base / head 算", async () => {
+    const id = await ticketPr("T-94a", "main");
+    const before = await pr.diff(id);
+    expect(await pr.merge(id, INTEGRATION_BRANCH)).toMatchObject({ merged: true });
+    const rec = (await store.get(id))!;
+    expect(rec.kind).toBe("ticket");
+    const wt = rec.kind === "ticket" ? rec.worktree_path : "";
+    await git(repo, ["worktree", "remove", "--force", wt]);
+    await git(repo, ["branch", "-D", "feat/T-94a"]);
+    const after = await pr.diff(id);
+    expect(after.base_sha).toBe(before.base_sha);
+    expect(after.head_sha).toBe(before.head_sha);
+    expect(after.files.map((f) => f.path)).toEqual(["T-94a.txt"]);
+  });
+
+  it("head_sha 取不到时改用记录的合并提交 <merge>^1..<merge>", async () => {
+    // 集成分支先前进，让本单合入产生真正的合并提交
+    await pr.merge(await ticketPr("T-94b", "main"), INTEGRATION_BRANCH);
+    const id = await ticketPr("T-94c", "main");
+    const res = await pr.merge(id, INTEGRATION_BRANCH);
+    expect(res).toMatchObject({ merged: true, fast_forward: false });
+    const rec = (await store.get(id))!;
+    await git(repo, [
+      "worktree",
+      "remove",
+      "--force",
+      rec.kind === "ticket" ? rec.worktree_path : "",
+    ]);
+    await git(repo, ["branch", "-D", "feat/T-94c"]);
+    const missing = "0".repeat(40);
+    await store.put({ ...rec, head_sha: missing });
+    const d = await pr.diff(id);
+    expect(res.merged && d.head_sha).toBe(res.merged && res.sha);
+    expect(d.base_sha).toBe(await rev(`${res.merged ? res.sha : ""}^1`));
+    expect(d.files.map((f) => f.path)).toEqual(["T-94c.txt"]);
+  });
+
+  it("没有合并提交可用时照旧报错", async () => {
+    const id = await ticketPr("T-94d", "main");
+    await pr.merge(id, INTEGRATION_BRANCH);
+    const rec = (await store.get(id))!;
+    const { merge_sha: _m, ...rest } = rec;
+    void _m;
+    await store.put({ ...rest, head_sha: "0".repeat(40) });
+    await expect(pr.diff(id)).rejects.toThrow();
+  });
+});
+
+describe("T-094：merge 落到 target 那段持 git 写锁", () => {
+  it("清理挂起并持锁时，下一张单的合并等待放锁，而不是报锁冲突；放锁后照常合入", async () => {
+    let tail: Promise<unknown> = Promise.resolve();
+    const lock = <T>(fn: () => Promise<T>): Promise<T> => {
+      const run = tail.then(fn);
+      tail = run.catch(() => undefined);
+      return run;
+    };
+    const p = new LocalPrProvider({
+      store,
+      repo,
+      author: { name: "t", email: "t@t" },
+      gitWriteLock: lock,
+    });
+    const id = await (async () => {
+      const branch = "feat/T-94L";
+      const wt = join(root, "wt-T-94L");
+      await git(repo, ["worktree", "add", "-q", "-b", branch, wt, "main"]);
+      await writeFile(join(wt, "L.txt"), "L\n");
+      await commitAll(wt, "L");
+      return p.open("T-94L", wt, branch);
+    })();
+    // 模拟合入后清理：拿着写锁不放
+    let release!: () => void;
+    const held = lock(() => new Promise<void>((r) => (release = r)));
+    let settled = false;
+    const m = p.merge(id, INTEGRATION_BRANCH).finally(() => (settled = true));
+    await new Promise((r) => setTimeout(r, 200));
+    expect(settled).toBe(false);
+    expect((await store.get(id))!.status).toBe("open");
+    release();
+    await held;
+    expect(await m).toMatchObject({ merged: true });
+    expect((await store.get(id))!.status).toBe("merged");
+  });
+});
