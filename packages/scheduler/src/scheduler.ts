@@ -1335,7 +1335,6 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     };
   };
 
-
   /**
    * 用户在 GitHub 上手动合并（或对账发现已 merged）：同步为 merged。
    * 合并日志一律记空串；合法 merge_sha 才发 interface_changed（T-046 / T-064）。
@@ -1494,51 +1493,48 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     }
   }
 
-  // 先占位，下面 return 里赋真实 sync；定时循环调 api.sync
-  let syncImpl: (() => Promise<SyncChange[]>) | undefined;
-
-    async function doSync() {
-      const changes = await requirePr().sync();
-      const applied: SyncChange[] = [];
-      for (const c of changes) {
-        const id = prToTicket.get(c.pr_id);
-        const e = id ? entries.get(id) : undefined;
-        // 只处理本单当前的 PR；已被取代的旧 PR、集成记录、终态的单跳过
-        if (!e || superseded.has(c.pr_id) || e.pr_id !== c.pr_id || TERMINAL.has(e.status))
-          continue;
-        try {
-          if (c.to === "merged") {
-            await applyManualMerge(e, c.pr_id, c.merge_sha);
-            applied.push(c);
-          } else if (c.to === "closed") {
-            await applyManualClose(e);
-            applied.push(c);
-          }
-        } catch (err) {
-          // 一条出错不影响其余
-          onError(err, e.ticket.ticket_id);
+  // 定时循环调 api.sync（doSync）；显式 sync 也走同一实现
+  async function doSync() {
+    const changes = await requirePr().sync();
+    const applied: SyncChange[] = [];
+    for (const c of changes) {
+      const id = prToTicket.get(c.pr_id);
+      const e = id ? entries.get(id) : undefined;
+      // 只处理本单当前的 PR；已被取代的旧 PR、集成记录、终态的单跳过
+      if (!e || superseded.has(c.pr_id) || e.pr_id !== c.pr_id || TERMINAL.has(e.status)) continue;
+      try {
+        if (c.to === "merged") {
+          await applyManualMerge(e, c.pr_id, c.merge_sha);
+          applied.push(c);
+        } else if (c.to === "closed") {
+          await applyManualClose(e);
+          applied.push(c);
         }
+      } catch (err) {
+        // 一条出错不影响其余
+        onError(err, e.ticket.ticket_id);
       }
-      // T-064 N3：6 的 sync 可能中途抛错吞掉已写进库的变化；按 2 的 PR 记录再对一次账
-      await reconcileFromPrStore(applied);
-      // 先应用本次变化再补发：affected 按最新状态重算（T-046）
-      await resendPending();
-      if (applied.length) {
-        kick();
-        kickDispatch();
-      }
-      // 显式 sync 成功：鉴权失败停掉的定时同步可以恢复（Q-3）
-      if (syncAuthDisabled) {
-        syncAuthDisabled = false;
-        if (syncLoopStarted && !stopped && syncPollMs > 0) scheduleSync(syncPollMs);
-      }
-      syncLastOkAt = new Date(clock.now()).toISOString();
-      syncLastError = null;
-      syncConsecutiveFailures = 0;
-      syncConsecutiveRateLimits = 0;
-      return applied;
     }
-  syncImpl = doSync;
+    // T-064 N3：6 的 sync 可能中途抛错吞掉已写进库的变化；按 2 的 PR 记录再对一次账
+    await reconcileFromPrStore(applied);
+    // 先应用本次变化再补发：affected 按最新状态重算（T-046）
+    await resendPending();
+    if (applied.length) {
+      kick();
+      kickDispatch();
+    }
+    // 显式 sync 成功：鉴权失败停掉的定时同步可以恢复（Q-3）
+    if (syncAuthDisabled) {
+      syncAuthDisabled = false;
+      if (syncLoopStarted && !stopped && syncPollMs > 0) scheduleSync(syncPollMs);
+    }
+    syncLastOkAt = new Date(clock.now()).toISOString();
+    syncLastError = null;
+    syncConsecutiveFailures = 0;
+    syncConsecutiveRateLimits = 0;
+    return applied;
+  }
+  const syncImpl = doSync;
 
   return {
     async start() {
@@ -1656,7 +1652,11 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       if (input.already_merged === true) {
         const existing = entries.get(ticket.ticket_id);
         if (existing) {
-          if (TERMINAL.has(existing.status) && existing.status === "merged" && existing.pr_id === pr_id)
+          if (
+            TERMINAL.has(existing.status) &&
+            existing.status === "merged" &&
+            existing.pr_id === pr_id
+          )
             return "already";
           if (TERMINAL.has(existing.status))
             throw new Error(
@@ -1763,9 +1763,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         last_error: syncLastError ? { ...syncLastError } : null,
         consecutive_failures: syncConsecutiveFailures,
         rate_limited_until:
-          syncRateLimitedUntil > clock.now()
-            ? new Date(syncRateLimitedUntil).toISOString()
-            : null,
+          syncRateLimitedUntil > clock.now() ? new Date(syncRateLimitedUntil).toISOString() : null,
         next_at: syncNextAt !== null ? new Date(syncNextAt).toISOString() : null,
       };
     },
