@@ -104,29 +104,20 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     }));
   }
 
-  /** 原文里最先出现的项目（项目名或 id，忽略大小写）；用于认领暂存需求 */
-  function firstMentioned(text: string, list: ProjectInfo[]): ProjectInfo | undefined {
-    const t = text.toLowerCase();
-    let best: { p: ProjectInfo; at: number } | undefined;
-    for (const p of list) {
-      for (const token of [p.project_id, p.name]) {
-        if (token.length < 2) continue;
-        const at = t.indexOf(token.toLowerCase());
-        if (at >= 0 && (!best || at < best.at)) best = { p, at };
-      }
-    }
-    return best?.p;
-  }
-
   /** 用户原文里字面提到的项目（项目名或 project_id，忽略大小写）；恰好一个才算 */
   function mentioned(text: string, list: ProjectInfo[]): ProjectInfo | undefined {
+    const hits = mentionedAll(text, list);
+    return hits.length === 1 ? hits[0] : undefined;
+  }
+
+  /** 原文里字面提到的全部项目（项目名或 id，忽略大小写） */
+  function mentionedAll(text: string, list: ProjectInfo[]): ProjectInfo[] {
     const t = text.toLowerCase();
-    const hits = list.filter(
+    return list.filter(
       (p) =>
         t.includes(p.project_id.toLowerCase()) ||
         (p.name.length >= 2 && t.includes(p.name.toLowerCase())),
     );
-    return hits.length === 1 ? hits[0] : undefined;
   }
 
   async function callModel(prompt: string, requirement_id: string, trace: Trace): Promise<string> {
@@ -586,8 +577,19 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   async function chat(msg: UserMessage): Promise<ChatReply> {
     const list = projects();
     const explicit = msg.project_id ? list.find((p) => p.project_id === msg.project_id) : undefined;
-    // 有暂存需求时按最先提到的项目认领（回复里可能顺带给另一个项目提新需求）
-    const named = explicit ?? (pending ? firstMentioned(msg.text, list) : undefined);
+    // 有暂存需求时：界面传的 project_id 优先；否则原文里恰好提到一个项目才认领，
+    // 提到多个项目就再问一次（暂存的需求保留，什么都不丢）
+    let named = explicit;
+    if (pending && !explicit) {
+      const hits = mentionedAll(msg.text, list);
+      if (hits.length > 1) {
+        return {
+          ...askProject(list),
+          text: `这条回复里提到了不止一个项目（${hits.map((h) => `「${h.name}」`).join("、")}），刚才那条需求要放到哪个项目？只回一个项目名即可。`,
+        };
+      }
+      named = hits[0];
+    }
 
     // 上一条在等项目：只用这条里的项目名（或界面传的 project_id）认领暂存的需求，
     // 其余内容当一条新消息处理，不丢掉用户顺带提的新需求

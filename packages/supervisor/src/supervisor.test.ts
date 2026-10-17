@@ -652,24 +652,50 @@ describe("chat", () => {
       { project_id: "web-2", name: "官网" },
     ];
 
-    it("回复里顺带提了新需求：两条都处理，不丢", async () => {
+    it("界面传了 project_id 认领，回复里顺带的新需求按同一 project_id 处理：两条都派单", async () => {
       const t = setup({
         projects,
         outputs: [req, splitOut([ticketJson()]), req, splitOut([ticketJson()])],
       });
       expect((await t.sup.chat({ text: "加个登录页" })).kind).toBe("ask_project");
-      const r = await t.sup.chat({ text: "官网。另外给应用加个搜索框" });
+      const r = await t.sup.chat({ text: "官网。另外加个搜索框", project_id: "web-2" });
       expect(t.prompts).toHaveLength(4);
       expect(t.prompts[1]).toContain('kind="requirement">\n加个登录页\n');
       // 新消息里去掉了认领用的项目名
-      expect(t.prompts[2]).toContain('kind="user_message">\n另外给应用加个搜索框\n');
-      expect(t.prompts[3]).toContain('kind="requirement">\n另外给应用加个搜索框\n');
-      expect(r.kind).toBe("dispatched");
-      expect(r.project_id).toBe("web-2");
+      expect(t.prompts[2]).toContain('kind="user_message">\n另外加个搜索框\n');
+      expect(t.prompts[3]).toContain('kind="requirement">\n另外加个搜索框\n');
+      expect(r).toMatchObject({ kind: "dispatched", project_id: "web-2" });
       expect(r.ticket_ids).toHaveLength(2);
-      expect(r.text).toContain("按项目「官网」处理");
-      expect(r.text).toContain("按项目「应用」处理");
       expect(t.enqueued).toHaveLength(2);
+    });
+
+    it("回复提到多个项目：不认领，再问一次，暂存需求保留（「加到官网，别加到应用」）", async () => {
+      const t = setup({ projects, outputs: [req, splitOut([ticketJson()])] });
+      await t.sup.chat({ text: "加个登录页" });
+      const r = await t.sup.chat({ text: "加到官网，别加到应用" });
+      expect(r.kind).toBe("ask_project");
+      expect(r.text).toContain("「官网」");
+      expect(r.text).toContain("「应用」");
+      expect(r.ticket_ids).toBeUndefined();
+      expect(t.prompts).toHaveLength(1); // 不调模型
+      expect(t.enqueued).toEqual([]);
+      expect(t.rows.size).toBe(0);
+      // 暂存的需求还在：再回一个项目名就接着拆
+      const r2 = await t.sup.chat({ text: "官网" });
+      expect(r2).toMatchObject({ kind: "dispatched", project_id: "web-2" });
+      expect(t.prompts[1]).toContain('kind="requirement">\n加个登录页\n');
+    });
+
+    it("提到多个项目但界面传了 project_id：以 project_id 为准", async () => {
+      const answer = JSON.stringify({ intent: "answer", reply: "收到", decision: null });
+      const t = setup({ projects, outputs: [req, splitOut([ticketJson()]), answer] });
+      await t.sup.chat({ text: "加个登录页" });
+      const r = await t.sup.chat({ text: "应用，不是官网", project_id: "app-1" });
+      expect(r).toMatchObject({ kind: "dispatched", project_id: "app-1" });
+      expect(r.ticket_ids).toHaveLength(1);
+      // 剩下的「不是官网」照常当新消息处理（这里模型判为一般回复）
+      expect(t.prompts).toHaveLength(3);
+      expect(t.prompts[2]).toContain('kind="user_message">\n不是官网\n');
     });
 
     it("回复只有项目名和虚词：只认领，不多调模型", async () => {
