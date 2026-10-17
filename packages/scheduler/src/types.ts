@@ -92,12 +92,33 @@ export interface ReReviewRequest {
  * `review_resubmits` 为 8 累计的评审复投次数（9 只记录，不改）。
  */
 export type SubAgentOutcome =
-  { pr_id: string; review_resubmits?: number } | { escalated: true; pr_id?: string };
+  | { pr_id: string; review_resubmits?: number }
+  | { escalated: true; pr_id?: string }
+  /**
+   * 冲突复投或重审途中当日预算用完（T-037）：8 不上报、不计复投；9 把单子放回 pending，
+   * 存下续跑凭据（9 不解析），预算重置后原样交回 8 的 resume。
+   */
+  | { requeue_budget: true; resume: unknown };
+
+/**
+ * 8 的 resume(ticket, token) 的结果（与 8 的 SubAgentOutcome 同形，9 只用到这些字段）。
+ * resume 走 8 的主流程：评审通过时 8 自己调 9 的 submit，再返回 merge_queued。
+ */
+export type ResumeOutcome =
+  | { kind: "merge_queued"; pr_id: string }
+  | { kind: "escalated"; pr_id: string | null }
+  | { kind: "requeue_budget"; resume: unknown };
 
 /** 8 的接口（8 未实现前注入 mock）。 */
 export interface SchedulerSubAgent {
   resubmitConflict(req: ConflictResubmitRequest): Promise<SubAgentOutcome>;
   reReview(req: ReReviewRequest): Promise<SubAgentOutcome>;
+  /**
+   * 预算重置后续跑：对应 8 的 `resume(ticket, token)`，token 是 8 给的续跑凭据，原样交回。
+   * 注意：8 的 resume 要完整的 SubAgentTicket，9 只有 SchedulerTicket，组合根要按单号补全（或 8 像
+   * resubmitConflict 一样自己 lookup）。
+   */
+  resume(ticket: SchedulerTicket, token: unknown): Promise<ResumeOutcome>;
 }
 
 /** 9 维护的需求单状态写到 2（适配 storage.saveTicket 的 status 字段）。 */
@@ -191,6 +212,8 @@ export interface QueueEntryView {
   round: number;
   resubmit_counts: { review: number; conflict: number };
   dependency: DependencyState;
+  /** 因当日预算用完放回 pending、等预算重置后续跑 */
+  budget_paused: boolean;
 }
 
 export interface Scheduler {
@@ -219,6 +242,13 @@ export interface Scheduler {
   mergeResult(pr_id: string): MergeResultRecord | undefined;
   /** 拉 6 的 sync() 并把变化应用到 TicketStatus，返回应用了的变化 */
   sync(): Promise<SyncChange[]>;
+  /**
+   * 预算重置后续跑：当日预算未用完时，把因预算放回 pending 的单交回 8 的 resume（带原续跑凭据），
+   * 返回这次续跑的单号；预算仍用完返回 []。T-039 在派单闸门打开时调用。
+   */
+  resumeBudgetPaused(): Promise<string[]>;
+  /** 因当日预算放回 pending、等续跑的单号（T-039 不要把它们当新单再派） */
+  budgetPaused(): string[];
   /** 反压信号（T-039 派单只读它，不重复实现） */
   backpressureState(): Promise<BackpressureState>;
   /** 依赖状态：全部合入 ready；有依赖没合入 waiting；有依赖（含间接）已上报 held */

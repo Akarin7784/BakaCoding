@@ -83,6 +83,12 @@ interface Entry {
   own_worktree: boolean;
   /** 9 的后台任务（冲突复投 / 重审）进行中 */
   busy: boolean;
+  /** 当日预算用完放回 pending 时 8 给的续跑凭据（9 不解析） */
+  resume_token: unknown;
+  /** 冲突复投途中因预算暂停：新 PR 开出（8 续跑后调 submit）时要关掉的旧 PR 和旧 worktree */
+  pending_replace: { old_pr_id: string; old_worktree: string | null } | undefined;
+  /** 正在 resume 中（8 会在评审通过时调 submit，所以不设 busy） */
+  resuming: boolean;
   conflicted: boolean;
   base_changed: boolean;
   re_reviewed: boolean;
@@ -320,6 +326,10 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       round: number;
     },
   ): Promise<void> {
+    if ("requeue_budget" in res) {
+      await requeueForBudget(e, res.resume, replace);
+      return;
+    }
     const new_pr = "pr_id" in res && res.pr_id ? res.pr_id : undefined;
     const supersedes =
       replace !== undefined && new_pr !== undefined && new_pr !== replace.old_pr_id;
@@ -364,6 +374,92 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     e.base_seq = base_seq;
     e.base_unknown = false;
     await setStatus(e, "merge_queued");
+  }
+
+  /**
+   * 当日预算用完（8 返回 requeue_budget）：不上报、不计复投，状态 pending（9 写），存续跑凭据，
+   * 等 resumeBudgetPaused() 交回 8。冲突复投途中暂停时记下旧 PR / 旧 worktree，新 PR 开出时再关。
+   */
+  async function requeueForBudget(
+    e: Entry,
+    token: unknown,
+    replace?: {
+      old_pr_id: string;
+      old_worktree: string | null;
+      new_worktree: string;
+      round: number;
+    },
+  ): Promise<void> {
+    if (TERMINAL.has(e.status)) {
+      if (replace) {
+        try {
+          await deps.worktrees.cleanup(replace.new_worktree);
+        } catch (err) {
+          onError(err, e.ticket.ticket_id);
+        }
+      }
+      return;
+    }
+    removeFromQueue(e.ticket.ticket_id);
+    e.resume_token = token;
+    if (replace) {
+      e.pending_replace ??= { old_pr_id: replace.old_pr_id, old_worktree: replace.old_worktree };
+      e.worktree_path = replace.new_worktree;
+      e.own_worktree = true;
+      e.round = replace.round;
+    }
+    await setStatus(e, "pending");
+  }
+
+  /** 新 PR 开出：关掉冲突复投前的旧 PR、清旧 worktree（先标记已取代，sync 跳过它）。 */
+  async function supersede(e: Entry, new_pr_id: string): Promise<void> {
+    const r = e.pending_replace;
+    if (!r || r.old_pr_id === new_pr_id) return;
+    e.pending_replace = undefined;
+    superseded.add(r.old_pr_id);
+    await requirePr().close(r.old_pr_id, `冲突复投，由 ${new_pr_id} 取代`);
+    if (r.old_worktree) await deps.worktrees.cleanup(r.old_worktree);
+  }
+
+  function startResume(e: Entry): void {
+    const token = e.resume_token;
+    e.resume_token = undefined;
+    e.resuming = true;
+    const p = (async () => {
+      const res = await deps.subAgent.resume(e.ticket, token);
+      if (res.kind === "requeue_budget") {
+        // 又碰上预算用完：继续等
+        if (!TERMINAL.has(e.status)) e.resume_token = res.resume;
+        return;
+      }
+      if (res.kind === "escalated") {
+        // 8 已上报：9 写终态、关掉没用的旧 PR、清 9 建的 worktree
+        if (res.pr_id) await supersede(e, res.pr_id);
+        if (!TERMINAL.has(e.status)) {
+          removeFromQueue(e.ticket.ticket_id);
+          e.status = "escalated";
+          await setStatus(e, "escalated");
+          await cleanupOwnWorktree(e);
+        }
+        return;
+      }
+      // merge_queued：8 已调 submit，9 的 submit 已入队（和关旧 PR）；这里只核对
+      if (!TERMINAL.has(e.status) && e.status !== "merge_queued")
+        throw new Error(`resume 返回 merge_queued，但 ${e.ticket.ticket_id} 未经 submit 入队`);
+    })()
+      .catch(async (err) => {
+        if (e.status === "escalated") {
+          onError(err, e.ticket.ticket_id);
+          return;
+        }
+        await escalateOnError(e, "resume_error", err);
+      })
+      .finally(() => {
+        e.resuming = false;
+        background.delete(p);
+        kick();
+      });
+    background.add(p);
   }
 
   function startConflictResubmit(e: Entry, conflicted_files: string[]): void {
@@ -648,6 +744,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         target_dirty_streak: 0,
         own_worktree: false,
         busy: false,
+        resume_token: undefined,
+        pending_replace: undefined,
+        resuming: false,
         conflicted: false,
         base_changed: false,
         re_reviewed: false,
@@ -696,8 +795,17 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       }
       prToTicket.set(pr_id, ticket_id);
       if (queue.includes(ticket_id)) throw new Error(`单 ${ticket_id} 已在合并队列中`);
+      e.resume_token = undefined;
       await setStatus(e, "merge_queued");
       queue.push(ticket_id);
+      if (e.pending_replace) {
+        // 预算暂停后续跑开出了新 PR：关掉冲突复投前的旧 PR
+        try {
+          await supersede(e, pr_id);
+        } catch (err) {
+          onError(err, ticket_id);
+        }
+      }
       kick();
     },
     eventContext,
@@ -740,6 +848,19 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       if (applied.length) kick();
       return applied;
     },
+    async resumeBudgetPaused() {
+      const paused = [...entries.values()].filter(
+        (e) => e.resume_token !== undefined && !e.resuming && !TERMINAL.has(e.status),
+      );
+      if (paused.length === 0 || stopped) return [];
+      if ((await deps.budgetState()).daily_exhausted) return [];
+      for (const e of paused) startResume(e);
+      return paused.map((e) => e.ticket.ticket_id);
+    },
+    budgetPaused: () =>
+      [...entries.values()]
+        .filter((e) => (e.resume_token !== undefined || e.resuming) && !TERMINAL.has(e.status))
+        .map((e) => e.ticket.ticket_id),
     async backpressureState(): Promise<BackpressureState> {
       const budget = await deps.budgetState();
       const merge_queued = [...entries.values()].filter((e) => e.status === "merge_queued").length;
@@ -775,6 +896,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         round: e.round,
         resubmit_counts: { ...e.counts },
         dependency: dependencyState(e.ticket.ticket_id),
+        budget_paused: e.resume_token !== undefined || e.resuming,
       })),
     async idle() {
       for (;;) {

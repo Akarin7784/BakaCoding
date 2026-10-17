@@ -8,6 +8,7 @@ import {
   createScheduler,
   type ConflictResubmitRequest,
   type ReReviewRequest,
+  type ResumeOutcome,
   type SchedulerDeps,
   type SchedulerTicket,
   type SubAgentOutcome,
@@ -53,6 +54,7 @@ interface Harness {
   ): void;
   resubmit: ReturnType<typeof vi.fn<(r: ConflictResubmitRequest) => Promise<SubAgentOutcome>>>;
   reReview: ReturnType<typeof vi.fn<(r: ReReviewRequest) => Promise<SubAgentOutcome>>>;
+  resume: ReturnType<typeof vi.fn<(t: SchedulerTicket, token: unknown) => Promise<ResumeOutcome>>>;
   eventContextInjected: unknown[];
   errors: unknown[];
   head: { sha: string };
@@ -85,6 +87,10 @@ function harness(over: { pending_pr_limit?: number; conflict_limit?: number } = 
   const reReview = vi.fn(async (r: ReReviewRequest): Promise<SubAgentOutcome> => {
     calls.push(`reReview:${r.ticket.ticket_id}`);
     return { pr_id: r.pr_id };
+  });
+  const resume = vi.fn(async (t: SchedulerTicket, token: unknown): Promise<ResumeOutcome> => {
+    calls.push(`resume:${t.ticket_id}:${JSON.stringify(token)}`);
+    return { kind: "escalated", pr_id: null };
   });
   const deps: SchedulerDeps = {
     bus: {
@@ -153,7 +159,7 @@ function harness(over: { pending_pr_limit?: number; conflict_limit?: number } = 
       },
       cleanup: (p) => void calls.push(`cleanup:${p}`),
     },
-    subAgent: { resubmitConflict: resubmit, reReview },
+    subAgent: { resubmitConflict: resubmit, reReview, resume },
     clock: {
       now: () => now,
       sleep: async (ms) => {
@@ -179,6 +185,7 @@ function harness(over: { pending_pr_limit?: number; conflict_limit?: number } = 
       handlers.get(type)?.({ type, payload }),
     resubmit,
     reReview,
+    resume,
     eventContextInjected,
     errors,
     head,
@@ -712,6 +719,101 @@ describe("模块 9 合并队列（T-035）", () => {
     expect(escalations(h).map((e) => e.payload)).toEqual([
       { reason: "github_manual", detail: "target_dirty: /repo" },
     ]);
+  });
+
+  it("B1. 冲突复投途中当日预算用完：放回 pending、不上报、不加计数；预算重置后带凭据续跑，新 PR 开出才关旧 PR", async () => {
+    const h = harness();
+    const ref: { s?: Awaited<ReturnType<typeof started>> } = {};
+    h.resubmit.mockImplementationOnce(async () => ({
+      requeue_budget: true,
+      resume: { phase: "coding", n: 1 },
+    }));
+    h.resume.mockImplementationOnce(async (t, token) => {
+      h.calls.push(`resume:${t.ticket_id}:${JSON.stringify(token)}`);
+      // 8 的 resume 走主流程：评审通过时自己调 9 的 submit
+      await ref.s!.submit({ ticket_id: t.ticket_id, pr_id: "pr-200", worktree_path: "/wt/T-1-r1" });
+      return { kind: "merge_queued", pr_id: "pr-200" };
+    });
+    const s = (ref.s = await started(h));
+    await s.enqueue(ticket("T-1"));
+    h.merges.set("pr-1", [conflict()]);
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/wt/T-1-r0" });
+    await s.idle();
+    expect(s.status("T-1")).toBe("pending");
+    expect(escalations(h)).toEqual([]);
+    expect(s.budgetPaused()).toEqual(["T-1"]);
+    expect(s.snapshot()[0]).toMatchObject({
+      budget_paused: true,
+      round: 1,
+      resubmit_counts: { review: 0, conflict: 1 },
+    });
+    expect(h.calls.some((c) => c.startsWith("close:"))).toBe(false);
+
+    h.daily.exhausted = true;
+    expect(await s.resumeBudgetPaused()).toEqual([]);
+    expect(h.resume).not.toHaveBeenCalled();
+
+    h.daily.exhausted = false;
+    expect(await s.resumeBudgetPaused()).toEqual(["T-1"]);
+    await s.idle();
+    expect(h.resume.mock.calls[0]![1]).toEqual({ phase: "coding", n: 1 });
+    expect(h.calls).toContain("close:pr-1:冲突复投，由 pr-200 取代");
+    expect(h.calls).toContain("cleanup:/wt/T-1-r0");
+    expect(s.status("T-1")).toBe("merged");
+    expect(s.snapshot()[0]!.resubmit_counts).toEqual({ review: 0, conflict: 1 });
+    expect(s.budgetPaused()).toEqual([]);
+    expect(escalations(h)).toEqual([]);
+    // 入队之后的状态都由 9 写：pending（预算暂停）、merge_queued、merged
+    expect(h.statuses.filter(([t]) => t === "T-1").map(([, st]) => st)).toEqual([
+      "pending",
+      "merge_queued",
+      "conflict",
+      "resubmitting",
+      "pending",
+      "merge_queued",
+      "merged",
+    ]);
+  });
+
+  it("B2. 重审途中预算用完：pending 等续跑；续跑又碰上就继续等；8 上报后 9 写 escalated、不重复发事件", async () => {
+    const h = harness();
+    h.reReview.mockImplementationOnce(async () => ({ requeue_budget: true, resume: "tok-1" }));
+    h.resume.mockImplementationOnce(async () => ({ kind: "requeue_budget", resume: "tok-2" }));
+    h.resume.mockImplementationOnce(async () => ({ kind: "escalated", pr_id: "pr-1" }));
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("9") });
+    await s.idle();
+    expect(h.reReview).toHaveBeenCalledTimes(1);
+    expect(s.status("T-1")).toBe("pending");
+    expect(await s.resumeBudgetPaused()).toEqual(["T-1"]);
+    await s.idle();
+    expect(h.resume.mock.calls[0]![1]).toBe("tok-1");
+    expect(s.budgetPaused()).toEqual(["T-1"]);
+    expect(await s.resumeBudgetPaused()).toEqual(["T-1"]);
+    await s.idle();
+    expect(h.resume.mock.calls[1]![1]).toBe("tok-2");
+    expect(s.status("T-1")).toBe("escalated");
+    expect(escalations(h)).toEqual([]);
+    expect(s.budgetPaused()).toEqual([]);
+  });
+
+  it("B3. 续跑抛错：上报 github_manual（resume_error），状态 escalated", async () => {
+    const h = harness();
+    h.reReview.mockImplementationOnce(async () => ({ requeue_budget: true, resume: "tok" }));
+    h.resume.mockImplementationOnce(async () => {
+      throw new Error("worktree gone");
+    });
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("9") });
+    await s.idle();
+    await s.resumeBudgetPaused();
+    await s.idle();
+    expect(escalations(h).map((e) => e.payload)).toEqual([
+      { reason: "github_manual", detail: "resume_error: worktree gone" },
+    ]);
+    expect(s.status("T-1")).toBe("escalated");
   });
 
   it("6. 当日预算用完：暂停派新单，在途的单照常合并；重置后恢复", async () => {
