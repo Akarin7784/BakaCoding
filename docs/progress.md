@@ -122,6 +122,7 @@ flowchart BT
 | T-065 | 模块 6 / types：DiffFile 加可选 old_path，6 用 git diff -M 时填上旧路径；模块 8 `isHighRiskDiffFile` 新旧路径都检查，041c 的改名兜底（renamed 一律当高风险）收窄成只看依赖文件（没有 old_path 的改名仍算）；依赖文件名不区分大小写（仍按整个文件名匹配）；模块 10 高风险证据的命中文件改成 `{ path, old_path? }` | 6、8、10 | 执行层开发 | 已合入 | #67 | `e5c17b5` |
 | T-066 | 模块 6：sync 中途出错也带出已收集变化；close PATCH 失败时 GET 远程状态（已合入不记 closed）；merge 加可选 expected_head；checks 翻页并读 commit status；模块 7 发 review_backlog/supervisor_backlog 时 requirement_id、ticket_id 写 null，trace 新开 | 6、7 | 执行层开发 | 已合入 | #68 | `a51e022` |
 | T-067 | 模块 12：接 syncState()（状态展示 + 鉴权停 / 限流提示）；IPC `sync:state` / `sync:state-update`，错误信息脱敏 + 截断，只读返回不可用 | 12 | 界面与诊断开发 | 已合入 | #74 | `d4f3c9e` |
+| T-068 | 模块 3：`redact` 10 万字符输入的耗时上限从 500ms 放宽到 2s（和 T-062 诊断用例一致）；以 main 旧正则为基准的邮箱随机对比提高比对下限（≥320），另按含 2 个及以上 `.`（≥140）、含 `-`（≥75）分开计数各设下限 | 3 | 基础层开发 | 待评审 | — | — |
 | T-069 | 模块 6：check-runs 翻页以 total_count 为准，不再遇到本页不足 100 条就停 | 6 | 执行层开发 | 已合入 | #76 | `4e518fd` |
 | T-070 | 模块 10：高风险待裁决不计入主管待办（去掉与 9 `pending_pr_limit` 的反压双计） | 10 | 编排层开发 | 已合入 | #75 | `61716e3` |
 

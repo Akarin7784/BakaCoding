@@ -84,7 +84,7 @@ function redactEmails(text: string): { text: string; count: number } {
 }
 
 // 顺序重要：先匹配带结构的，再匹配宽泛的。
-// 所有规则都要线性（T-059：10 万字符的输入 light / full 都在 500ms 内）：重复次数有上限，
+// 所有规则都要线性（T-059：10 万字符的输入 light / full 都在 2s 内，T-068 由 500ms 放宽）：重复次数有上限，
 // 或者是匹配末尾的一段贪婪字符（后面没有别的约束，不会回溯）。
 const RULES: Rule[] = [
   { name: "private_key", level: "light", apply: redactPrivateKeys },
