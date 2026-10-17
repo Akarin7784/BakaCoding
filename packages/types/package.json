@@ -2,7 +2,7 @@
   "name": "@bakacoding/types",
   "version": "0.0.0",
   "private": true,
-  "description": "共享类型：事件类型、常量和 zod schema",
+  "description": "共享类型与 zod schema（事件、调用上下文、权限清单、台账、diff）",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

@@ -8,16 +8,7 @@
       "models": {
         "deepseek-flash": {
           "expected_display_name": "DeepSeek-V4.1-Flash",
-          "thinking_enabled": true,
-          "effort_map": {
-            "target_field": "output_config.effort",
-            "values": {
-              "off": "off",
-              "low": "low",
-              "high": "high",
-              "max": "max"
-            }
-          }
+          "thinking_enabled": true
         }
       }
     }
@@ -42,7 +33,10 @@
           "model": "deepseek-flash",
           "effort": "high"
         }
-      ]
+      ],
+      "review_assignment": "least_busy",
+      "sticky_on_resubmit": true,
+      "skip_rate_limited": true
     },
     "sub_agent": {
       "provider": "deepseek",
@@ -52,7 +46,8 @@
     "coder": {
       "provider": "deepseek",
       "model": "deepseek-flash",
-      "effort": "low"
+      "effort": "low",
+      "resubmit_effort": ["low", "high", "high"]
     }
   },
   "routing": {
@@ -62,5 +57,31 @@
   "validation": {
     "unsupported_effort": "error",
     "display_name_change": "require_confirmation"
+  },
+  "budget": {
+    "daily_micro_usd": 5000000,
+    "per_ticket_ratio": 0.05,
+    "offpeak_preference": false
+  },
+  "pipeline": {
+    "concurrency_max": 8,
+    "concurrency_hard_max": 64,
+    "resubmit_limits": {
+      "review": 3,
+      "conflict": 2
+    },
+    "resplit_limit": 2,
+    "supervisor_backlog_limit": 10,
+    "main_merge": "user"
+  },
+  "backpressure": {
+    "reviews_per_member": 2,
+    "halve_at": 2,
+    "pause_at": 4,
+    "recover_step": 1,
+    "recover_interval_min": 5
+  },
+  "diagnostics": {
+    "retention_days": 30
   }
 }
