@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@bakacoding/config-budget": "workspace:*",
+    "@bakacoding/storage": "workspace:*",
     "@bakacoding/types": "workspace:*",
     "better-sqlite3": "^12.11.1",
     "class-variance-authority": "^0.7.1",
@@ -25,7 +26,6 @@
     "tailwind-merge": "^3.7.0"
   },
   "devDependencies": {
-    "@bakacoding/storage": "workspace:*",
     "@electron/rebuild": "^4.2.1",
     "@tailwindcss/vite": "^4.3.3",
     "@testing-library/dom": "^10.4.2",

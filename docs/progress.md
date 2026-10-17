@@ -37,8 +37,8 @@ flowchart BT
   classDef doing fill:#fef3c7,stroke:#d97706,color:#78350f
   classDef done fill:#dcfce7,stroke:#16a34a,color:#14532d
 
-  class M0,M2,M6,M7,M11,M12,T done
-  class M3,M4 doing
+  class M0,M2,M6,M7,M11,T done
+  class M3,M4,M12 doing
   class M1,M5,M8,M9,M10 todo
 ```
 
@@ -79,6 +79,7 @@ flowchart BT
 | T-023 | 桌面界面读取真实事件：主进程只读打开存储，IPC 推快照与增量，preload 只读 API | 12 | 界面与诊断开发 | 已合入 | #22 | `c5efa90` |
 | T-024 | 诊断包接存储：`storage.diagnosticsSource()` 作为模块 11 数据源的集成测试与数据缺口说明 | 11 | 界面与诊断开发 | 已合入 | #24 | `94c0624` |
 | T-026 | better-sqlite3 升到 12.x（Electron 44 能编过）；存储只读打开 `openStorageReadonly`、`maxSeq`、`nativeBinding`；prStore 结构字段加 `closed_by` | 2 | 基础层开发 | 已合入 | #26 | `11c867d` |
+| T-027 | 桌面界面改用存储只读 API：`openStorageReadonly` 替换手写 SQL，按 `maxSeq()` 轮询，库缺失 / 版本不符 / ABI 不符给出可读状态；实测 Electron 窗口显示真实数据（#22 的 ABI 已知问题已解决） | 12 | 界面与诊断开发 | 待评审 | — | — |
 | T-028 | 模块 6 补接口：`commitWorktree`（提交 worktree 全部改动）、`close`（`closed_by` / `close_reason`，sync 不把自己关的当手动关闭） | 6 | 执行层开发 | 已合入 | #25 | `4a2ce07` |
 | T-030 | 模块 7 评审池：`review` / `backlog`、CI 失败直接判不过、主管兼任、复投粘性与限流跳过、输出解析重试、`review_backlog` 事件；评审结论类型进 `@bakacoding/types` | 7 | 执行层开发 | 已合入 | #27、跟进 #28 | `be1fa6f`、`a44d985` |
 

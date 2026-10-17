@@ -1,8 +1,17 @@
-// 主进程的只读数据读取：用 better-sqlite3 以只读方式打开模块 2 的库。
-// 不走 openStorage：它会抢写入者租约、跑迁移，协调服务在跑时会抛 StorageLeaseError（见 PR 说明）。
+// 主进程的只读数据读取：用模块 2 的 openStorageReadonly 打开库（T-027）。
+// 不拿写入者租约、不跑迁移，协调服务在写的时候也能读；读方法全部走存储的公共 API，不手写 SQL。
 import { existsSync } from "node:fs";
-import Database from "better-sqlite3";
-import { EventSchema, TicketStatusSchema, type TicketStatus } from "@bakacoding/types";
+import {
+  openStorageReadonly,
+  StorageVersionError,
+  type ReadonlyStorage,
+} from "@bakacoding/storage";
+import {
+  EventSchema,
+  TicketStatusSchema,
+  type BakaEvent,
+  type TicketStatus,
+} from "@bakacoding/types";
 import {
   UI_EVENT_TYPES,
   type DbStatus,
@@ -16,6 +25,8 @@ export interface ReaderOptions {
   path: string;
   /** better-sqlite3 的原生模块路径（Electron ABI 版本，见 rebuild:electron）；不给则用默认。 */
   nativeBinding?: string;
+  /** 测试用：替换打开函数。 */
+  open?: typeof openStorageReadonly;
 }
 
 export interface EventReader {
@@ -24,8 +35,6 @@ export interface EventReader {
   poll(): DesktopUpdate | null;
   close(): void;
 }
-
-type Row = Record<string, unknown>;
 
 const TITLE_MAX = 80;
 
@@ -39,134 +48,147 @@ function toStatus(v: unknown): TicketStatus {
   return r.success ? r.data : "pending";
 }
 
-export function openEventReader(opts: ReaderOptions): EventReader {
-  let db: Database.Database | null = null;
-  let status: DbStatus = { path: opts.path, state: "missing" };
-  let lastSeq = -1;
-  let lastTicketsKey = "";
+/** 打不开或读失败时给界面看的说明。 */
+function describeError(e: unknown): string {
+  if (e instanceof StorageVersionError) return e.message;
+  const msg = e instanceof Error ? e.message : String(e);
+  if (/NODE_MODULE_VERSION|was compiled against a different Node\.js version/.test(msg)) {
+    return `better-sqlite3 原生模块和 Electron 版本不匹配，请先运行 pnpm --filter @bakacoding/desktop rebuild:electron（${msg}）`;
+  }
+  return msg;
+}
 
-  function ensureOpen(): Database.Database | null {
-    if (db) return db;
+/** 从事件里认出项目：project_created，以及带 project_id 的群消息。 */
+function projectOf(e: BakaEvent): string | undefined {
+  if (e.type === "project_created" || e.type === "group_message") return e.payload.project_id;
+  return undefined;
+}
+
+export function openEventReader(opts: ReaderOptions): EventReader {
+  const open = opts.open ?? openStorageReadonly;
+  let store: ReadonlyStorage | null = null;
+  let status: DbStatus = { path: opts.path, state: "missing" };
+  /** 已下发的最大 seq（界面契约里的 last_seq）。 */
+  let lastSeq = -1;
+  /** 已读过的库内最大 seq（含界面不关心的事件），按 maxSeq() 判断有没有新事件。 */
+  let seenSeq = -1;
+  let lastTicketsKey = "";
+  /** 存储按项目查需求单，没有「列出全部项目」的读方法，项目 id 从事件里收集。 */
+  const projects = new Set<string>();
+
+  function reset(): void {
+    store?.close();
+    store = null;
+    lastSeq = -1;
+    seenSeq = -1;
+    projects.clear();
+  }
+
+  function ensureOpen(): ReadonlyStorage | null {
+    if (store) return store;
     if (!existsSync(opts.path)) {
       status = { path: opts.path, state: "missing" };
       return null;
     }
     try {
-      db = new Database(opts.path, {
-        readonly: true,
-        fileMustExist: true,
+      store = open({
+        path: opts.path,
         ...(opts.nativeBinding ? { nativeBinding: opts.nativeBinding } : {}),
       });
-      db.pragma("busy_timeout = 2000");
       status = { path: opts.path, state: "ok" };
-      return db;
+      return store;
     } catch (e) {
-      status = { path: opts.path, state: "error", message: (e as Error).message };
-      db = null;
+      status = { path: opts.path, state: "error", message: describeError(e) };
+      store = null;
       return null;
     }
   }
 
-  function hasTable(d: Database.Database, name: string): boolean {
-    return !!d.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name);
-  }
-
-  function hasColumn(d: Database.Database, table: string, column: string): boolean {
-    return (d.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some(
-      (c) => c.name === column,
-    );
-  }
-
-  function readEvents(d: Database.Database, afterSeq: number): UiEvent[] {
-    if (!hasTable(d, "events")) return [];
-    const marks = UI_EVENT_TYPES.map(() => "?").join(", ");
-    const rows = d
-      .prepare(`SELECT * FROM events WHERE seq > ? AND type IN (${marks}) ORDER BY seq`)
-      .all(afterSeq, ...UI_EVENT_TYPES) as Row[];
+  function readEvents(s: ReadonlyStorage): UiEvent[] {
+    const max = s.maxSeq();
+    if (max === null || max <= seenSeq) return [];
+    // 项目 id 要从全部 project_created / group_message 里收，和下发的类型一致，一次查完。
+    const rows = s.queryEvents({ after_seq: seenSeq, types: [...UI_EVENT_TYPES] });
+    seenSeq = Math.max(max, ...rows.map((r) => r.seq));
     const out: UiEvent[] = [];
     for (const row of rows) {
-      const payload = JSON.parse(row.payload as string) as Row;
-      // call_completed 的完整提示词和输出在 call_log；界面只要输出，提示词不下发。
-      if (row.type === "call_completed") {
-        const c = hasTable(d, "call_log")
-          ? (d
-              .prepare("SELECT output, summary FROM call_log WHERE event_id = ?")
-              .get(row.event_id) as { output: string | null; summary: string } | undefined)
-          : undefined;
-        payload.prompt = "";
-        payload.output = c?.output ?? c?.summary ?? "";
-      }
-      const parsed = EventSchema.safeParse({
-        event_id: row.event_id,
-        seq: row.seq,
-        type: row.type,
-        ts: row.ts,
-        trace_id: row.trace_id,
-        span_id: row.span_id,
-        parent_span_id: row.parent_span_id,
-        requirement_id: row.requirement_id,
-        ticket_id: row.ticket_id,
-        payload,
-      });
+      const project = projectOf(row);
+      if (project) projects.add(project);
+      // 完整提示词不下发给界面，输出照存储给的（过期后是摘要）。
+      const e =
+        row.type === "call_completed" ? { ...row, payload: { ...row.payload, prompt: "" } } : row;
+      const parsed = EventSchema.safeParse(e);
       // 不符合 schema 的行跳过，不让一条坏数据挡住整个界面。
       if (parsed.success) out.push(parsed.data as UiEvent);
-      lastSeq = Math.max(lastSeq, row.seq as number);
+      lastSeq = Math.max(lastSeq, row.seq);
     }
     return out;
   }
 
-  function readTickets(d: Database.Database): TicketView[] {
-    if (!hasTable(d, "tickets")) return [];
-    const rounds = hasTable(d, "pr_rounds")
-      ? "(SELECT COUNT(*) FROM pr_rounds r WHERE r.ticket_id = t.ticket_id)"
-      : "0";
-    // 存储 v2（T-022）起有毫秒列，按它排序；旧库退回按文本排序。
-    const order = hasColumn(d, "tickets", "created_at_ms") ? "t.created_at_ms" : "t.created_at";
-    const rows = d
-      .prepare(
-        `SELECT t.ticket_id, t.project_id, t.requirement_id, t.created_at, t.ticket_text, t.status,
-           ${rounds} AS rounds FROM tickets t ORDER BY ${order}, t.ticket_id`,
-      )
-      .all() as Row[];
-    return rows.map((r) => ({
-      ticket_id: r.ticket_id as string,
-      project_id: r.project_id as string,
-      requirement_id: r.requirement_id as string,
-      created_at: r.created_at as string,
-      title: ticketTitle(r.ticket_text as string),
-      status: toStatus(r.status),
-      resubmit_count: Math.max(0, (r.rounds as number) - 1),
-    }));
+  function readTickets(s: ReadonlyStorage): TicketView[] {
+    const all: TicketView[] = [];
+    for (const project_id of projects) {
+      for (const t of s.query({ project_id })) {
+        all.push({
+          ticket_id: t.ticket_id,
+          project_id: t.project_id,
+          requirement_id: t.requirement_id,
+          created_at: t.created_at,
+          title: ticketTitle(t.ticket_text),
+          status: toStatus(t.status),
+          resubmit_count: Math.max(0, t.rounds.length - 1),
+        });
+      }
+    }
+    // 各项目内已按 created_at_ms 排好；跨项目再按毫秒时间排一次。
+    const ms = (iso: string) => Date.parse(iso);
+    return all.sort(
+      (a, b) => ms(a.created_at) - ms(b.created_at) || a.ticket_id.localeCompare(b.ticket_id),
+    );
+  }
+
+  /** 读一次；读失败（库被删、被升级到更新版本等）时关掉连接，标 error，下次轮询重开。 */
+  function read(): { events: UiEvent[]; tickets: TicketView[] } | null {
+    const s = ensureOpen();
+    if (!s) return null;
+    try {
+      const events = readEvents(s);
+      return { events, tickets: readTickets(s) };
+    } catch (e) {
+      reset();
+      status = { path: opts.path, state: "error", message: describeError(e) };
+      return null;
+    }
   }
 
   return {
     snapshot() {
-      lastSeq = -1;
-      const d = ensureOpen();
-      if (!d) {
-        lastTicketsKey = "[]";
-        return { db: status, events: [], tickets: [], last_seq: lastSeq };
-      }
-      const events = readEvents(d, -1);
-      const tickets = readTickets(d);
+      reset();
+      const r = read();
+      const tickets = r?.tickets ?? [];
       lastTicketsKey = JSON.stringify(tickets);
-      return { db: status, events, tickets, last_seq: lastSeq };
+      return { db: status, events: r?.events ?? [], tickets, last_seq: lastSeq };
     },
     poll() {
-      const before = status.state;
-      const d = ensureOpen();
-      if (!d) return before === status.state ? null : { db: status, events: [], last_seq: lastSeq };
-      const events = readEvents(d, lastSeq);
-      const tickets = readTickets(d);
-      const key = JSON.stringify(tickets);
-      const ticketsChanged = key !== lastTicketsKey;
+      const before = JSON.stringify(status);
+      const r = read();
+      const statusChanged = JSON.stringify(status) !== before;
+      if (!r) return statusChanged ? { db: status, events: [], last_seq: lastSeq } : null;
+      // 重新打开（库刚建好或从错误恢复）时补发全部事件和需求单，界面按 event_id 去重。
+      const key = JSON.stringify(r.tickets);
+      const ticketsChanged = key !== lastTicketsKey || statusChanged;
       lastTicketsKey = key;
-      if (events.length === 0 && !ticketsChanged && before === status.state) return null;
-      return { db: status, events, ...(ticketsChanged ? { tickets } : {}), last_seq: lastSeq };
+      if (r.events.length === 0 && !ticketsChanged && !statusChanged) return null;
+      return {
+        db: status,
+        events: r.events,
+        ...(ticketsChanged ? { tickets: r.tickets } : {}),
+        last_seq: lastSeq,
+      };
     },
     close() {
-      db?.close();
-      db = null;
+      store?.close();
+      store = null;
     },
   };
 }

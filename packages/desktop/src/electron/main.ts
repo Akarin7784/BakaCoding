@@ -1,4 +1,4 @@
-// Electron 主进程：开一个窗口，跟随系统深浅色；只读打开模块 2 的库，经 IPC 推给渲染进程。
+// Electron 主进程：开一个窗口，跟随系统深浅色；用 openStorageReadonly 只读打开模块 2 的库，经 IPC 推给渲染进程。
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";

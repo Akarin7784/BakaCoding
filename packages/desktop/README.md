@@ -4,7 +4,10 @@
 
 ## 数据来源（T-023）
 
-- 主进程用 better-sqlite3 **只读**打开模块 2 的库（`readonly: true`，不跑迁移、不拿写入者租约），协调服务在写的时候也能看。
+- 主进程用模块 2 的 `openStorageReadonly` 打开库（T-027 起；T-023 时是手写 SQL）：不跑迁移、不拿写入者租约，协调服务在写的时候也能看。事件用 `queryEvents({ after_seq, types })`，需求单用 `query({ project_id })`，不再直接碰表。
+- 轮询先看 `maxSeq()`，没有新事件就不查事件表；需求单（`saveTicket` 不产生事件）每次照查，有变化才下发。
+- 需求单按项目查，存储没有「列出全部项目」的读方法，项目 id 从 `project_created` 和群消息事件里收集；没有这些事件的项目，界面本来也不显示。
+- 界面顶部的状态：库文件不存在显示路径；库版本和代码不一致（`StorageVersionError`）显示存储给的说明；原生模块 ABI 不对时提示先跑 `rebuild:electron`。打开或读取失败后每次轮询重试，恢复后补发全部数据。
 - 路径：`--db=<path>` 参数 > 环境变量 `BAKACODING_DB_PATH` > `<cwd>/.bakacoding/bakacoding.db`。库还不存在时界面顶部提示路径，建库后自动接上。
 - 主进程每 1 秒按 `seq` 增量轮询（协调服务在另一个进程，进程内总线订阅不到），经 IPC 推给渲染进程：先 `bakacoding:snapshot` 取快照，再收 `bakacoding:update` 增量。只下发 `project_created`、`group_message`、`call_completed`（不带提示词）、`escalated` 和需求单摘要。
 - preload 通过 contextBridge 只暴露 `window.bakacoding`：`platform`、`getSnapshot()`、`onUpdate(listener)`，没有写操作；窗口开 `contextIsolation`、`sandbox`，关 `nodeIntegration`。契约在 `src/shared/api.ts`。
@@ -16,4 +19,5 @@
 - `pnpm build:app`：vite 打包渲染进程到 `dist-renderer/`，主进程和 preload（`preload.cjs`）到 `dist-electron/`
 - `pnpm dev`：开发模式（需要 Electron 二进制；pnpm 10 默认不跑 electron 的安装脚本，需要时执行 `node node_modules/electron/install.js`）
 - `pnpm rebuild:electron`：用 `@electron/rebuild` 为当前 Electron 版本另编一份 better-sqlite3，放到 `native/electron/better_sqlite3.node`（已 gitignore），主进程通过 `nativeBinding` 加载。不就地重编，也不放进 postinstall：better-sqlite3 在 pnpm 下只有一份，被模块 2 和 Node 下的 vitest 共用。
-  - better-sqlite3 已升到 12.x（T-026），在 Electron 44.9.0 下能编过并正常加载。
+  - better-sqlite3 已升到 12.x（T-026），在 Electron 44.9.0 下能编过并正常加载；T-027 实测窗口能显示真实库的数据（#22 里 ABI 报错的已知问题已解决）。
+  - `@bakacoding/storage` 打包进主进程，`better-sqlite3` 保持 external、运行时从本包的 `node_modules` 加载，所以本包仍直接依赖 better-sqlite3：这也是 `rebuild:electron` 编译的那一份，两者版本一致。
