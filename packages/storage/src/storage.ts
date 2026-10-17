@@ -774,17 +774,28 @@ function open(options: StorageOptions, ro: boolean): Storage {
   });
 
   /** 读 `tickets.fields`：损坏的 JSON 或不是普通对象时读成 null 并记警告，不让一行坏数据拖垮整个读取。 */
+  /** 已经警告过 fields 损坏的单号：同一个连接里同一单号只警告一次（T-057）。 */
+  const warnedFields = new Set<string>();
+  function warnFieldsOnce(ticket_id: string, message: string): void {
+    if (warnedFields.has(ticket_id)) return;
+    warnedFields.add(ticket_id);
+    logger.warn(message);
+  }
+
   function decodeFields(ticket_id: string, raw: unknown): TicketFields | null {
     if (raw == null) return null;
     let v: unknown;
     try {
       v = JSON.parse(raw as string);
     } catch {
-      logger.warn(`[storage] 需求单 ${ticket_id} 的 fields 不是合法 JSON，按 null 读出`);
+      warnFieldsOnce(
+        ticket_id,
+        `[storage] 需求单 ${ticket_id} 的 fields 不是合法 JSON，按 null 读出`,
+      );
       return null;
     }
     if (v === null || typeof v !== "object" || Array.isArray(v)) {
-      logger.warn(`[storage] 需求单 ${ticket_id} 的 fields 不是对象，按 null 读出`);
+      warnFieldsOnce(ticket_id, `[storage] 需求单 ${ticket_id} 的 fields 不是对象，按 null 读出`);
       return null;
     }
     return v as TicketFields;
