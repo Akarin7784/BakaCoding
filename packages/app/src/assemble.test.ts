@@ -1,5 +1,6 @@
 // T-041a：组合根。真实的 0 总线、2 存储（SQLite）、8 / 9 / 10；5 / 7 / 6 / 4 的 worktree 用替身。
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -98,6 +99,12 @@ interface Opts {
   config?: (c: AppDeps["config"]) => AppDeps["config"];
   /** 额外的 9 选项（T-041c：验证 holdHighRisk 关不掉） */
   scheduler?: Record<string, unknown>;
+  /** T-094：4 的 cleanupMerged 替身 */
+  cleanupMerged?: AppDeps["worktrees"]["cleanupMerged"];
+  logger?: AppDeps["logger"];
+  cleanupSweepTimeoutMs?: number;
+  /** T-094：4 的仓库根 */
+  repoRoot?: string;
 }
 
 async function start(o: Opts) {
@@ -132,12 +139,17 @@ async function start(o: Opts) {
         return { path, branch: `bakacoding/${ticket_id}-r${round}` };
       },
       cleanup: () => {},
+      ...(o.cleanupMerged ? { cleanupMerged: o.cleanupMerged } : {}),
     },
     worktreeRoot: o.worktreeRoot,
+    ...(o.repoRoot !== undefined ? { repoRoot: o.repoRoot } : {}),
     targetHead: () => HEAD,
     notifyUser: o.notifyUser ?? (() => {}),
     scheduler: { dispatch_poll_ms: 0, ...o.scheduler },
-    logger: { warn: () => {} },
+    logger: o.logger ?? { warn: () => {} },
+    ...(o.cleanupSweepTimeoutMs !== undefined
+      ? { cleanupSweepTimeoutMs: o.cleanupSweepTimeoutMs }
+      : {}),
   });
   apps.push(app);
   return { app, created };
@@ -1629,5 +1641,182 @@ describe("T-096 App.stop() 等 9 收尾", () => {
     expect(storage.listTickets().map((t) => [t.ticket_id, t.status])).toEqual(after);
     expect(storage.queryEvents().length).toBe(events);
     expect(storage.queryEvents({ types: ["escalated"] })).toEqual([]);
+  });
+});
+
+describe("T-094：重启补清理已合入单的 worktree / 分支", () => {
+  it("接管后、定时 sync 前，对 2 里已 merged 且还留着 worktree 或分支的单调 cleanupMerged；失败只警告", async () => {
+    const { root, storage, worktreeRoot } = setup();
+    const repo = join(root, "repo");
+    const g = (...a: string[]) => execFileSync("git", a, { cwd: repo, encoding: "utf8" });
+    g("init", "-q", "-b", "main");
+    g("config", "user.email", "t@example.com");
+    g("config", "user.name", "t");
+    writeFileSync(join(repo, "a.txt"), "a\n");
+    g("add", "a.txt");
+    g("commit", "-qm", "init");
+    g("branch", "bakacoding/T-B-r1"); // 只剩分支
+    g("branch", "bakacoding/integration");
+    mkdirSync(join(worktreeRoot, "T-A-r0"), { recursive: true }); // 只剩目录
+    mkdirSync(join(worktreeRoot, "T-P-r0"), { recursive: true }); // 未合入的单：不碰
+    saveTicket(storage, "T-A", "merged", fields());
+    saveTicket(storage, "T-B", "merged", fields());
+    saveTicket(storage, "T-C", "merged", fields()); // 没有残留：不调
+    saveTicket(storage, "T-P", "escalated", fields());
+    const calls: string[] = [];
+    const warns: string[] = [];
+    const { app } = await start({
+      storage,
+      worktreeRoot,
+      repoRoot: repo,
+      pr: fakePr().pr,
+      cleanupMerged: async (id, into) => {
+        calls.push(`${id}:${into}`);
+        if (id === "T-B") throw new Error("EBUSY");
+        return { errors: [] };
+      },
+      logger: { warn: (m) => void warns.push(m) },
+    });
+    // 后台跑：等它跑完
+    await vi.waitFor(() => expect(warns.some((w) => w.includes("T-B"))).toBe(true));
+    expect(calls.sort()).toEqual(["T-A:bakacoding/integration", "T-B:bakacoding/integration"]);
+    expect(app.takeOver.merged).toEqual(expect.arrayContaining(["T-A", "T-B", "T-C"]));
+  });
+
+  it("仓库不是 git 仓库时只警告、照常启动", async () => {
+    const { root, storage, worktreeRoot } = setup();
+    saveTicket(storage, "T-A", "merged", fields());
+    const warns: string[] = [];
+    const { app } = await start({
+      storage,
+      worktreeRoot,
+      repoRoot: join(root, "repo"),
+      pr: fakePr().pr,
+      cleanupMerged: async () => ({ errors: [] }),
+      logger: { warn: (m) => void warns.push(m) },
+    });
+    expect(app.takeOver.merged).toEqual(["T-A"]);
+    await vi.waitFor(() => expect(warns.some((w) => w.includes("重启补清理"))).toBe(true));
+  });
+
+  it("读分支用显式传入的 repoRoot，不从 worktreeRoot 推；不给 repoRoot 时只按 worktree 目录找", async () => {
+    const { root, storage } = setup();
+    const repo = join(root, "elsewhere");
+    mkdirSync(repo);
+    const g = (...a: string[]) => execFileSync("git", a, { cwd: repo, encoding: "utf8" });
+    g("init", "-q", "-b", "main");
+    g("config", "user.email", "t@example.com");
+    g("config", "user.name", "t");
+    writeFileSync(join(repo, "a.txt"), "a\n");
+    g("add", "a.txt");
+    g("commit", "-qm", "init");
+    g("branch", "bakacoding/T-B-r0"); // 只剩分支
+    // worktreeRoot 故意不在 repo 下面
+    const worktreeRoot = join(root, "wt-root");
+    mkdirSync(join(worktreeRoot, "T-A-r0"), { recursive: true }); // 只剩目录
+    saveTicket(storage, "T-A", "merged", fields());
+    saveTicket(storage, "T-B", "merged", fields());
+
+    const calls: string[] = [];
+    await start({
+      storage,
+      worktreeRoot,
+      repoRoot: repo,
+      pr: fakePr().pr,
+      cleanupMerged: async (id) => {
+        calls.push(id);
+        return { errors: [] };
+      },
+    });
+    await vi.waitFor(() => expect(calls.sort()).toEqual(["T-A", "T-B"]));
+
+    const calls2: string[] = [];
+    const warns: string[] = [];
+    await start({
+      storage,
+      worktreeRoot,
+      pr: fakePr().pr,
+      cleanupMerged: async (id) => {
+        calls2.push(id);
+        return { errors: [] };
+      },
+      logger: { warn: (m) => void warns.push(m) },
+    });
+    await vi.waitFor(() => expect(calls2).toEqual(["T-A"]));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(calls2).toEqual(["T-A"]);
+    expect(warns).toEqual([]);
+  });
+
+  /** 仓库里给每张单留一个 worktree 目录残留 */
+  function leftovers(worktreeRoot: string, storage: Storage, ids: string[]) {
+    for (const id of ids) {
+      mkdirSync(join(worktreeRoot, `${id}-r0`), { recursive: true });
+      saveTicket(storage, id, "merged", fields());
+    }
+  }
+
+  it("后台跑：清理挂起时 assemble 照常返回，定时 sync 照常开", async () => {
+    const { storage, worktreeRoot } = setup();
+    leftovers(worktreeRoot, storage, ["T-A"]);
+    let started = false;
+    const { app } = await start({
+      storage,
+      worktreeRoot,
+      pr: fakePr().pr,
+      cleanupMerged: () => {
+        started = true;
+        return new Promise(() => {});
+      },
+    });
+    await vi.waitFor(() => expect(started).toBe(true));
+    expect(app.takeOver.merged).toEqual(["T-A"]);
+    expect(app.scheduler.syncState()).toBeTruthy();
+  });
+
+  it("整轮总超时：到点不再开始新的单，只警告一次", async () => {
+    const { storage, worktreeRoot } = setup();
+    leftovers(worktreeRoot, storage, ["T-A", "T-B"]);
+    const calls: string[] = [];
+    const warns: string[] = [];
+    await start({
+      storage,
+      worktreeRoot,
+      pr: fakePr().pr,
+      cleanupSweepTimeoutMs: 50,
+      cleanupMerged: (id) => {
+        calls.push(id);
+        return new Promise(() => {});
+      },
+      logger: { warn: (m) => void warns.push(m) },
+    });
+    await vi.waitFor(() => expect(warns.some((w) => w.includes("整轮超时"))).toBe(true));
+    expect(calls).toEqual(["T-A"]);
+    expect(warns.filter((w) => w.includes("整轮超时"))).toHaveLength(1);
+  });
+
+  it("app.stop() 后不再开始新的单、不再警告", async () => {
+    const { storage, worktreeRoot } = setup();
+    leftovers(worktreeRoot, storage, ["T-A", "T-B"]);
+    const calls: string[] = [];
+    const warns: string[] = [];
+    let fail!: (e: Error) => void;
+    const { app } = await start({
+      storage,
+      worktreeRoot,
+      pr: fakePr().pr,
+      cleanupMerged: (id) => {
+        calls.push(id);
+        return new Promise((_, rej) => (fail = rej));
+      },
+      logger: { warn: (m) => void warns.push(m) },
+    });
+    await vi.waitFor(() => expect(calls).toEqual(["T-A"]));
+    app.stop();
+    fail(new Error("停机后才失败"));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(calls).toEqual(["T-A"]);
+    // 测试仓库不是 git 仓库，停机前已有一条「读本地分支失败」；停机后的失败不再警告
+    expect(warns.filter((w) => w.includes("T-A") || w.includes("T-B"))).toEqual([]);
   });
 });

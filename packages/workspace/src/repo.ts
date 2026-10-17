@@ -5,10 +5,11 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { isProtectedPath } from "./guard.js";
 import { ensureBakacodingIgnored, isBakacodingIgnored } from "./worktree.js";
-import { gitEnv } from "./git-env.js";
+import { gitEnv, REPO_GIT_TIMEOUT_MS } from "./git-env.js";
+import { withGitWriteLock } from "./git-lock.js";
 
-/** 每次 git 调用的默认超时。 */
-export const REPO_GIT_TIMEOUT_MS = 30_000;
+/** 每次 git 调用的默认超时（定义挪到 git-env.ts，T-094）。 */
+export { REPO_GIT_TIMEOUT_MS };
 export const MAIN_BRANCH = "main";
 export const INITIAL_COMMIT_MESSAGE = "初始提交（BakaCoding）";
 
@@ -252,6 +253,15 @@ export async function initRepo(
   const o = opts(options);
   if (init.identity) assertIdentity(init.identity);
   const abs = resolve(dir);
+  // T-094：仓库写操作持进程内 git 写锁，与建 / 删 worktree、合入后清理串行
+  return withGitWriteLock(abs, () => initRepoLocked(abs, init, o));
+}
+
+async function initRepoLocked(
+  abs: string,
+  init: { identity?: GitIdentity },
+  o: GitOpts,
+): Promise<void> {
   if (await ownRepoRoot(abs, o)) throw new RepoFixError("repo_exists");
   await mkdir(abs, { recursive: true });
   // 不依赖 git 2.28 的 `-b`：先 init，再把未出生的 HEAD 指到 main。
@@ -328,6 +338,14 @@ export async function initialCommit(
   const o = opts(options);
   if (what.identity) assertIdentity(what.identity);
   const root = await requireRoot(dir, o);
+  return withGitWriteLock(root, () => initialCommitLocked(root, what, o));
+}
+
+async function initialCommitLocked(
+  root: string,
+  what: ({ files: readonly string[] } | { empty: true }) & { identity?: GitIdentity },
+  o: GitOpts,
+): Promise<{ commit: string }> {
   if (await hasCommit(root, o)) throw new RepoFixError("has_commits");
   if (what.identity) {
     await gitOk(root, "config", ["config", "--local", "user.name", what.identity.name.trim()], o);
@@ -378,6 +396,10 @@ export async function createMainBranch(
 ): Promise<{ from: string }> {
   const o = opts(options);
   const root = await requireRoot(dir, o);
+  return withGitWriteLock(root, () => createMainBranchLocked(root, o));
+}
+
+async function createMainBranchLocked(root: string, o: GitOpts): Promise<{ from: string }> {
   if (!(await hasCommit(root, o))) throw new RepoFixError("no_commits");
   if (await hasMain(root, o)) throw new RepoFixError("main_exists");
   const from =
