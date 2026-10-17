@@ -1,5 +1,8 @@
 import type { Diff } from "@bakacoding/types";
 
+/** 默认集成分支名（v1 写死，不设配置项）。 */
+export const INTEGRATION_BRANCH = "bakacoding/integration";
+
 export type MergeResult =
   | { merged: true; sha: string; fast_forward: boolean }
   | { merged: false; conflict: true; conflicted_files: string[] }
@@ -19,6 +22,12 @@ export interface PrProvider {
   /** 在 worktree 当前分支上 git apply + commit，返回新提交 sha。 */
   commitPatch(ticket_id: string, worktree_path: string, patch: string): Promise<string>;
   open(ticket_id: string, worktree_path: string, branch: string): Promise<string>;
+  /**
+   * 把集成分支作为一条 PR 记录打开（默认 INTEGRATION_BRANCH → main）。分支不存在时从 target 建出；
+   * 同一对 (branch, target) 只保留一条未结束（open / conflict）的记录，重复调用返回已有 pr_id。
+   */
+  openIntegration(branch?: string, target?: string): Promise<string>;
+  /** 集成记录未结束时每次现算：base_sha = merge-base(target, branch)，head_sha = branch 当前 HEAD。 */
   diff(pr_id: string): Promise<Diff>;
   /** 冲突不抛错，返回 { merged: false, conflict: true }，由模块 9 决定复投。 */
   merge(pr_id: string, target: string): Promise<MergeResult>;

@@ -126,7 +126,8 @@ graph BT
 
 ### 6. PR 抽象
 - **职责**：一套接口两种实现：有 GitHub 时推工作分支开真 PR、轮到时合入集成分支；没有远程仓库或读不到 `GITHUB_TOKEN`（经 3 的 `getSecret`）时只建本地 PR 记录。Flash 产出的补丁由 6 转成 commit。worktree 路径和分支由 4 交来，6 自己用 git 读 diff。单张 PR 和集成分支的 CI check 都由 6 读，集成分支也作为一种 PR 记录。本地记录为准，GitHub 状态同步回本地，差异记入日志；需要人工处理 GitHub 时发「上报」事件。
-- **对外接口（草案）**：`open(ticket_id, worktree_path, branch) → pr_id`、`commitPatch(ticket_id, worktree_path, patch) → sha`、`diff(pr_id) → { base_sha, head_sha, files: [{ path, status, additions, deletions, patch }] }`、`merge(pr_id, target)`、`checks(pr_id) → results`、`sync()`；事件：上报（`reason: github_manual`，鉴权失败或需要手动解冲突时发，写 `detail`，不带 `resubmit_counts`）。
+- **对外接口（草案）**：`open(ticket_id, worktree_path, branch) → pr_id`、`openIntegration(branch = INTEGRATION_BRANCH, target = "main") → pr_id`、`commitPatch(ticket_id, worktree_path, patch) → sha`、`diff(pr_id) → { base_sha, head_sha, files: [{ path, status, additions, deletions, patch }] }`、`merge(pr_id, target)`、`checks(pr_id) → results`、`sync()`；事件：上报（`reason: github_manual`，鉴权失败或需要手动解冲突时发，写 `detail`，不带 `resubmit_counts`）。
+- **集成分支记录**（T-018）：默认集成分支名为导出常量 `INTEGRATION_BRANCH = "bakacoding/integration"`（v1 写死，不设配置项）。`openIntegration` 在分支不存在时从 `target` 建出（不 checkout）；同一对 `(branch, target)` 只保留一条未结束的记录，重复调用返回已有 `pr_id`（格式 `local-integration-<n>`），合入后再调用新建一条。`PrRecord` 按 `kind` 区分：`ticket` 必带 `ticket_id`、`worktree_path`；`integration` 不带这两个字段。集成记录复用 `diff`、`checks`、`merge`：未合入时 `diff` 每次现算，`base_sha = merge-base(target, branch)`、`head_sha` 取集成分支当前 HEAD；合入后按记录值冻结。
 - **依赖**：2、3（`GITHUB_TOKEN`）。
 - **对应章节**：PD §2、§7、§9、§15。
 - **配置字段**：设计中没有专用字段。
