@@ -159,7 +159,7 @@ flowchart BT
 | T-088 | 模块 3：界面保存密钥 `setUserSecret` / `clearUserSecret` / `secretStatus`（`secrets.ts`）：写 `HKCU\Environment` 并更新 `process.env`（`getSecret` 照旧读 `process.env`，保存后立即生效）；标记文件 `secret-markers.json`（`userData` 下）存 `{ source, saved_at, last4? }`，`last4` 只在保存时、值 ≥ 8 位才记；末 4 位对不上或变量没了时清标记；标记写失败回滚 HKCU 和 `process.env`；清除只清自己存的（`not_owned` / `not_set`）；密钥值不回传、不进日志 / 事件 / 标记文件；modules.md §3 同步。IPC 在 UI-03b。main `1b34694`，测试 104 个文件 / 1904 个 | 3 | 基础层开发 | 已合入 | #126 | `1b34694` |
 | T-107 | 模块 3：给 `powershellUserEnv()` 补测试（T-088 #126 评审跟进）：挪到内部文件 `secrets-powershell.ts`；mock `spawn` 断言启动参数和脚本文本里没有密钥值、值只在 stdin 里；名字拼进脚本前按白名单再核一次，不在白名单直接拒、不启动 PowerShell；Windows 默认路径（不注入 `userEnv`）保存再清除全程同样断言；接口不变，modules.md §3 同步。UI-03b 之前合入。main `7419998`，测试 105 个文件 / 1912 个 | 3 | 基础层开发 | 已合入 | #128 | `7419998` |
 | UI-03b | 模块 12 模型配置：密钥项、向导、「测试连接」；`secret:*` 和 `provider:test` IPC（UI-07 复用）；依赖 T-088（#126）、T-089 | 12 | 界面与诊断开发 | 等 T-089、T-108 | — | — |
-| T-109 | 界面：`App.status.test` 重新连接失败用例偶发超时（flaky），定位并修稳；preview.1 之后处理（UI-03a #130 评审跟进） | 12 | 界面与诊断开发 | 待开始（preview.1 之后） | — | — |
+| T-109 | 界面：`App.status.test` 重新连接失败用例偶发超时（flaky），定位并修稳；preview.1 之后处理（UI-03a #130 评审跟进） | 12 | 界面与诊断开发 | 待开发（preview.1 之后） | — | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
