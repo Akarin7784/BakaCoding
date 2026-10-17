@@ -160,6 +160,11 @@ const STATUS_STATE_MAP: Record<
   error: { status: "completed", conclusion: "failure" },
 };
 
+/** check-runs / commit status 翻页上限（每页 100 条） */
+const MAX_CHECK_PAGES = 50;
+/** 顶层 state 为失败但没有失败条目时补的那条结果的名字 */
+const COMBINED_STATUS_NAME = "commit-status (combined)";
+
 interface GhPull {
   number: number;
   html_url: string;
@@ -407,11 +412,13 @@ export class GithubPrProvider implements PrProvider {
     return [...runs, ...statuses];
   }
 
-  /** 翻页拉齐全部 check-runs（T-066 C2）。 */
+  /** 翻页拉齐全部 check-runs（T-066 C2）。最多 MAX_CHECK_PAGES 页，超出抛错（不静默漏掉后面的失败）。 */
   private async fetchAllCheckRuns(rec: PrRecord, sha: string): Promise<CheckResult[]> {
     const op = "GET /commits/{sha}/check-runs";
     const out: CheckResult[] = [];
     for (let page = 1; ; page++) {
+      if (page > MAX_CHECK_PAGES)
+        throw new Error(`${op} 超过 ${MAX_CHECK_PAGES} 页仍未取完：${sha}`);
       const res = await this.request(
         op,
         rec,
@@ -442,23 +449,47 @@ export class GithubPrProvider implements PrProvider {
     return out;
   }
 
-  /** 读 combined commit status，映射为 CheckResult（T-066 C2）。 */
+  /**
+   * 读 combined commit status，映射为 CheckResult（T-066 C2）。按 per_page=100&page=N 翻页，直到收满
+   * total_count（或某页为空）；最多 MAX_CHECK_PAGES 页，超出抛错。顶层 state 为 failure / error
+   * 却没收集到任何失败条目时，补一条失败结果，不让评审绕过 CI。
+   */
   private async fetchCommitStatuses(rec: PrRecord, sha: string): Promise<CheckResult[]> {
     const op = "GET /commits/{sha}/status";
-    const res = await this.request(op, rec, "GET", `/commits/${sha}/status`);
-    if (!res.ok) throw await this.apiError(op, res);
-    const body = (await res.json()) as {
-      statuses?: { context: string; state: string; target_url?: string | null }[];
-    };
-    return (body.statuses ?? []).map((s) => {
-      const mapped = STATUS_STATE_MAP[s.state] ?? {
-        status: "queued" as const,
-        conclusion: null,
+    const out: CheckResult[] = [];
+    let state: string | undefined;
+    for (let page = 1; ; page++) {
+      if (page > MAX_CHECK_PAGES)
+        throw new Error(`${op} 超过 ${MAX_CHECK_PAGES} 页仍未取完：${sha}`);
+      const res = await this.request(
+        op,
+        rec,
+        "GET",
+        `/commits/${sha}/status?per_page=100&page=${page}`,
+      );
+      if (!res.ok) throw await this.apiError(op, res);
+      const body = (await res.json()) as {
+        state?: string;
+        total_count?: number;
+        statuses?: { context: string; state: string; target_url?: string | null }[];
       };
-      const r: CheckResult = { name: s.context, ...mapped };
-      if (s.target_url) r.url = s.target_url;
-      return r;
-    });
+      if (page === 1) state = body.state;
+      const batch = body.statuses ?? [];
+      for (const s of batch) {
+        const mapped = STATUS_STATE_MAP[s.state] ?? {
+          status: "queued" as const,
+          conclusion: null,
+        };
+        const r: CheckResult = { name: s.context, ...mapped };
+        if (s.target_url) r.url = s.target_url;
+        out.push(r);
+      }
+      const total = typeof body.total_count === "number" ? body.total_count : out.length;
+      if (batch.length === 0 || out.length >= total) break;
+    }
+    if ((state === "failure" || state === "error") && !out.some((r) => r.conclusion === "failure"))
+      out.push({ name: COMBINED_STATUS_NAME, status: "completed", conclusion: "failure" });
+    return out;
   }
 
   /**
@@ -496,8 +527,9 @@ export class GithubPrProvider implements PrProvider {
           changes.push(change);
         } else {
           await this.store.put({ ...latest, status: "closed", updated_ts: ts });
-          await this.escalate(rec, `GitHub PR #${rec.remote.number}：用户在 GitHub 手动关闭`);
+          // 先记变化再上报：escalate 抛错时这条变化仍随 SyncPartialError.changes 带出
           changes.push({ pr_id: rec.pr_id, from, to: "closed" });
+          await this.escalate(rec, `GitHub PR #${rec.remote.number}：用户在 GitHub 手动关闭`);
         }
       }
       return changes;

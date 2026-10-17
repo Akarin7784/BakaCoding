@@ -70,6 +70,10 @@ class FakeGithub {
   }[] = [];
   /** check-runs 每页条数，默认 100；测翻页时可改小 */
   checkRunsPageSize = 100;
+  /** commit status 每页上限（同真 GitHub：不带 per_page 默认 30，最多 100）；测翻页时可改小 */
+  statusPageSize = 100;
+  /** 覆盖 combined status 顶层 state；不设时按 statuses 推出（同真 GitHub） */
+  commitCombinedState: string | undefined;
 
   fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = new URL(String(input));
@@ -163,10 +167,23 @@ class FakeGithub {
       return json({ total_count: this.checkRuns.length, check_runs: slice });
     }
     if (method === "GET" && /^\/commits\/[0-9a-f]+\/status$/.test(path)) {
+      const page = Math.max(1, Number(url.searchParams.get("page") ?? "1") || 1);
+      const per = Math.min(
+        this.statusPageSize,
+        100,
+        Math.max(1, Number(url.searchParams.get("per_page") ?? "30") || 30),
+      );
+      const start = (page - 1) * per;
+      const all = this.commitStatuses;
+      const derived = all.some((x) => x.state === "failure" || x.state === "error")
+        ? "failure"
+        : all.length === 0 || all.some((x) => x.state === "pending")
+          ? "pending"
+          : "success";
       return json({
-        state: "success",
-        total_count: this.commitStatuses.length,
-        statuses: this.commitStatuses,
+        state: this.commitCombinedState ?? derived,
+        total_count: all.length,
+        statuses: all.slice(start, start + per),
       });
     }
     return json({ message: "Not Found" }, 404);
@@ -466,7 +483,7 @@ describe("checks", () => {
       { name: "deploy", status: "completed", conclusion: "failure" },
     ]);
     const head = await rev(repo, INTEGRATION_BRANCH);
-    expect(gh.calls.at(-1)!.path).toBe(`/commits/${head}/status`);
+    expect(gh.calls.at(-1)!.path).toBe(`/commits/${head}/status?per_page=100&page=1`);
     expect(gh.calls.some((c) => c.path === `/commits/${head}/check-runs?per_page=100&page=1`)).toBe(
       true,
     );
@@ -812,7 +829,7 @@ describe("评审读 CI 用 push 之后的 head sha", () => {
     expect(gh.calls.some((c) => c.path === `/commits/${sha}/check-runs?per_page=100&page=1`)).toBe(
       true,
     );
-    expect(gh.calls.at(-1)!.path).toBe(`/commits/${sha}/status`);
+    expect(gh.calls.at(-1)!.path).toBe(`/commits/${sha}/status?per_page=100&page=1`);
     expect(await rev(bare, `refs/heads/${branch}`)).toBe(sha);
 
     await writeFile(join(wt, "T-27b.txt"), "b\n");
@@ -821,7 +838,7 @@ describe("评审读 CI 用 push 之后的 head sha", () => {
     expect(gh.calls.some((c) => c.path === `/commits/${sha2}/check-runs?per_page=100&page=1`)).toBe(
       true,
     );
-    expect(gh.calls.at(-1)!.path).toBe(`/commits/${sha2}/status`);
+    expect(gh.calls.at(-1)!.path).toBe(`/commits/${sha2}/status?per_page=100&page=1`);
   });
 
   it("上次 push 失败、远程落后：checks 先补推本单分支（并补开 PR）再按新 sha 查；补推失败就抛错，不拿远程没有的 sha 去查", async () => {
@@ -844,7 +861,7 @@ describe("评审读 CI 用 push 之后的 head sha", () => {
     expect(
       gh.calls.some((c) => c.path === `/commits/${local}/check-runs?per_page=100&page=1`),
     ).toBe(true);
-    expect(gh.calls.at(-1)!.path).toBe(`/commits/${local}/status`);
+    expect(gh.calls.at(-1)!.path).toBe(`/commits/${local}/status?per_page=100&page=1`);
     expect((await store.get(id))?.remote).toBeDefined();
   });
 });
@@ -1026,6 +1043,22 @@ describe("T-066 sync 中途出错仍带回已收集变化（B1）", () => {
     expect(err.changes.length).toBeGreaterThan(0);
   });
 
+  it("用户手动关闭后 escalate 抛错：这条 closed 变化仍在 SyncPartialError.changes 里", async () => {
+    const boom = new Error("publish 失败");
+    pr = provider({
+      publish: () => {
+        throw boom;
+      },
+    });
+    const { branch, id } = await ticketPr("T-66h", { from: "main" });
+    gh.pulls.find((p) => p.head === branch)!.state = "closed";
+    const err = (await pr.sync().catch((e: unknown) => e)) as SyncPartialError;
+    expect(err).toBeInstanceOf(SyncPartialError);
+    expect(err.changes).toEqual([{ pr_id: id, from: "open", to: "closed" }]);
+    expect(err.cause).toBe(boom);
+    expect((await store.get(id))?.status).toBe("closed");
+  });
+
   it("中途出错但尚未收集到变化：抛原始错误，不是 SyncPartialError", async () => {
     await integrationAhead();
     await pr.openIntegration();
@@ -1063,6 +1096,26 @@ describe("T-066 close PATCH 失败时 GET 远程（B4）", () => {
       method === "PATCH" ? new Response("{}", { status: 500 }) : undefined;
     await expect(pr.close(id, "r")).rejects.toThrow(/500/);
     expect(await store.get(id)).toMatchObject({ status: "closed", closed_by: "bakacoding" });
+  });
+
+  it("远程已关闭但未合入：PATCH 失败后不抛 PrAlreadyMergedError，重抛原错误，本地保持 closed", async () => {
+    const { branch, id } = await ticketPr("T-66i", { from: "main" });
+    const pull = gh.pulls.find((p) => p.head === branch)!;
+    pull.state = "closed";
+    pull.merged = false;
+    gh.override = (method) =>
+      method === "PATCH"
+        ? new Response(JSON.stringify({ message: "boom" }), { status: 500 })
+        : undefined;
+    const err = await pr.close(id, "r").catch((e: unknown) => e);
+    expect(err).not.toBeInstanceOf(PrAlreadyMergedError);
+    expect(String(err)).toMatch(/500/);
+    expect(gh.calls.some((c) => c.method === "GET" && c.path === `/pulls/${pull.number}`)).toBe(
+      true,
+    );
+    const rec = await store.get(id);
+    expect(rec).toMatchObject({ status: "closed", closed_by: "bakacoding", close_reason: "r" });
+    expect(rec).not.toHaveProperty("merge_sha");
   });
 
   it("反向：远程已合入却把本地留成 closed 时本用例失败", async () => {
@@ -1146,7 +1199,75 @@ describe("T-066 checks 翻页 + commit status（C2）", () => {
       `/commits/${head}/check-runs?per_page=100&page=1`,
       `/commits/${head}/check-runs?per_page=100&page=2`,
     ]);
-    expect(gh.calls.some((c) => c.path === `/commits/${head}/status`)).toBe(true);
+    expect(gh.calls.some((c) => c.path === `/commits/${head}/status?per_page=100&page=1`)).toBe(
+      true,
+    );
+  });
+
+  it("commit status 超过 30 条：按 per_page=100&page=N 翻页取满 total_count，后页的失败不漏", async () => {
+    await integrationAhead();
+    const iid = await pr.openIntegration();
+    gh.commitStatuses = Array.from({ length: 120 }, (_, i) => ({
+      context: `ci-${i}`,
+      state: i === 110 ? "failure" : "success",
+    }));
+    const res = await pr.checks(iid);
+    expect(res.filter((r) => r.name.startsWith("ci-"))).toHaveLength(120);
+    expect(res.find((r) => r.name === "ci-110")).toMatchObject({
+      status: "completed",
+      conclusion: "failure",
+    });
+    expect(res.some((r) => r.name === "commit-status (combined)")).toBe(false);
+    const head = await rev(repo, INTEGRATION_BRANCH);
+    expect(
+      gh.calls.filter((c) => c.path.startsWith(`/commits/${head}/status`)).map((c) => c.path),
+    ).toEqual([
+      `/commits/${head}/status?per_page=100&page=1`,
+      `/commits/${head}/status?per_page=100&page=2`,
+    ]);
+  });
+
+  it("commit status 服务端每页只给 30 条：按 total_count 继续翻页，第 2 页的失败不漏", async () => {
+    await integrationAhead();
+    const iid = await pr.openIntegration();
+    gh.statusPageSize = 30;
+    gh.commitStatuses = Array.from({ length: 35 }, (_, i) => ({
+      context: `s-${i}`,
+      state: i === 33 ? "error" : "success",
+    }));
+    const res = await pr.checks(iid);
+    expect(res.filter((r) => r.name.startsWith("s-"))).toHaveLength(35);
+    expect(res.find((r) => r.name === "s-33")).toMatchObject({ conclusion: "failure" });
+  });
+
+  it("commit status 超过页数上限仍未取满：抛错，不静默漏掉后面的状态", async () => {
+    await integrationAhead();
+    const iid = await pr.openIntegration();
+    gh.statusPageSize = 1;
+    gh.commitStatuses = Array.from({ length: 60 }, (_, i) => ({
+      context: `c-${i}`,
+      state: "success",
+    }));
+    await expect(pr.checks(iid)).rejects.toThrow(/超过 50 页/);
+  });
+
+  it("顶层 state 为 failure 却没有失败条目：补一条失败结果", async () => {
+    await integrationAhead();
+    const iid = await pr.openIntegration();
+    gh.commitStatuses = [{ context: "ok", state: "success" }];
+    gh.commitCombinedState = "failure";
+    const res = await pr.checks(iid);
+    expect(res.filter((r) => r.conclusion === "failure")).toEqual([
+      { name: "commit-status (combined)", status: "completed", conclusion: "failure" },
+    ]);
+  });
+
+  it("顶层 state 为 success：不补失败结果", async () => {
+    await integrationAhead();
+    const iid = await pr.openIntegration();
+    gh.commitStatuses = [{ context: "ok", state: "success" }];
+    const res = await pr.checks(iid);
+    expect(res.some((r) => r.conclusion === "failure")).toBe(false);
   });
 
   it("反向：只读第一页会漏掉第 101 条 check-run", async () => {
