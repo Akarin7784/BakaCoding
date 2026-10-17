@@ -29,6 +29,26 @@ function assertTicket(ticket_id: string): void {
   }
 }
 
+/**
+ * 把 `/.bakacoding/` 写进 dir 所在仓库的 .git/info/exclude（T-078）；幂等，旧行保留。
+ * dir 不是 git 仓库时返回 false、不抛错；写文件失败照常抛错。导入 / 启动时在建数据库之前调用。
+ */
+export async function ensureBakacodingIgnored(dir: string): Promise<boolean> {
+  let commonDir: string;
+  try {
+    const root = await git(resolve(dir), "rev-parse", "--show-toplevel");
+    commonDir = resolve(root, await git(root, "rev-parse", "--git-common-dir"));
+  } catch {
+    return false;
+  }
+  const exclude = join(commonDir, "info", "exclude");
+  await mkdir(join(commonDir, "info"), { recursive: true });
+  const cur = existsSync(exclude) ? await readFile(exclude, "utf8") : "";
+  if (cur.split(/\r?\n/).some((l) => COVERING_LINES.has(l.trim()))) return true;
+  await appendFile(exclude, `${cur && !cur.endsWith("\n") ? "\n" : ""}${IGNORE_LINE}\n`);
+  return true;
+}
+
 /** 每单 worktree 管理：路径 <repo>/.bakacoding/worktrees/<ticket_id>-r<n>，分支 bakacoding/<ticket_id>-r<n>。 */
 export class WorktreeManager {
   private constructor(readonly repoRoot: string) {}
@@ -39,15 +59,8 @@ export class WorktreeManager {
 
   /** 把整个 `.bakacoding/` 写进 .git/info/exclude（不改用户跟踪的 .gitignore）；幂等，旧行保留。 */
   async ensureIgnored(): Promise<void> {
-    const commonDir = resolve(
-      this.repoRoot,
-      await git(this.repoRoot, "rev-parse", "--git-common-dir"),
-    );
-    const exclude = join(commonDir, "info", "exclude");
-    await mkdir(join(commonDir, "info"), { recursive: true });
-    const cur = existsSync(exclude) ? await readFile(exclude, "utf8") : "";
-    if (cur.split(/\r?\n/).some((l) => COVERING_LINES.has(l.trim()))) return;
-    await appendFile(exclude, `${cur && !cur.endsWith("\n") ? "\n" : ""}${IGNORE_LINE}\n`);
+    if (!(await ensureBakacodingIgnored(this.repoRoot)))
+      throw new Error(`不是 git 仓库：${this.repoRoot}`);
   }
 
   async createWorktree(

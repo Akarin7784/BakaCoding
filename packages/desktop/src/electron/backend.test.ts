@@ -1,9 +1,17 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { openStorageReadonly, StorageLeaseError } from "@bakacoding/storage";
+import { openStorage, openStorageReadonly, StorageLeaseError } from "@bakacoding/storage";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   NotifyBuffer,
@@ -190,5 +198,101 @@ describe("startBackend（T-063）", () => {
     expect(JSON.stringify(backend.syncState())).not.toContain(secret);
     expect(logs.join("\n")).not.toContain(secret);
     await backend.stop();
+  });
+});
+
+describe("startBackend 在建库之前写 .git/info/exclude（T-078）", () => {
+  const excludeOf = (root: string) => {
+    const p = join(root, ".git", "info", "exclude");
+    return existsSync(p) ? readFileSync(p, "utf8") : "";
+  };
+  const hasRule = (root: string) => excludeOf(root).split(/\r?\n/).includes("/.bakacoding/");
+
+  it("openStorage 被调用时规则已经写好；之后 git status 不显示 .bakacoding/", async () => {
+    const { root } = gitRepoWithConfig();
+    let atOpen: boolean | undefined;
+    const backend = await startBackend({
+      argv: [`--repo=${root}`],
+      env: { DEEPSEEK_API_KEY: "sk-t078" },
+      cwd: root,
+      pricingPath,
+      logger: { warn: () => {} },
+      openStorage: (o) => {
+        atOpen = hasRule(root);
+        return openStorage(o);
+      },
+    });
+    expect(atOpen).toBe(true);
+    expect(backend.status().mode).toBe("live");
+    const status = execFileSync("git", ["status", "--porcelain", "--untracked-files=all"], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    expect(status).not.toContain(".bakacoding");
+    await backend.stop();
+  });
+
+  it("缺密钥进只读时也照样写", async () => {
+    const { root } = gitRepoWithConfig();
+    const backend = await startBackend({
+      argv: [`--repo=${root}`],
+      env: {},
+      cwd: root,
+      pricingPath,
+      logger: { warn: () => {} },
+    });
+    expect(backend.status().mode).toBe("readonly");
+    expect(hasRule(root)).toBe(true);
+    await backend.stop();
+  });
+
+  it("数据库用绝对路径放在仓库外时，规则仍写进仓库（传的是仓库根）", async () => {
+    const { root } = gitRepoWithConfig();
+    const outside = mkdtempSync(join(tmpdir(), "bc-be-db-"));
+    dirs.push(outside);
+    const seen: string[] = [];
+    const backend = await startBackend({
+      argv: [`--repo=${root}`],
+      env: { DEEPSEEK_API_KEY: "sk-t078", BAKACODING_DB_PATH: join(outside, "x.db") },
+      cwd: root,
+      pricingPath,
+      logger: { warn: () => {} },
+      ensureIgnored: async (dir) => {
+        seen.push(dir);
+        return true;
+      },
+    });
+    expect(seen).toEqual([root]);
+    await backend.stop();
+  });
+
+  it("返回 false 或抛错都不挡启动和渲染就绪；warn 只记 errorDetail，不带错误对象", async () => {
+    for (const mode of ["false", "throw"] as const) {
+      const { root } = gitRepoWithConfig();
+      const logs: Array<[string, unknown]> = [];
+      const err = new Error("exclude 不可写");
+      err.name = "Evil\nName";
+      const backend = await startBackend({
+        argv: [`--repo=${root}`],
+        env: { DEEPSEEK_API_KEY: "sk-t078" },
+        cwd: root,
+        pricingPath,
+        logger: { warn: (m, d) => logs.push([m, d]) },
+        ensureIgnored: async () => {
+          if (mode === "throw") throw err;
+          return false;
+        },
+      });
+      expect(backend.status().mode).toBe("live");
+      expect(backend.markRendererReady()).toEqual([]);
+      const mine = logs.filter(([m]) => m.includes(".git/info/exclude"));
+      expect(mine).toHaveLength(1);
+      expect(mine[0]?.[1]).toBeUndefined();
+      if (mode === "throw") {
+        expect(mine[0]?.[0]).toContain("exclude 不可写");
+        expect(mine[0]?.[0]).not.toContain("\n");
+      }
+      await backend.stop();
+    }
   });
 });

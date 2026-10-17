@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { WorktreeManager } from "./worktree.js";
+import { ensureBakacodingIgnored, WorktreeManager } from "./worktree.js";
 
 let repo: string;
 const git = (...a: string[]) => execFileSync("git", a, { cwd: repo, encoding: "utf8" }).trim();
@@ -70,6 +70,18 @@ describe("WorktreeManager", () => {
     const m = await WorktreeManager.open(repo);
     await m.ensureIgnored();
     expect(readFileSync(exclude, "utf8")).toBe(".bakacoding/\n");
+  });
+  it("T-078：ensureBakacodingIgnored 从子目录调用也写进仓库；非 git 目录返回 false 不抛错", async () => {
+    mkdirSync(join(repo, "sub"), { recursive: true });
+    expect(await ensureBakacodingIgnored(join(repo, "sub"))).toBe(true);
+    expect(readFileSync(join(repo, ".git/info/exclude"), "utf8")).toContain("/.bakacoding/\n");
+    const plain = realpathSync(mkdtempSync(join(tmpdir(), "bc-nogit-")));
+    try {
+      expect(await ensureBakacodingIgnored(plain)).toBe(false);
+      expect(existsSync(join(plain, ".git"))).toBe(false);
+    } finally {
+      rmSync(plain, { recursive: true, force: true });
+    }
   });
   it("cleanup 按 ticket 清掉所有轮次，按路径只清一个", async () => {
     const m = await WorktreeManager.open(repo);
