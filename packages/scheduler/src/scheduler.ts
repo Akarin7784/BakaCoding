@@ -245,10 +245,21 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   let syncNextAt: number | null = null;
   let dispatchRunning: Promise<string[]> | undefined;
   let dispatchQueued: Promise<string[]> | undefined;
-  /** stop() 时中止：传给 8 的 handle / resume（T-039）和 resubmitConflict / reReview（T-102b），8 再原样传给 5 / 7 */
+  /**
+   * stop() 时中止：传给 8 的 handle / resume（T-039）和 resubmitConflict / reReview（T-102b），8 再原样传给 5 / 7；
+   * 9 自己调 6 的 merge / sync / close / diff 也带它（T-112）。
+   */
   const abort = new AbortController();
   /** 被 stop() 取消的 8 调用：不上报、不改状态，只记一笔 */
   const cancelled = (): boolean => abort.signal.aborted;
+  /** 9 调 6 的公共选项（T-112）：带 stop() 用的同一个 signal */
+  const prOpts = (): { signal: AbortSignal } => ({ signal: abort.signal });
+  /**
+   * 6 因 stop() 中止而原样抛回的 signal.reason（T-112）：不当合并失败 / 冲突 / 高风险 / 取不到 diff，
+   * 不上报、不改状态，原样往上抛（9 内部没有上层调用方的交 onError）。
+   */
+  const isStopAbort = (err: unknown): boolean =>
+    abort.signal.aborted && err === abort.signal.reason;
 
   const entries = new Map<string, Entry>();
   const prToTicket = new Map<string, string>();
@@ -579,8 +590,10 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
 
   async function changedFiles(pr_id: string): Promise<string[]> {
     try {
-      return (await requirePr().diff(pr_id)).files.map((f) => f.path);
+      return (await requirePr().diff(pr_id, prOpts())).files.map((f) => f.path);
     } catch (err) {
+      // T-112：stop() 中止不算「取不到 diff」，原样抛，不拿空文件列表发 interface_changed
+      if (isStopAbort(err)) throw err;
       onError(err, prToTicket.get(pr_id) ?? pr_id);
       return [];
     }
@@ -684,7 +697,6 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     } catch (err) {
       await reportMergedBut(e, err);
     }
-    const files = await changedFiles(pr_id);
     record(e, pr_id, {
       conflict: e.conflicted,
       base_changed: e.base_changed,
@@ -701,6 +713,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     } catch (err) {
       await reportMergedBut(e, err);
     }
+    // T-112：取 diff 放在写完 merged、saveMergeResult 之后；被 stop() 中止时原样抛（不发 interface_changed、
+    // 不报 merged_but），已写的 merged 和合并结果保留
+    const files = await changedFiles(pr_id);
     await announceMerge(e, pr_id, sha, files);
     scheduleMergedCleanup(e);
   }
@@ -783,7 +798,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     if (supersedes) {
       // 新 PR 已开出：关旧 PR（closed_by: bakacoding），再清旧 worktree。先标记，close 期间的 sync 也跳过它
       superseded.add(replace.old_pr_id);
-      await requirePr().close(replace.old_pr_id, `冲突复投，由 ${new_pr} 取代`);
+      // T-112：带 stop 的 signal；被中止时原样抛，旧 PR 留着、旧 worktree 不清，状态停在 resubmitting
+      await requirePr().close(replace.old_pr_id, `冲突复投，由 ${new_pr} 取代`, prOpts());
       if (replace.old_worktree) await deps.worktrees.cleanup(replace.old_worktree);
     }
     if (TERMINAL.has(e.status)) {
@@ -853,7 +869,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     if (!r || r.old_pr_id === new_pr_id) return;
     e.pending_replace = undefined;
     superseded.add(r.old_pr_id);
-    await requirePr().close(r.old_pr_id, `冲突复投，由 ${new_pr_id} 取代`);
+    // T-112：带 stop 的 signal；被中止时原样抛，旧 PR 留着、旧 worktree 不清
+    await requirePr().close(r.old_pr_id, `冲突复投，由 ${new_pr_id} 取代`, prOpts());
     if (r.old_worktree) await deps.worktrees.cleanup(r.old_worktree);
   }
 
@@ -1092,7 +1109,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     if (stopped) return false;
     let res: MergeResult;
     try {
-      res = await requirePr().merge(pr_id, target);
+      // T-112：带 stop 的 signal；被中止时进下面 stopped 分支：不上报、不记 mergeResult，仍是 merge_queued
+      res = await requirePr().merge(pr_id, target, prOpts());
     } catch (err) {
       if (stopped) {
         // T-096：stop 之后才失败：不上报、不改状态（仍是 merge_queued），留给下次启动的 takeOver
@@ -1181,7 +1199,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
             // 出错的单上报 github_manual，队列继续
             const e = current as Entry | undefined;
             // 已经合入、收尾（发 interface_changed 等）失败：状态保持 merged，发 escalated(merged_but)（T-038）
-            if (e && currentMerged) await reportMergedBut(e, err);
+            // T-112：合入后取 diff 被 stop() 中止不算收尾失败，不报 merged_but
+            if (e && currentMerged && !isStopAbort(err)) await reportMergedBut(e, err);
             else if (e && stopped)
               onError(err, e.ticket.ticket_id); // T-096：stop 后不上报、不改状态
             else if (e) await escalateOnError(e, "merge_error", err);
@@ -1562,8 +1581,13 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       // 显式 sync 成功：鉴权失败停掉后可恢复（本轮是定时的，同样清）
       scheduleSync(syncPollMs);
     } catch (err) {
-      syncConsecutiveFailures++;
       const root = unwrapSyncCause(err);
+      if (isStopAbort(root)) {
+        // T-112：被 stop() 中止不算同步失败：不计失败次数、不写 last_error、不退避
+        onError(err, "(sync)");
+        return;
+      }
+      syncConsecutiveFailures++;
       const at = new Date(clock.now()).toISOString();
       syncLastError = {
         at,
@@ -1632,7 +1656,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     let changes: SyncChange[];
     let partialCause: unknown | undefined;
     try {
-      changes = await requirePr().sync();
+      // T-112：带 stop 的 signal；中止时 6 已处理完的记录照常应用（T-042），再原样抛 signal.reason
+      changes = await requirePr().sync(prOpts());
     } catch (err) {
       // T-042：先应用已收集变化，再把 cause 抛给限流 / 鉴权逻辑
       if (isSyncPartialError(err)) {
@@ -1759,8 +1784,10 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       let base = base_commit;
       if (!base) {
         try {
-          base = (await requirePr().diff(pr_id)).base_sha;
+          base = (await requirePr().diff(pr_id, prOpts())).base_sha;
         } catch (err) {
+          // T-112：stop() 中止原样抛，不当「基线未知」接着入队
+          if (isStopAbort(err)) throw err;
           onError(err, ticket_id);
         }
       }

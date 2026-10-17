@@ -3486,3 +3486,343 @@ describe("T-094：清理的错误回调", () => {
     }
   });
 });
+
+// ---------------- T-112：9 调 6 的 merge / sync / close / diff 带 stop() 的 signal ----------------
+
+type PrMethod = "merge" | "close" | "sync" | "diff";
+type ScheduledPr = Awaited<ReturnType<SchedulerDeps["createPr"]>>;
+interface PrCall {
+  method: PrMethod;
+  args: unknown[];
+  signal: AbortSignal | undefined;
+}
+/** 各方法 opts 参数的位置：merge(pr_id, target, opts)、close(pr_id, reason, opts)、sync(opts)、diff(pr_id, opts) */
+const OPT_INDEX: Record<PrMethod, number> = { merge: 2, close: 2, sync: 0, diff: 1 };
+
+/**
+ * 把 harness 的 6 包一层：记下每次调用带的 signal；`over[m]` 返回 Promise 时替换该次调用的实现
+ * （返回 undefined 则照常走 harness 的实现）。
+ */
+function signalPr(
+  h: Harness,
+  over: Partial<
+    Record<
+      PrMethod,
+      (signal: AbortSignal | undefined, args: unknown[]) => Promise<unknown> | undefined
+    >
+  > = {},
+): PrCall[] {
+  const calls: PrCall[] = [];
+  const orig = h.deps.createPr;
+  h.deps.createPr = async (a) => {
+    const base = await orig(a);
+    const wrap =
+      (m: PrMethod) =>
+      (...args: unknown[]): Promise<unknown> => {
+        const signal = (args[OPT_INDEX[m]] as { signal?: AbortSignal } | undefined)?.signal;
+        calls.push({ method: m, args, signal });
+        const replaced = over[m]?.(signal, args);
+        if (replaced) return replaced;
+        return (base[m] as (...x: unknown[]) => Promise<unknown>)(...args);
+      };
+    return {
+      merge: wrap("merge"),
+      close: wrap("close"),
+      sync: wrap("sync"),
+      diff: wrap("diff"),
+    } as unknown as ScheduledPr;
+  };
+  return calls;
+}
+
+/**
+ * 模拟 6 收到中止即原样抛 signal.reason（T-102a）。没收到 signal（反向检查时去掉透传）就 50ms 后以别的错误失败，
+ * 让用例尽快变红而不是挂死。
+ */
+function untilAbort(signal: AbortSignal | undefined): Promise<never> {
+  return new Promise<never>((_, reject) => {
+    if (!signal) {
+      setTimeout(() => reject(new Error("6 没收到 signal")), 50);
+      return;
+    }
+    if (signal.aborted) reject(signal.reason);
+    signal.addEventListener("abort", () => reject(signal.reason));
+  });
+}
+
+/** 断言这就是 stop() 用的那个 signal：调用时未中止，stop() 之后中止、reason 是 9 的「调度器已停止」。 */
+async function expectStopSignal(s: Scheduler, signal: AbortSignal | undefined): Promise<void> {
+  expect(signal).toBeInstanceOf(AbortSignal);
+  expect(signal!.aborted).toBe(false);
+  await s.stop();
+  expect(signal!.aborted).toBe(true);
+  expect(signal!.reason).toMatchObject({ name: "AbortError", message: "调度器已停止" });
+}
+
+/** 冲突复投途中预算用完：旧 PR pr-1 / 旧 worktree /wt/T-1-r0 记在 pending_replace，等新 PR 开出再关。 */
+async function budgetPausedResubmit(h: Harness): Promise<Scheduler> {
+  h.resubmit.mockImplementationOnce(async () => ({ requeue_budget: true, resume: { n: 1 } }));
+  const s = await started(h);
+  await s.enqueue(ticket("T-1"));
+  h.merges.set("pr-1", [conflict()]);
+  await s.submit({
+    ticket_id: "T-1",
+    pr_id: "pr-1",
+    worktree_path: "/wt/T-1-r0",
+    base_commit: SHA("a"),
+  });
+  await s.idle();
+  expect(s.status("T-1")).toBe("pending");
+  return s;
+}
+
+describe("T-112 9 调 6 的六处调用都带 stop() 的 signal", () => {
+  it("合并队列的 merge 带 stop 的 signal", async () => {
+    const h = harness();
+    const calls = signalPr(h);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("a") });
+    await s.idle();
+    const merges = calls.filter((c) => c.method === "merge");
+    expect(merges).toHaveLength(1);
+    await expectStopSignal(s, merges[0]!.signal);
+  });
+
+  it("sync 带 stop 的 signal（公开的 sync() 签名不变）", async () => {
+    const h = harness();
+    const calls = signalPr(h);
+    const s = await started(h);
+    await s.sync();
+    const syncs = calls.filter((c) => c.method === "sync");
+    expect(syncs).toHaveLength(1);
+    await expectStopSignal(s, syncs[0]!.signal);
+  });
+
+  it("冲突复投返回新 PR 后关旧 PR 的 close 带 stop 的 signal", async () => {
+    const h = harness();
+    const calls = signalPr(h);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    h.merges.set("pr-1", [conflict()]);
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("a") });
+    await vi.waitFor(() =>
+      expect(calls.some((c) => c.method === "close" && c.args[0] === "pr-1")).toBe(true),
+    );
+    await s.idle();
+    const close = calls.find((c) => c.method === "close" && c.args[0] === "pr-1")!;
+    await expectStopSignal(s, close.signal);
+  });
+
+  it("预算暂停后续跑开出新 PR（submit → supersede）关旧 PR 的 close 带 stop 的 signal", async () => {
+    const h = harness();
+    const calls = signalPr(h);
+    const s = await budgetPausedResubmit(h);
+    expect(calls.some((c) => c.method === "close")).toBe(false);
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-200", worktree_path: "/wt/T-1-r1" });
+    const close = calls.find((c) => c.method === "close" && c.args[0] === "pr-1");
+    expect(close).toBeDefined();
+    await s.idle();
+    await expectStopSignal(s, close!.signal);
+  });
+
+  it("合入后取改动文件的 diff 带 stop 的 signal", async () => {
+    const h = harness();
+    const calls = signalPr(h);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    // 带 base_commit：submit 不取 diff，这里只有合入后的那次
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("a") });
+    await s.idle();
+    expect(s.status("T-1")).toBe("merged");
+    const mergeAt = calls.findIndex((c) => c.method === "merge");
+    const diffs = calls.filter((c, i) => c.method === "diff" && i > mergeAt);
+    expect(diffs).toHaveLength(1);
+    expect(calls.filter((c) => c.method === "diff")).toHaveLength(1);
+    await expectStopSignal(s, diffs[0]!.signal);
+  });
+
+  it("submit 没带 base_commit 时取 base_sha 的 diff 带 stop 的 signal", async () => {
+    const h = harness();
+    const calls = signalPr(h);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1" });
+    // submit 里的那次 diff 在任何 merge 之前
+    expect(calls[0]).toMatchObject({ method: "diff", args: ["pr-1", expect.anything()] });
+    await s.idle();
+    await expectStopSignal(s, calls[0]!.signal);
+  });
+});
+
+describe("T-112 9 调 6 被 stop() 中止：原样抛 signal.reason，不写失败 / 冲突 / 高风险状态，不上报", () => {
+  it("merge 被中止：reason 原样交 onError，仍是 merge_queued，不记 mergeResult、不复投", async () => {
+    const h = harness();
+    const calls = signalPr(h, { merge: (signal) => untilAbort(signal) });
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("a") });
+    await vi.waitFor(() => expect(calls.some((c) => c.method === "merge")).toBe(true));
+    const signal = calls.find((c) => c.method === "merge")!.signal;
+    const before = [...h.statuses];
+    await s.stop();
+    expect(h.errors).toContain(signal!.reason);
+    expect(h.statuses).toEqual(before);
+    expect(s.status("T-1")).toBe("merge_queued");
+    expect(s.mergeResult("pr-1")).toBeUndefined();
+    expect(escalations(h)).toEqual([]);
+    expect(h.resubmit).not.toHaveBeenCalled();
+    expect(s.snapshot()[0]).toMatchObject({ high_risk: false });
+  });
+
+  it("显式 sync 被中止：sync() 原样抛 signal.reason，不改状态、不上报、不记同步失败", async () => {
+    const h = harness();
+    const calls = signalPr(h, { sync: (signal) => untilAbort(signal) });
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { depends_on: ["T-X"] }));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("a") });
+    const before = [...h.statuses];
+    const syncing = s.sync();
+    syncing.catch(() => {});
+    await flush();
+    const signal = calls.find((c) => c.method === "sync")!.signal;
+    await s.stop();
+    await expect(syncing).rejects.toBe(signal!.reason);
+    expect(h.statuses).toEqual(before);
+    expect(s.status("T-1")).toBe("merge_queued");
+    expect(escalations(h)).toEqual([]);
+    expect(s.syncState()).toMatchObject({ last_error: null, consecutive_failures: 0 });
+  });
+
+  it("sync 中途被中止：中止前 6 已处理完的记录照常应用、保持不变，后面的记录不动，再原样抛 signal.reason", async () => {
+    const h = harness();
+    const calls = signalPr(h, {
+      // 6 已把 pr-1 处理成 merged，查 pr-2 时被中止（GitHub 实现此时抛 SyncPartialError，cause 是 signal.reason）
+      sync: (signal) =>
+        untilAbort(signal).catch((reason: unknown) => {
+          throw new SyncPartialError(
+            [{ pr_id: "pr-1", from: "open", to: "merged", merge_sha: SHA("c") }],
+            reason,
+          );
+        }),
+    });
+    const s = await started(h);
+    // 依赖没登记的单：留在合并队列里不合（waiting）
+    await s.enqueue(ticket("T-1", { depends_on: ["T-X"] }));
+    await s.enqueue(ticket("T-2", { depends_on: ["T-X"] }));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("a") });
+    await s.submit({ ticket_id: "T-2", pr_id: "pr-2", worktree_path: "/2", base_commit: SHA("a") });
+    const before = [...h.statuses];
+    const syncing = s.sync();
+    syncing.catch(() => {});
+    await flush();
+    const signal = calls.find((c) => c.method === "sync")!.signal;
+    await s.stop();
+    await expect(syncing).rejects.toBe(signal!.reason);
+    expect(s.status("T-1")).toBe("merged");
+    expect(s.status("T-2")).toBe("merge_queued");
+    expect(h.statuses).toEqual([...before, ["T-1", "merged"]]);
+    expect(escalations(h)).toEqual([]);
+  });
+
+  it("定时 sync 被中止：不计失败次数、不写 last_error，只交 onError", async () => {
+    const h = harness();
+    const jobs: Array<() => void> = [];
+    h.deps.sync_poll_ms = 1000;
+    h.deps.timers = {
+      setTimeout: (fn: () => void) => {
+        jobs.push(fn);
+        return fn;
+      },
+      clearTimeout: (t: unknown) => {
+        const i = jobs.indexOf(t as () => void);
+        if (i >= 0) jobs.splice(i, 1);
+      },
+    };
+    const calls = signalPr(h, { sync: (signal) => untilAbort(signal) });
+    const s = await started(h);
+    s.startSyncLoop();
+    expect(jobs).toHaveLength(1);
+    jobs.shift()!();
+    await flush();
+    const signal = calls.find((c) => c.method === "sync")!.signal;
+    await s.stop();
+    expect(h.errors).toContain(signal!.reason);
+    expect(s.syncState()).toMatchObject({ last_error: null, consecutive_failures: 0 });
+    expect(escalations(h)).toEqual([]);
+  });
+
+  it("冲突复投关旧 PR 被中止：reason 原样交 onError，停在 resubmitting，旧 worktree 不清", async () => {
+    const h = harness();
+    const calls = signalPr(h, { close: (signal) => untilAbort(signal) });
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    h.merges.set("pr-1", [conflict()]);
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("a") });
+    await vi.waitFor(() => expect(calls.some((c) => c.method === "close")).toBe(true));
+    const signal = calls.find((c) => c.method === "close")!.signal;
+    const before = [...h.statuses];
+    expect(before.at(-1)).toEqual(["T-1", "resubmitting"]);
+    await s.stop();
+    expect(h.errors).toContain(signal!.reason);
+    expect(h.statuses).toEqual(before);
+    expect(s.status("T-1")).toBe("resubmitting");
+    expect(escalations(h)).toEqual([]);
+    expect(h.calls.filter((c) => c.startsWith("cleanup:"))).toEqual([]);
+  });
+
+  it("预算续跑后关旧 PR 被中止：reason 原样交 onError，不上报，旧 worktree 不清", async () => {
+    const h = harness();
+    const calls = signalPr(h, { close: (signal) => untilAbort(signal) });
+    const s = await budgetPausedResubmit(h);
+    const submitting = s.submit({ ticket_id: "T-1", pr_id: "pr-200", worktree_path: "/wt/T-1-r1" });
+    await vi.waitFor(() => expect(calls.some((c) => c.method === "close")).toBe(true));
+    const signal = calls.find((c) => c.method === "close")!.signal;
+    const before = [...h.statuses];
+    await s.stop();
+    await submitting;
+    expect(h.errors).toContain(signal!.reason);
+    expect(h.statuses).toEqual(before);
+    expect(escalations(h)).toEqual([]);
+    expect(h.calls.filter((c) => c.startsWith("cleanup:"))).toEqual([]);
+  });
+
+  it("合入后取 diff 被中止：merged 和合并结果保留，不报 merged_but、不发 interface_changed", async () => {
+    const h = harness();
+    const saved: string[] = [];
+    h.deps.saveMergeResult = (t) => void saved.push(t);
+    const calls = signalPr(h, { diff: (signal) => untilAbort(signal) });
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("a") });
+    await vi.waitFor(() => expect(calls.some((c) => c.method === "diff")).toBe(true));
+    const signal = calls.find((c) => c.method === "diff")!.signal;
+    const before = [...h.statuses];
+    expect(before.at(-1)).toEqual(["T-1", "merged"]);
+    await s.stop();
+    expect(h.errors).toContain(signal!.reason);
+    expect(h.statuses).toEqual(before);
+    expect(s.status("T-1")).toBe("merged");
+    expect(saved).toEqual(["T-1"]);
+    expect(escalations(h)).toEqual([]);
+    expect(h.published.filter((e) => e.type === "interface_changed")).toEqual([]);
+  });
+
+  it("submit 取 base_sha 的 diff 被中止：submit 原样抛 signal.reason，不写 merge_queued、不入队", async () => {
+    const h = harness();
+    const calls = signalPr(h, { diff: (signal) => untilAbort(signal) });
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    const before = [...h.statuses];
+    const submitting = s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1" });
+    submitting.catch(() => {});
+    await vi.waitFor(() => expect(calls.some((c) => c.method === "diff")).toBe(true));
+    const signal = calls.find((c) => c.method === "diff")!.signal;
+    await s.stop();
+    await expect(submitting).rejects.toBe(signal!.reason);
+    expect(h.statuses).toEqual(before);
+    expect(s.status("T-1")).toBe("pending");
+    expect(calls.some((c) => c.method === "merge")).toBe(false);
+    expect(escalations(h)).toEqual([]);
+  });
+});
