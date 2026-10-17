@@ -334,6 +334,43 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     await deps.bus.publish({ ...common(e.ticket), type: "escalated", payload });
   }
 
+  /**
+   * 合入后清理（T-094）：把 4 的 cleanupMerged 丢到后台，不 await、不卡合并循环，stop() 也不等它。
+   * 失败（抛错或结果带 errors）只调 onError，状态保持 merged、不上报、不发 merged_but。
+   * stop() 之后才结束的清理不再回调 onError（停机后静默）；清理本身只碰 git 和文件系统，不写数据库。
+   */
+  function scheduleMergedCleanup(e: Entry): void {
+    const fn = deps.worktrees.cleanupMerged;
+    if (typeof fn !== "function") return;
+    const id = e.ticket.ticket_id;
+    e.own_worktree = false; // 本单所有轮次都由 cleanupMerged 清
+    const report = (err: unknown): void => {
+      if (stopped) return;
+      try {
+        onError(err, id);
+      } catch {
+        // onError 自己出错也不能变成未处理的 rejection
+      }
+    };
+    void (async () => {
+      try {
+        const r = await fn.call(deps.worktrees, id, target);
+        const errs = r && Array.isArray(r.errors) ? r.errors : [];
+        if (errs.length)
+          report(
+            new Error(
+              `合入后清理没做完：${errs.map((x) => `${x.target}（${x.message}）`).join("；")}`.slice(
+                0,
+                1000,
+              ),
+            ),
+          );
+      } catch (err) {
+        report(err);
+      }
+    })();
+  }
+
   /** 最终上报时清掉 9 自己建的 r<n+1> worktree（尽力而为，失败只调 onError）。 */
   async function cleanupOwnWorktree(e: Entry): Promise<void> {
     if (!e.own_worktree || !e.worktree_path) return;
@@ -648,6 +685,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       await reportMergedBut(e, err);
     }
     await announceMerge(e, pr_id, sha, files);
+    scheduleMergedCleanup(e);
   }
 
   /**
@@ -1389,6 +1427,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         e.ticket.ticket_id,
       );
     }
+    scheduleMergedCleanup(e);
   }
 
   /** 用户手动关闭：6 已发 escalated(github_manual)，9 只改状态。 */

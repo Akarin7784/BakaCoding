@@ -3085,3 +3085,108 @@ describe("T-064 定时 sync + 独占区域大小写 + adopt 已合入", () => {
     s.stop();
   });
 });
+
+describe("T-094：合入后清理 worktree / 分支", () => {
+  it("合入后在发完 interface_changed 之后调 cleanupMerged(ticket_id, 目标分支)", async () => {
+    const h = harness();
+    const order: string[] = [];
+    const pub = h.deps.bus.publish;
+    h.deps.bus.publish = (e) => {
+      if (e.type === "interface_changed") order.push("interface_changed");
+      return pub(e);
+    };
+    h.deps.worktrees.cleanupMerged = (t, into) => {
+      order.push(`cleanupMerged:${t}:${into}`);
+      return { errors: [] };
+    };
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/wt/T-1-r0" });
+    await s.idle();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(s.status("T-1")).toBe("merged");
+    expect(order).toEqual(["interface_changed", "cleanupMerged:T-1:bakacoding/integration"]);
+    expect(h.errors).toEqual([]);
+  });
+
+  it("清理挂起不卡合并循环：下一张单照常合入；stop() 不等它", async () => {
+    const h = harness();
+    const started_: string[] = [];
+    h.deps.worktrees.cleanupMerged = (t) => {
+      started_.push(t);
+      return new Promise(() => {}); // 永远不结束
+    };
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.enqueue(ticket("T-2"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/wt/T-1-r0" });
+    await s.submit({ ticket_id: "T-2", pr_id: "pr-2", worktree_path: "/wt/T-2-r0" });
+    await s.idle();
+    expect(s.status("T-1")).toBe("merged");
+    expect(s.status("T-2")).toBe("merged");
+    expect(started_).toEqual(["T-1", "T-2"]);
+    s.stop(); // 同步返回，不等挂起的清理
+  });
+
+  it("清理抛错或结果带 errors：状态仍是 merged，不上报、不发 merged_but，只调 onError", async () => {
+    const h = harness();
+    h.deps.worktrees.cleanupMerged = (t) => {
+      if (t === "T-1") throw new Error("EBUSY: 文件被占用");
+      return Promise.resolve({ errors: [{ target: "/wt/T-2-r0", message: "locked" }] });
+    };
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.enqueue(ticket("T-2"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/wt/T-1-r0" });
+    await s.submit({ ticket_id: "T-2", pr_id: "pr-2", worktree_path: "/wt/T-2-r0" });
+    await s.idle();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(s.status("T-1")).toBe("merged");
+    expect(s.status("T-2")).toBe("merged");
+    expect(escalations(h)).toEqual([]);
+    expect(h.statuses.filter(([, st]) => st === "escalated")).toEqual([]);
+    const msgs = h.errors.map((e) => (e as Error).message);
+    expect(msgs.some((m) => m.includes("EBUSY"))).toBe(true);
+    expect(msgs.some((m) => m.includes("/wt/T-2-r0") && m.includes("locked"))).toBe(true);
+  });
+
+  it("sync 发现手动合入也清理；没注入 cleanupMerged 时行为不变", async () => {
+    const h = harness();
+    const cleaned: string[] = [];
+    h.deps.worktrees.cleanupMerged = (t) => void cleaned.push(t);
+    const s = await started(h);
+    await s.enqueue(ticket("T-0"));
+    await s.enqueue(ticket("T-1", { depends_on: ["T-0"] }));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/wt/T-1-r0" });
+    await s.idle();
+    h.syncChanges.push({ pr_id: "pr-1", from: "open", to: "merged", merge_sha: SHA("c") });
+    await s.sync();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(s.status("T-1")).toBe("merged");
+    expect(cleaned).toEqual(["T-1"]);
+
+    const h2 = harness();
+    const s2 = await started(h2);
+    await s2.enqueue(ticket("T-1"));
+    await s2.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/wt/T-1-r0" });
+    await s2.idle();
+    expect(s2.status("T-1")).toBe("merged");
+    expect(h2.errors).toEqual([]);
+  });
+
+  it("stop() 之后才失败的清理不再回调 onError（停机后静默，不碰数据库）", async () => {
+    const h = harness();
+    let fail!: (e: Error) => void;
+    h.deps.worktrees.cleanupMerged = () => new Promise((_, rej) => (fail = rej));
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/wt/T-1-r0" });
+    await s.idle();
+    const statusesBefore = h.statuses.length;
+    s.stop();
+    fail(new Error("停机后才失败"));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.errors).toEqual([]);
+    expect(h.statuses.length).toBe(statusesBefore);
+  });
+});
