@@ -51,7 +51,7 @@ import {
   type TakeOverReport,
 } from "@bakacoding/supervisor";
 import type { DiffFile, EventOf, ReviewResult, TicketStatus } from "@bakacoding/types";
-import { cleanupGitEnv, isUnsafeGlob, type ScopeBus } from "@bakacoding/workspace";
+import { gitEnv, isUnsafeGlob, type ScopeBus } from "@bakacoding/workspace";
 
 export type MaybePromise<T> = T | Promise<T>;
 
@@ -378,7 +378,7 @@ export async function assemble(deps: AppDeps): Promise<App> {
       const { stdout } = await promisify(execFile)(
         "git",
         ["for-each-ref", "--format=%(refname)", "refs/heads/bakacoding/"],
-        { cwd: repo, encoding: "utf8", env: cleanupGitEnv() },
+        { cwd: repo, encoding: "utf8", env: gitEnv() },
       );
       for (const ref of stdout.split("\n")) {
         const m = /^refs\/heads\/bakacoding\/(.+)-r\d+$/.exec(ref.trim());

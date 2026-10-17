@@ -1,9 +1,17 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { cleanupGitEnv, cleanupMergedWorktrees, isGitLockError } from "./cleanup.js";
+import { cleanupMergedWorktrees, isGitLockError } from "./cleanup.js";
 import { withGitWriteLock } from "./git-lock.js";
 import { WorktreeManager } from "./worktree.js";
 
@@ -210,14 +218,24 @@ describe("cleanupMergedWorktrees（T-094）", () => {
     }
   });
 
-  it("cleanupGitEnv 剔掉所有 GIT_ 变量，只留自己加的", () => {
-    const env = cleanupGitEnv({
-      PATH: "/bin",
-      GIT_DIR: "/x",
-      git_work_tree: "/y",
-      GIT_CONFIG_COUNT: "1",
-    });
-    expect(env).toEqual({ PATH: "/bin", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" });
+  it("worktrees 目录里指向别处的符号链接不当受管目录，不删", async () => {
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), "bc-clean-out-")));
+    try {
+      writeFileSync(join(outside, "keep.txt"), "x");
+      const m = await WorktreeManager.open(repo);
+      await m.createWorktree("T-11", "HEAD", 0); // 建出 worktrees 根目录
+      const link = join(repo, ".bakacoding/worktrees/T-11-r1");
+      symlinkSync(outside, link);
+      git("worktree", "add", "-q", "--detach", join(repo, ".bakacoding/worktrees/T-11-r2"), "HEAD");
+      // 把登记的 r2 目录换成指向 outside 的链接
+      rmSync(join(repo, ".bakacoding/worktrees/T-11-r2"), { recursive: true, force: true });
+      symlinkSync(outside, join(repo, ".bakacoding/worktrees/T-11-r2"));
+      const res = await cleanupMergedWorktrees(repo, "T-11", { merged_into: INT, ...fast });
+      expect(existsSync(join(outside, "keep.txt"))).toBe(true);
+      expect(res.removed_worktrees.some((p) => p.endsWith("T-11-r2"))).toBe(false);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   it("不删受管目录以外的 worktree", async () => {
@@ -263,5 +281,57 @@ describe("withGitWriteLock", () => {
       true,
     );
     expect(isGitLockError(new Error("Permission denied"))).toBe(false);
+  });
+});
+
+describe.skipIf(process.platform === "win32")("git 超时（T-094）", () => {
+  /** PATH 前面放一个永远不退出的假 git */
+  function slowGitPath(): { dir: string; path: string } {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "bc-slowgit-")));
+    writeFileSync(join(dir, "git"), "#!/bin/sh\nexec sleep 30\n");
+    chmodSync(join(dir, "git"), 0o755);
+    return { dir, path: `${dir}:${process.env.PATH ?? ""}` };
+  }
+
+  it("cleanupMerged：git 超时被杀掉、记进 errors，写锁随之释放，下一个操作立刻拿到锁", async () => {
+    const slow = slowGitPath();
+    const saved = process.env.PATH;
+    process.env.PATH = slow.path;
+    try {
+      const t0 = Date.now();
+      const res = await cleanupMergedWorktrees(repo, "T-1", {
+        merged_into: INT,
+        git_timeout_ms: 200,
+        ...fast,
+      });
+      expect(res.errors.length).toBeGreaterThan(0);
+      expect(Date.now() - t0).toBeLessThan(10_000);
+      const got = await Promise.race([
+        withGitWriteLock(repo, () => "locked"),
+        new Promise((r) => setTimeout(() => r("timeout"), 2000)),
+      ]);
+      expect(got).toBe("locked");
+    } finally {
+      process.env.PATH = saved;
+      rmSync(slow.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("WorktreeManager 的 git 也带超时：超时后 cleanup 报错、写锁释放", async () => {
+    const m = await WorktreeManager.open(repo, { git_timeout_ms: 200 });
+    const slow = slowGitPath();
+    const saved = process.env.PATH;
+    process.env.PATH = slow.path;
+    try {
+      await expect(m.cleanup("T-1")).rejects.toThrow();
+      const got = await Promise.race([
+        withGitWriteLock(repo, () => "locked"),
+        new Promise((r) => setTimeout(() => r("timeout"), 2000)),
+      ]);
+      expect(got).toBe("locked");
+    } finally {
+      process.env.PATH = saved;
+      rmSync(slow.dir, { recursive: true, force: true });
+    }
   });
 });

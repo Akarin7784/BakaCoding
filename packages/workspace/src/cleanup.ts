@@ -3,6 +3,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
+import { gitEnv, REPO_GIT_TIMEOUT_MS } from "./git-env.js";
 import { withGitWriteLock } from "./git-lock.js";
 
 const run = promisify(execFile);
@@ -26,6 +27,8 @@ export interface CleanupMergedOptions {
   sleep?: (ms: number) => Promise<void>;
   /** 测试注入：git 删 worktree 都失败后的兜底删除，默认 fs.rm（递归、强制、maxRetries 5） */
   removeDir?: (path: string) => Promise<void>;
+  /** 每条 git 的超时，默认 REPO_GIT_TIMEOUT_MS（30 秒）；超时的命令被杀掉、记进 errors，锁随之释放 */
+  git_timeout_ms?: number;
   /** 测试注入：执行 git（参数不含 `git` 本身） */
   runGit?: (cwd: string, args: string[]) => Promise<string>;
 }
@@ -39,29 +42,18 @@ export interface CleanupMergedResult {
 
 export const DEFAULT_CLEANUP_RETRY_DELAYS_MS: readonly number[] = [500, 2000, 5000];
 
-/**
- * 清理用的 git 环境（T-094）：先剔掉 process.env 里所有 `GIT_` 开头的变量（GIT_DIR、GIT_INDEX_FILE、
- * GIT_WORK_TREE 等会把命令带到别的仓库），再显式加上自己要的：不弹凭据提示、英文输出（认锁文件错误靠
- * stderr 文案）。配置项一律用 `-c` 只作用于单条命令。T-086（#97）的 gitEnv() 合入后由基础层换成它。
- */
-export function cleanupGitEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {};
-  for (const [k, v] of Object.entries(base)) {
-    if (k.toUpperCase().startsWith("GIT_")) continue;
-    env[k] = v;
-  }
-  env.GIT_TERMINAL_PROMPT = "0";
-  env.LC_ALL = "C";
-  return env;
-}
-
-async function defaultGit(cwd: string, args: string[]): Promise<string> {
-  const { stdout } = await run("git", args, {
-    cwd,
-    env: cleanupGitEnv(),
-    maxBuffer: 16 * 1024 * 1024,
-  });
-  return stdout.trim();
+/** 清理用的 git：环境用 4 的 gitEnv()（剔掉所有 GIT_ 变量），带超时（默认 REPO_GIT_TIMEOUT_MS）。 */
+function defaultGit(timeout: number): (cwd: string, args: string[]) => Promise<string> {
+  return async (cwd, args) => {
+    const { stdout } = await run("git", args, {
+      cwd,
+      env: gitEnv(),
+      timeout,
+      windowsHide: true,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    return stdout.trim();
+  };
 }
 
 function errMessage(err: unknown): string {
@@ -105,14 +97,16 @@ function isManagedPath(repo: string, p: string): boolean {
   const root = join(repo, WORKTREES_SUBDIR);
   const rel = relative(root, resolve(p));
   if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return false;
-  // 按真实路径再查一次（防 worktrees 目录里的符号链接把删除带到别处）
+  // worktrees 根目录本身不在：路径按字面判断已在根下（目录都不在，fs.rm 也删不到别处）
+  if (!existsSync(root)) return true;
+  // 按真实路径再查一次（防 worktrees 目录里的符号链接把删除带到别处）；其他出错一律当不受管（宁可漏删）
   try {
     const realRoot = realpathSync(root);
-    const realP = existsSync(p) ? realpathSync(p) : resolve(p);
+    const realP = existsSync(p) ? realpathSync(p) : resolve(realRoot, rel);
     const r2 = relative(realRoot, realP);
     return r2 !== "" && !r2.startsWith("..") && !isAbsolute(r2);
   } catch {
-    return true; // worktrees 根目录本身不在：路径按字面判断已在根下
+    return false;
   }
 }
 
@@ -209,7 +203,7 @@ export async function cleanupMergedWorktrees(
     return result;
   }
   const repo = resolve(repoRoot);
-  const runGit = opts.runGit ?? defaultGit;
+  const runGit = opts.runGit ?? defaultGit(opts.git_timeout_ms ?? REPO_GIT_TIMEOUT_MS);
   const ctx: Ctx = {
     repo,
     git: (args) => runGit(repo, args),
