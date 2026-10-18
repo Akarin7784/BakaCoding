@@ -104,6 +104,72 @@ describe("open / diff", () => {
     expect(by["new.txt"]).not.toHaveProperty("old_path");
     expect(by["gone.txt"]).not.toHaveProperty("old_path");
   });
+  it("T-121：改过的源文件复制出的新文件按 added + old_path 报，patch 只含复制块", async () => {
+    const wt = await worktree("feat/copy");
+    const original = await readFile(join(repo, "a.txt"), "utf8");
+    await writeFile(join(wt, "a.txt"), "1\nTWO\n3\n");
+    await writeFile(join(wt, "a-copy.txt"), original);
+    await commitAll(wt, "copy");
+    const id = await pr.open("T-copy", wt, "feat/copy");
+    const d = await pr.diff(id);
+    const by = Object.fromEntries(d.files.map((f) => [f.path, f]));
+    expect(by["a-copy.txt"]).toMatchObject({
+      path: "a-copy.txt",
+      status: "added",
+      additions: 0,
+      deletions: 0,
+      old_path: "a.txt",
+    });
+    expect(by["a-copy.txt"]!.patch).toContain("copy from a.txt");
+    expect(by["a-copy.txt"]!.patch).toContain("copy to a-copy.txt");
+    // 源文件的改动块不能混进复制文件的 patch
+    expect(by["a-copy.txt"]!.patch).not.toContain("+TWO");
+    expect(by["a.txt"]).toMatchObject({ status: "modified", additions: 1, deletions: 1 });
+    expect(by["a.txt"]!.patch).toContain("+TWO");
+    expect(by["a.txt"]).not.toHaveProperty("old_path");
+  });
+  it("T-121：部分复制（复制块带 hunk）也带 old_path，patch 只含复制块、不含源文件改动", async () => {
+    const wt = await worktree("feat/copy-partial");
+    const lines = (await readFile(join(repo, "old.txt"), "utf8")).split("\n");
+    await writeFile(
+      join(wt, "old.txt"),
+      lines.map((l) => (l === "line1" ? "line1-changed" : l)).join("\n"),
+    );
+    await writeFile(
+      join(wt, "old-partial.txt"),
+      lines.map((l) => (l === "line5" ? "line5-changed" : l)).join("\n"),
+    );
+    await commitAll(wt, "partial copy");
+    const id = await pr.open("T-copy3", wt, "feat/copy-partial");
+    const d = await pr.diff(id);
+    const by = Object.fromEntries(d.files.map((f) => [f.path, f]));
+    expect(by["old-partial.txt"]).toMatchObject({
+      path: "old-partial.txt",
+      status: "added",
+      additions: 1,
+      deletions: 1,
+      old_path: "old.txt",
+    });
+    expect(by["old-partial.txt"]!.patch).toContain("copy from old.txt");
+    expect(by["old-partial.txt"]!.patch).toContain("+line5-changed");
+    // 源文件的改动块不能混进复制文件的 patch
+    expect(by["old-partial.txt"]!.patch).not.toContain("+line1-changed");
+    expect(by["old.txt"]).toMatchObject({ status: "modified", additions: 1, deletions: 1 });
+  });
+  it("T-121：源文件没改动时复制不检出（不加 --find-copies-harder），仍按 added 报、不带 old_path", async () => {
+    const wt = await worktree("feat/copy-harder");
+    await writeFile(join(wt, "old-copy.txt"), await readFile(join(repo, "old.txt"), "utf8"));
+    await commitAll(wt, "copy unmodified");
+    const id = await pr.open("T-copy2", wt, "feat/copy-harder");
+    const by = Object.fromEntries((await pr.diff(id)).files.map((f) => [f.path, f]));
+    expect(by["old-copy.txt"]).toMatchObject({
+      path: "old-copy.txt",
+      status: "added",
+      additions: 5,
+      deletions: 0,
+    });
+    expect(by["old-copy.txt"]).not.toHaveProperty("old_path");
+  });
   it("package.json 改名成 x.json 时带 old_path", async () => {
     // package.json 必须先在 base（main）上，相对 base 的 rename 才会被 -M 检出
     await writeFile(join(repo, "package.json"), '{\n  "name": "demo"\n}\n');
