@@ -721,3 +721,69 @@ describe("组合根 logger / onError 的脱敏接线（UI-03a 评审 N1）", () 
     await be.stop();
   });
 });
+
+describe("T-128：诊断包保留天数取自配置", () => {
+  it("config.diagnostics.retention_days 传给 openStorage；没配时显式传默认 30", async () => {
+    const { root } = gitRepoWithConfig();
+    const cfgPath = join(root, "config", "models.json");
+    type OpenOptions = Parameters<typeof openStorage>[0];
+    const seen: OpenOptions[] = [];
+    const start = () =>
+      startBackend({
+        argv: [`--repo=${root}`],
+        env: { DEEPSEEK_API_KEY: "sk-t128" },
+        cwd: root,
+        pricingPath,
+        logger: { warn: () => {} },
+        openStorage: (o) => {
+          seen.push(o);
+          return openStorage(o);
+        },
+      });
+
+    // 示例配置没写 diagnostics：走 schema 默认值 30，也显式交给模块 2
+    const b1 = await start();
+    expect(b1.status().mode).toBe("live");
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.retention_days).toBe(30);
+    await b1.stop();
+
+    // 配 7 天：原样传下去
+    const raw = JSON.parse(readFileSync(cfgPath, "utf8")) as Record<string, unknown>;
+    raw["diagnostics"] = { retention_days: 7 };
+    writeFileSync(cfgPath, JSON.stringify(raw));
+    seen.length = 0;
+    const b2 = await start();
+    expect(b2.status().mode).toBe("live");
+    expect(seen[0]!.retention_days).toBe(7);
+    await b2.stop();
+  });
+
+  it("缺配置 / 坏配置：建库之前就退只读（不调用 openStorage、不生成库文件）", async () => {
+    const cases: Array<[string, (cfgPath: string) => void]> = [
+      ["缺配置文件", (p) => rmSync(p)],
+      ["坏 JSON", (p) => writeFileSync(p, "{ not json")],
+    ];
+    for (const [name, mutate] of cases) {
+      const { root, db } = gitRepoWithConfig();
+      mutate(join(root, "config", "models.json"));
+      const opened: Parameters<typeof openStorage>[0][] = [];
+      const backend = await startBackend({
+        argv: [`--repo=${root}`],
+        env: { DEEPSEEK_API_KEY: "sk-t128" },
+        cwd: root,
+        pricingPath,
+        logger: { warn: () => {} },
+        openStorage: (o) => {
+          opened.push(o);
+          return openStorage(o);
+        },
+      });
+      expect(backend.status().mode, name).toBe("readonly");
+      expect(backend.status().reason, name).toContain("ConfigError");
+      expect(opened, name).toHaveLength(0);
+      expect(existsSync(db), name).toBe(false);
+      await backend.stop();
+    }
+  });
+});

@@ -424,7 +424,7 @@ export function sanitizedDepsLogging(
 }
 
 /**
- * 启动后端：写入锁 → openStorage → getConfig → createDefaultDeps → assemble（含 takeOver）。
+ * 启动后端：写入锁 → getConfig → openStorage → createDefaultDeps → assemble（含 takeOver）。
  * 失败（缺密钥、坏配置、锁被占、StorageLeaseError）→ 只读，reason 只含变量名 / 错误名。
  */
 export async function startBackend(opts: BackendOptions = {}): Promise<BackendHandle> {
@@ -557,18 +557,21 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
   } else {
     lock = acquired;
     try {
-      storage = open({
-        path: dbPath,
-        ...(opts.nativeBinding !== undefined && { nativeBinding: opts.nativeBinding }),
-        logger: { warn: (m) => logger.warn(m) },
-      });
-
+      // T-128：先读配置再建库——模块 2 的完整提示词 / 输出保留天数取自
+      // config.diagnostics.retention_days；配置缺失 / 坏在建库之前就退只读，不留下半成品库文件。
       if (!existsSync(configPath)) {
         throw new ConfigError([
           `配置文件不存在：请设置 ${CONFIG_ENV} 或提供 <repo>/config/models.json`,
         ]);
       }
       const config = loadConfig(configPath);
+
+      storage = open({
+        path: dbPath,
+        ...(opts.nativeBinding !== undefined && { nativeBinding: opts.nativeBinding }),
+        retention_days: config.diagnostics.retention_days,
+        logger: { warn: (m) => logger.warn(m) },
+      });
 
       depsHandle = await (opts.createDefaultDeps ?? createDefaultDeps)(config, storage, {
         repoRoot,
