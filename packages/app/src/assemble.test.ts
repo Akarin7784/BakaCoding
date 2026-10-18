@@ -2083,7 +2083,8 @@ describe("T-133 接口变更说明持久化（组合根接线）", () => {
 
   it("8 的说明落进 tickets.fields.interface_notes；重启（新 assemble、同一库）后新实例读到旧说明并叠加", async () => {
     const { storage, worktreeRoot } = setup();
-    saveTicket(storage, "T-1", "coding", fields());
+    // merged 状态的单 takeOver 不会再派单，测试只关心 8 的持久化读写
+    saveTicket(storage, "T-1", "merged", fields());
     const a = await start({ storage, worktreeRoot, pr: fakePr().pr });
     a.app.subAgent.onInterfaceChanged(iface("pr-9-1", "第一次改动"));
     let notes = storage.getTicket("T-1")!.fields!.interface_notes as string[];

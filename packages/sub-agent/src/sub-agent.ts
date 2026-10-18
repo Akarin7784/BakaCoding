@@ -42,13 +42,9 @@ import {
   safeScope,
   type GeneratedPermissions,
 } from "./permissions.js";
-import { MAX_INTERFACE_NOTES, memoryInterfaceNotes } from "./interface-notes.js";
+import { MAX_INTERFACE_NOTES, memoryInterfaceNotes, truncateNote } from "./interface-notes.js";
 import { registerRecorder } from "./internal.js";
 
-/** 每条接口变更说明的最大长度（码点，T-133）：条数上限之外再限单条体积，避免 fields 随评审意见膨胀 */
-const MAX_INTERFACE_NOTE_CHARS = 4096;
-
-/** 每单最多攒多少条没带给编码池的接口变更说明（多了丢最早的） */
 /** 每条接口变更说明里合并说明（summary）的最大长度 */
 const MAX_NOTE_SUMMARY = 2000;
 
@@ -158,10 +154,7 @@ function interfaceNote(ev: EventOf<"interface_changed">): string {
       : e.summary;
   const note = `${ev.ticket_id} 的 PR ${e.pr_id} 已合入集成分支（新基线 ${e.base_commit}），可能影响本单。改动的接口：${ifaces || "（未列出）"}。合并说明：${summary || "（无）"}`;
   // T-133：条数有上限，单条体积也要限（超长按码点截断），否则 fields 会随接口列表无限膨胀
-  const cps = Array.from(note);
-  return cps.length > MAX_INTERFACE_NOTE_CHARS
-    ? `${cps.slice(0, MAX_INTERFACE_NOTE_CHARS - 1).join("")}…`
-    : note;
+  return truncateNote(note);
 }
 
 /** 去重并保持首次出现的顺序（预算续跑凭据里的说明与持久化里的可能重复）。 */
@@ -362,6 +355,11 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
   const coding = new Set<string>();
   /** 收到但还没带给编码池的接口变更说明（T-038）；T-133 起同时写进 `deps.interfaceNotes`（2 的 fields）跨重启保留 */
   const pendingNotes = new Map<string, string[]>();
+  /**
+   * 本轮已经取出来带给编码池、但持久化里还没清掉的说明（T-133 评审 P1）：`onInterfaceChanged` 写回持久化时
+   * 要把这部分滤掉，既不会重复交付给下一轮，也不会把重启前还没带的旧说明冲掉。
+   */
+  const inFlightNotes = new Map<string, Set<string>>();
   /** 每单收到的接口变更通知计数：评审开始后又涨了，就在交出去之前再评审一次 */
   const noteSeq = new Map<string, number>();
   /** 接口变更说明的持久存取（T-133）：注入 2 的适配器就落库，不注入退回进程内存 */
@@ -683,10 +681,9 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
     };
   }
 
-  /** 取出本单待带的接口变更说明（取走即清空）。 */
   /**
    * 取出本单待带的接口变更说明（T-133）：内存 + 持久化合并去重；取走只清内存，**持久化的等真正带给编码池后
-   * 才由 `clearNotes` 清**（预算暂停 / 编码池抛错时说明还在 2 里，重启后照样能带到）。
+   * 才由 `clearNotes` 处理**（预算暂停 / 编码池抛错时说明还在 2 里，重启后照样能带到）。
    */
   function takeNotes(ticket_id: string): string[] {
     const n = dedupeNotes([...(pendingNotes.get(ticket_id) ?? []), ...readStoredNotes(ticket_id)]);
@@ -694,9 +691,13 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
     return n;
   }
 
-  /** 说明已经带给编码池（runTicket 正常返回、非预算暂停）：清掉持久化的待带说明（T-133）。 */
+  /**
+   * 本轮说明已经带给编码池（runTicket 正常返回、非预算暂停）：持久化写回**还没交付的剩余**——
+   * 本轮编码期间才到达的说明只在 `pendingNotes` 里（`onInterfaceChanged` 同时写了 store），这里不能被清掉；
+   * 已交付的那批不在 `pendingNotes` 里，自然从 store 移除（T-133 评审 P1）。
+   */
   function clearNotes(ticket_id: string): void {
-    writeStoredNotes(ticket_id, []);
+    writeStoredNotes(ticket_id, pendingNotes.get(ticket_id) ?? []);
   }
 
   /** 没带出去的说明放回队首（runTicket 抛错时）。 */
@@ -814,6 +815,7 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
           -MAX_INTERFACE_NOTES,
         );
         s.interface_notes = notes.length ? notes : undefined;
+        if (notes.length) inFlightNotes.set(ticket_id, new Set(notes));
         const feedback = notes.length
           ? s.feedback !== undefined
             ? `${s.feedback}\n\n${notesSection(notes)}`
@@ -840,12 +842,13 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
           throw e;
         } finally {
           coding.delete(ticket_id);
+          inFlightNotes.delete(ticket_id); // 本轮结束（成功 / 预算暂停 / 抛错都算），之后不再视为「在途」
         }
         throwIfAborted(s.signal);
         // 预算暂停：说明还没真正用上，留在 RunState 里进续跑凭据、持久化的也留着；否则已带给编码池
         if (res.status === "budget_exceeded") return budgetStop(s);
         s.interface_notes = undefined;
-        clearNotes(ticket_id); // T-133：已带给编码池，清掉 2 里待带的说明
+        clearNotes(ticket_id); // T-133：已带给编码池，写回还没交付的剩余（在途期间才到的说明保留）
 
         let failure: { status: CoderFailureStatus; feedback: string } | undefined;
         if (res.status === "done") {
@@ -1110,12 +1113,13 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
     const note = interfaceNote(e);
     for (const id of new Set(e.payload.affected_ticket_ids)) {
       if (id === e.ticket_id) continue;
-      // T-133：内存与 2 里的都并进来再去重，进程重启后新到的说明不会盖掉还没带出去的旧说明
-      const list = dedupeNotes([
-        ...readStoredNotes(id),
-        ...(pendingNotes.get(id) ?? []),
-        note,
-      ]).slice(-MAX_INTERFACE_NOTES);
+      // T-133 评审 P1：合并「持久化里还没交付的」+「本进程内存里的」+ 新说明；**滤掉本轮已交付、还没清的**
+      // 在途说明（不读回它们，避免下一轮重复交付），也保住重启前就存在 2 里、还没带的旧说明。
+      const inFlight = inFlightNotes.get(id) ?? new Set<string>();
+      const persisted = readStoredNotes(id).filter((n) => !inFlight.has(n));
+      const list = dedupeNotes([...persisted, ...(pendingNotes.get(id) ?? []), note]).slice(
+        -MAX_INTERFACE_NOTES,
+      );
       pendingNotes.set(id, list);
       writeStoredNotes(id, list);
       noteSeq.set(id, (noteSeq.get(id) ?? 0) + 1);
