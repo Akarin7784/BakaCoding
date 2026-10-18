@@ -2697,6 +2697,17 @@ describe("T-133 接口变更说明持久化", () => {
     expect(store.get("T-1")).toEqual([]);
   });
 
+  it("评审 P1：store 里重启前还没带的旧说明不被新写入覆盖（新事件只追加）", () => {
+    const store = memoryInterfaceNotes();
+    store.set("T-1", ["旧说明"]); // 模拟上一次进程留下、还没带给编码池的说明
+    const t = setup({ over: { interfaceNotes: store } });
+    t.agent.onInterfaceChanged(ifaceEvent({ summary: "新说明" }));
+    const notes = store.get("T-1");
+    expect(notes).toHaveLength(2);
+    expect(notes[0]).toContain("旧说明");
+    expect(notes[1]).toContain("新说明");
+  });
+
   it("评审 P2：编码池抛错时说明写回 store，重启后的下一轮仍能带上", async () => {
     const store = memoryInterfaceNotes();
     let throwOnce = true;
