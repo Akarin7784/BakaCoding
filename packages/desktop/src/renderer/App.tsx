@@ -28,6 +28,8 @@ import { SettingsDialog } from "./components/SettingsDialog";
 import { CommandPalette } from "./components/CommandPalette";
 import { TitleBar } from "./components/TitleBar";
 import { RightPanelShell, type RightPanelTab } from "./components/RightPanelShell";
+import { ActivityFeed } from "./components/ActivityFeed";
+import { useActivityDot } from "./data/useActivityDot";
 import { AgentIcon } from "./components/AgentIcon";
 import { Button } from "./components/ui/button";
 import { useLayout } from "./lib/useLayout";
@@ -106,6 +108,9 @@ export function App(props: AppProps) {
       : (lastProjectId ?? projects[0]?.project.payload.project_id);
   const current = projects.find((p) => p.project.payload.project_id === currentId);
   const showProject = selection.kind === "project" && current !== undefined;
+  // T-127：动态标签的小点——面板开着且停在动态标签才算已读（§4.5.1）
+  const viewingActivity = layout.rightPanelOpen && panelTab === "activity";
+  const activityDot = useActivityDot(current, viewingActivity);
 
   // 当前视图相关的高风险单优先；主管页显示全部
   const panelItems =
@@ -261,6 +266,7 @@ export function App(props: AppProps) {
           actions={titleActions}
           rightPanelOpen={layout.rightPanelOpen}
           onToggleRightPanel={layout.toggleRightPanel}
+          rightPanelDot={activityDot && !layout.rightPanelOpen}
           insetRight={panelDocked ? 0 : inset.right}
         />
         {quitting && <QuittingBanner />}
@@ -334,6 +340,8 @@ export function App(props: AppProps) {
         tab={panelTab}
         onTabChange={setPanelTab}
         insetRight={inset.right}
+        activityDot={activityDot}
+        activity={<ActivityFeed project={current} />}
         overview={
           current ? (
             <RightPanel

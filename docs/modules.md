@@ -391,6 +391,7 @@ graph BT
   - **右面板抽屉**（窗口 < 1200）：改用 Radix Dialog（`role="dialog"`，打开时焦点移入、Tab 困在抽屉里，关上后焦点回到标题栏开关），底下一层 `--overlay` 淡遮罩。停靠模式不变。
   - **窗口按钮留位**：优先用 `navigator.windowControlsOverlay.getTitlebarAreaRect()`（`geometrychange` 时重算），取不到时退回固定值（右 138 / 左 76）。
   - **启动不闪**：`window:theme` 成功后主进程把偏好写到 userData 的 `window-theme.json`（T-105：同目录临时文件 + `rename` 原子写，失败删临时文件、旧文件不动）；下次启动在建窗口前同步读出、设 `nativeTheme.themeSource`，标题栏叠层颜色和窗口底色一开始就对。`window:theme` 失败时 `reason` 一律是固定文案「主题设置失败」，不传任何原始错误内容（T-105，取代 UI-08 的脱敏透传）。
+- **右面板动态（T-127，`docs/ui-design.md` §4.5.1）**：右面板第二个标签只显示 Agent 之间的消息，数据来自现有 `group_message` 事件（**不新增事件、不改 IPC**）。每条：头像、发送方 → 接收方（事件只有 `sender`，接收方按消息类型推：主管发的派给该单副 Agent，副 Agent 发的回主管）、时间（本地 HH:mm）、类型标签、正文超 3 行折叠；右上角按单过滤（选项取消息里出现过的 `ticket_id`）；最新在底部，贴底时自动滚到底，用户上翻后停止自动滚并给「回到最新」；底部一行当前状态取 `prs` 里在跑的单（coding / in_review / resubmitting / re_reviewing / merge_queued / conflict，与全局状态点同一套）。面板关着、或打开但停在概览时来了新消息，「动态」标签和标题栏右面板开关亮一个小点；打开动态标签即已读，按项目分别记已读，切项目不会把别的项目的旧消息当新消息；首次看到某项目时的历史消息不算新消息。
 - **依赖**：3（项目导入）、`@bakacoding/app`（组合根）及各模块的接口。
 - **对应章节**：PD §15、§16。
 - **配置字段**：设计中没有专用字段；设置入口编辑模块 3 的配置。
