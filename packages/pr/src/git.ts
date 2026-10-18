@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { gitEnv, REPO_GIT_TIMEOUT_MS } from "@bakacoding/workspace";
 
 export class GitError extends Error {
@@ -35,6 +35,36 @@ export class GitTimeoutError extends GitError {
 export const REMOTE_GIT_TIMEOUT_MS = 120_000;
 /** 超时 / 中止时先 SIGTERM，这么久之后子进程还没退出就 SIGKILL。 */
 export const GIT_KILL_GRACE_MS = 5_000;
+
+/**
+ * 结束 git 子进程及整棵进程树（T-123）。Windows 上 git 会派生 ssh / git-remote-ext 等孙进程
+ * （远程 git 和 `ext::` 传输都有），`child.kill()` 只终止直接子进程，孙进程会残留：继续跑、继续
+ * 占着 stdio 管道。Windows 没有优雅信号，直接用 `taskkill /PID <pid> /T /F` 结束整棵树；
+ * taskkill 起不来（PATH 异常等）时退回 `child.kill()`。POSIX 行为不变：SIGTERM → SIGKILL。
+ */
+function endProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
+  const pid = child.pid;
+  if (process.platform === "win32" && typeof pid === "number") {
+    try {
+      const killer = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
+        windowsHide: true,
+        stdio: "ignore",
+      });
+      killer.on("error", () => {
+        try {
+          child.kill(signal);
+        } catch {
+          // 进程已经退出
+        }
+      });
+      killer.unref();
+      return;
+    } catch {
+      // 退回到直接 kill
+    }
+  }
+  child.kill(signal);
+}
 
 /**
  * 写命令（T-110）：会改索引、ref 或工作区，中途被 kill 可能留下 index.lock 或改了一半的 ref。
@@ -139,8 +169,8 @@ export function collectInto(
  * 调 git（spawn，不经 shell）。allowCodes 内的非零退出码不抛错。
  * 本地操作的环境用 `gitEnv()`：继承的 `GIT_DIR`、`GIT_WORK_TREE`、`GIT_INDEX_FILE`
  * 等不会把操作带到别的仓库或索引上（T-097）。
- * 超时 / 中止（T-110）：SIGTERM，`GIT_KILL_GRACE_MS` 后仍未退出再 SIGKILL；以子进程退出为准，
- * 不等 stdio 关闭（ssh 等孙进程可能还占着管道）。
+ * 超时 / 中止（T-110）：SIGTERM，`GIT_KILL_GRACE_MS` 后仍未退出再 SIGKILL；Windows 上连同整棵进程树一起
+ * 结束（T-123，`taskkill /T /F`，避免 git 派生的 ssh 等孙进程残留）；以子进程退出为准，不等 stdio 关闭。
  */
 export function git(
   cwd: string,
@@ -193,8 +223,9 @@ export function git(
     function kill(why: "timeout" | "abort" | "buffer") {
       if (killedFor || settled) return;
       killedFor = why;
-      child.kill("SIGTERM");
-      grace = setTimeout(() => child.kill("SIGKILL"), GIT_KILL_GRACE_MS);
+      // T-123：Windows 上要结束整棵进程树，否则 ssh 等孙进程会残留
+      endProcessTree(child, "SIGTERM");
+      grace = setTimeout(() => endProcessTree(child, "SIGKILL"), GIT_KILL_GRACE_MS);
       grace.unref?.();
     }
     child.stdout.on(
