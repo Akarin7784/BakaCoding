@@ -14,10 +14,7 @@ export const TEMPLATE_FILES = [
  * 模块 4 的 `ensureExcludeLines(dir, lines)`（T-082，经 `@bakacoding/app` 再导出）的注入点：
  * 把行追加进 `git rev-parse --git-path info/exclude`；dir 不是 git 仓库时返回 false、不抛错。
  */
-export type EnsureExcludeLines = (
-  dir: string,
-  lines: readonly ExcludeRule[],
-) => Promise<boolean>;
+export type EnsureExcludeLines = (dir: string, lines: readonly ExcludeRule[]) => Promise<boolean>;
 
 /** 模板目录：打包版在 exe 同一层的 config-templates/；开发时用仓库根的 config/。 */
 export function defaultTemplateDir(packaged: boolean, execPath: string, repoRoot: string): string {

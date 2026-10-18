@@ -17,7 +17,6 @@ import type { UserMessage } from "@bakacoding/supervisor";
 import path from "node:path";
 import type { BackendHandle } from "./backend.js";
 import {
-import {
   RELOAD_REASON_MAX,
   sanitizeReloadReason,
   type BackendSwitcher,
@@ -360,10 +359,12 @@ export function serveProjectSettings(ipc: IpcMainLike, deps: ProjectSettingsDeps
     let warn: string | undefined;
     if (made.created.length && deps.ensureExcludeLines) {
       try {
-        await deps.ensureExcludeLines(
+        // T-082 的约定：dir 不是 git 仓库时返回 false、不抛错。两种都只提醒，不挡导入。
+        const ok = await deps.ensureExcludeLines(
           dir,
           made.created.map((f) => `/${f}`),
         );
+        if (!ok) warn = "没能写入 .git/info/exclude（不是 Git 仓库）";
       } catch (e) {
         // 写 exclude 失败只提醒，不挡导入
         warn = clean(`没能写入 .git/info/exclude：${errorDetail(e)}`);

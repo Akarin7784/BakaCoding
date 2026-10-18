@@ -69,7 +69,10 @@ export function useProjectActions(
 
   const unavailable = () => setNotice({ tone: "error", text: "没有连接主进程，不能操作" });
 
-  const run = async (kind: "import" | "create-config", fn: () => Promise<Parameters<typeof handleResult>[0]>) => {
+  const run = async (
+    kind: "import" | "create-config",
+    fn: () => Promise<Parameters<typeof handleResult>[0]>,
+  ) => {
     if (busy) return;
     setBusy(kind);
     try {

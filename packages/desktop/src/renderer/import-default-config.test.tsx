@@ -56,7 +56,9 @@ describe("导入缺配置：用默认模板创建（T-081）", () => {
     const main = screen.getByRole("main", { name: "内容区" });
     expect(main.children[1]).toBe(banner);
     // 缺失清单只出现一次（T-081：主进程合成一句，界面不再拼）
-    const toast = await screen.findByText(/导入失败：缺少 config\/models\.json、config\/pricing\.json/);
+    const toast = await screen.findByText(
+      /导入失败：缺少 config\/models\.json、config\/pricing\.json/,
+    );
     expect(toast.textContent!.match(/config\/models\.json/g)).toHaveLength(1);
   });
 
@@ -84,11 +86,15 @@ describe("导入缺配置：用默认模板创建（T-081）", () => {
   });
 
   it("创建成功：横幅消失，提示已用默认模板创建", async () => {
-    const a = api(MISSING, async () => ({
-      ok: true,
-      project: { project_id: "p-1", name: "p", path: "/repo" },
-      note: "已用默认模板创建 config/models.json",
-    }) as DesktopImportResult);
+    const a = api(
+      MISSING,
+      async () =>
+        ({
+          ok: true,
+          project: { project_id: "p-1", name: "p", path: "/repo" },
+          note: "已用默认模板创建 config/models.json",
+        }) as DesktopImportResult,
+    );
     renderApp({ api: a, onReload: () => {} });
     await clickImport();
     fireEvent.click(screen.getByTestId("create-default-config"));

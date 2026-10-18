@@ -321,7 +321,7 @@ export function App(props: AppProps) {
           <SupervisorChat
             showHeader={false}
             initial={supervisorMessages}
-            busy={actions.busy}
+            busy={actions.busy === "create-config" ? "import" : actions.busy}
             api={api}
             readonly={backendReadonly}
           />

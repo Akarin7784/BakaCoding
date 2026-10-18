@@ -51,6 +51,23 @@ function repo(opts: { git?: boolean; models?: string; pricing?: string } = {}): 
 }
 const read = (p: string) => readFileSync(p, "utf8");
 
+/**
+ * 本机能不能建符号链接：Windows 没开发者模式 / 权限时 symlinkSync 抛 EPERM。
+ * 符号链接用例在不能建的机器上 skip，避免环境问题被算成「新增失败」。
+ */
+function canCreateSymlink(): boolean {
+  const d = mkdtempSync(join(tmpdir(), "bc-sym-probe-"));
+  try {
+    symlinkSync(d, join(d, "link"), "dir");
+    return true;
+  } catch {
+    return false;
+  } finally {
+    rmSync(d, { recursive: true, force: true });
+  }
+}
+const SYMLINK_OK = canCreateSymlink();
+
 describe("createDefaultConfigFiles（T-081）", () => {
   it("两个都缺：都从模板创建，导入校验通过", () => {
     const d = repo();
@@ -106,7 +123,7 @@ describe("createDefaultConfigFiles（T-081）", () => {
     expect(existsSync(join(d, "config"))).toBe(false);
   });
 
-  it("config/ 或目标文件是符号链接：拒绝，不写到链接另一头", () => {
+  it.skipIf(!SYMLINK_OK)("config/ 或目标文件是符号链接：拒绝，不写到链接另一头", () => {
     const outside = tmp();
     const a = repo();
     symlinkSync(outside, join(a, "config"));
@@ -144,7 +161,11 @@ describe("createDefaultConfigFiles（T-081）", () => {
     expect(made).toEqual({ ok: true, created: ["config/models.json"] });
     expect(made.ok).toBe(true);
     // main.ts 的接线就是把新建的相对路径加个前导斜杠交给 T-082
-    if (made.ok) await ensureExcludeLines(d, made.created.map((f) => `/${f}`));
+    if (made.ok)
+      await ensureExcludeLines(
+        d,
+        made.created.map((f) => `/${f}`),
+      );
     const exclude = read(join(d, ".git", "info", "exclude"));
     expect(exclude).toContain("/config/models.json");
     expect(exclude).not.toContain("/config/pricing.json");
@@ -179,7 +200,7 @@ describe("project:createDefaultConfig IPC（T-081）", () => {
       status: () => ({ mode: "live" as const }),
     };
     const saveLastRepo = vi.fn();
-    const ensureExcludeLines = vi.fn();
+    const ensureExcludeLines = vi.fn(async () => true);
     const { ipc, invoke, handlers } = fakeIpc();
     const stop = serveProjectSettings(ipc, {
       backend,
@@ -266,6 +287,15 @@ describe("project:createDefaultConfig IPC（T-081）", () => {
     expect(JSON.stringify(r)).not.toContain(secret);
   });
 
+  it("ensureExcludeLines 返回 false（T-082 约定：不是 git 仓库、不抛错）：同样只提醒、不挡导入", async () => {
+    const d = repo();
+    const { invoke } = setup(d, { ensureExcludeLines: async () => false });
+    await invoke(IPC_CHANNELS.projectImport);
+    const r = await invoke(IPC_CHANNELS.projectCreateDefaultConfig);
+    expect(r.ok).toBe(true);
+    expect(r.ok && r.note).toContain("没能写入 .git/info/exclude（不是 Git 仓库）");
+  });
+
   it("建完后内容校验不过：返回失败，不切换", async () => {
     const d = repo({ pricing: "{ not json" });
     const { invoke, backend } = setup(d);
@@ -275,6 +305,21 @@ describe("project:createDefaultConfig IPC（T-081）", () => {
     expect(r.ok === false && r.reason).toContain("pricing.json");
     expect(read(join(d, "config/pricing.json"))).toBe("{ not json");
     expect(backend.switchTo).not.toHaveBeenCalled();
+  });
+
+  it("--config / BAKACODING_CONFIG 指向的文件不存在：不给按钮，报错说指定的配置不存在", async () => {
+    for (const over of [
+      { argv: ["--config", "/nope/models.json"] },
+      { env: { BAKACODING_CONFIG: "/nope/models.json" } },
+    ]) {
+      const d = repo();
+      const { invoke } = setup(d, over);
+      const r = await invoke(IPC_CHANNELS.projectImport);
+      expect(r).not.toHaveProperty("canCreateDefaultConfig");
+      expect(r.ok === false && r.reason).toContain("指定的配置，但文件不存在");
+      expect((await invoke(IPC_CHANNELS.projectCreateDefaultConfig)).ok).toBe(false);
+      expect(existsSync(join(d, "config"))).toBe(false);
+    }
   });
 
   it("没注入模板目录：不给按钮", async () => {
