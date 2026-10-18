@@ -169,6 +169,7 @@ const SERVE: Record<string, (ipc: IpcMainLike, backend: BackendHandle) => () => 
       pickSavePath: async () => null,
       downloadsDir: "/dl",
       saveLastRepo: () => {},
+      openDataDir: async () => {},
     }),
 };
 function wireAll(ipc: IpcMainLike, backend: BackendHandle): Array<() => void> {
@@ -288,6 +289,7 @@ describe("handler 参数：第一个是 event，渲染进程参数从第二个�
     await expect(api.importProject()).resolves.toEqual({ ok: false, canceled: true });
     // T-081：没有待创建配置的目录时拒绝
     await expect(api.createDefaultConfig()).resolves.toMatchObject({ ok: false });
+    await expect(api.openDataDir()).resolves.toEqual({ ok: true });
     await expect(api.exportDiagnostics()).resolves.toEqual({
       ok: false,
       canceled: true,
@@ -469,6 +471,7 @@ describe("preload 暴露的只读 API", () => {
       "onSupervisorNotify",
       "onSyncState",
       "onUpdate",
+      "openDataDir",
       "platform",
       "reconnectBackend",
       "reloadBackend",
@@ -540,5 +543,112 @@ describe("preload 暴露的只读 API", () => {
         /from\s+["'](node:[^"']+|fs|path|electron|better-sqlite3|@bakacoding\/storage)["']/,
       );
     }
+  });
+});
+
+describe("diagnostics:export 粒度与数据目录（T-130）", () => {
+  function setup(over: Partial<ProjectSettingsDeps> = {}) {
+    const { ipc, invoke, handlers } = fakeIpcMain();
+    const backend = fakeBackend();
+    const deps: ProjectSettingsDeps = {
+      backend: backend as unknown as ProjectSettingsDeps["backend"],
+      argv: [],
+      env: {},
+      pickDirectory: async () => null,
+      pickSavePath: async () => path.join(process.cwd(), "out.zip"),
+      downloadsDir: "/dl",
+      saveLastRepo: () => {},
+      now: () => new Date("2026-10-18T12:00:00Z"),
+      ...over,
+    };
+    const stop = serveProjectSettings(ipc, deps);
+    return { invoke, backend, stop, handlers };
+  }
+
+  it("省略参数：不传 options（后端按最近 24 小时），保存框 / 保存路径校验不变", async () => {
+    const { invoke, backend } = setup();
+    await expect(invoke(IPC_CHANNELS.diagnosticsExport)).resolves.toEqual({
+      ok: true,
+      path: path.join(process.cwd(), "out.zip"),
+    });
+    expect(backend.exportDiagnostics).toHaveBeenCalledWith(
+      path.join(process.cwd(), "out.zip"),
+      undefined,
+      new Date("2026-10-18T12:00:00Z"),
+    );
+  });
+
+  it("三种合法粒度原样透传", async () => {
+    const cases = [
+      { scope: { kind: "ticket", ticket_id: "T-9" } },
+      { scope: { kind: "requirement", requirement_id: "R-9" } },
+      { scope: { kind: "time_range", from: "2026-10-17T00:00:00Z", to: "2026-10-18T00:00:00Z" } },
+    ] as const;
+    for (const arg of cases) {
+      const { invoke, backend } = setup();
+      await expect(invoke(IPC_CHANNELS.diagnosticsExport, arg)).resolves.toEqual({
+        ok: true,
+        path: path.join(process.cwd(), "out.zip"),
+      });
+      expect(backend.exportDiagnostics).toHaveBeenCalledWith(
+        path.join(process.cwd(), "out.zip"),
+        arg,
+        new Date("2026-10-18T12:00:00Z"),
+      );
+    }
+  });
+
+  it("非法参数：固定文案、不调用后端、不弹保存框", async () => {
+    const badArgs: unknown[] = [
+      "x",
+      42,
+      { scope: "ticket" },
+      { scope: { kind: "ticket", ticket_id: "" } },
+      { scope: { kind: "ticket", ticket_id: "x".repeat(201) } },
+      { scope: { kind: "ticket", ticket_id: 7 } },
+      { scope: { kind: "requirement" } },
+      { scope: { kind: "time_range", from: "nope", to: "2026-10-18T00:00:00Z" } },
+      { scope: { kind: "time_range", from: "2026-10-18T02:00:00Z", to: "2026-10-18T01:00:00Z" } },
+      { scope: { kind: "weird" } },
+    ];
+    for (const arg of badArgs) {
+      const pickSavePath = vi.fn(async () => path.join(process.cwd(), "out.zip"));
+      const { invoke, backend } = setup({ pickSavePath });
+      await expect(invoke(IPC_CHANNELS.diagnosticsExport, arg)).resolves.toEqual({
+        ok: false,
+        reason: "导出参数不合法",
+      });
+      expect(backend.exportDiagnostics).not.toHaveBeenCalled();
+      expect(pickSavePath).not.toHaveBeenCalled();
+    }
+  });
+
+  it("open-data-dir：成功 / 注入失败固定文案 / 未注入", async () => {
+    const ok = setup({ openDataDir: async () => {} });
+    await expect(ok.invoke(IPC_CHANNELS.diagnosticsOpenDataDir)).resolves.toEqual({ ok: true });
+
+    const failing = setup({
+      openDataDir: async () => {
+        throw new Error("boom C:\\secret\\path");
+      },
+    });
+    const r = await failing.invoke(IPC_CHANNELS.diagnosticsOpenDataDir);
+    expect(r).toEqual({ ok: false, reason: "打开数据目录失败" });
+    expect(JSON.stringify(r)).not.toContain("secret");
+
+    const missing = setup();
+    await expect(missing.invoke(IPC_CHANNELS.diagnosticsOpenDataDir)).resolves.toEqual({
+      ok: false,
+      reason: "没有连接主进程，不能打开数据目录",
+    });
+  });
+
+  it("停止时注销两个新通道", () => {
+    const { stop, handlers } = setup();
+    expect(handlers.has(IPC_CHANNELS.diagnosticsExport)).toBe(true);
+    expect(handlers.has(IPC_CHANNELS.diagnosticsOpenDataDir)).toBe(true);
+    stop();
+    expect(handlers.has(IPC_CHANNELS.diagnosticsExport)).toBe(false);
+    expect(handlers.has(IPC_CHANNELS.diagnosticsOpenDataDir)).toBe(false);
   });
 });

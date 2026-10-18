@@ -31,6 +31,7 @@ import {
   resolveRepoSource,
   sanitizedDepsLogging,
   startBackend,
+  exportScope,
 } from "./backend.js";
 
 const examplePath = fileURLToPath(
@@ -785,5 +786,35 @@ describe("T-128：诊断包保留天数取自配置", () => {
       expect(existsSync(db), name).toBe(false);
       await backend.stop();
     }
+  });
+});
+
+describe("T-130：导出粒度 → 11 的 ExportScope", () => {
+  const now = new Date("2026-10-18T12:00:00Z");
+  it("省略粒度 = 最近 24 小时（T-072 行为不变）", () => {
+    const want = {
+      kind: "time_range",
+      from: "2026-10-17T12:00:00.000Z",
+      to: "2026-10-18T12:00:00.000Z",
+    };
+    expect(exportScope(undefined, now)).toEqual(want);
+    expect(exportScope({}, now)).toEqual(want);
+  });
+
+  it("三种粒度原样转换", () => {
+    expect(exportScope({ scope: { kind: "ticket", ticket_id: "T-9" } }, now)).toEqual({
+      kind: "ticket",
+      ticket_id: "T-9",
+    });
+    expect(exportScope({ scope: { kind: "requirement", requirement_id: "R-9" } }, now)).toEqual({
+      kind: "requirement",
+      requirement_id: "R-9",
+    });
+    const scope = {
+      kind: "time_range" as const,
+      from: "2026-10-17T00:00:00.000Z",
+      to: "2026-10-18T00:00:00.000Z",
+    };
+    expect(exportScope({ scope }, now)).toEqual(scope);
   });
 });

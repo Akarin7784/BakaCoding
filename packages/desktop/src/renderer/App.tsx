@@ -366,6 +366,7 @@ export function App(props: AppProps) {
         settings={actions.settings}
         error={actions.settingsError}
         {...(api?.secretStatus && { api })}
+        {...(api && { desktopApi: api })}
       />
       <CommandPalette
         open={paletteOpen}
