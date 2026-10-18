@@ -1,9 +1,9 @@
 // T-118：保留期自动清理。打开写库先清一次（补停机期间过期的数据），之后按 purge_interval_ms 定时清；
-// 只读连接不跑；失败只记日志不挡启动；close() 停掉定时器。
+// 只读连接不跑；失败只记日志不挡启动；close() 停掉定时器；定时器 unref（不阻止进程退出）。
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BakaEvent } from "@bakacoding/types";
 import { openStorage, openStorageReadonly, type Storage } from "./index.js";
 
@@ -73,14 +73,6 @@ function promptOf(s: Storage, event_id: string): string {
   return (e?.payload as { prompt: string }).prompt;
 }
 
-async function waitUntil(fn: () => boolean, timeoutMs = 3000): Promise<void> {
-  const started = Date.now();
-  while (!fn()) {
-    if (Date.now() - started > timeoutMs) throw new Error("等待自动清理超时");
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-}
-
 describe("T-118 保留期自动清理", () => {
   it("打开写库时先清一次：停机期间过期的提示词和输出被清掉", () => {
     const path = tmpDb();
@@ -96,48 +88,90 @@ describe("T-118 保留期自动清理", () => {
   });
 
   it("到期后按 purge_interval_ms 自动清，不用等到重启", async () => {
-    let clock = new Date("2026-01-01T00:00:00.000Z");
-    const s = openStorageAt({
-      path: tmpDb(),
-      now: () => clock,
-      purge_interval_ms: 20,
-    });
-    const e = call("2026-01-01T00:00:00.000Z");
-    s.ingest(e);
-    expect(promptOf(s, e.event_id)).toBe("写一个函数");
+    vi.useFakeTimers();
+    try {
+      let clock = new Date("2026-01-01T00:00:00.000Z");
+      const s = openStorageAt({
+        path: tmpDb(),
+        now: () => clock,
+        purge_interval_ms: 20,
+      });
+      const e = call("2026-01-01T00:00:00.000Z");
+      s.ingest(e);
+      expect(promptOf(s, e.event_id)).toBe("写一个函数");
 
-    clock = new Date("2026-03-01T00:00:00.000Z");
-    await waitUntil(() => promptOf(s, e.event_id) === "");
+      clock = new Date("2026-03-01T00:00:00.000Z");
+      await vi.advanceTimersByTimeAsync(20);
+      expect(promptOf(s, e.event_id)).toBe("");
+      s.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("close() 之后定时器不再跑（不会在已关闭的库上清理）", async () => {
-    const warns: string[] = [];
-    let clock = new Date("2026-01-01T00:00:00.000Z");
-    const s = openStorageAt({
-      path: tmpDb(),
-      now: () => clock,
-      purge_interval_ms: 10,
-      logger: { warn: (m) => warns.push(m) },
-    });
-    s.close();
-    expect(s.health().closed).toBe(true);
-    clock = new Date("2026-03-01T00:00:00.000Z");
-    await new Promise((resolve) => setTimeout(resolve, 60));
-    expect(warns).toEqual([]);
+    vi.useFakeTimers();
+    try {
+      const warns: string[] = [];
+      let clock = new Date("2026-01-01T00:00:00.000Z");
+      const s = openStorageAt({
+        path: tmpDb(),
+        now: () => clock,
+        purge_interval_ms: 10,
+        logger: { warn: (m) => warns.push(m) },
+      });
+      s.close();
+      expect(s.health().closed).toBe(true);
+      clock = new Date("2026-03-01T00:00:00.000Z");
+      await vi.advanceTimersByTimeAsync(60);
+      expect(warns).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("自动清理定时器 unref：不阻止进程退出", () => {
+    vi.useFakeTimers();
+    try {
+      const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+      const s = openStorageAt({
+        path: tmpDb(),
+        now: () => new Date("2026-01-01T00:00:00.000Z"),
+        purge_interval_ms: 60_000,
+      });
+      const handles = setIntervalSpy.mock.calls.map((args, i) => ({
+        delay: args[1],
+        handle: setIntervalSpy.mock.results[i]?.value as { hasRef(): boolean } | undefined,
+      }));
+      // 租约续期是 ttl/3 = 10 秒，自动清理是传入的 60 秒；抓后者
+      const purgeHandle = handles.find((h) => h.delay === 60_000)?.handle;
+      expect(purgeHandle).toBeDefined();
+      expect(purgeHandle!.hasRef()).toBe(false);
+      s.close();
+      setIntervalSpy.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("purge_interval_ms: 0 关闭自动清理（打开时那一次也不跑）", async () => {
-    const s = openStorageAt({
-      path: tmpDb(),
-      now: () => new Date("2026-03-01T00:00:00.000Z"),
-      purge_interval_ms: 0,
-    });
-    const e = call("2026-01-01T00:00:00.000Z");
-    s.ingest(e);
-    await new Promise((resolve) => setTimeout(resolve, 40));
-    expect(promptOf(s, e.event_id)).toBe("写一个函数");
-    // 数据本身已经过期：手动清理时清掉 1 条，证明不是数据没到期
-    expect(s.purgeExpired()).toEqual({ purged_calls: 1 });
+    vi.useFakeTimers();
+    try {
+      const s = openStorageAt({
+        path: tmpDb(),
+        now: () => new Date("2026-03-01T00:00:00.000Z"),
+        purge_interval_ms: 0,
+      });
+      const e = call("2026-01-01T00:00:00.000Z");
+      s.ingest(e);
+      await vi.advanceTimersByTimeAsync(60);
+      expect(promptOf(s, e.event_id)).toBe("写一个函数");
+      // 数据本身已经过期：手动清理时清掉 1 条，证明不是数据没到期
+      expect(s.purgeExpired()).toEqual({ purged_calls: 1 });
+      s.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("只读连接不清理", () => {
