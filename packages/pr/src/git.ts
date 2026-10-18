@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn, type ChildProcess } from "node:child_process";
+import { join } from "node:path";
 import { gitEnv, REPO_GIT_TIMEOUT_MS } from "@bakacoding/workspace";
 
 export class GitError extends Error {
@@ -40,13 +41,16 @@ export const GIT_KILL_GRACE_MS = 5_000;
  * 结束 git 子进程及整棵进程树（T-123）。Windows 上 git 会派生 ssh / git-remote-ext 等孙进程
  * （远程 git 和 `ext::` 传输都有），`child.kill()` 只终止直接子进程，孙进程会残留：继续跑、继续
  * 占着 stdio 管道。Windows 没有优雅信号，直接用 `taskkill /PID <pid> /T /F` 结束整棵树；
- * taskkill 起不来（PATH 异常等）时退回 `child.kill()`。POSIX 行为不变：SIGTERM → SIGKILL。
+ * taskkill 用 `%SystemRoot%\System32\taskkill.exe` 绝对路径（不走 PATH，防劫持），拿不到 SystemRoot
+ * 时才退回命令名；taskkill 起不来时退回 `child.kill()`。POSIX 行为不变：SIGTERM → SIGKILL。
  */
 function endProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
   const pid = child.pid;
   if (process.platform === "win32" && typeof pid === "number") {
     try {
-      const killer = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
+      const systemRoot = process.env.SystemRoot ?? process.env.windir;
+      const taskkill = systemRoot ? join(systemRoot, "System32", "taskkill.exe") : "taskkill";
+      const killer = spawn(taskkill, ["/PID", String(pid), "/T", "/F"], {
         windowsHide: true,
         stdio: "ignore",
       });
