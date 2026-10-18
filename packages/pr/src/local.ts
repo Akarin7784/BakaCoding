@@ -326,8 +326,9 @@ export class LocalPrProvider implements PrProvider {
         head = await this.revParse(cwd, rec.merge_sha);
       }
       const range = [base, head];
-      const ns = (await git(cwd, ["diff", "-M", "--name-status", "-z", ...range])).stdout;
-      const num = (await git(cwd, ["diff", "-M", "--numstat", "-z", ...range])).stdout;
+      // T-121：-C 检出复制，复制出来的文件按 added + old_path 报（DiffFile 不加 copied 状态）
+      const ns = (await git(cwd, ["diff", "-M", "-C", "--name-status", "-z", ...range])).stdout;
+      const num = (await git(cwd, ["diff", "-M", "-C", "--numstat", "-z", ...range])).stdout;
 
       const entries: { status: DiffFile["status"]; path: string; old?: string }[] = [];
       const t = ns.split("\0");
@@ -345,14 +346,16 @@ export class LocalPrProvider implements PrProvider {
       const n = num.split("\0");
       for (let i = 0; i < n.length && n[i];) {
         const [a, d, p] = n[i++]!.split("\t");
-        const path = p === "" ? (i++, n[i++]!) : p!; // 重命名：空路径后跟 old\0new
+        const path = p === "" ? (i++, n[i++]!) : p!; // 重命名 / 复制：空路径后跟 old\0new
         counts.set(path, { a: a === "-" ? 0 : Number(a), d: d === "-" ? 0 : Number(d) });
       }
 
       const files: DiffFile[] = [];
       for (const e of entries) {
         const paths = e.old ? [e.old, e.path] : [e.path];
-        const patch = (await git(cwd, ["diff", "-M", ...range, "--", ...paths])).stdout;
+        const raw = (await git(cwd, ["diff", "-M", "-C", ...range, "--", ...paths])).stdout;
+        // 复制：git 会同时输出源文件的改动块和复制块，本文件的 patch 只留目标路径那一块
+        const patch = e.old && e.status === "added" ? patchBlockOf(raw, e.path) : raw;
         const c = counts.get(e.path) ?? { a: 0, d: 0 };
         files.push({
           path: e.path,
@@ -573,6 +576,24 @@ async function refExists(cwd: string, ref: string): Promise<boolean> {
 
 function cwdOf(rec: PrRecord): string {
   return rec.kind === "ticket" ? rec.worktree_path : rec.repo_path;
+}
+
+/**
+ * 逐文件取 patch 时，paths 同时带了源路径和目标路径（复制检测要用源路径）。
+ * `git diff -M -C -- <源> <目标>` 检出复制时会输出两块：源文件的改动块 + 复制块，
+ * 本文件的 patch 只能留目标路径那一块，否则会把源文件的改动算进来（T-121）。
+ * 只有一块、或块头认不出（路径被 git 加了引号等）时原样返回。
+ */
+function patchBlockOf(patch: string, path: string): string {
+  if (!patch.startsWith("diff --git ")) return patch;
+  const blocks = patch.split(/(?=^diff --git )/m).filter((b) => b.startsWith("diff --git "));
+  if (blocks.length <= 1) return patch;
+  const hit = blocks.find((b) => {
+    const nl = b.indexOf("\n");
+    const header = nl < 0 ? b : b.slice(0, nl);
+    return header.endsWith(` b/${path}`) || header.endsWith(` "b/${path}"`);
+  });
+  return hit ?? patch;
 }
 
 /**
