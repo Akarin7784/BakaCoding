@@ -270,6 +270,15 @@ export function serveSupervisorChat(
 }
 
 /**
+ * fs / git 报错的 message 里带绝对路径（如 `copyfile 'C:\\…' -> 'C:\\…'`），只把错误码交给界面（T-126，§12 口径）。
+ * 取不到合法错误码时给 `unknown`，不透出原始 message。
+ */
+export function errorCodeOnly(e: unknown): string {
+  const code = (e as NodeJS.ErrnoException | undefined)?.code;
+  return typeof code === "string" && /^[A-Z0-9_]+$/.test(code) ? code : "unknown";
+}
+
+/**
  * 导入项目 / 导出诊断包 / 只读设置 IPC（T-072）。对话框、userData 写入由 main 注入；
  * 依赖与辅助函数在 project-settings-ipc.ts。
  */
@@ -353,7 +362,8 @@ export function serveProjectSettings(ipc: IpcMainLike, deps: ProjectSettingsDeps
     try {
       made = createDefaultConfigFiles(dir, deps.templateDir, deps.argv, deps.env);
     } catch (e) {
-      return { ok: false, reason: clean(`创建配置失败：${errorDetail(e)}`) };
+      // T-126：fs 报错的 message 带绝对路径，只把错误码交给界面（§12 口径）
+      return { ok: false, reason: `创建配置失败（${errorCodeOnly(e)}）` };
     }
     if (!made.ok) return { ok: false, reason: clean(made.reason) } satisfies DesktopImportResult;
     let warn: string | undefined;
@@ -366,8 +376,8 @@ export function serveProjectSettings(ipc: IpcMainLike, deps: ProjectSettingsDeps
         );
         if (!ok) warn = "没能写入 .git/info/exclude（不是 Git 仓库）";
       } catch (e) {
-        // 写 exclude 失败只提醒，不挡导入
-        warn = clean(`没能写入 .git/info/exclude：${errorDetail(e)}`);
+        // 写 exclude 失败只提醒，不挡导入；同样只留错误码
+        warn = `没能写入 .git/info/exclude（${errorCodeOnly(e)}）`;
       }
     }
     const check = checkProjectDir(dir, deps.env, deps.argv);

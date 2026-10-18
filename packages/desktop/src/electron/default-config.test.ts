@@ -23,7 +23,7 @@ import {
   createDefaultConfigFiles,
   defaultTemplateDir,
 } from "./default-config.js";
-import { serveProjectSettings, type IpcMainLike } from "./ipc.js";
+import { errorCodeOnly, serveProjectSettings, type IpcMainLike } from "./ipc.js";
 import { checkProjectDir } from "./project-import.js";
 import type { ProjectSettingsDeps } from "./project-settings-ipc.js";
 
@@ -287,6 +287,24 @@ describe("project:createDefaultConfig IPC（T-081）", () => {
     expect(JSON.stringify(r)).not.toContain(secret);
   });
 
+  it("fs 报错只留错误码：不把带绝对路径的 message 拼进提示（T-126）", async () => {
+    const d = repo();
+    const err = Object.assign(
+      new Error(`EACCES: permission denied, copyfile '${join(d, "config/models.json")}'`),
+      { code: "EACCES" },
+    );
+    const { invoke } = setup(d, {
+      ensureExcludeLines: () => {
+        throw err;
+      },
+    });
+    await invoke(IPC_CHANNELS.projectImport);
+    const r = await invoke(IPC_CHANNELS.projectCreateDefaultConfig);
+    expect(r.ok).toBe(true);
+    expect(r.ok && r.note).toContain("没能写入 .git/info/exclude（EACCES）");
+    expect(JSON.stringify(r)).not.toContain(d);
+  });
+
   it("ensureExcludeLines 返回 false（T-082 约定：不是 git 仓库、不抛错）：同样只提醒、不挡导入", async () => {
     const d = repo();
     const { invoke } = setup(d, { ensureExcludeLines: async () => false });
@@ -385,5 +403,14 @@ describe("project:createDefaultConfig IPC（T-081）", () => {
     expect(handlers.has(IPC_CHANNELS.projectCreateDefaultConfig)).toBe(true);
     stop();
     expect(handlers.size).toBe(0);
+  });
+});
+
+describe("errorCodeOnly（T-126）", () => {
+  it("只认标识符形状的错误码；取不到时给 unknown，不透出原始 message", () => {
+    expect(errorCodeOnly(Object.assign(new Error("x"), { code: "EACCES" }))).toBe("EACCES");
+    expect(errorCodeOnly(Object.assign(new Error("x"), { code: "bad code" }))).toBe("unknown");
+    expect(errorCodeOnly(new Error("copyfile 'C:\\secret\\config.json'"))).toBe("unknown");
+    expect(errorCodeOnly(undefined)).toBe("unknown");
   });
 });

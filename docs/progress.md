@@ -137,6 +137,7 @@ flowchart BT
 | T-080 | 文档：README 重写（1.0.0-preview 的 Windows 下载与运行、桌面端用法、环境变量、v1 已知限制、第三方声明 lucide ISC）；`docs/images/` 加三张实机截图（主界面、同步状态行、导出诊断包）；整体设计（md / html）状态句改为 v1 已实现，worktree 排除说明改为 `.git/info/exclude` 排除整个 `/.bakacoding/`；整体设计和模块文档的密钥说明改为只从环境变量读（不读 `config/secrets.local.json`）。只改文档，main `dd266a4`，测试仍为 73 个文件 / 1570 个 | 文档 | 界面与诊断开发 | 已合入 | #89 | `dd266a4` |
 | T-082 | 模块 4：新增通用接口 `ensureExcludeLines(dir, lines)`（经 `@bakacoding/app` 再导出，供 T-081 写 `/config/*.json`）；`ensureBakacodingIgnored` 改为调用它，行为不变；判断规则是否已存在改按 git 语义（行首空格算数、行尾未转义空格不算、CRLF 视同 LF），修掉 `trim()` 把行首空格当成等价的问题；modules.md 同步。main `2a4dba5`，测试 73 个文件 / 1578 个 | 4 | 基础层开发 | 已合入 | #90 | `2a4dba5` |
 | T-081 | 导入缺配置时「用默认模板创建」：新 IPC `project:createDefaultConfig`（无参数，目录由主进程记住，每次导入 / 用完即清）；只补缺的文件、不覆盖、`--config` 时只建 pricing.json、符号链接 / 非 git 仓库拒绝；exclude 行经 `ensureExcludeLines`（T-082，main.ts 注入真实实现，只写本次新建的文件）；缺失清单只说一遍并提示模板位置；界面内容区「缺配置」横幅 +「用默认模板创建」按钮（原因走 toast）；UI-03b 起不是 Git 仓库不进 `missing`，失败结果带 `notGit` / `envConfigMissing`，都不给按钮 | 12 | 界面与诊断开发 | 已合入 | #91 | `226362e` |
+| T-126 | 模块 12：T-081 评审 P2 清尾：`project:createDefaultConfig` 创建配置 / 写 `.git/info/exclude` 的报错只留错误码（fs 报错的 message 带绝对路径，不再拼进界面提示）；`modules.md` §12 措辞对齐（补完后内容校验仍不过时，提醒并进失败原因）；已知缺口登记 11/12 三条（右面板动态空壳、诊断导出只有 24 小时一键、设置弹层缺可编辑标签） | 12 | 界面与诊断开发 | 待评审 | #155 | |
 | UI-01 | 模块 12 设计 token、主题、字体与基础组件（`docs/ui-design.md` §5、§6，`01b15dd`）：§5.1 浅 / 深两套 OKLCH 颜色 token（danger 红与 accent 蓝分开，错误提示改用 danger）；主题跟随系统 / 浅 / 深，偏好存 localStorage，写到 `<html data-theme>`，设置页加主题切换；字体西文 Inter（随包 latin / latin-ext 子集，OFL）+ Segoe UI Variable / 微软雅黑 UI，正文 14px，代码字体栈；间距、圆角、阴影、动效 token，尊重减少动态效果；按钮只留 primary / secondary / danger 三种（34 / 28 高），danger 只能经确认框的 `DialogDangerButton` 用；补 shadcn 组件 Dialog、DropdownMenu、Tooltip、Toast（sonner）、Tabs、Input、Select、Switch、ScrollArea、Collapsible、Command；`StatusIcon`（9 个状态 → lucide 图标，§5.2）；文案表 `lib/copy.ts`（merged「已合入」、合入 main「已合入 main」、复投「重写」），测试搜 `packages/desktop/src` 不得出现旧叫法；新依赖 `radix-ui`、`sonner`、`cmdk`、`@fontsource-variable/inter`；IPC 与布局不变。main `e44f4a5`，测试 78 个文件 / 1619 个 | 12 | 界面与诊断开发 | 已合入 | #93 | `e44f4a5` |
 | T-085 | 模块 9 单子状态变更事件：`@bakacoding/types` 新增 `ticket_status_changed`（`project_id`、`from`（可为 null）、`to`，`ticket_id` 必填，只加不改）；组合根的 `tickets.setStatus`（8 和 9 写状态都经它）在写库成功、且状态真的变了之后发一条，同状态重复写、写库抛错、找不到单、新建单子都不发，发布失败只记警告；trace 取单子 `fields.trace`；8、9、10 的代码和接口不动；modules.md 事件清单和「组合根」一节同步。main `1824b12`，测试 81 个文件 / 1678 个 | 9 | 编排层开发 | 已合入 | #99 | `1824b12` |
 | T-095 | 根目录 `pnpm typecheck` 在干净检出上报 TS6310：根脚本是 `tsc -b --noEmit`，而 TypeScript project references 要求被引用项目能写出声明文件，CLI 的 `--noEmit` 会关掉整张依赖图的 emit；最小修复是把根 `typecheck` 改成 `tsc -b`（与 `build` 相同，会写出 dist）。干净检出（`pnpm install`、无先验 build）根目录 typecheck 通过；回滚 `--noEmit` 后 TS6310 复现；`pnpm build` / `test` / `lint` / `format:check` / `pnpm -r typecheck` 不受影响。README 开发者指南同步说明。 | 工具链 / 12 | 界面与诊断开发 | 已合入 | #96 | `fe8207c` |
@@ -235,6 +236,9 @@ flowchart BT
 - 已补测试（T-076）：模块 6 check-runs 响应里没有 `total_count` 时，按已收到的条数算，当页之后不再翻页（行为不变，只补测试）。
 - 模块 12（T-073）：桌面端暂用 Electron 43.8.0（better-sqlite3 尚无 Electron 44/ABI 149 预编译），上游出了再升。
 - 模块 12（T-073）：开发用 better-sqlite3 12.11.1，打包用 12.12.0 electron-v148 预编译（lib/ 逐字节相同，仅 SQLite 版本不同）。
+- 模块 12（UI-04～UI-06）：右面板「动态」标签仍是空壳；数据源已就绪（`group_message` + T-085 `ticket_status_changed`），界面未接（T-126 登记）。
+- 模块 11 / 12（UI-09）：诊断导出只有「最近 24 小时」一键入口；按单张单 / 需求 / 时间段选择、`eval_task` 人工补填、SWE-bench JSONL 导出都还没接（11 的接口已支持，T-126 登记）。
+- 模块 12（UI-07）：设置弹层目前只有只读设置 + 密钥 + 模型向导；设计稿 7 个标签里的通用 / 项目 / 模型 / 预算 / 诊断 / 关于和可编辑写回（`writeConfig` / `writePricing` + reload 排队）未做（T-126 登记）。
 
 ### 不对应需求单的 PR
 
