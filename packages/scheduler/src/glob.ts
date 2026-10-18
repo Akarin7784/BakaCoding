@@ -105,14 +105,25 @@ function classEndOf(s: string, open: number): number {
   return -1;
 }
 
-/** 字符类内容（不含两侧 `[` `]`）转成正则片段；空类 / 只有否定符时返回 undefined（按字面量）。 */
+/**
+ * 字符类内容（不含两侧 `[` `]`）转成正则片段；空类 / 只有否定符 / 非法类（如 `[z-a]` 反向区间）返回
+ * undefined，按字面量处理。返回前先试建一次正则：非法类不能在 `new RegExp` 处抛（T-115 评审 P1）。
+ */
 function classToRegExp(body: string): string | undefined {
   if (body === "") return undefined;
   const negated = body[0] === "!" || body[0] === "^";
   const content = negated ? body.slice(1) : body;
   if (content === "") return undefined;
   const escaped = content.replace(/\\/g, "\\\\").replace(/]/g, "\\]");
-  return negated ? `[^${escaped}]` : `[${escaped}]`;
+  const cls = negated ? `[^${escaped}]` : `[${escaped}]`;
+  // 反向区间（`[z-a]`）等非法写法会让 new RegExp 抛 SyntaxError。写入范围来自单子字段，若在 9 的派单里抛，
+  // `tryLock` 每轮重抛、单子一直 pending、调度卡停；所以非法类一律按字面量。
+  try {
+    new RegExp(cls);
+  } catch {
+    return undefined;
+  }
+  return cls;
 }
 
 /** 段里有没有合法的 `[...]` 字符类（未闭合的 `[` 按字面量，不算通配）。 */
@@ -193,7 +204,8 @@ function braceFreeToRegExp(glob: string): string {
 
 /**
  * 极简 glob：`**` 跨目录、`*` 不跨 `/`、`?` 单个字符、`[...]` 字符类（`[!...]` / `[^...]` 否定，
- * 等同 minimatch；未闭合的 `[` 按字面量）、`{a,b}` 花括号展开；其余字面匹配。
+ * 等同 minimatch；未闭合的 `[`、空类和非法类（如 `[z-a]` 反向区间）按字面量）、`{a,b}` 花括号展开；
+ * 其余字面匹配。任何输入都不抛：非法字符类按字面量处理。
  */
 export function globToRegExp(glob: string): RegExp {
   const alts = expandBraces(glob).map(braceFreeToRegExp);

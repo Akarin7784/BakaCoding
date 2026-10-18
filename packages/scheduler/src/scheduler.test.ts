@@ -2094,6 +2094,32 @@ describe("T-115 写入范围 glob：字符类", () => {
     expect(globToRegExp("**/package.json").test("pkgs/x/package.json")).toBe(true);
   });
 
+  it("非法字符类（[z-a] 反向区间等）按字面量，四个入口都不抛（评审 P1）", () => {
+    const bad = "src/[z-a].ts";
+    const entries = [
+      () => globToRegExp(bad),
+      () => matchesAny("src/a.ts", [bad]),
+      () => globsOverlap(bad, "src/a.ts"),
+      () => inExclusiveZone(bad, DEFAULT_EXCLUSIVE_ZONES),
+    ];
+    for (const call of entries) expect(call, bad).not.toThrow();
+    expect(globToRegExp(bad).test("src/[z-a].ts")).toBe(true);
+    expect(globToRegExp(bad).test("src/a.ts")).toBe(false);
+    expect(globsOverlap(bad, "src/a.ts")).toBe(false);
+    expect(globsOverlap(bad, bad)).toBe(true);
+    expect(inExclusiveZone(bad, DEFAULT_EXCLUSIVE_ZONES)).toBe(false);
+    // 带反斜杠的错位类同样按字面量、不抛
+    const weird = "src/[a-\\d].ts";
+    for (const call of [
+      () => globToRegExp(weird),
+      () => matchesAny("src/a.ts", [weird]),
+      () => globsOverlap(weird, "src/a.ts"),
+      () => inExclusiveZone(weird, DEFAULT_EXCLUSIVE_ZONES),
+    ])
+      expect(call, weird).not.toThrow();
+    expect(globToRegExp(weird).test("src/[a-\\d].ts")).toBe(true);
+  });
+
   it("globsOverlap：字符类与能匹配的字面量算重叠，匹配不上的不重叠；两边都带通配照旧保守", () => {
     const yes: Array<[string, string]> = [
       ["src/[ab].ts", "src/a.ts"],
@@ -2146,6 +2172,19 @@ describe("T-115 写入范围 glob：字符类", () => {
     d.pending.get("T-1")!.resolve({ kind: "escalated", pr_id: null });
     await settle(s);
     expect(d.handled).toEqual(["T-1", "T-2"]);
+  });
+
+  it("D17. 调度：写入范围含非法字符类的单照常派发，tryLock 不抛、调度不卡停", async () => {
+    const h = harness();
+    const d = withHandle(h);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { write_scope: ["src/[z-a].ts"] }));
+    await settle(s);
+    expect(d.handled).toEqual(["T-1"]);
+    expect(h.errors).toEqual([]);
+    d.pending.get("T-1")!.resolve({ kind: "escalated", pr_id: null });
+    await settle(s);
+    expect(h.errors).toEqual([]);
   });
 });
 
