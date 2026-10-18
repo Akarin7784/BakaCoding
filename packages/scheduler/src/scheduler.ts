@@ -44,6 +44,13 @@ export const SYNC_BACKOFF_MAX_MS = 600_000;
 export const WHOLE_REPO_SCOPE: readonly string[] = ["**"];
 
 /**
+ * 等锁防饿死（T-116）：一张单连续这么多轮派单都因为写入范围锁加不上而被跳过之后，同一轮里与它锁冲突的
+ * 新单让它一轮（不派），避免大写入范围的单一直被后来小范围的单抢先（T-039 已知缺口）。
+ * 没有这种等待者时，派单顺序和结果与之前完全一致。
+ */
+export const LOCK_WAIT_AGING_ROUNDS = 2;
+
+/**
  * 默认独占区域（PD §4：依赖清单、锁文件、全局配置、迁移、公共类型属于独占区域，单独排队）。
  * 公共类型的位置因项目而异，这里只列常见的 `types` 目录和声明文件；项目可用 `deps.exclusive_zones` 整体替换。
  */
@@ -177,6 +184,11 @@ interface Entry {
   coding: boolean;
   /** 持有的写入范围锁；null 为没持锁。到终态自动不算（见 holders()） */
   lock_scope: string[] | null;
+  /**
+   * 连续多少轮派单因为写入范围锁加不上被跳过（T-116 等锁防饿死）：`tryLock` 失败时 +1，派出时清 0。
+   * 达到 `LOCK_WAIT_AGING_ROUNDS` 后，同一轮里与它锁冲突的新单让它一轮。
+   */
+  lock_wait_rounds: number;
   conflicted: boolean;
   base_changed: boolean;
   re_reviewed: boolean;
@@ -499,6 +511,25 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   }
 
   /**
+   * 等锁防饿死（T-116）：是否有「等老了」的单会和 e 抢同一把锁。等老 = pending、没派出、不是预算暂停续跑、
+   * 依赖已就绪、没被 offpeak 压住、`lock_wait_rounds >= LOCK_WAIT_AGING_ROUNDS`；锁冲突按 `scopesOverlap`
+   * 判（与 tryLock 的普通重叠规则一致；独占区域不需要额外规则——候选单先持锁并不会挡住等待中的独占单）。
+   * 没有这种等待者时返回 false，派单顺序和结果与改动前完全一致。
+   */
+  function hasAgedLockWaiter(e: Entry, waitOffpeak: boolean): boolean {
+    const mine = scopeOf(e.ticket);
+    for (const w of entries.values()) {
+      if (w === e || w.lock_wait_rounds < LOCK_WAIT_AGING_ROUNDS) continue;
+      if (w.status !== "pending" || w.dispatched || w.pr_id !== null) continue;
+      if (w.resume_token !== undefined) continue;
+      if (dependencyState(w.ticket.ticket_id) !== "ready") continue;
+      if (w.ticket.priority === "deferred" && waitOffpeak) continue;
+      if (scopesOverlap(mine, scopeOf(w.ticket))) return true;
+    }
+    return false;
+  }
+
+  /**
    * 8 转来的范围外写入申请（T-038）：对本单重新加锁，成功把范围并进 write_scope；失败不改锁，
    * 发 `escalated(scope_lock_failed)`（进队前状态归 8，9 不改 TicketStatus）。未登记或已终态直接失败。
    * 回 `write_scope_granted` / `write_scope_denied` 由 8 发（8 是唯一答复方），9 不发。
@@ -799,6 +830,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       dispatched: false,
       coding: false,
       lock_scope: null,
+      lock_wait_rounds: 0,
       conflicted: false,
       base_changed: false,
       re_reviewed: false,
@@ -1397,7 +1429,12 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         continue;
       if (dependencyState(id) !== "ready") continue;
       if (e.ticket.priority === "deferred" && waitOffpeak) continue;
-      if (!tryLock(e, scopeOf(e.ticket)).ok) continue;
+      // T-116 等锁防饿死：有等锁 >= 2 轮的 pending 单和本单冲突时，本轮让路，把槽位留给它
+      if (hasAgedLockWaiter(e, waitOffpeak)) continue;
+      if (!tryLock(e, scopeOf(e.ticket)).ok) {
+        e.lock_wait_rounds += 1;
+        continue;
+      }
       startHandle(e);
       used++;
       out.push(id);
@@ -1442,6 +1479,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     const handle = deps.subAgent.handle!;
     e.dispatched = true;
     e.coding = true;
+    e.lock_wait_rounds = 0; // T-116：派出即不再算等锁
     const p = (async () => {
       const res: DispatchOutcome = await handle(e.ticket, { signal: abort.signal });
       if (TERMINAL.has(e.status)) return;

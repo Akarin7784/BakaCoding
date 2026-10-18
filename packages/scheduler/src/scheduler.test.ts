@@ -33,6 +33,7 @@ import {
   globsOverlap,
   inExclusiveZone,
   isUnsafeScope,
+  LOCK_WAIT_AGING_ROUNDS,
   MAX_BRACE_EXPANSIONS,
   matchesAny,
   sampleOf,
@@ -2213,6 +2214,58 @@ describe("T-115 写入范围 glob：字符类", () => {
     d.pending.get("T-1")!.resolve({ kind: "escalated", pr_id: null });
     await settle(s);
     expect(h.errors).toEqual([]);
+  });
+});
+
+describe("T-116 等锁防饿死", () => {
+  it("常量是 2 轮；没有等锁者时派单顺序和结果与之前一致", async () => {
+    expect(LOCK_WAIT_AGING_ROUNDS).toBe(2);
+    const h = harness();
+    const d = withHandle(h, { max: 3 });
+    const s = await started(h);
+    for (const id of ["T-1", "T-2", "T-3"])
+      await s.enqueue(ticket(id, { write_scope: [`src/${id}/**`] }));
+    await settle(s);
+    expect(d.handled).toEqual(["T-1", "T-2", "T-3"]);
+    expect(await s.dispatch()).toEqual([]);
+  });
+
+  it("D19. 大范围单等锁 >= 2 轮后，新来的重叠单让路；锁释放后它第一轮拿到锁", async () => {
+    const h = harness();
+    const d = withHandle(h, { max: 2 });
+    const s = await started(h);
+    await s.enqueue(ticket("T-0", { write_scope: ["src/a.ts"] }));
+    await s.enqueue(ticket("T-1", { write_scope: ["src/**"] }));
+    await settle(s);
+    // T-1 加不上锁、已经被跳过 >= 2 轮
+    expect(d.handled).toEqual(["T-0"]);
+
+    await s.enqueue(ticket("T-2", { write_scope: ["src/b.ts"] }));
+    await settle(s);
+    // 修复前 T-2 会抢到第 2 个槽位、T-1 继续饿着；修复后 T-2 让路
+    expect(d.handled).toEqual(["T-0"]);
+
+    d.pending.get("T-0")!.resolve({ kind: "escalated", pr_id: null });
+    await settle(s);
+    // T-0 释放后 T-1 第一轮拿到锁；T-2 仍被 T-1 的 src/** 挡住
+    expect(d.handled).toEqual(["T-0", "T-1"]);
+
+    d.pending.get("T-1")!.resolve({ kind: "escalated", pr_id: null });
+    await settle(s);
+    expect(d.handled).toEqual(["T-0", "T-1", "T-2"]);
+  });
+
+  it("D20. 不冲突的单不让路：等待者在 src/** 时，新来的 lib/** 照常派出", async () => {
+    const h = harness();
+    const d = withHandle(h, { max: 3 });
+    const s = await started(h);
+    await s.enqueue(ticket("T-0", { write_scope: ["src/a.ts"] }));
+    await s.enqueue(ticket("T-1", { write_scope: ["src/**"] }));
+    await settle(s);
+    expect(d.handled).toEqual(["T-0"]);
+    await s.enqueue(ticket("T-2", { write_scope: ["lib/x.ts"] }));
+    await settle(s);
+    expect(d.handled).toEqual(["T-0", "T-2"]);
   });
 });
 
