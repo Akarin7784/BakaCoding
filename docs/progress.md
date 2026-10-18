@@ -172,6 +172,7 @@ flowchart BT
 | T-109 | 界面：`App.status.test` 重新连接失败用例偶发失败（flaky），定位并修稳（UI-03a #130 评审跟进）。根因：sonner 点 action 默认关掉 toast（200ms 后卸载），「复制详情」把错误 toast 关了，末尾断言能否通过取决于测试是否在 200ms 内跑完；`notifyError` 的复制按钮 `preventDefault`，复制后错误 toast 留着，测试改看 `data-removed` 标记、不靠时间。另补退出组合测试：stop 挂住 + 收尾中点关闭 + 到 `QUIT_STOP_TIMEOUT_MS` 放行窗口、只退出一次（假计时器）。main `aae7037`，测试 115 个文件 / 2127 个 | 12 | 界面与诊断开发 | 已合入 | #147 | `aae7037` |
 | T-114 | 模块 3 / 4：配置向导（T-113）的底层支持：3 新增 `writePricing(path, pricing, opts?)` 与 `WRITABLE_PRICING_FILE`（只写 `pricing.json`，`PricingSchema` 校验 + 像密钥的值检查，和 `writeConfig` 共用原子写入）；4 新增 `nested_repo`：`checkRepo` 的 git 项、`initRepo`（不建目录、不 init）和提交类修复都识别「在另一个 Git 仓库里面」，`rev-parse` 失败时逐层 lstat 找 `.git`。main `10d9e00`，测试 116 个文件 / 2149 个 | 3、4 | 基础层开发 | 已合入 | #148 | `10d9e00` |
 | T-122 | 模块 7：`review()` 的 signal 也透传给 6 的 `checks` / `diff`（6 的 T-102a / T-110 起支持请求级超时与取消）；`ReviewPrSource.checks` / `diff` 加可选 `{ signal }`，给了 signal 才传第二参、没给仍只传 `pr_id`；在途中止由 6 抛 `signal.reason`、7 原样抛，6 没理会 signal、取消后才返回时 7 丢弃结果并抛，两种情况都不再读 diff / 不调模型；补 5 条测试；modules.md §7 同步 | 7 | 执行层开发 | 待评审 | #158 | |
+| T-125 | Windows 测试基线（新增 `docs/test-baseline.md`）：测量时 main `10ac6e3`（118 文件 / 2205 测试）；全量并发跑 163 条失败，串行交叉验证后确定性失败 **55 条 / 21 文件**（其余 108 条为 5s 超时 / EBUSY 负载噪声，不计入）；固化门禁三条（build/typecheck/lint/format:check 全绿、受影响包串行对比、新增失败=0）与平台守卫按模块分摊清单，消除进度在本文件登记 | 全模块 / 测试基线 | 审查官 | 待评审 | #160 | |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
