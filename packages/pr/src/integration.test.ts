@@ -45,7 +45,9 @@ beforeEach(async () => {
   pr = new LocalPrProvider({ store, repo, author: { name: "t", email: "t@t" } });
 });
 afterEach(async () => {
-  await rm(root, { recursive: true, force: true });
+  // T-134：Windows 上 git 子进程退出后可能短暂占着临时目录（EBUSY），重试几次再删；
+  // 这是测试侧的环境问题，不改生产代码。
+  await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 });
 
 describe("openIntegration", () => {
@@ -93,6 +95,8 @@ describe("openIntegration", () => {
 });
 
 describe("集成记录 diff 现算", () => {
+  // T-134：这条要串行跑十几次 git（openIntegration / 两次合并 / 多次 diff / 主仓库前进），
+  // Windows + 高负载下 5 秒默认超时会假红，单独放宽到 20 秒；断言不变。
   it("随集成分支前进而更新，base 取当前 merge-base", async () => {
     const id = await pr.openIntegration();
     const d0 = await pr.diff(id);
@@ -126,10 +130,12 @@ describe("集成记录 diff 现算", () => {
     );
     expect(d3.base_sha).not.toBe(d0.base_sha);
     expect(d3.files.map((f) => f.path)).toEqual(["T-3.txt"]);
-  });
+  }, 20_000);
 });
 
 describe("集成记录 merge", () => {
+  // T-134：同「diff 现算」，这条要串行跑多次合并 / 开 worktree，Windows + 高负载下 5 秒默认超时会假红，
+  // 单独放宽到 20 秒；断言不变。
   it("快进合入 main，记录 merged；再 open 得到新 pr_id", async () => {
     const id = await pr.openIntegration();
     await pr.merge(await ticketPr("T-4"), INTEGRATION_BRANCH);
@@ -151,7 +157,7 @@ describe("集成记录 merge", () => {
     await pr.merge(await ticketPr("T-6"), INTEGRATION_BRANCH);
     expect((await pr.diff(next)).files.map((f) => f.path)).toEqual(["T-6.txt"]);
     expect((await pr.diff(id)).files.map((f) => f.path).sort()).toEqual(["T-4.txt", "T-5.txt"]);
-  });
+  }, 20_000);
 
   it("main 已前进：生成合并提交（非 FF）", async () => {
     const id = await pr.openIntegration();
