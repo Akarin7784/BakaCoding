@@ -432,10 +432,17 @@ function open(options: StorageOptions, ro: boolean): Storage {
       throw e;
     }
   } else {
-    db.pragma("journal_mode = WAL");
-    db.pragma("synchronous = NORMAL");
-    db.pragma("foreign_keys = ON");
-    migrate(db);
+    try {
+      db.pragma("journal_mode = WAL");
+      db.pragma("synchronous = NORMAL");
+      db.pragma("foreign_keys = ON");
+      migrate(db);
+    } catch (e) {
+      // 迁移失败（如旧库有重复 seq）时也要关掉句柄：否则 Windows 上库文件一直被占用，
+      // 临时目录 / 库文件删不掉（T-129）。原错误照常抛给调用方。
+      db.close();
+      throw e;
+    }
   }
   const toMs = (ts: string, field: string): number => {
     const ms = isoToMs(ts);
