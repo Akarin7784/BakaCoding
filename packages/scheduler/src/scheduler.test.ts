@@ -2174,18 +2174,42 @@ describe("T-115 写入范围 glob：字符类", () => {
     expect(d.handled).toEqual(["T-1", "T-2"]);
   });
 
-  it("D17. 调度：写入范围含非法字符类的单照常派发，tryLock 不抛、多轮 dispatch 不重复抛", async () => {
+  it("D17. 调度：write_scope 含非法字符类 [z-a] 的单照常派出，多轮 dispatch 不重复抛", async () => {
     const h = harness();
     const d = withHandle(h);
+    h.daily.exhausted = true; // 先压住自动派单，好拿到 dispatch() 这一轮的返回值
     const s = await started(h);
     await s.enqueue(ticket("T-1", { write_scope: ["src/[z-a].ts"] }));
     await settle(s);
-    expect(d.handled).toEqual(["T-1"]);
+    expect(d.handled).toEqual([]);
+    h.daily.exhausted = false;
+    // dispatchOnce 正常返回该单、不抛
+    expect(await s.dispatch()).toEqual(["T-1"]);
     expect(h.errors).toEqual([]);
-    // 再手动跑几轮派单循环：没有卡在 pending 里每轮重抛
-    for (let i = 0; i < 3; i++) await s.dispatch();
-    expect(h.errors).toEqual([]);
+    // 再 kick 一次：不重复派、单子不卡在 pending、不重复抛
+    expect(await s.dispatch()).toEqual([]);
     expect(d.handle).toHaveBeenCalledTimes(1);
+    expect(s.snapshot().find((v) => v.ticket_id === "T-1")!.coding).toBe(true);
+    expect(h.errors).toEqual([]);
+    d.pending.get("T-1")!.resolve({ kind: "escalated", pr_id: null });
+    await settle(s);
+    expect(h.errors).toEqual([]);
+  });
+
+  it("D18. 调度：write_scope 含非法字符类 [a-\\d] 的单照常派出，tryLock 不抛", async () => {
+    const h = harness();
+    const d = withHandle(h);
+    h.daily.exhausted = true;
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { write_scope: ["src/[a-\\d].ts"] }));
+    await settle(s);
+    expect(d.handled).toEqual([]);
+    h.daily.exhausted = false;
+    expect(await s.dispatch()).toEqual(["T-1"]);
+    expect(h.errors).toEqual([]);
+    expect(await s.dispatch()).toEqual([]);
+    expect(d.handle).toHaveBeenCalledTimes(1);
+    expect(s.snapshot().find((v) => v.ticket_id === "T-1")!.coding).toBe(true);
     d.pending.get("T-1")!.resolve({ kind: "escalated", pr_id: null });
     await settle(s);
     expect(h.errors).toEqual([]);
