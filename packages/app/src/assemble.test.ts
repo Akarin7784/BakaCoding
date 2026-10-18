@@ -2059,3 +2059,44 @@ describe("T-112 组合根：merge_followup 标记与重启补做", () => {
     expect(markerOf(storage, "req-1-1")).toBeUndefined();
   });
 });
+
+describe("T-133 接口变更说明持久化（组合根接线）", () => {
+  const iface = (pr: string, summary: string) =>
+    ({
+      type: "interface_changed",
+      seq: 1,
+      event_id: `ev-${pr}`,
+      ts: "2026-10-17T09:00:00Z",
+      trace_id: "tr",
+      span_id: "sp",
+      parent_span_id: null,
+      requirement_id: "req-1",
+      ticket_id: "T-9",
+      payload: {
+        pr_id: pr,
+        base_commit: "f".repeat(40),
+        changed_interfaces: [{ file: "lib/a/x.ts", symbol: "foo" }],
+        summary,
+        affected_ticket_ids: ["T-1"],
+      },
+    }) as never;
+
+  it("8 的说明落进 tickets.fields.interface_notes；重启（新 assemble、同一库）后新实例读到旧说明并叠加", async () => {
+    const { storage, worktreeRoot } = setup();
+    saveTicket(storage, "T-1", "coding", fields());
+    const a = await start({ storage, worktreeRoot, pr: fakePr().pr });
+    a.app.subAgent.onInterfaceChanged(iface("pr-9-1", "第一次改动"));
+    let notes = storage.getTicket("T-1")!.fields!.interface_notes as string[];
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain("第一次改动");
+    await a.app.stop();
+
+    // 「重启」：同一库重新组装，新实例的适配器能读到库里原有的说明，再叠加新的一条
+    const b = await start({ storage, worktreeRoot, pr: fakePr().pr });
+    b.app.subAgent.onInterfaceChanged(iface("pr-9-2", "第二次改动"));
+    notes = storage.getTicket("T-1")!.fields!.interface_notes as string[];
+    expect(notes).toHaveLength(2);
+    expect(notes[0]).toContain("第一次改动");
+    expect(notes[1]).toContain("第二次改动");
+  });
+});

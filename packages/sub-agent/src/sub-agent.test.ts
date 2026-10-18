@@ -14,10 +14,12 @@ import {
   isHighRiskDiffFile,
   highRiskEvidence,
   HIGH_RISK_FILES_MAX,
+  memoryInterfaceNotes,
   reasonsToFeedback,
   type SubAgentConfig,
   type SubAgentDeps,
   type SubAgentTicket,
+  type TicketInterfaceNoteStore,
   type TicketPermissionStore,
   type SubAgent,
   memoryTicketPermissions,
@@ -2580,5 +2582,84 @@ describe("T-065 改名看旧路径、依赖文件名不区分大小写（isHighR
     expect(isHighRiskDiffFile(m("docs/Package.json.md"))).toBe(false);
     expect(isHighRiskDiffFile(m("docs/package.json.md"))).toBe(false);
     expect(isDependencyFile("PACKAGE.JSON.BAK")).toBe(false);
+  });
+});
+
+describe("T-133 接口变更说明持久化", () => {
+  it("说明写进注入的 store；进程重启后（新实例、同一个 store）下一次 runTicket 仍能带上，带出去后 store 清空", async () => {
+    const store = memoryInterfaceNotes();
+    const first = setup({ over: { interfaceNotes: store } });
+    first.agent.onInterfaceChanged(ifaceEvent());
+    expect(store.get("T-1")).toHaveLength(1);
+
+    // 「重启」：新的 8 实例、同一个 store；编码池正常返回
+    const restarted = setup({ runs: [done()], reviews: [PASS()], over: { interfaceNotes: store } });
+    expect((await restarted.agent.handle(TICKET)).kind).toBe("merge_queued");
+    expect(restarted.runInputs[0]!.feedback).toContain("T-9 的 PR pr-T-9-1");
+    expect(store.get("T-1")).toEqual([]);
+  });
+
+  it("预算暂停：说明留在 store 和续跑凭据里；重启后照样带到下一次编码，带出去后清空", async () => {
+    const store = memoryInterfaceNotes();
+    const t = setup({
+      runs: [{ status: "budget_exceeded", summary: "", changed_files: [] }],
+      budget: [{ daily_exhausted: true }],
+      over: { interfaceNotes: store },
+    });
+    t.agent.onInterfaceChanged(ifaceEvent());
+    const paused = await t.agent.handle(TICKET);
+    expect(paused.kind).toBe("requeue_budget");
+    expect(store.get("T-1")).toHaveLength(1);
+
+    const restarted = setup({ runs: [done()], reviews: [PASS()], over: { interfaceNotes: store } });
+    await restarted.agent.handle(TICKET);
+    expect(restarted.runInputs[0]!.feedback).toContain("T-9 的 PR");
+    expect(store.get("T-1")).toEqual([]);
+  });
+
+  it("store 抛错只 warn：编码 / 评审照常完成，说明仍在内存里带给编码池；下次事件到达时重试写成功", async () => {
+    const writes: string[][] = [];
+    let fail = true;
+    const store: TicketInterfaceNoteStore = {
+      get: () => [],
+      set: (_id, notes) => {
+        if (fail) {
+          fail = false;
+          throw new Error("db gone");
+        }
+        writes.push([...notes]);
+      },
+    };
+    const warn = vi.fn();
+    const t = setup({
+      runs: [done()],
+      reviews: [PASS()],
+      over: { interfaceNotes: store, logger: { warn } },
+    });
+    expect(() => t.agent.onInterfaceChanged(ifaceEvent())).not.toThrow();
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/写接口变更说明失败.*db gone/));
+    expect((await t.agent.handle(TICKET)).kind).toBe("merge_queued");
+    expect(t.runInputs[0]!.feedback).toContain("T-9 的 PR");
+    // 第二次 onInterfaceChanged 重试写成功（之前 handle 里清空那次也写成功，这里是最后一条非空）
+    t.agent.onInterfaceChanged(ifaceEvent());
+    expect(writes.at(-1)!.length).toBeGreaterThan(0);
+  });
+
+  it("单条说明有体积上限：超长接口列表 / 说明按码点截到 4096，写入 store 的也截了", () => {
+    const store = memoryInterfaceNotes();
+    const t = setup({ over: { interfaceNotes: store } });
+    t.agent.onInterfaceChanged(
+      ifaceEvent({
+        changed_interfaces: Array.from({ length: 200 }, (_, i) => ({
+          file: `src/file-${i}-${"x".repeat(40)}.ts`,
+          symbol: "sym",
+        })),
+        summary: "y".repeat(5000),
+      }),
+    );
+    const [note] = store.get("T-1");
+    expect(note).toBeDefined();
+    expect(Array.from(note!).length).toBeLessThanOrEqual(4096);
+    expect(note!.endsWith("…")).toBe(true);
   });
 });

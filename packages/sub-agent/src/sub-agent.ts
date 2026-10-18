@@ -30,6 +30,7 @@ import type {
   SubAgentEscalationReason,
   SubAgentOutcome,
   SubAgentTicket,
+  TicketInterfaceNoteStore,
 } from "./types.js";
 import {
   appendGrantedScope,
@@ -41,10 +42,13 @@ import {
   safeScope,
   type GeneratedPermissions,
 } from "./permissions.js";
+import { MAX_INTERFACE_NOTES, memoryInterfaceNotes } from "./interface-notes.js";
 import { registerRecorder } from "./internal.js";
 
+/** 每条接口变更说明的最大长度（码点，T-133）：条数上限之外再限单条体积，避免 fields 随评审意见膨胀 */
+const MAX_INTERFACE_NOTE_CHARS = 4096;
+
 /** 每单最多攒多少条没带给编码池的接口变更说明（多了丢最早的） */
-const MAX_INTERFACE_NOTES = 20;
 /** 每条接口变更说明里合并说明（summary）的最大长度 */
 const MAX_NOTE_SUMMARY = 2000;
 
@@ -152,7 +156,19 @@ function interfaceNote(ev: EventOf<"interface_changed">): string {
     e.summary.length > MAX_NOTE_SUMMARY
       ? `${e.summary.slice(0, MAX_NOTE_SUMMARY)}…（已截断）`
       : e.summary;
-  return `${ev.ticket_id} 的 PR ${e.pr_id} 已合入集成分支（新基线 ${e.base_commit}），可能影响本单。改动的接口：${ifaces || "（未列出）"}。合并说明：${summary || "（无）"}`;
+  const note = `${ev.ticket_id} 的 PR ${e.pr_id} 已合入集成分支（新基线 ${e.base_commit}），可能影响本单。改动的接口：${ifaces || "（未列出）"}。合并说明：${summary || "（无）"}`;
+  // T-133：条数有上限，单条体积也要限（超长按码点截断），否则 fields 会随接口列表无限膨胀
+  const cps = Array.from(note);
+  return cps.length > MAX_INTERFACE_NOTE_CHARS
+    ? `${cps.slice(0, MAX_INTERFACE_NOTE_CHARS - 1).join("")}…`
+    : note;
+}
+
+/** 去重并保持首次出现的顺序（预算续跑凭据里的说明与持久化里的可能重复）。 */
+function dedupeNotes(notes: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const n of notes) if (!out.includes(n)) out.push(n);
+  return out;
 }
 
 function notesSection(notes: readonly string[]): string {
@@ -344,10 +360,30 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
   const grantedHere = new Map<string, Set<string>>();
   /** 正在 runTicket 的单：4 的登记表按 ticket_id 释放，同一单绝不能同时有两个 runTicket（T-048） */
   const coding = new Set<string>();
-  /** 收到但还没带给编码池的接口变更说明（T-038，v1 只在内存里） */
+  /** 收到但还没带给编码池的接口变更说明（T-038）；T-133 起同时写进 `deps.interfaceNotes`（2 的 fields）跨重启保留 */
   const pendingNotes = new Map<string, string[]>();
   /** 每单收到的接口变更通知计数：评审开始后又涨了，就在交出去之前再评审一次 */
   const noteSeq = new Map<string, number>();
+  /** 接口变更说明的持久存取（T-133）：注入 2 的适配器就落库，不注入退回进程内存 */
+  const noteStore: TicketInterfaceNoteStore = deps.interfaceNotes ?? memoryInterfaceNotes();
+  /** 读持久化的待带说明；读失败只记 warn（不挡编码 / 评审） */
+  function readStoredNotes(ticket_id: string): string[] {
+    try {
+      const notes = noteStore.get(ticket_id);
+      return Array.isArray(notes) ? notes.filter((n): n is string => typeof n === "string") : [];
+    } catch (err) {
+      logger.warn(`[bakacoding/sub-agent] ${ticket_id} 读接口变更说明失败：${String(err)}`);
+      return [];
+    }
+  }
+  /** 写回待带说明；写失败只记 warn（不挡编码 / 评审，后续事件到达时会再试着写） */
+  function writeStoredNotes(ticket_id: string, notes: readonly string[]): void {
+    try {
+      noteStore.set(ticket_id, notes);
+    } catch (err) {
+      logger.warn(`[bakacoding/sub-agent] ${ticket_id} 写接口变更说明失败：${String(err)}`);
+    }
+  }
 
   function register(t: SubAgentTicket): void {
     if (!t.ticket_id || !t.project_id) throw new Error("需求单必须带 ticket_id 和 project_id");
@@ -648,17 +684,31 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
   }
 
   /** 取出本单待带的接口变更说明（取走即清空）。 */
+  /**
+   * 取出本单待带的接口变更说明（T-133）：内存 + 持久化合并去重；取走只清内存，**持久化的等真正带给编码池后
+   * 才由 `clearNotes` 清**（预算暂停 / 编码池抛错时说明还在 2 里，重启后照样能带到）。
+   */
   function takeNotes(ticket_id: string): string[] {
-    const n = pendingNotes.get(ticket_id) ?? [];
+    const n = dedupeNotes([...(pendingNotes.get(ticket_id) ?? []), ...readStoredNotes(ticket_id)]);
     pendingNotes.delete(ticket_id);
     return n;
+  }
+
+  /** 说明已经带给编码池（runTicket 正常返回、非预算暂停）：清掉持久化的待带说明（T-133）。 */
+  function clearNotes(ticket_id: string): void {
+    writeStoredNotes(ticket_id, []);
   }
 
   /** 没带出去的说明放回队首（runTicket 抛错时）。 */
   function restoreNotes(ticket_id: string, notes: readonly string[] | undefined): void {
     if (!notes?.length) return;
-    const merged = [...notes, ...(pendingNotes.get(ticket_id) ?? [])].slice(-MAX_INTERFACE_NOTES);
+    const merged = dedupeNotes([
+      ...notes,
+      ...(pendingNotes.get(ticket_id) ?? []),
+      ...readStoredNotes(ticket_id),
+    ]).slice(-MAX_INTERFACE_NOTES);
     pendingNotes.set(ticket_id, merged);
+    writeStoredNotes(ticket_id, merged);
   }
 
   function remember(s: RunState): void {
@@ -758,8 +808,9 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
           );
         coding.add(ticket_id);
         let res: Awaited<ReturnType<SubAgentDeps["coder"]["runTicket"]>>;
-        // 接口变更说明（T-038）：作为不可信反馈接在 feedback 后面（5 按 T-043 包装）；s.feedback 本身不变
-        const notes = [...(s.interface_notes ?? []), ...takeNotes(ticket_id)].slice(
+        // 接口变更说明（T-038）：作为不可信反馈接在 feedback 后面（5 按 T-043 包装）；s.feedback 本身不变。
+        // T-133：预算续跑凭据里的说明可能和持久化里的重复，去重后再用。
+        const notes = dedupeNotes([...(s.interface_notes ?? []), ...takeNotes(ticket_id)]).slice(
           -MAX_INTERFACE_NOTES,
         );
         s.interface_notes = notes.length ? notes : undefined;
@@ -791,9 +842,10 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
           coding.delete(ticket_id);
         }
         throwIfAborted(s.signal);
-        // 预算暂停：说明还没真正用上，留在 RunState 里进续跑凭据；否则已带给编码池
+        // 预算暂停：说明还没真正用上，留在 RunState 里进续跑凭据、持久化的也留着；否则已带给编码池
         if (res.status === "budget_exceeded") return budgetStop(s);
         s.interface_notes = undefined;
+        clearNotes(ticket_id); // T-133：已带给编码池，清掉 2 里待带的说明
 
         let failure: { status: CoderFailureStatus; feedback: string } | undefined;
         if (res.status === "done") {
@@ -1058,8 +1110,14 @@ export function createSubAgent(deps: SubAgentDeps): SubAgent {
     const note = interfaceNote(e);
     for (const id of new Set(e.payload.affected_ticket_ids)) {
       if (id === e.ticket_id) continue;
-      const list = [...(pendingNotes.get(id) ?? []), note].slice(-MAX_INTERFACE_NOTES);
+      // T-133：内存与 2 里的都并进来再去重，进程重启后新到的说明不会盖掉还没带出去的旧说明
+      const list = dedupeNotes([
+        ...readStoredNotes(id),
+        ...(pendingNotes.get(id) ?? []),
+        note,
+      ]).slice(-MAX_INTERFACE_NOTES);
       pendingNotes.set(id, list);
+      writeStoredNotes(id, list);
       noteSeq.set(id, (noteSeq.get(id) ?? 0) + 1);
     }
   }

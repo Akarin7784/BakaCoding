@@ -38,6 +38,7 @@ import {
   eventLogGrantedScopes,
   eventLogResubmitHistory,
   isHighRiskDiffFile,
+  storageTicketInterfaceNotes,
   storageTicketPermissions,
   type HandleOptions,
   type ResumeToken,
@@ -587,6 +588,7 @@ export async function assemble(deps: AppDeps): Promise<App> {
     prRecords: { get: (pr_id) => store.get(pr_id) },
     loadTicket: (ticket_id) => supervisor.loadTicket(ticket_id),
     permissions: storageTicketPermissions(storage),
+    interfaceNotes: storageTicketInterfaceNotes(storage),
     scopeRequests: {
       bus: bus as unknown as ScopeBus,
       ...(deps.scopeTimeoutMs !== undefined ? { timeout_ms: deps.scopeTimeoutMs } : {}),

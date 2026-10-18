@@ -307,6 +307,13 @@ export interface Storage {
   saveTicket(ticket: TicketInput): void;
   /** 按单号读一张需求单（T-055），不存在返回 undefined。 */
   getTicket(ticket_id: string): StoredTicket | undefined;
+  /**
+   * T-133：原子地只改需求单 `fields` 里的**一个键**（`value` 为 undefined 时删掉该键），不读改写整行、
+   * 不碰别的键，也不改需求单的其他列。只接受合法标识符键名（`[A-Za-z_][A-Za-z0-9_]*`）。
+   * 单不存在、或 `fields` 为 null / 损坏时返回 false 且不动数据（避免把旧单写成不完整的 fields 被 10 判
+   * fields_invalid）；返回是否更新了记录。
+   */
+  setTicketField(ticket_id: string, key: string, value: JsonValue | undefined): boolean;
   /** 按项目 / 需求 / 状态列出需求单（T-055），按 created_at、ticket_id 升序。 */
   listTickets(filter?: TicketFilter): StoredTicket[];
   savePrRecord(round: PrRoundInput): void;
@@ -782,6 +789,38 @@ function open(options: StorageOptions, ro: boolean): Storage {
     });
   });
 
+  /**
+   * T-133：只改 `fields` 里的一个键。读-改-写都在同一个 IMMEDIATE 事务里（`write()` 包装），与同一连接上的
+   * 其他写（10 的 patchFields、9 的状态写）串行，不会互相冲掉；也只写 `fields` 一列。
+   * 单不存在 / `fields` 为 null 或损坏时返回 false、不动数据。
+   */
+  const setTicketField = write(
+    "setTicketField",
+    (ticket_id: string, key: string, value: JsonValue | undefined): boolean => {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new TypeError(`fields 的键名不合法：${key}`);
+      const row = db.prepare("SELECT fields FROM tickets WHERE ticket_id = ?").get(ticket_id) as
+        { fields: string | null } | undefined;
+      if (!row) return false;
+      let base: TicketFields;
+      if (row.fields == null) return false;
+      try {
+        const v: unknown = JSON.parse(row.fields);
+        if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+        base = v as TicketFields;
+      } catch {
+        return false;
+      }
+      const next: TicketFields = { ...base };
+      if (value === undefined) delete next[key];
+      else next[key] = value;
+      db.prepare("UPDATE tickets SET fields = ? WHERE ticket_id = ?").run(
+        encodeFields(ticket_id, next),
+        ticket_id,
+      );
+      return true;
+    },
+  );
+
   /** 已经警告过 fields 损坏的单号：同一个连接里同一单号只警告一次（T-057）。 */
   const warnedFields = new Set<string>();
   function warnFieldsOnce(ticket_id: string, message: string): void {
@@ -1157,6 +1196,7 @@ function open(options: StorageOptions, ro: boolean): Storage {
     saveTicket,
     getTicket,
     listTickets,
+    setTicketField,
     savePrRecord,
     prStore,
     saveMergeResult,
