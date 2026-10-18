@@ -17,11 +17,19 @@ import type { UserMessage } from "@bakacoding/supervisor";
 import path from "node:path";
 import type { BackendHandle } from "./backend.js";
 import {
+import {
   RELOAD_REASON_MAX,
   sanitizeReloadReason,
   type BackendSwitcher,
 } from "./backend-switcher.js";
-import { checkProjectDir, repoLockedBy, REPO_LOCKED_REASON } from "./project-import.js";
+import {
+  checkProjectDir,
+  IMPORT_REASON_MAX,
+  repoLockedBy,
+  REPO_LOCKED_REASON,
+  type DirCheck,
+} from "./project-import.js";
+import { canCreateDefaultConfig, createDefaultConfigFiles } from "./default-config.js";
 import {
   defaultExportName,
   envPresence,
@@ -269,41 +277,109 @@ export function serveSupervisorChat(
 export function serveProjectSettings(ipc: IpcMainLike, deps: ProjectSettingsDeps): () => void {
   const now = deps.now ?? (() => new Date());
 
+  /**
+   * T-081：上次导入对话框选中、且「只缺配置文件」的目录。只在主进程里记，
+   * createDefaultConfig 只写这个目录，渲染进程传不进任何路径。
+   */
+  let pendingDir: string | null = null;
+
+  /**
+   * 校验失败的结果；只缺配置时记下目录、带上按钮标记和模板位置提示。
+   * UI-03b 起不是 Git 仓库不再进 `missing`，这里按 `notGit` 单独判：写不了 .git/info/exclude，不给按钮；
+   * `--config` / BAKACODING_CONFIG 指向的文件不存在时补模板也过不了，同样不给。
+   */
+  const failure = (dir: string, check: Extract<DirCheck, { ok: false }>): DesktopImportResult => {
+    const can =
+      canCreateDefaultConfig(check.missing) &&
+      !check.notGit &&
+      !check.envConfigMissing &&
+      !!deps.templateDir;
+    pendingDir = can ? dir : null;
+    const hint = can ? "。模板在安装目录的 config-templates 文件夹，可点「用默认模板创建」" : "";
+    return {
+      ok: false,
+      ...(check.missing && { missing: check.missing }),
+      ...(check.reason !== undefined && { reason: `${check.reason}${hint}` }),
+      ...(can && { canCreateDefaultConfig: true as const }),
+    };
+  };
+
+  /** 校验通过后的切换（导入成功路径；createDefaultConfig 复用，含 UI-03b 的 needsPrep） */
+  const complete = async (dir: string, note?: string): Promise<DesktopImportResult> => {
+    pendingDir = null;
+    const abs = path.resolve(dir);
+    const r = await deps.backend.switchTo(abs);
+    if (!r.ok && "needsPrep" in r) {
+      // UI-03b：没准备好的文件夹也算导入了（记下路径），界面进准备页
+      deps.saveLastRepo(abs);
+      return {
+        ok: false,
+        needsPrep: true,
+        reason: r.reason,
+        ...(note !== undefined && { note }),
+      } satisfies DesktopImportResult;
+    }
+    if (!r.ok) {
+      // 新后端已经在跑、只是 importProject 失败：记下的路径要和实际运行的仓库一致
+      if (r.switched) deps.saveLastRepo(abs);
+      return { ok: false, reason: r.reason };
+    }
+    deps.saveLastRepo(abs);
+    return { ok: true, project: r.project, ...(note !== undefined && { note }) };
+  };
+
   ipc.handle(IPC_CHANNELS.projectImport, async () => {
+    // 每次导入都清掉上次失败记下的目录：取消 / 选了别的文件夹后，不能再对旧目录建配置
+    pendingDir = null;
     if (repoLockedBy(deps.argv, deps.env))
       return { ok: false, reason: REPO_LOCKED_REASON } satisfies DesktopImportResult;
     const dir = await deps.pickDirectory();
     if (!dir) return { ok: false, canceled: true } satisfies DesktopImportResult;
     const check = checkProjectDir(dir, deps.env, deps.argv);
+    if (!check.ok) return failure(dir, check);
+    return complete(dir, check.note);
+  });
+
+  ipc.handle(IPC_CHANNELS.projectCreateDefaultConfig, async () => {
+    if (repoLockedBy(deps.argv, deps.env))
+      return { ok: false, reason: REPO_LOCKED_REASON } satisfies DesktopImportResult;
+    const dir = pendingDir;
+    if (!dir || !deps.templateDir)
+      return {
+        ok: false,
+        reason: "没有待创建配置的项目，请先点「导入项目」选择仓库",
+      } satisfies DesktopImportResult;
+    const clean = (t: string) => sanitizeSyncErrorMessage(t, deps.env, IMPORT_REASON_MAX);
+    let made;
+    try {
+      made = createDefaultConfigFiles(dir, deps.templateDir, deps.argv, deps.env);
+    } catch (e) {
+      return { ok: false, reason: clean(`创建配置失败：${errorDetail(e)}`) };
+    }
+    if (!made.ok) return { ok: false, reason: clean(made.reason) } satisfies DesktopImportResult;
+    let warn: string | undefined;
+    if (made.created.length && deps.ensureExcludeLines) {
+      try {
+        await deps.ensureExcludeLines(
+          dir,
+          made.created.map((f) => `/${f}`),
+        );
+      } catch (e) {
+        // 写 exclude 失败只提醒，不挡导入
+        warn = clean(`没能写入 .git/info/exclude：${errorDetail(e)}`);
+      }
+    }
+    const check = checkProjectDir(dir, deps.env, deps.argv);
     if (!check.ok) {
-      return {
-        ok: false,
-        ...(check.missing && { missing: check.missing }),
-        ...(check.reason !== undefined && { reason: check.reason }),
-      } satisfies DesktopImportResult;
+      const r = failure(dir, check);
+      return warn && !r.ok ? { ...r, reason: `${r.reason ?? ""}；${warn}` } : r;
     }
-    const r = await deps.backend.switchTo(path.resolve(dir));
-    if (!r.ok && "needsPrep" in r) {
-      // UI-03b：没准备好的文件夹也算导入了（记下路径），界面进准备页
-      deps.saveLastRepo(path.resolve(dir));
-      return {
-        ok: false,
-        needsPrep: true,
-        reason: r.reason,
-        ...(check.note !== undefined && { note: check.note }),
-      } satisfies DesktopImportResult;
-    }
-    if (!r.ok) {
-      // 新后端已经在跑、只是 importProject 失败：记下的路径要和实际运行的仓库一致
-      if (r.switched) deps.saveLastRepo(path.resolve(dir));
-      return { ok: false, reason: r.reason } satisfies DesktopImportResult;
-    }
-    deps.saveLastRepo(path.resolve(dir));
-    return {
-      ok: true,
-      project: r.project,
-      ...(check.note !== undefined && { note: check.note }),
-    } satisfies DesktopImportResult;
+    const notes = [
+      `已用默认模板创建 ${made.created.join("、") || "（无，文件已存在）"}`,
+      ...(check.note ? [check.note] : []),
+      ...(warn ? [warn] : []),
+    ];
+    return complete(dir, notes.join("；"));
   });
 
   ipc.handle(IPC_CHANNELS.diagnosticsExport, async () => {
@@ -360,6 +436,7 @@ export function serveProjectSettings(ipc: IpcMainLike, deps: ProjectSettingsDeps
 
   return () => {
     ipc.removeHandler(IPC_CHANNELS.projectImport);
+    ipc.removeHandler(IPC_CHANNELS.projectCreateDefaultConfig);
     ipc.removeHandler(IPC_CHANNELS.diagnosticsExport);
     ipc.removeHandler(IPC_CHANNELS.settingsGet);
   };

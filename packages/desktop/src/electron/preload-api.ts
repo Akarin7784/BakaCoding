@@ -92,6 +92,8 @@ export function createDesktopApi(ipc: IpcRendererLike, platform: string): BakaDe
       };
     },
     importProject: () => ipc.invoke(IPC_CHANNELS.projectImport) as Promise<DesktopImportResult>,
+    createDefaultConfig: () =>
+      ipc.invoke(IPC_CHANNELS.projectCreateDefaultConfig) as Promise<DesktopImportResult>,
     exportDiagnostics: () =>
       ipc.invoke(IPC_CHANNELS.diagnosticsExport) as Promise<DesktopExportResult>,
     getSettings: () => ipc.invoke(IPC_CHANNELS.settingsGet) as Promise<DesktopSettings>,

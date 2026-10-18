@@ -15,6 +15,7 @@ import { useBackendStatus } from "./data/useBackendStatus";
 import { useQuitting } from "./data/useQuitting";
 import { QuittingBanner } from "./components/QuittingBanner";
 import { ReadonlyBanner } from "./components/ReadonlyBanner";
+import { MissingConfigBanner } from "./components/MissingConfigBanner";
 import { StatusDot } from "./components/StatusDot";
 import { attentionItems, globalLevel, runningCount } from "./lib/globalStatus";
 import { describeSyncState } from "./lib/sync-labels";
@@ -263,6 +264,13 @@ export function App(props: AppProps) {
           insetRight={panelDocked ? 0 : inset.right}
         />
         {quitting && <QuittingBanner />}
+        {/* T-081：只缺配置时给一行「缺配置」横幅 + 用默认模板创建（§3：页面横幅带操作按钮） */}
+        {actions.canCreateDefaultConfig && (
+          <MissingConfigBanner
+            busy={actions.busy !== null}
+            onCreate={() => void actions.createDefaultConfig()}
+          />
+        )}
         {backendReadonly && backend.status && (
           <ReadonlyBanner
             status={backend.status}

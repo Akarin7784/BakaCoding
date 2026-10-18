@@ -74,3 +74,10 @@ export const QUIT_COPY = {
   title: "正在退出…",
   detail: "正在等后台任务收尾，完成后窗口会自动关闭",
 } as const;
+
+/** 导入缺配置（T-081）：内容区「缺配置」横幅 + 用默认模板创建（§3：页面横幅带操作按钮）。 */
+export const CONFIG_COPY = {
+  bannerLabel: "缺配置",
+  text: "项目缺配置文件，可以用默认模板创建",
+  create: "用默认模板创建",
+} as const;

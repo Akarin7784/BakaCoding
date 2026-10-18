@@ -37,6 +37,8 @@ export const IPC_CHANNELS = {
   supervisorChat: "bakacoding:supervisor:chat",
   /** invoke：选目录导入项目，切换后端到该仓库（T-072）。 */
   projectImport: "bakacoding:project:import",
+  /** invoke：对上次导入失败（只缺配置）的目录用默认模板补配置，再完成导入；无参数（T-081）。 */
+  projectCreateDefaultConfig: "bakacoding:project:create-default-config",
   /** invoke：选保存路径，导出最近 24 小时诊断包（T-072）。 */
   diagnosticsExport: "bakacoding:diagnostics:export",
   /** invoke：只读设置（仓库、环境变量是否已设、本地 / GitHub 模式）（T-072）。 */
@@ -277,7 +279,14 @@ export type DesktopChatResult = { ok: true; reply: ChatReply } | { ok: false; re
 /** `project:import` 结果（T-072）：project 原样取自 3 的 importProject；note 为补充说明（如在用 BAKACODING_CONFIG）。 */
 export type DesktopImportResult =
   | { ok: true; project: Project; note?: string }
-  | { ok: false; canceled?: true; missing?: string[]; reason?: string }
+  | {
+      ok: false;
+      canceled?: true;
+      missing?: string[];
+      reason?: string;
+      /** T-081：只缺配置文件，可以点「用默认模板创建」 */
+      canCreateDefaultConfig?: true;
+    }
   /**
    * UI-03b：文件夹还没准备好（不是 Git 仓库 / 没有提交 / 没有 main）：已切到它（只读，来源 last_import），
    * 界面直接进项目准备页；reason 是只读原因（已脱敏）。
@@ -325,6 +334,8 @@ export interface BakaDesktopApi {
   supervisorChat(message: UserMessage): Promise<DesktopChatResult>;
   /** 选目录导入项目（T-072）。 */
   importProject(): Promise<DesktopImportResult>;
+  /** 对上次导入时选的目录用默认模板补配置并完成导入（T-081）；目录由主进程记住，不从界面传。 */
+  createDefaultConfig(): Promise<DesktopImportResult>;
   /** 导出诊断包（T-072）。 */
   exportDiagnostics(): Promise<DesktopExportResult>;
   /** 只读设置（T-072）。 */

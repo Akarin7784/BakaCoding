@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme } from "electron";
 import { SECRET_MARKER_FILE } from "@bakacoding/config-budget";
+import { ensureExcludeLines } from "@bakacoding/app";
 import { lastRepoForStart, resolveRepoDbPath, startBackend, type RepoSource } from "./backend.js";
 import {
   notifyAppQuitting,
@@ -24,6 +25,7 @@ import { openEventReader, type EventReader } from "./reader.js";
 import { createQuitGuard, createWindowCloseHandler, type QuitGuard } from "./quit-guard.js";
 import { readLastRepo, writeLastRepo } from "./repo-store.js";
 import { readSavedTheme, writeSavedTheme } from "./theme-store.js";
+import { defaultTemplateDir } from "./default-config.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -147,6 +149,14 @@ if (!gotLock) {
       env: process.env,
       downloadsDir: app.getPath("downloads"),
       saveLastRepo: (repo) => writeLastRepo(userData, repo),
+      // T-081：打包版在 exe 同一层 config-templates/；开发时用仓库根 config/（here = packages/desktop/dist-electron）
+      templateDir: defaultTemplateDir(
+        app.isPackaged,
+        process.execPath,
+        path.join(here, "../../.."),
+      ),
+      // T-082 的 ensureExcludeLines（经 @bakacoding/app 再导出）：只给本次新建的配置文件写 .git/info/exclude
+      ensureExcludeLines,
       async pickDirectory() {
         const r = win
           ? await dialog.showOpenDialog(win, { properties: ["openDirectory"], title: "导入项目" })
