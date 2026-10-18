@@ -2218,8 +2218,7 @@ describe("T-115 写入范围 glob：字符类", () => {
 });
 
 describe("T-116 等锁防饿死", () => {
-  it("常量是 2 轮；没有等锁者时派单顺序和结果与之前一致", async () => {
-    expect(LOCK_WAIT_AGING_ROUNDS).toBe(2);
+  it("没有等锁者时派单顺序、返回值和并发与之前一致", async () => {
     const h = harness();
     const d = withHandle(h, { max: 3 });
     const s = await started(h);
@@ -2227,17 +2226,27 @@ describe("T-116 等锁防饿死", () => {
       await s.enqueue(ticket(id, { write_scope: [`src/${id}/**`] }));
     await settle(s);
     expect(d.handled).toEqual(["T-1", "T-2", "T-3"]);
+    expect(
+      s
+        .snapshot()
+        .filter((v) => v.coding)
+        .map((v) => v.ticket_id),
+    ).toEqual(["T-1", "T-2", "T-3"]);
+    const state = await s.backpressureState();
+    expect(state.paused).toBe(false);
+    expect(state.concurrency).toBe(3);
     expect(await s.dispatch()).toEqual([]);
   });
 
-  it("D19. 大范围单等锁 >= 2 轮后，新来的重叠单让路；锁释放后它第一轮拿到锁", async () => {
+  it("D19. 大范围单等锁到 aging 轮数后，新来的重叠单让路；锁释放后它第一轮拿到锁", async () => {
     const h = harness();
     const d = withHandle(h, { max: 2 });
     const s = await started(h);
     await s.enqueue(ticket("T-0", { write_scope: ["src/a.ts"] }));
     await s.enqueue(ticket("T-1", { write_scope: ["src/**"] }));
     await settle(s);
-    // T-1 加不上锁、已经被跳过 >= 2 轮
+    // 用导出的常量表达「等老」阈值，不写死 2
+    for (let i = 0; i < LOCK_WAIT_AGING_ROUNDS; i++) await s.dispatch();
     expect(d.handled).toEqual(["T-0"]);
 
     await s.enqueue(ticket("T-2", { write_scope: ["src/b.ts"] }));
@@ -2262,10 +2271,37 @@ describe("T-116 等锁防饿死", () => {
     await s.enqueue(ticket("T-0", { write_scope: ["src/a.ts"] }));
     await s.enqueue(ticket("T-1", { write_scope: ["src/**"] }));
     await settle(s);
+    for (let i = 0; i < LOCK_WAIT_AGING_ROUNDS; i++) await s.dispatch();
     expect(d.handled).toEqual(["T-0"]);
     await s.enqueue(ticket("T-2", { write_scope: ["lib/x.ts"] }));
     await settle(s);
     expect(d.handled).toEqual(["T-0", "T-2"]);
+  });
+
+  it("D21. 多个 aged 等待者按入队顺序拿锁；新来的冲突单一直让路到它们跑完", async () => {
+    const h = harness();
+    const d = withHandle(h, { max: 2 });
+    const s = await started(h);
+    await s.enqueue(ticket("T-0", { write_scope: ["src/a.ts"] }));
+    await s.enqueue(ticket("T-1", { write_scope: ["src/**"] }));
+    await s.enqueue(ticket("T-2", { write_scope: ["src/a.ts"] }));
+    await settle(s);
+    for (let i = 0; i < LOCK_WAIT_AGING_ROUNDS; i++) await s.dispatch();
+    expect(d.handled).toEqual(["T-0"]);
+
+    await s.enqueue(ticket("T-3", { write_scope: ["src/b.ts"] }));
+    await settle(s);
+    expect(d.handled).toEqual(["T-0"]);
+
+    d.pending.get("T-0")!.resolve({ kind: "escalated", pr_id: null });
+    await settle(s);
+    // 两个等待者都等老时，入队更早的 T-1 先拿锁（T-2 / T-3 都还被挡住）
+    expect(d.handled).toEqual(["T-0", "T-1"]);
+
+    d.pending.get("T-1")!.resolve({ kind: "escalated", pr_id: null });
+    await settle(s);
+    // T-1 释放后入队更早的 T-2 先拿锁；T-3 与 T-2 不冲突，同一轮一起派出去
+    expect(d.handled).toEqual(["T-0", "T-1", "T-2", "T-3"]);
   });
 });
 

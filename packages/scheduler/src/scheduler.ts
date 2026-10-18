@@ -329,6 +329,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
 
   async function setStatus(e: Entry, status: TicketStatus): Promise<void> {
     e.status = status;
+    // T-116：状态离开 pending（升级 / 合并等）后清掉等锁计数，别留脏计数让后续轮次误让路
+    if (status !== "pending") e.lock_wait_rounds = 0;
     await deps.tickets.setStatus(e.ticket.ticket_id, status);
     // 终态释放写入范围锁、可能让依赖它的单就绪：再派一轮
     if (TERMINAL.has(status)) kickDispatch();
@@ -337,6 +339,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   function removeFromQueue(ticket_id: string): void {
     const i = queue.indexOf(ticket_id);
     if (i >= 0) queue.splice(i, 1);
+    // T-116：出队（终态 / 取消）后清掉等锁计数，防御直接改 status 不走 setStatus 的路径
+    const e = entries.get(ticket_id);
+    if (e) e.lock_wait_rounds = 0;
   }
 
   function common(t: SchedulerTicket) {
