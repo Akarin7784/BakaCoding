@@ -181,6 +181,7 @@ flowchart BT
 | T-128 | 模块 12：生产 `openStorage` 不传 `retention_days`（T-118 遗留，`diagnostics.retention_days` 配置值接不进模块 2，30 天保留期只能按默认清）。`startBackend` 把配置存在性检查 + `loadConfig` 提到 `openStorage` 之前，`retention_days` 取 `config.diagnostics.retention_days` 显式传入（模块 2 的 `StorageOptions.retention_days` 已存在，接口不动）；配置缺失 / 坏 JSON 在建库前抛 `ConfigError`，`cleanupPartial()` 对 storage 可空、不泄漏锁也不留半成品库；测试钉住「没配显式传 30、配 7 传 7」和「缺配置 / 坏 JSON 不调 `openStorage`、不生成库文件」；modules.md §2 / §12 同步。`packages/desktop` 串行 53 文件 / 516 条 = 504 过 + 11 条 T-125 基线失败 + 1 skip，新增失败 0 | 12 | 界面与诊断开发 | 已合入 | #163 | `f44c45b` |
 | T-119 | 模块 4：`isUnsafeGlob` 的 `..` 判定收窄到路径段（已知缺口：任何含 `..` 都判不安全，`a..b.txt` / `src/a..b.ts` 这类合法文件名进不了权限清单、也不能申请越界写）。只有 `..` 作为完整路径段才不安全；整段 `..`、组内（花括号 / extglob / 字符类）的 `..`、`.` 段、空段、绝对路径、盘符、反斜杠、`!` / `#`、组里 `/`、备选 `.` 仍全部拒绝（宁严勿宽）；`packages/sub-agent/src/permissions.test.ts` 同步移掉 ESCAPES 里 `src/a..b` 一条并加两条断言（跨模块测试改动，已在群报备）；补 `a..b.txt` 安全、组内 `..` 仍不安全、能申请扩大范围用例；modules.md §4 同步。受影响包 `workspace + sub-agent + scheduler` 串行 491 条 = 470 过 + 17 条基线失败 + 4 skip，新增失败 0 | 4 | 基础层开发 | 已合入 | #164 | `140d1a4` |
 | T-123 | 模块 6：Windows 超时 / 中止 / 输出超限结束整棵进程树（已知缺口：T-110 起 `kill` 只杀直接子进程，ssh 等孙进程会残留）。新增 `endProcessTree()`：Windows 走 `taskkill /PID <pid> /T /F`（stdio ignore、windowsHide、unref，taskkill 起不来才退回 `child.kill()`），POSIX 保持 SIGTERM → 5s → SIGKILL 逐字节不变；`kill()` 三条路径都接上；测试新增 2 条 Windows 用例（git 经 sh 别名派生 node 孙进程，超时 / abort 各一条断言孙进程被结束、不残留，`finally` 兜底 taskkill）；modules.md §6 / §9 同步。`packages/pr` 串行 161 条 = 147 过 + 14 失败（11 条负载噪声单文件复跑转绿、3 条与 T-125 基线同名同数）→ 新增失败 0；`git-timeout.test.ts` 22/22 全绿，T-125 基线里该项目 7 条 EBUSY 消失 | 6 | 执行层开发 | 已合入 | #165 | `b9459e5` |
+| T-117 | 模块 10：重启接管失败单的下游不再一直 `waiting`（已知缺口：`takeOver` 里 adopt / enqueue 失败只进 `report.failed`，`blockedBy` 只看 `escalated` / `fields_invalid`，失败单的下游照样交 9，9 不认识依赖 → 永远 `waiting`）。接回顺序改成按依赖拓扑交付（DFS + 栈防环，无依赖边时仍「先 adopt 再 enqueue」原序）；失败单记 `failedIds`，直接 / 间接下游本轮不交 9、进 `held`（`blocked_by` 直接依赖）并 `holdOnce` 通知一次，下次接管重试成功后照常接回；补 3 条用例（adopt 失败→下游 held 且父先子后、二次接管不重复通知且恢复后接回、enqueue 失败且子单排序更早时仍先父后子）；modules.md §10 同步。`packages/supervisor` 串行 4 文件 / 105 条全过，新增失败 0 | 10 | 编排层开发 | 已合入 | #166 | `8974181` |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
@@ -249,6 +250,8 @@ flowchart BT
 - 已解决（T-127）：右面板「动态」标签已接 `group_message`（按单过滤、滚动、折叠、未读小点、状态行）；T-085 `ticket_status_changed` 仍未进桌面端 `UI_EVENT_TYPES` 白名单，状态行暂用快照 `prs`，等 UI-05 步骤条统一接。
 - 模块 11 / 12（UI-09）：诊断导出只有「最近 24 小时」一键入口；按单张单 / 需求 / 时间段选择、`eval_task` 人工补填、SWE-bench JSONL 导出都还没接（11 的接口已支持，T-126 登记）。
 - 模块 12（UI-07）：设置弹层目前只有只读设置 + 密钥 + 模型向导；设计稿 7 个标签里的通用 / 项目 / 模型 / 预算 / 诊断 / 关于和可编辑写回（`writeConfig` / `writePricing` + reload 排队）未做（T-126 登记）。
+
+- 模块 10（T-117 后）：未注入 `adopt` 的 `awaiting_adopt` 场景，失败单的下游仍会交 9 卡 `waiting`（同类缺口的未覆盖分支）；成环时可能子先父、环内失败的下游已先交付，交 9 处理。
 
 ### 不对应需求单的 PR
 
