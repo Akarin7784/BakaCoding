@@ -102,45 +102,54 @@ describe("Windows：超时 / 中止结束整棵进程树（T-123）", () => {
   };
   const pidFileOf = async (node: string) => Number((await readFile(node, "utf8")).trim());
 
-  it.skipIf(!isWin)("超时：孙进程也被结束，不在后台残留", async () => {
-    const pidFile = await spawnTree();
-    const settled = git(root, ["-c", "alias.tree=!sh tree.sh", "tree"], {
-      timeoutMs: 3_000,
-    }).catch((e: unknown) => e);
-    let gpid = 0;
-    try {
-      expect(await until(() => existsSync(pidFile), 2_500)).toBe(true);
-      gpid = await pidFileOf(pidFile);
-      expect(gpid).toBeGreaterThan(0);
-      expect(alive(gpid)).toBe(true);
-      const e = await settled;
-      expect(e).toBeInstanceOf(GitTimeoutError);
-      expect(await until(() => !alive(gpid))).toBe(true);
-    } finally {
-      if (gpid > 0 && alive(gpid)) killTree(gpid);
-    }
-  });
+  // 时间余量给足（T-123 评审 P2）：高负载机器上 sh/node 启动可能很慢，别因为等不到 pid 文件假红。
+  it.skipIf(!isWin)(
+    "超时：孙进程也被结束，不在后台残留",
+    async () => {
+      const pidFile = await spawnTree();
+      const settled = git(root, ["-c", "alias.tree=!sh tree.sh", "tree"], {
+        timeoutMs: 12_000,
+      }).catch((e: unknown) => e);
+      let gpid = 0;
+      try {
+        expect(await until(() => existsSync(pidFile), 8_000)).toBe(true);
+        gpid = await pidFileOf(pidFile);
+        expect(gpid).toBeGreaterThan(0);
+        expect(alive(gpid)).toBe(true);
+        const e = await settled;
+        expect(e).toBeInstanceOf(GitTimeoutError);
+        expect(await until(() => !alive(gpid), 8_000)).toBe(true);
+      } finally {
+        if (gpid > 0 && alive(gpid)) killTree(gpid);
+      }
+    },
+    40_000,
+  );
 
-  it.skipIf(!isWin)("中止：同样结束整棵进程树，原样抛 signal.reason", async () => {
-    const pidFile = await spawnTree();
-    const ctl = new AbortController();
-    const reason = new Error("stop");
-    const settled = git(root, ["-c", "alias.tree=!sh tree.sh", "tree"], {
-      timeoutMs: 0,
-      signal: ctl.signal,
-    }).catch((e: unknown) => e);
-    let gpid = 0;
-    try {
-      expect(await until(() => existsSync(pidFile), 4_000)).toBe(true);
-      gpid = await pidFileOf(pidFile);
-      expect(alive(gpid)).toBe(true);
-      ctl.abort(reason);
-      expect(await settled).toBe(reason);
-      expect(await until(() => !alive(gpid))).toBe(true);
-    } finally {
-      if (gpid > 0 && alive(gpid)) killTree(gpid);
-    }
-  });
+  it.skipIf(!isWin)(
+    "中止：同样结束整棵进程树，原样抛 signal.reason",
+    async () => {
+      const pidFile = await spawnTree();
+      const ctl = new AbortController();
+      const reason = new Error("stop");
+      const settled = git(root, ["-c", "alias.tree=!sh tree.sh", "tree"], {
+        timeoutMs: 0,
+        signal: ctl.signal,
+      }).catch((e: unknown) => e);
+      let gpid = 0;
+      try {
+        expect(await until(() => existsSync(pidFile), 8_000)).toBe(true);
+        gpid = await pidFileOf(pidFile);
+        expect(alive(gpid)).toBe(true);
+        ctl.abort(reason);
+        expect(await settled).toBe(reason);
+        expect(await until(() => !alive(gpid), 8_000)).toBe(true);
+      } finally {
+        if (gpid > 0 && alive(gpid)) killTree(gpid);
+      }
+    },
+    40_000,
+  );
 });
 
 describe("本地 git 超时：行为不变（T-110）", () => {

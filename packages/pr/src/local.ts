@@ -579,10 +579,87 @@ function cwdOf(rec: PrRecord): string {
 }
 
 /**
+ * 解开 git 的 C 风格引号路径（T-131）：`core.quotePath` 默认把非 ASCII 字符写成八进制 `\nnn`，
+ * 文件名里的引号、换行、制表符、反斜杠也会转义。只处理整段被引号包起来的形式。
+ */
+function unquoteGitPath(raw: string): string {
+  if (!raw.startsWith('"') || !raw.endsWith('"') || raw.length < 2) return raw;
+  const body = raw.slice(1, -1);
+  const bytes: number[] = [];
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i]!;
+    if (ch !== "\\") {
+      const code = body.charCodeAt(i);
+      if (code >= 0xd800 && code <= 0xdbff && i + 1 < body.length) {
+        // 代理对按码点编码
+        bytes.push(...Buffer.from(body.slice(i, i + 2), "utf8"));
+        i++;
+      } else {
+        bytes.push(...Buffer.from(ch, "utf8"));
+      }
+      continue;
+    }
+    const next = body[i + 1];
+    i++;
+    switch (next) {
+      case "a":
+        bytes.push(0x07);
+        break;
+      case "b":
+        bytes.push(0x08);
+        break;
+      case "f":
+        bytes.push(0x0c);
+        break;
+      case "n":
+        bytes.push(0x0a);
+        break;
+      case "r":
+        bytes.push(0x0d);
+        break;
+      case "t":
+        bytes.push(0x09);
+        break;
+      case "v":
+        bytes.push(0x0b);
+        break;
+      case "\\":
+        bytes.push(0x5c);
+        break;
+      case '"':
+        bytes.push(0x22);
+        break;
+      default: {
+        const oct = body.slice(i, i + 3);
+        if (/^[0-7]{3}$/.test(oct)) {
+          bytes.push(parseInt(oct, 8));
+          i += 2;
+        } else if (next !== undefined) {
+          bytes.push(...Buffer.from(next, "utf8"));
+        }
+      }
+    }
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+
+/**
+ * 判定 `diff --git a/<源> b/<目标>` 块头的目标路径是不是 path（T-131）。
+ * 普通 / 带空格的文件名不转义（直接比较后缀）；非 ASCII、引号、换行等会被 git 用 C 风格引号包起来，
+ * 解开引号后再比。两段 token 都可能带引号，最后一个 ` "` 之后就是目标 token（引号里的 `"` 会转义成 `\"`）。
+ */
+function blockTargetIs(header: string, path: string): boolean {
+  if (header.endsWith(` b/${path}`)) return true;
+  const last = header.lastIndexOf(' "');
+  if (last < 0 || !header.endsWith('"')) return false;
+  return unquoteGitPath(header.slice(last + 1)) === `b/${path}`;
+}
+
+/**
  * 逐文件取 patch 时，paths 同时带了源路径和目标路径（复制检测要用源路径）。
  * `git diff -M -C -- <源> <目标>` 检出复制时会输出两块：源文件的改动块 + 复制块，
  * 本文件的 patch 只能留目标路径那一块，否则会把源文件的改动算进来（T-121）。
- * 只有一块、或块头认不出（路径被 git 加了引号等）时原样返回。
+ * 只有一块、或块头认不出时原样返回。
  */
 function patchBlockOf(patch: string, path: string): string {
   if (!patch.startsWith("diff --git ")) return patch;
@@ -591,7 +668,7 @@ function patchBlockOf(patch: string, path: string): string {
   const hit = blocks.find((b) => {
     const nl = b.indexOf("\n");
     const header = nl < 0 ? b : b.slice(0, nl);
-    return header.endsWith(` b/${path}`) || header.endsWith(` "b/${path}"`);
+    return blockTargetIs(header, path);
   });
   return hit ?? patch;
 }
