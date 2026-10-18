@@ -25,17 +25,20 @@ export class FsToolError extends Error {
  */
 /**
  * 权限清单 / 写入范围里的 glob 是否不安全（全项目只此一份，8、9 调这里）。命中任一条即不安全：
- * - 任何位置出现 `..`（含花括号、extglob 里的；文件名本身带 `..` 也算，宁严勿宽）；`.` 段、空段（`a//b`、开头或结尾的 `/`）；
+ * - 有 `.` 段、空段（`a//b`、开头或结尾的 `/`），或有**一整段**正好是 `..`（`..`、`../x`、`src/../x`、`src/**` 后面接 `..` 段）；
+ * - 花括号、extglob、字符类里出现 `..`（展开后可能变成 `..` 段：`src/{a,..}/x`、`src/+(..)/x`、`src/[..]/x`）；
+ *   普通文件名里连续的两个点不算（`a..b.txt`、`src/a..b.ts` 是合法文件名，minimatch 不把它当上级目录）；
  * - 绝对路径（`/` 开头）、盘符（`C:`）、`~` 开头、反斜杠（Windows 分隔符或 minimatch 转义）、NUL；
  * - `!` / `#` 开头（minimatch 的否定 / 注释）；
  * - 花括号或小括号里出现 `/`，或有一个备选正好是 `.`（展开后可能多出 / 少掉路径段）；空串。
- * minimatch 会解析 `..`，所以 `src/../**` 这类写法若放行，等于给了整个仓库。
+ * minimatch 会解析 `..` 段，所以 `src/../**` 这类写法若放行，等于给了整个仓库。
  */
 export function isUnsafeGlob(glob: string): boolean {
   if (typeof glob !== "string" || glob.length === 0) return true;
   if (/[\\\0]/.test(glob)) return true;
   if (/^[/~!#]/.test(glob) || /^[A-Za-z]:/.test(glob)) return true;
-  if (glob.includes("..")) return true;
+  if (glob.split("/").some((seg) => seg === "..")) return true;
+  if (hasDotsInGroup(glob)) return true;
   if (glob.split("/").some((seg) => seg === "" || seg === ".")) return true;
   let depth = 0;
   let alt = "";
@@ -50,6 +53,22 @@ export function isUnsafeGlob(glob: string): boolean {
     } else if (depth > 0) {
       if (c === "/") return true;
       alt += c;
+    }
+  }
+  return false;
+}
+
+/** 花括号 / extglob / 字符类里出现 `..`：展开后可能多出 `..` 段，按不安全处理（宁可误拒）。 */
+function hasDotsInGroup(glob: string): boolean {
+  let depth = 0;
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i]!;
+    if (c === "{" || c === "(" || c === "[") {
+      depth++;
+    } else if (c === "}" || c === ")" || c === "]") {
+      depth = Math.max(0, depth - 1);
+    } else if (depth > 0 && c === "." && glob[i + 1] === ".") {
+      return true;
     }
   }
   return false;

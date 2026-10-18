@@ -82,7 +82,6 @@ describe("#47 安全修复：.. / . / 绝对路径等不能逃出写入范围", 
     "src/{a,.}/x",
     "src/@(a|..)/x",
     "src/+(a|b/c)",
-    "src/a..b",
     "",
   ];
 
@@ -96,6 +95,9 @@ describe("#47 安全修复：.. / . / 绝对路径等不能逃出写入范围", 
       "a/b/c.ts",
       ".github/**",
       "src/.env.example",
+      // T-119：文件名里连续两个点是普通字符，不是上级目录
+      "src/a..b.ts",
+      "a..b.txt",
     ])
       expect(isUnsafeGlob(g), g).toBe(false);
   });
@@ -145,6 +147,13 @@ describe("#47 安全修复：.. / . / 绝对路径等不能逃出写入范围", 
       generatePermissionList({ permission_list: [{ glob: "src/../**", level: "rw" }] })
         .permission_list,
     ).toEqual([{ glob: "**", level: "deny" }]);
+    // T-119：文件名里连续两个点不算不安全，不再按 unsafe_glob 裁掉
+    const kept = generatePermissionList({
+      permission_list: [{ glob: "src/a..b.ts", level: "rw" }],
+      write_scope: ["src/**"],
+    });
+    expect(kept.permission_list).toEqual([{ glob: "src/a..b.ts", level: "rw" }]);
+    expect(kept.cut).toEqual([]);
   });
 
   it("不安全的 ro 原位改成 deny（T-038）：src/** rw + src/../src/secret/** ro 之后 src/secret 不可写", () => {
