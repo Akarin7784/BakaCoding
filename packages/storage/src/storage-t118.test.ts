@@ -148,6 +148,9 @@ describe("T-118 保留期自动清理", () => {
       expect(purgeHandle).toBeDefined();
       expect(purgeHandle!.hasRef()).toBe(false);
       s.close();
+      // close() 之后两个定时器都被清掉：租约续期（10 秒）和自动清理（60 秒）
+      expect(vi.getTimerCount()).toBe(0);
+      expect(purgeHandle!.hasRef()).toBe(false);
       setIntervalSpy.mockRestore();
     } finally {
       vi.useRealTimers();
