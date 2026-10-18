@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`10ac6e3` · main 上测试：116 个测试文件 / 2179 个测试；Windows 本机约 70 条环境相关失败 + 1 条 symlink skip（T-125 跟踪） · 更新日期：2026-10-18（UTC+8）
+> 上次更新时 main：`0d132e8` · main 上测试：122 个测试文件 / 2270 个测试（2202 过 + 61 失败 + 7 skip）；Windows 本机确定性失败 47 条 / 19 文件（`docs/test-baseline.md`，T-125 跟踪） · 更新日期：2026-10-18（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -137,7 +137,7 @@ flowchart BT
 | T-080 | 文档：README 重写（1.0.0-preview 的 Windows 下载与运行、桌面端用法、环境变量、v1 已知限制、第三方声明 lucide ISC）；`docs/images/` 加三张实机截图（主界面、同步状态行、导出诊断包）；整体设计（md / html）状态句改为 v1 已实现，worktree 排除说明改为 `.git/info/exclude` 排除整个 `/.bakacoding/`；整体设计和模块文档的密钥说明改为只从环境变量读（不读 `config/secrets.local.json`）。只改文档，main `dd266a4`，测试仍为 73 个文件 / 1570 个 | 文档 | 界面与诊断开发 | 已合入 | #89 | `dd266a4` |
 | T-082 | 模块 4：新增通用接口 `ensureExcludeLines(dir, lines)`（经 `@bakacoding/app` 再导出，供 T-081 写 `/config/*.json`）；`ensureBakacodingIgnored` 改为调用它，行为不变；判断规则是否已存在改按 git 语义（行首空格算数、行尾未转义空格不算、CRLF 视同 LF），修掉 `trim()` 把行首空格当成等价的问题；modules.md 同步。main `2a4dba5`，测试 73 个文件 / 1578 个 | 4 | 基础层开发 | 已合入 | #90 | `2a4dba5` |
 | T-081 | 导入缺配置时「用默认模板创建」：新 IPC `project:createDefaultConfig`（无参数，目录由主进程记住，每次导入 / 用完即清）；只补缺的文件、不覆盖、`--config` 时只建 pricing.json、符号链接 / 非 git 仓库拒绝；exclude 行经 `ensureExcludeLines`（T-082，main.ts 注入真实实现，只写本次新建的文件）；缺失清单只说一遍并提示模板位置；界面内容区「缺配置」横幅 +「用默认模板创建」按钮（原因走 toast）；UI-03b 起不是 Git 仓库不进 `missing`，失败结果带 `notGit` / `envConfigMissing`，都不给按钮 | 12 | 界面与诊断开发 | 已合入 | #91 | `226362e` |
-| T-126 | 模块 12：T-081 评审 P2 清尾：`project:createDefaultConfig` 创建配置 / 写 `.git/info/exclude` 的报错只留错误码（fs 报错的 message 带绝对路径，不再拼进界面提示）；`modules.md` §12 措辞对齐（补完后内容校验仍不过时，提醒并进失败原因）；已知缺口登记 11/12 三条（右面板动态空壳、诊断导出只有 24 小时一键、设置弹层缺可编辑标签） | 12 | 界面与诊断开发 | 待评审 | #155 | |
+| T-126 | 模块 12：T-081 评审 P2 清尾：`project:createDefaultConfig` 创建配置 / 写 `.git/info/exclude` 的报错只留错误码（fs 报错的 message 带绝对路径，不再拼进界面提示）；`modules.md` §12 措辞对齐（补完后内容校验仍不过时，提醒并进失败原因）；已知缺口登记 11/12 三条（右面板动态空壳、诊断导出只有 24 小时一键、设置弹层缺可编辑标签） | 12 | 界面与诊断开发 | 已合入 | #155 | `ec3d9dc` |
 | UI-01 | 模块 12 设计 token、主题、字体与基础组件（`docs/ui-design.md` §5、§6，`01b15dd`）：§5.1 浅 / 深两套 OKLCH 颜色 token（danger 红与 accent 蓝分开，错误提示改用 danger）；主题跟随系统 / 浅 / 深，偏好存 localStorage，写到 `<html data-theme>`，设置页加主题切换；字体西文 Inter（随包 latin / latin-ext 子集，OFL）+ Segoe UI Variable / 微软雅黑 UI，正文 14px，代码字体栈；间距、圆角、阴影、动效 token，尊重减少动态效果；按钮只留 primary / secondary / danger 三种（34 / 28 高），danger 只能经确认框的 `DialogDangerButton` 用；补 shadcn 组件 Dialog、DropdownMenu、Tooltip、Toast（sonner）、Tabs、Input、Select、Switch、ScrollArea、Collapsible、Command；`StatusIcon`（9 个状态 → lucide 图标，§5.2）；文案表 `lib/copy.ts`（merged「已合入」、合入 main「已合入 main」、复投「重写」），测试搜 `packages/desktop/src` 不得出现旧叫法；新依赖 `radix-ui`、`sonner`、`cmdk`、`@fontsource-variable/inter`；IPC 与布局不变。main `e44f4a5`，测试 78 个文件 / 1619 个 | 12 | 界面与诊断开发 | 已合入 | #93 | `e44f4a5` |
 | T-085 | 模块 9 单子状态变更事件：`@bakacoding/types` 新增 `ticket_status_changed`（`project_id`、`from`（可为 null）、`to`，`ticket_id` 必填，只加不改）；组合根的 `tickets.setStatus`（8 和 9 写状态都经它）在写库成功、且状态真的变了之后发一条，同状态重复写、写库抛错、找不到单、新建单子都不发，发布失败只记警告；trace 取单子 `fields.trace`；8、9、10 的代码和接口不动；modules.md 事件清单和「组合根」一节同步。main `1824b12`，测试 81 个文件 / 1678 个 | 9 | 编排层开发 | 已合入 | #99 | `1824b12` |
 | T-095 | 根目录 `pnpm typecheck` 在干净检出上报 TS6310：根脚本是 `tsc -b --noEmit`，而 TypeScript project references 要求被引用项目能写出声明文件，CLI 的 `--noEmit` 会关掉整张依赖图的 emit；最小修复是把根 `typecheck` 改成 `tsc -b`（与 `build` 相同，会写出 dist）。干净检出（`pnpm install`、无先验 build）根目录 typecheck 通过；回滚 `--noEmit` 后 TS6310 复现；`pnpm build` / `test` / `lint` / `format:check` / `pnpm -r typecheck` 不受影响。README 开发者指南同步说明。 | 工具链 / 12 | 界面与诊断开发 | 已合入 | #96 | `fe8207c` |
@@ -171,22 +171,31 @@ flowchart BT
 | T-112 | 模块 9：9 调 6 的 `merge` / `sync` / `close` ×2 / `diff` ×2 都带 `stop()` 的 signal（T-102b #136 评审跟进），被中止时原样抛 `signal.reason`，不上报、不改状态；sync 中止前已处理的变化照常应用；T-102b 用例名「C3」「C4」改成描述性名字；modules.md §9「收尾要多久」去掉 150 秒 / 记录数 × 30 秒，复核桌面退出 35 秒不用改；合入后取 diff 被中止时靠 `merge_followup` 标记由 takeOver 补发 `interface_changed`（9 / 10 / 组合根可选接口追加，已批准）。main `918c49d`，测试 116 个文件 / 2179 个 | 9 | 编排层开发 | 已合入 | #144 | `918c49d` |
 | T-109 | 界面：`App.status.test` 重新连接失败用例偶发失败（flaky），定位并修稳（UI-03a #130 评审跟进）。根因：sonner 点 action 默认关掉 toast（200ms 后卸载），「复制详情」把错误 toast 关了，末尾断言能否通过取决于测试是否在 200ms 内跑完；`notifyError` 的复制按钮 `preventDefault`，复制后错误 toast 留着，测试改看 `data-removed` 标记、不靠时间。另补退出组合测试：stop 挂住 + 收尾中点关闭 + 到 `QUIT_STOP_TIMEOUT_MS` 放行窗口、只退出一次（假计时器）。main `aae7037`，测试 115 个文件 / 2127 个 | 12 | 界面与诊断开发 | 已合入 | #147 | `aae7037` |
 | T-114 | 模块 3 / 4：配置向导（T-113）的底层支持：3 新增 `writePricing(path, pricing, opts?)` 与 `WRITABLE_PRICING_FILE`（只写 `pricing.json`，`PricingSchema` 校验 + 像密钥的值检查，和 `writeConfig` 共用原子写入）；4 新增 `nested_repo`：`checkRepo` 的 git 项、`initRepo`（不建目录、不 init）和提交类修复都识别「在另一个 Git 仓库里面」，`rev-parse` 失败时逐层 lstat 找 `.git`。main `10d9e00`，测试 116 个文件 / 2149 个 | 3、4 | 基础层开发 | 已合入 | #148 | `10d9e00` |
-| T-122 | 模块 7：`review()` 的 signal 也透传给 6 的 `checks` / `diff`（6 的 T-102a / T-110 起支持请求级超时与取消）；`ReviewPrSource.checks` / `diff` 加可选 `{ signal }`，给了 signal 才传第二参、没给仍只传 `pr_id`；在途中止由 6 抛 `signal.reason`、7 原样抛，6 没理会 signal、取消后才返回时 7 丢弃结果并抛，两种情况都不再读 diff / 不调模型；补 5 条测试；modules.md §7 同步 | 7 | 执行层开发 | 待评审 | #158 | |
-| T-125 | Windows 测试基线（新增 `docs/test-baseline.md`）：测量时 main `10ac6e3`（118 文件 / 2205 测试）；全量并发跑 163 条失败，串行交叉验证后确定性失败 **55 条 / 21 文件**（其余 108 条为 5s 超时 / EBUSY 负载噪声，不计入）；固化门禁三条（build/typecheck/lint/format:check 全绿、受影响包串行对比、新增失败=0）与平台守卫按模块分摊清单，消除进度在本文件登记 | 全模块 / 测试基线 | 审查官 | 待评审 | #160 | |
-| T-115 | 模块 9：写入范围 glob 支持 `[...]` 字符类（语义同 minimatch）。锁的重叠判定、代表路径、独占区域判定都按字符类处理：`[abc]` / `[a-c]` / `[!a]` / `[^a]` 能匹配的字面量判为重叠（`src/[ab].ts` 与 `src/a.ts` 不再同时派），代表路径取字符类里能匹配的字符（`src/[p]ackage.json` 判进独占区域）；未闭合的 `[`、空类和非法字符类（如 `[z-a]` 反向区间）按字面量、四个入口都不抛（评审 P1，避免 `tryLock` 每轮重抛卡住调度）；补 D16 / D17 / D18 调度用例（`[z-a]`、`[a-\d]` 各一条：`dispatchOnce` 正常返回该单、再 kick 不重复派不重复抛），modules.md §9 同步。main `10ac6e3`，本单新增 7 条测试（`scheduler.test.ts` 158 条全过），受影响包 `packages/scheduler` 串行 2 文件 / 160 条全过 | 9 | 编排层开发 | 待评审 | #157 | |
-| T-118 | 模块 2：保留期自动清理（已知缺口：`purgeExpired()` 全仓没有生产调用方，30 天保留期从不生效）。`openStorage` 新增 `purge_interval_ms`（默认 24 小时，0 关闭）：打开写库先清一次（补停机期间过期数据），之后定时清；定时器 `unref()`、`close()` 清掉；失败只经 `logger.warn` 记日志、不挡启动；只读连接不自动清理；`purgeExpired()` 接口和语义不变。评审 P1 跟进：两条定时器用例改用假计时器（`advanceTimersByTimeAsync`），新增 unref 断言（spy `setInterval` 抓 60 秒句柄、`hasRef() === false`）。遗留：生产 `openStorage` 未传 `retention_days`，配置值接线要 12/组合根把 `loadConfig` 挪到 `openStorage` 之前，建议另开跟随单 | 2 | 基础层开发 | 待评审 | #156 | |
+| T-122 | 模块 7：`review()` 的 signal 也透传给 6 的 `checks` / `diff`（6 的 T-102a / T-110 起支持请求级超时与取消）；`ReviewPrSource.checks` / `diff` 加可选 `{ signal }`，给了 signal 才传第二参、没给仍只传 `pr_id`；在途中止由 6 抛 `signal.reason`、7 原样抛，6 没理会 signal、取消后才返回时 7 丢弃结果并抛，两种情况都不再读 diff / 不调模型；补 5 条测试；modules.md §7 同步 | 7 | 执行层开发 | 已合入 | #158 | `b620fdc` |
+| T-125 | Windows 测试基线（新增 `docs/test-baseline.md`）：测量时 main `10ac6e3`（118 文件 / 2205 测试）；全量并发跑 163 条失败，串行交叉验证后确定性失败 **55 条 / 21 文件**（其余 108 条为 5s 超时 / EBUSY 负载噪声，不计入）；#170 起按 T-123 实测更新为 **47 条 / 19 文件**（全量 122 文件 / 2268 条 = 2200 过 + 61 失败 + 7 skip）；固化门禁三条（build/typecheck/lint/format:check 全绿、受影响包串行对比、新增失败=0）与平台守卫按模块分摊清单，消除进度在本文件登记 | 全模块 / 测试基线 | 审查官 | 已合入 | #160、#170 | `60b9a66`、`0d132e8` |
+| T-115 | 模块 9：写入范围 glob 支持 `[...]` 字符类（语义同 minimatch）。锁的重叠判定、代表路径、独占区域判定都按字符类处理：`[abc]` / `[a-c]` / `[!a]` / `[^a]` 能匹配的字面量判为重叠（`src/[ab].ts` 与 `src/a.ts` 不再同时派），代表路径取字符类里能匹配的字符（`src/[p]ackage.json` 判进独占区域）；未闭合的 `[`、空类和非法字符类（如 `[z-a]` 反向区间）按字面量、四个入口都不抛（评审 P1，避免 `tryLock` 每轮重抛卡住调度）；补 D16 / D17 / D18 调度用例（`[z-a]`、`[a-\d]` 各一条：`dispatchOnce` 正常返回该单、再 kick 不重复派不重复抛），modules.md §9 同步。main `10ac6e3`，本单新增 7 条测试（`scheduler.test.ts` 158 条全过），受影响包 `packages/scheduler` 串行 2 文件 / 160 条全过 | 9 | 编排层开发 | 已合入 | #157 | `4b113e8` |
+| T-118 | 模块 2：保留期自动清理（已知缺口：`purgeExpired()` 全仓没有生产调用方，30 天保留期从不生效）。`openStorage` 新增 `purge_interval_ms`（默认 24 小时，0 关闭）：打开写库先清一次（补停机期间过期数据），之后定时清；定时器 `unref()`、`close()` 清掉；失败只经 `logger.warn` 记日志、不挡启动；只读连接不自动清理；`purgeExpired()` 接口和语义不变。评审 P1 跟进：两条定时器用例改用假计时器（`advanceTimersByTimeAsync`），新增 unref 断言（spy `setInterval` 抓 60 秒句柄、`hasRef() === false`）。遗留：生产 `openStorage` 未传 `retention_days`，配置值接线要 12/组合根把 `loadConfig` 挪到 `openStorage` 之前，建议另开跟随单 | 2 | 基础层开发 | 已合入 | #156 | `2ca7a99` |
+| T-127 | 模块 12：右面板「动态」标签（UI-04～06 最小一块）：接现有 `group_message` 做 Agent 活动流——头像 +「发送方 → 接收方 · 类型 · 时间」、超 3 行折叠、按单过滤、贴底自动滚 /「回到最新」、底部状态行（取快照 `prs` 的在跑单）、空状态；未读小点：面板关着或停在概览时来新消息，标签与标题栏右面板开关亮小点，打开动态即已读，按项目记已读、切项目不误亮；P2 评审跟进：切项目时 `setTicketFilter("all")` 重置（保留防御性 `effectiveTicketFilter`），强调色收口到 `ActivityDot` 组件。如实登记的偏差：桌面端 `UI_EVENT_TYPES` 白名单还没有 T-085 `ticket_status_changed`，本单不改后端，状态行暂用快照 `prs`；`group_message` 没有 receiver 字段，接收方按类型推。renderer 34 文件 / 225 条全过；`packages/desktop` 串行 514 条 = 502 过 + 11 条 T-125 基线失败 + 1 skip | 12 | 界面与诊断开发 | 已合入 | #159 | `cb52c7e` |
+| T-121 | 模块 6：`diff` 加复制检测 `-C`（已知缺口：6 用 `git diff -M` 不带 `-C`，复制出来的文件查不出旧路径）。本地三处 git 调用（name-status / numstat / patch）统一 `-M -C`；复制文件按 `status: "added"` + `old_path` 报（`STATUS` 已有 `C → added` 映射），`DiffSchema` 不加 `copied` 枚举、types 零改动；新增内部 `patchBlockOf`，只保留目标路径的 patch 块（`-M -C -- <源> <目标>` 会同时输出源文件块）；只检测本 diff 里改动过的源文件，不加 `--find-copies-harder`；补 3 条真实 git 用例（100% 复制 / 部分复制带 hunk / 未改源复制不检出）；modules.md §6 同步。`packages/pr` 串行 7 文件 / 159 条 = 146 过 + 13 条 T-125 基线失败，新增失败 0 | 6 | 执行层开发 | 已合入 | #161 | `60274be` |
+| T-116 | 模块 9：等锁防饿死（已知缺口：大写入范围的单等锁时可能一直被小范围单抢先）。新增并导出 `LOCK_WAIT_AGING_ROUNDS = 2`；`Entry.lock_wait_rounds` 登记 0、`tryLock` 失败 +1、派出 / 离开 pending / 出队三处清 0；`dispatchOnce` 的候选单若与「已等 ≥2 轮且未派出」的 pending 单锁冲突（`scopesOverlap`）则本轮让路，等待者须 pending、依赖 ready、非预算续跑、未被 offpeak 压住；无等待者时派单顺序、返回值、并发、反压逐字节不变；补 4 条用例（顺序回归、D19 防饿死、D20 不冲突不让路、D21 多 aged 等待者按入队序），测试从导出常量取轮数；modules.md §9 同步。`packages/scheduler` 串行 163 过 + 1 条 T-079 已登记 flaky，新增失败 0 | 9 | 编排层开发 | 已合入 | #162 | `5d558e6` |
+| T-128 | 模块 12：生产 `openStorage` 不传 `retention_days`（T-118 遗留，`diagnostics.retention_days` 配置值接不进模块 2，30 天保留期只能按默认清）。`startBackend` 把配置存在性检查 + `loadConfig` 提到 `openStorage` 之前，`retention_days` 取 `config.diagnostics.retention_days` 显式传入（模块 2 的 `StorageOptions.retention_days` 已存在，接口不动）；配置缺失 / 坏 JSON 在建库前抛 `ConfigError`，`cleanupPartial()` 对 storage 可空、不泄漏锁也不留半成品库；测试钉住「没配显式传 30、配 7 传 7」和「缺配置 / 坏 JSON 不调 `openStorage`、不生成库文件」；modules.md §2 / §12 同步。`packages/desktop` 串行 53 文件 / 516 条 = 504 过 + 11 条 T-125 基线失败 + 1 skip，新增失败 0 | 12 | 界面与诊断开发 | 已合入 | #163 | `f44c45b` |
+| T-119 | 模块 4：`isUnsafeGlob` 的 `..` 判定收窄到路径段（已知缺口：任何含 `..` 都判不安全，`a..b.txt` / `src/a..b.ts` 这类合法文件名进不了权限清单、也不能申请越界写）。只有 `..` 作为完整路径段才不安全；整段 `..`、组内（花括号 / extglob / 字符类）的 `..`、`.` 段、空段、绝对路径、盘符、反斜杠、`!` / `#`、组里 `/`、备选 `.` 仍全部拒绝（宁严勿宽）；`packages/sub-agent/src/permissions.test.ts` 同步移掉 ESCAPES 里 `src/a..b` 一条并加两条断言（跨模块测试改动，已在群报备）；补 `a..b.txt` 安全、组内 `..` 仍不安全、能申请扩大范围用例；modules.md §4 同步。受影响包 `workspace + sub-agent + scheduler` 串行 491 条 = 470 过 + 17 条基线失败 + 4 skip，新增失败 0 | 4 | 基础层开发 | 已合入 | #164 | `140d1a4` |
+| T-123 | 模块 6：Windows 超时 / 中止 / 输出超限结束整棵进程树（已知缺口：T-110 起 `kill` 只杀直接子进程，ssh 等孙进程会残留）。新增 `endProcessTree()`：Windows 走 `taskkill /PID <pid> /T /F`（stdio ignore、windowsHide、unref，taskkill 起不来才退回 `child.kill()`），POSIX 保持 SIGTERM → 5s → SIGKILL 逐字节不变；`kill()` 三条路径都接上；测试新增 2 条 Windows 用例（git 经 sh 别名派生 node 孙进程，超时 / abort 各一条断言孙进程被结束、不残留，`finally` 兜底 taskkill）；modules.md §6 / §9 同步。`packages/pr` 串行 161 条 = 147 过 + 14 失败（11 条负载噪声单文件复跑转绿、3 条与 T-125 基线同名同数）→ 新增失败 0；`git-timeout.test.ts` 22/22 全绿，T-125 基线里该项目 7 条 EBUSY 消失 | 6 | 执行层开发 | 已合入 | #165 | `b9459e5` |
+| T-117 | 模块 10：重启接管失败单的下游不再一直 `waiting`（已知缺口：`takeOver` 里 adopt / enqueue 失败只进 `report.failed`，`blockedBy` 只看 `escalated` / `fields_invalid`，失败单的下游照样交 9，9 不认识依赖 → 永远 `waiting`）。接回顺序改成按依赖拓扑交付（DFS + 栈防环，无依赖边时仍「先 adopt 再 enqueue」原序）；失败单记 `failedIds`，直接 / 间接下游本轮不交 9、进 `held`（`blocked_by` 直接依赖）并 `holdOnce` 通知一次，下次接管重试成功后照常接回；补 3 条用例（adopt 失败→下游 held 且父先子后、二次接管不重复通知且恢复后接回、enqueue 失败且子单排序更早时仍先父后子）；modules.md §10 同步。`packages/supervisor` 串行 4 文件 / 105 条全过，新增失败 0 | 10 | 编排层开发 | 已合入 | #166 | `8974181` |
+| T-120 | 模块 4：`checkRepo` 识别仓库默认分支，去掉「只支持 main」的 v1 限制（a 单）。识别顺序：`origin/HEAD`（本地有同名分支且有提交）→ 本地 `main` → 当前检出分支（有提交）→ null；`main` 项语义改为「有可用的默认分支」，`no_main` 时 `current` / 分支名截断 / 不含路径 / 只读 / `gitEnv` / 超时都保持；新增 `default_branch` 字段，空仓库、not_git、nested 路径为 null；补 3 条默认分支用例；modules.md §4 同步。遗留（b 单，已报备）：组合根 `create-default-deps` 仍硬编码 `main`、12 层只读横幅 / 准备页文案仍是「main 分支」，按 b1（组合根 + 6 集成分支起点）/ b2（12 层文案）跟随。`packages/workspace` 串行 190 条 = 171 过 + 15 条基线失败 + 4 skip，新增失败 0 | 4 | 基础层开发 | 已合入 | #167 | `ef3f5cf` |
+| T-131 | 模块 6：`diff` 复制块按解引号后的路径匹配（T-121 评审 P2，中文 / 空格 / 引号文件名）。新增 `unquoteGitPath`（`\nnn` 八进制、`\"` / `\\` / `\n` / `\t` 等转义、代理对）与 `blockTargetIs`（普通 / 空格名快速路径 + 解引号路径兼容 `core.quotePath` 两种取值），解不出时仍安全 fallback 整段；同单带上 T-123 两条 P2：`taskkill` 改绝对路径 `%SystemRoot%\System32\taskkill.exe`（拿不到 env 才退回命令名，起不来仍回退 `child.kill()`）、Windows 用例时间余量放宽到 8s / 12s / per-test 40s；补中文文件名复制用例（patch 只留复制块、不含源文件改动），普通 diff 路径不变；modules.md §6 记引号 / 换行文件名的已知局限。`packages/pr` 串行 163 条 = 160 过 + 3 条基线失败，新增失败 0；`git-timeout.test.ts` 22/22 全绿 | 6 | 执行层开发 | 已合入 | #168 | `6629892` |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
 ### 已知缺口
 
 - 模块 2 / 11（T-055）：需求单 `fields` 按设计原样存取、不脱敏，诊断包导出永远不能原样带上 `fields`。已由 T-056 的回归测试锁住。
-- 模块 9（T-039）：大写入范围的单等锁时没有防饿死，可能一直被小范围的单抢先。
+- 已解决（T-116）：大写入范围的单等锁时不会一直被小范围单抢先——等锁 ≥2 轮的 pending 单与冲突新单让路；无等待者时派单顺序不变。
 - 模块 9（T-039）：`priority: deferred` 只看闲时开关，不看预算紧张程度。
 - 模块 8（T-038）：接口变更说明（interface notes）v1 不持久化：只在进程内存和预算暂停的 `ResumeToken.interface_notes` 里，进程重启后还没带给编码池的说明会丢。
 - 模块 9：文件名本身带通配的独占区域（如 `**/*.d.ts`、`**/*.lock`）判断时仍只取一个代表路径，可能漏判。
 - 已解决（T-115）：模块 9 的写入范围 glob 已按 minimatch 语义处理 `[...]` 字符类（锁的重叠判定、代表路径、独占区域判定），未闭合的 `[` 按字面量。
-- 模块 4 / 8 / 9（T-051）：`isUnsafeGlob` 把任何含 `..` 的 glob 都当不安全（包括 `a..b.txt` 这类文件名），这类路径不能写进权限清单、也不能申请扩大写入范围（v1 宁严勿宽）。
+- 已解决（T-119）：`isUnsafeGlob` 只把 `..` 作为完整路径段才判不安全，`a..b.txt` / `src/a..b.ts` 这类文件名可以写进权限清单、也能申请扩大写入范围；整段 `..`、组内（花括号 / extglob / 字符类）的 `..`、`.` 段、空段、绝对路径、盘符、反斜杠、`!` / `#`、组里 `/` 仍全部拒绝。
 - 模块 8（T-038 评审 / T-053）：文件名自带 `[]()*` 等字符（如 `app/[id]/page.tsx`）无法临时申请，需拆单时放进 `write_scope`。
 - 模块 10（T-040）：意图判断调用也预生成 requirement_id（模块 1/2/3 的台账、call_log 和 call_completed 都要求必填），要改需另开单动 1/2/3 接口和迁移；不是需求的 1:1 消息也会在调用日志和台账里留下一个未登记的需求号。
 - 模块 10（T-040）：追问项目后，去掉项目名和虚词仍剩至少 2 个字就当新消息处理，判断较粗，可能误判。
@@ -207,7 +216,7 @@ flowchart BT
 - 已解决（T-064）：9 有定时 `sync()`（默认 60s）+ 对账；GitHub 上手动合并 / 关闭被扣的 PR 一轮内生效。
 - 模块 8 / 组合根（T-041c）：重启补判取 diff 出错也按高风险，可能误扣。
 - 已解决（T-065）：6 的 DiffFile 带 `old_path` 后，8 / 组合根带 `old_path` 的改名只在新旧路径有一个是依赖文件时才算高风险，不再一律算；没有 `old_path` 的改名（旧数据）仍按兜底算高风险。
-- 模块 6 / 8（T-065）：6 用 `git diff -M`、不带 `-C`，复制检测用不到（复制出来的文件按 `added` 报、不带 `old_path`，原文件还在，不影响高风险判定）；`DiffFile.status` 也没有 `copied`。
+- 已解决（T-121）：6 的 `diff` 统一 `-M -C`，复制出来的文件按 `added` + `old_path` 报（不加 `--find-copies-harder`，`DiffFile.status` 仍没有 `copied` 枚举）。
 - 已解决（T-064 N6 + T-065）：9 的 `inExclusiveZone` 经 8 的 `isDependencyFile`；T-065 合入后依赖文件名不区分大小写，`Package.json` 也算独占区域。
 - 模块 10（T-041c）：高风险通知「同一 PR 只通知一次」、待裁决清单 `pendingHighRisk()` 都只在进程内，重启后重新通知一次。
 - 模块 10（T-041c）：拒绝后关 PR 失败（`high_risk_close.state = unconfirmed`）的重试只在进程内；重启后不接着重试，PR 可能一直开着，要用户到 GitHub 上关。
@@ -240,9 +249,11 @@ flowchart BT
 - 已补测试（T-076）：模块 6 check-runs 响应里没有 `total_count` 时，按已收到的条数算，当页之后不再翻页（行为不变，只补测试）。
 - 模块 12（T-073）：桌面端暂用 Electron 43.8.0（better-sqlite3 尚无 Electron 44/ABI 149 预编译），上游出了再升。
 - 模块 12（T-073）：开发用 better-sqlite3 12.11.1，打包用 12.12.0 electron-v148 预编译（lib/ 逐字节相同，仅 SQLite 版本不同）。
-- 模块 12（UI-04～UI-06）：右面板「动态」标签仍是空壳；数据源已就绪（`group_message` + T-085 `ticket_status_changed`），界面未接（T-126 登记）。
+- 已解决（T-127）：右面板「动态」标签已接 `group_message`（按单过滤、滚动、折叠、未读小点、状态行）；T-085 `ticket_status_changed` 仍未进桌面端 `UI_EVENT_TYPES` 白名单，状态行暂用快照 `prs`，等 UI-05 步骤条统一接。
 - 模块 11 / 12（UI-09）：诊断导出只有「最近 24 小时」一键入口；按单张单 / 需求 / 时间段选择、`eval_task` 人工补填、SWE-bench JSONL 导出都还没接（11 的接口已支持，T-126 登记）。
 - 模块 12（UI-07）：设置弹层目前只有只读设置 + 密钥 + 模型向导；设计稿 7 个标签里的通用 / 项目 / 模型 / 预算 / 诊断 / 关于和可编辑写回（`writeConfig` / `writePricing` + reload 排队）未做（T-126 登记）。
+
+- 模块 10（T-117 后）：未注入 `adopt` 的 `awaiting_adopt` 场景，失败单的下游仍会交 9 卡 `waiting`（同类缺口的未覆盖分支）；成环时可能子先父、环内失败的下游已先交付，交 9 处理。
 
 ### 不对应需求单的 PR
 
@@ -252,9 +263,10 @@ flowchart BT
 | 文档：整体设计 v3.1 接口决定 | #2 | `edb0fe7` |
 | 文档：modules.md 模块 11 接口约定 | #12 | `4120b0d` |
 | 文档：总开发进度（本文件）；整体设计 §18 schema 版本改为 v1.1 | #17 | `205a37d` |
+| 仓库基础设施：pnpm 12 `allowBuilds`（新 worktree 直接 install 可编译 better-sqlite3）+ `.gitattributes` 统一 LF 检出（T-124） | #153 | `10ac6e3` |
 
 ## 更新规则
 
-- 每个 PR 都要在本文件里更新自己那张单的一行：状态改成「待评审」，填上 PR 编号。
-- 合并人（蓝色大肥鱼）合入后填合入提交，并更新文件头的 main 哈希、测试数和日期。
-- 没有更新本文件的 PR 不合并。
+- 代码 PR 不需要改本文件（2026-10-18 起）：单号、模块、测试数写在 PR body，避免多张 PR 同时改本文件末尾的行互相冲突。
+- 合并人（蓝色大肥鱼）合入后统一出 bookkeeping PR：补各行「已合入 / PR 编号 / 合入提交」，并更新文件头的 main 哈希、测试数和日期。
+- 没有登记的 PR 不算完成；进度以 PR 与合入提交为准。
