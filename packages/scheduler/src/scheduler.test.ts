@@ -2071,6 +2071,84 @@ describe("T-048 写入范围 glob：花括号与独占区域", () => {
   });
 });
 
+describe("T-115 写入范围 glob：字符类", () => {
+  it("globToRegExp 支持 [abc] / [a-c] / [!a]（同 minimatch），未闭合或空类按字面量", () => {
+    expect(globToRegExp("src/[ab].ts").test("src/a.ts")).toBe(true);
+    expect(globToRegExp("src/[ab].ts").test("src/b.ts")).toBe(true);
+    expect(globToRegExp("src/[ab].ts").test("src/c.ts")).toBe(false);
+    expect(globToRegExp("src/[a-c].ts").test("src/b.ts")).toBe(true);
+    expect(globToRegExp("src/[a-c].ts").test("src/d.ts")).toBe(false);
+    expect(globToRegExp("src/[!a].ts").test("src/a.ts")).toBe(false);
+    expect(globToRegExp("src/[!a].ts").test("src/b.ts")).toBe(true);
+    expect(globToRegExp("src/[^a].ts").test("src/a.ts")).toBe(false);
+    expect(globToRegExp("src/[]]").test("src/]")).toBe(true);
+    expect(matchesAny("src/a.ts", ["src/[ab].ts"])).toBe(true);
+    expect(matchesAny("src/c.ts", ["src/[ab].ts"])).toBe(false);
+    // 未闭合的 `[`、空类 `[]` 按字面量（同 minimatch）
+    expect(globToRegExp("src/[ab.ts").test("src/a.ts")).toBe(false);
+    expect(globToRegExp("src/[ab.ts").test("src/[ab.ts")).toBe(true);
+    expect(globToRegExp("src/[]").test("src/[]")).toBe(true);
+    // 原有 `*` / `?` / `**` 语义不变
+    expect(globToRegExp("src/*.ts").test("src/a.ts")).toBe(true);
+    expect(globToRegExp("src/*.ts").test("src/a/b.ts")).toBe(false);
+    expect(globToRegExp("**/package.json").test("pkgs/x/package.json")).toBe(true);
+  });
+
+  it("globsOverlap：字符类与能匹配的字面量算重叠，匹配不上的不重叠；两边都带通配照旧保守", () => {
+    const yes: Array<[string, string]> = [
+      ["src/[ab].ts", "src/a.ts"],
+      ["src/[a-c].ts", "src/b.ts"],
+      ["src/[!a].ts", "src/b.ts"],
+      ["packages/[ab]/x.ts", "packages/a/x.ts"],
+      ["src/[ab].ts", "src/*.ts"],
+      ["src/[ab].ts", "src/[bc].ts"],
+    ];
+    const no: Array<[string, string]> = [
+      ["src/[ab].ts", "src/c.ts"],
+      ["src/[!a].ts", "src/a.ts"],
+      ["src/[a-c].ts", "src/d.ts"],
+      ["src/[ab].ts", "lib/a.ts"],
+    ];
+    for (const [a, b] of yes) {
+      expect(globsOverlap(a, b), `${a} vs ${b}`).toBe(true);
+      expect(globsOverlap(b, a), `${b} vs ${a}`).toBe(true);
+    }
+    for (const [a, b] of no) {
+      expect(globsOverlap(a, b), `${a} vs ${b}`).toBe(false);
+      expect(globsOverlap(b, a), `${b} vs ${a}`).toBe(false);
+    }
+  });
+
+  it("代表路径取能匹配的字符；独占区域按字符类算", () => {
+    expect(sampleOf("src/[ab].ts")).toBe("src/a.ts");
+    expect(sampleOf("src/[!a].ts")).toBe("src/b.ts");
+    expect(sampleOf("src/[0-9].ts")).toBe("src/0.ts");
+    expect(samplesOf("{src,lib}/[ab].ts")).toEqual(["src/a.ts", "lib/a.ts"]);
+    expect(sampleOf("src/[ab.ts")).toBe("src/[ab.ts");
+    const Z = DEFAULT_EXCLUSIVE_ZONES;
+    // 字符类能写到独占区域里的具体文件名 / 目录
+    expect(inExclusiveZone("src/[p]ackage.json", Z)).toBe(true);
+    expect(inExclusiveZone("db/[m]igrations/001.sql", Z)).toBe(true);
+    expect(inExclusiveZone("pkg/[t]ypes/a.ts", Z)).toBe(true);
+    // 不该变独占的
+    expect(inExclusiveZone("src/[ab].ts", Z)).toBe(false);
+    expect(inExclusiveZone("src/[ab]/*.ts", Z)).toBe(false);
+  });
+
+  it("D16. 调度：src/[ab].ts 与 src/a.ts 不同时派（字符类能写到同一个文件）", async () => {
+    const h = harness();
+    const d = withHandle(h);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { write_scope: ["src/[ab].ts"] }));
+    await s.enqueue(ticket("T-2", { write_scope: ["src/a.ts"] }));
+    await settle(s);
+    expect(d.handled).toEqual(["T-1"]);
+    d.pending.get("T-1")!.resolve({ kind: "escalated", pr_id: null });
+    await settle(s);
+    expect(d.handled).toEqual(["T-1", "T-2"]);
+  });
+});
+
 describe("#47 安全修复：写入范围里的 .. / . / 绝对路径", () => {
   it("不安全的写入范围与任何范围都算重叠，也算落在独占区域", () => {
     const unsafe = [

@@ -173,6 +173,7 @@ flowchart BT
 | T-114 | 模块 3 / 4：配置向导（T-113）的底层支持：3 新增 `writePricing(path, pricing, opts?)` 与 `WRITABLE_PRICING_FILE`（只写 `pricing.json`，`PricingSchema` 校验 + 像密钥的值检查，和 `writeConfig` 共用原子写入）；4 新增 `nested_repo`：`checkRepo` 的 git 项、`initRepo`（不建目录、不 init）和提交类修复都识别「在另一个 Git 仓库里面」，`rev-parse` 失败时逐层 lstat 找 `.git`。main `10d9e00`，测试 116 个文件 / 2149 个 | 3、4 | 基础层开发 | 已合入 | #148 | `10d9e00` |
 | T-122 | 模块 7：`review()` 的 signal 也透传给 6 的 `checks` / `diff`（6 的 T-102a / T-110 起支持请求级超时与取消）；`ReviewPrSource.checks` / `diff` 加可选 `{ signal }`，给了 signal 才传第二参、没给仍只传 `pr_id`；在途中止由 6 抛 `signal.reason`、7 原样抛，6 没理会 signal、取消后才返回时 7 丢弃结果并抛，两种情况都不再读 diff / 不调模型；补 5 条测试；modules.md §7 同步 | 7 | 执行层开发 | 待评审 | #158 | |
 | T-125 | Windows 测试基线（新增 `docs/test-baseline.md`）：测量时 main `10ac6e3`（118 文件 / 2205 测试）；全量并发跑 163 条失败，串行交叉验证后确定性失败 **55 条 / 21 文件**（其余 108 条为 5s 超时 / EBUSY 负载噪声，不计入）；固化门禁三条（build/typecheck/lint/format:check 全绿、受影响包串行对比、新增失败=0）与平台守卫按模块分摊清单，消除进度在本文件登记 | 全模块 / 测试基线 | 审查官 | 待评审 | #160 | |
+| T-115 | 模块 9：写入范围 glob 支持 `[...]` 字符类（语义同 minimatch）。锁的重叠判定、代表路径、独占区域判定都按字符类处理：`[abc]` / `[a-c]` / `[!a]` / `[^a]` 能匹配的字面量判为重叠（`src/[ab].ts` 与 `src/a.ts` 不再同时派），代表路径取字符类里能匹配的字符（`src/[p]ackage.json` 判进独占区域）；未闭合的 `[` 和空类 `[]` 按字面量；补 D16 调度用例，modules.md §9 同步。main `10ac6e3`，本单新增 4 条测试（scheduler.test.ts 155 条全过），全仓 118 个文件 / 2209 个（Windows 环境既有失败见 T-125，与本单无关） | 9 | 编排层开发 | 待评审 | | |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
@@ -183,7 +184,7 @@ flowchart BT
 - 模块 9（T-039）：`priority: deferred` 只看闲时开关，不看预算紧张程度。
 - 模块 8（T-038）：接口变更说明（interface notes）v1 不持久化：只在进程内存和预算暂停的 `ResumeToken.interface_notes` 里，进程重启后还没带给编码池的说明会丢。
 - 模块 9：文件名本身带通配的独占区域（如 `**/*.d.ts`、`**/*.lock`）判断时仍只取一个代表路径，可能漏判。
-- 模块 9：写入范围 glob 把 `[...]` 字符类当字面量处理。
+- 已解决（T-115）：模块 9 的写入范围 glob 已按 minimatch 语义处理 `[...]` 字符类（锁的重叠判定、代表路径、独占区域判定），未闭合的 `[` 按字面量。
 - 模块 4 / 8 / 9（T-051）：`isUnsafeGlob` 把任何含 `..` 的 glob 都当不安全（包括 `a..b.txt` 这类文件名），这类路径不能写进权限清单、也不能申请扩大写入范围（v1 宁严勿宽）。
 - 模块 8（T-038 评审 / T-053）：文件名自带 `[]()*` 等字符（如 `app/[id]/page.tsx`）无法临时申请，需拆单时放进 `write_scope`。
 - 模块 10（T-040）：意图判断调用也预生成 requirement_id（模块 1/2/3 的台账、call_log 和 call_completed 都要求必填），要改需另开单动 1/2/3 接口和迁移；不是需求的 1:1 消息也会在调用日志和台账里留下一个未登记的需求号。
