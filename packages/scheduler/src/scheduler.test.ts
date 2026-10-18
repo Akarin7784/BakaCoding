@@ -2174,7 +2174,7 @@ describe("T-115 写入范围 glob：字符类", () => {
     expect(d.handled).toEqual(["T-1", "T-2"]);
   });
 
-  it("D17. 调度：写入范围含非法字符类的单照常派发，tryLock 不抛、调度不卡停", async () => {
+  it("D17. 调度：写入范围含非法字符类的单照常派发，tryLock 不抛、多轮 dispatch 不重复抛", async () => {
     const h = harness();
     const d = withHandle(h);
     const s = await started(h);
@@ -2182,6 +2182,10 @@ describe("T-115 写入范围 glob：字符类", () => {
     await settle(s);
     expect(d.handled).toEqual(["T-1"]);
     expect(h.errors).toEqual([]);
+    // 再手动跑几轮派单循环：没有卡在 pending 里每轮重抛
+    for (let i = 0; i < 3; i++) await s.dispatch();
+    expect(h.errors).toEqual([]);
+    expect(d.handle).toHaveBeenCalledTimes(1);
     d.pending.get("T-1")!.resolve({ kind: "escalated", pr_id: null });
     await settle(s);
     expect(h.errors).toEqual([]);
