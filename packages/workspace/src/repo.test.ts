@@ -83,11 +83,13 @@ describe("checkRepo", () => {
       ["ignored", false, "not_ignored"],
     ]);
     expect(r.current_branch).toBeNull();
+    expect(r.default_branch).toBeNull();
   });
 
   it("不存在的目录也只报 not_git", async () => {
     const r = await checkRepo(join(base, "nope"));
     expect(r.items[0]).toMatchObject({ ok: false, code: "not_git" });
+    expect(r.default_branch).toBeNull();
   });
 
   it("外层仓库的子目录报 nested_repo（T-114），其余各项不通过，不含外层路径", async () => {
@@ -104,9 +106,10 @@ describe("checkRepo", () => {
     );
     expect(JSON.stringify(r)).not.toContain(base);
     expect(r.current_branch).toBeNull();
+    expect(r.default_branch).toBeNull();
   });
 
-  it("空仓库 master：报 no_commits 和 no_main，带 current，detail 不含路径", async () => {
+  it("空仓库 master：报 no_commits 和 no_main，带 current，detail 不含路径（T-120）", async () => {
     git("init", "-q", "-b", "master");
     const r = await checkRepo(dir);
     expect(r.items[0]).toEqual({ id: "git", ok: true });
@@ -114,7 +117,50 @@ describe("checkRepo", () => {
     expect(r.items[2]).toMatchObject({ ok: false, code: "no_main", current: "master" });
     expect(r.items[2]!.detail).toContain("master");
     expect(r.current_branch).toBe("master");
+    expect(r.default_branch).toBeNull();
     for (const i of r.items) expect(i.detail ?? "").not.toContain(base);
+  });
+
+  it("默认分支识别（T-120）：只有 master / trunk 且有提交时不再要求叫 main", async () => {
+    for (const name of ["master", "trunk"]) {
+      const p = join(base, `proj-${name}`);
+      mkdirSync(p);
+      const g = (...a: string[]) => execFileSync("git", a, { cwd: p, encoding: "utf8" }).trim();
+      g("init", "-q", "-b", name);
+      g("config", "user.name", "t");
+      g("config", "user.email", "t@example.com");
+      g("commit", "-q", "--allow-empty", "-m", "x");
+      const r = await checkRepo(p);
+      expect(r.items[2]).toEqual({ id: "main", ok: true });
+      expect(r.current_branch).toBe(name);
+      expect(r.default_branch).toBe(name);
+    }
+  });
+
+  it("默认分支识别（T-120）：仓库有 main 时，检出在功能分支上不影响默认分支", async () => {
+    git("init", "-q", "-b", "main");
+    ident();
+    git("commit", "-q", "--allow-empty", "-m", "x");
+    git("branch", "feat/x");
+    git("checkout", "-q", "feat/x");
+    const r = await checkRepo(dir);
+    expect(r.items[2]).toEqual({ id: "main", ok: true });
+    expect(r.current_branch).toBe("feat/x");
+    expect(r.default_branch).toBe("main");
+  });
+
+  it("默认分支识别（T-120）：origin/HEAD 指向的远程默认分支优先于当前检出分支", async () => {
+    git("init", "-q", "-b", "main");
+    ident();
+    git("commit", "-q", "--allow-empty", "-m", "x");
+    git("branch", "master");
+    git("checkout", "-q", "master");
+    git("update-ref", "refs/remotes/origin/main", "refs/heads/main");
+    git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
+    const r = await checkRepo(dir);
+    expect(r.current_branch).toBe("master");
+    expect(r.default_branch).toBe("main");
+    expect(r.items[2]).toEqual({ id: "main", ok: true });
   });
 
   it("身份只回是否配置，不回值", async () => {
@@ -151,7 +197,8 @@ describe("initRepo", () => {
     expect(readFileSync(join(p, ".git", "info", "exclude"), "utf8")).toContain("/.bakacoding/");
     const r = await checkRepo(p);
     expect(r.items.map((i) => i.ok)).toEqual([true, false, false, true]);
-    expect(r.items[2]!.current).toBeUndefined();
+    expect(r.items[2]!.current).toBe("main");
+    expect(r.default_branch).toBeNull();
   });
 
   it("已经是仓库：repo_exists，不改配置", async () => {
