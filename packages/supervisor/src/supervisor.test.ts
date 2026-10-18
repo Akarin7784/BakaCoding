@@ -1520,6 +1520,80 @@ describe("T-041b 重启接管补跑", () => {
     expect(r2.held.map((h) => h.ticket_id)).toEqual(["req-1-10", "req-1-11", "req-1-9"]);
     expect(t.notified.slice(n).filter((x) => /没有接回|排在后面/.test(x.text))).toEqual([]);
   });
+
+  it("T-117：adopt 失败的单，下游不再交给 9、进 held 并通知一次；父单先于子单处理", async () => {
+    const t = setup({
+      rows: [
+        row("req-1-1", "merge_queued", f({ write_scope: ["lib/a/**"] })),
+        row("req-1-2", "pending", f({ write_scope: ["lib/b/**"], depends_on: ["req-1-1"] })),
+      ],
+    });
+    const order: string[] = [];
+    const enq = t.enqueued;
+    t.deps.adopt = vi.fn(() => {
+      order.push("adopt:req-1-1");
+      throw new Error("adopt 挂了");
+    });
+    t.deps.enqueue = (x) => {
+      order.push(`enqueue:${x.ticket_id}`);
+      enq.push(x);
+    };
+    const { sup } = withDeps(t);
+    const r = await sup.takeOver();
+    expect(order).toEqual(["adopt:req-1-1"]);
+    expect(r.failed).toEqual([{ ticket_id: "req-1-1", error: "adopt 挂了" }]);
+    expect(r.held).toEqual([{ ticket_id: "req-1-2", blocked_by: ["req-1-1"] }]);
+    expect(r.enqueued).toEqual([]);
+    expect(t.notified.at(-1)!.text).toMatch(/req-1-1 本次重启接管失败/);
+  });
+
+  it("T-117：同进程二次 takeOver 不重复通知；失败单恢复后下游照常接回", async () => {
+    const t = setup({
+      rows: [
+        row("req-1-1", "merge_queued", f({ write_scope: ["lib/a/**"] })),
+        row("req-1-2", "pending", f({ write_scope: ["lib/b/**"], depends_on: ["req-1-1"] })),
+      ],
+    });
+    let fail = true;
+    const enq = t.enqueued;
+    t.deps.adopt = vi.fn(() => {
+      if (fail) throw new Error("adopt 挂了");
+    });
+    t.deps.enqueue = (x) => {
+      enq.push(x);
+    };
+    const { sup } = withDeps(t);
+    await sup.takeOver();
+    const n = t.notified.length;
+    const r2 = await sup.takeOver();
+    expect(r2.failed.map((x) => x.ticket_id)).toEqual(["req-1-1"]);
+    expect(t.notified.length).toBe(n); // 下游挂起的通知不重复
+    fail = false;
+    const r3 = await sup.takeOver();
+    expect(r3.adopted).toEqual(["req-1-1"]);
+    expect(r3.enqueued).toEqual(["req-1-2"]);
+  });
+
+  it("T-117：enqueue 失败同样挂起下游；子单在列表里更早时也先交付父单", async () => {
+    const t = setup({
+      rows: [
+        // 子单号更小、listTickets 里排在父单前面；父单号大
+        row("req-1-1", "pending", f({ write_scope: ["lib/b/**"], depends_on: ["req-1-9"] })),
+        row("req-1-9", "pending", f({ write_scope: ["lib/a/**"] })),
+      ],
+    });
+    const order: string[] = [];
+    t.deps.enqueue = (x) => {
+      order.push(`enqueue:${x.ticket_id}`);
+      if (x.ticket_id === "req-1-9") throw new Error("9 不接");
+    };
+    const { sup } = withDeps(t);
+    const r = await sup.takeOver();
+    expect(order).toEqual(["enqueue:req-1-9"]);
+    expect(r.failed).toEqual([{ ticket_id: "req-1-9", error: "9 不接" }]);
+    expect(r.held).toEqual([{ ticket_id: "req-1-1", blocked_by: ["req-1-9"] }]);
+    expect(r.enqueued).toEqual([]);
+  });
 });
 
 describe("T-041c 高风险 PR 裁决", () => {
