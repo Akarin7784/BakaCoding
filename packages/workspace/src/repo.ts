@@ -22,7 +22,7 @@ export interface RepoCheckItem {
   code?: RepoCheckCode;
   /** 中文说明，不含路径。 */
   detail?: string;
-  /** 只在 code 为 no_main 时给：当前分支名（分离 HEAD 或没有分支时不给）。 */
+  /** 只在 code 为 no_main 时给：当前检出的分支名（分离 HEAD 时不给）。 */
   current?: string;
 }
 
@@ -31,6 +31,12 @@ export interface RepoCheck {
   items: RepoCheckItem[];
   /** 当前分支名；不是仓库或分离 HEAD 时为 null。 */
   current_branch: string | null;
+  /**
+   * 仓库的默认分支（T-120）。识别顺序：`origin/HEAD` 指向的远程默认分支（本地有同名分支且有提交）
+   * → 本地 `main`（保持 v1 行为）→ 当前检出分支（有提交）。都没有（空仓库、分离 HEAD 且没有可用的
+   * main 等）时为 null。`main` 检查项通过与否由它决定，`no_main` 表示「找不到可用的默认分支」。
+   */
+  default_branch: string | null;
   /** 是否配了 user.name / user.email（任意层级），不回传值。 */
   identity: { name: boolean; email: boolean };
 }
@@ -197,20 +203,48 @@ async function hasGitAbove(start: string): Promise<boolean> {
 
 const hasCommit = async (root: string, o: GitOpts) =>
   (await gitTry(root, "rev-parse", ["rev-parse", "--verify", "-q", "HEAD^{commit}"], o)) !== null;
-const hasMain = async (root: string, o: GitOpts) =>
+const hasBranchCommit = async (root: string, ref: string, o: GitOpts) =>
   (await gitTry(
     root,
     "rev-parse",
-    ["rev-parse", "--verify", "-q", `refs/heads/${MAIN_BRANCH}^{commit}`],
+    ["rev-parse", "--verify", "-q", `refs/heads/${ref}^{commit}`],
     o,
   )) !== null;
+const hasMain = async (root: string, o: GitOpts) => hasBranchCommit(root, MAIN_BRANCH, o);
 const currentBranch = async (root: string, o: GitOpts) =>
   (await gitTry(root, "symbolic-ref", ["symbolic-ref", "--short", "-q", "HEAD"], o)) || null;
 const configured = async (root: string, key: string, o: GitOpts) =>
   !!(await gitTry(root, "config", ["config", "--get", key], o));
 
 /**
- * 逐项检查 dir（T-086）：是 Git 仓库（dir 本身是仓库根）、至少一次提交、有 main 分支、`.bakacoding/` 已忽略。
+ * 默认分支识别（T-120）：`origin/HEAD` 指向的远程默认分支（本地有同名分支且有提交）→ 本地 `main`
+ * （保持 v1 行为，不因用户检出在功能分支上而改基线）→ 当前检出分支（有提交，master / trunk 这类仓库）。
+ * 都不可用时返回 null（`no_main`）。只读；git 调用都带超时。
+ */
+async function defaultBranch(
+  root: string,
+  branch: string | null,
+  o: GitOpts,
+): Promise<string | null> {
+  const remoteHead = await gitTry(
+    root,
+    "symbolic-ref",
+    ["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"],
+    o,
+  );
+  if (remoteHead) {
+    const name = remoteHead.startsWith("origin/") ? remoteHead.slice("origin/".length) : remoteHead;
+    if (name && (await hasBranchCommit(root, name, o))) return name;
+  }
+  if (await hasBranchCommit(root, MAIN_BRANCH, o)) return MAIN_BRANCH;
+  if (branch && (await hasBranchCommit(root, branch, o))) return branch;
+  return null;
+}
+
+/**
+ * 逐项检查 dir（T-086）：是 Git 仓库（dir 本身是仓库根）、至少一次提交、有可用的默认分支（T-120：
+ * `origin/HEAD` → 本地 main → 当前检出分支，见 `defaultBranch`）、`.bakacoding/` 已忽略。
+ * `main` 项通过表示存在默认分支，不再要求分支名必须叫 main；`no_main` 表示找不到可用的默认分支。
  * dir 在另一个仓库里面时 git 项记 nested_repo（T-114），detail 不含外层仓库路径。
  * 只读，不改任何文件；git 调用都带超时。前一项不通过时后面各项一律记不通过。
  */
@@ -223,33 +257,33 @@ export async function checkRepo(dir: string, options?: RepoOptions): Promise<Rep
       items: [
         { id: "git", ok: false, code: git, detail: MESSAGES[git] },
         { id: "commit", ok: false, code: "no_commits", detail: MESSAGES.no_commits },
-        { id: "main", ok: false, code: "no_main", detail: "没找到 main 分支" },
+        { id: "main", ok: false, code: "no_main", detail: "没找到默认分支" },
         { id: "ignored", ok: false, code: "not_ignored", detail: ".bakacoding/ 还没加入忽略" },
       ],
       current_branch: null,
+      default_branch: null,
       identity: { name: false, email: false },
     };
   }
   const root = status.root;
-  const [commit, main, branch, ignored, name, email] = await Promise.all([
+  const [commit, branch, ignored, name, email] = await Promise.all([
     hasCommit(root, o),
-    hasMain(root, o),
     currentBranch(root, o),
     isBakacodingIgnored(root),
     configured(root, "user.name", o),
     configured(root, "user.email", o),
   ]);
-  const mainItem: RepoCheckItem = main
+  const base = await defaultBranch(root, branch, o);
+  const mainItem: RepoCheckItem = base
     ? { id: "main", ok: true }
     : {
         id: "main",
         ok: false,
         code: "no_main",
-        detail:
-          branch && branch !== MAIN_BRANCH
-            ? `没找到 main 分支（当前是 ${shortBranch(branch)}）`
-            : "没找到 main 分支",
-        ...(branch && branch !== MAIN_BRANCH ? { current: branch } : {}),
+        detail: branch
+          ? `没找到默认分支（当前是 ${shortBranch(branch)}）`
+          : "没找到默认分支（分离 HEAD）",
+        ...(branch ? { current: branch } : {}),
       };
   return {
     items: [
@@ -263,6 +297,7 @@ export async function checkRepo(dir: string, options?: RepoOptions): Promise<Rep
         : { id: "ignored", ok: false, code: "not_ignored", detail: ".bakacoding/ 还没加入忽略" },
     ],
     current_branch: branch,
+    default_branch: base,
     identity: { name, email },
   };
 }
