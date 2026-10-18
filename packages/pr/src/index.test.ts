@@ -170,6 +170,45 @@ describe("open / diff", () => {
     });
     expect(by["old-copy.txt"]).not.toHaveProperty("old_path");
   });
+  it("T-131：中文文件名的复制也按 added + old_path 报，patch 只含复制块（header 被 git 转义）", async () => {
+    // 源和目标都带中文：git header 里两段 path 都会写成八进制转义
+    await writeFile(join(repo, "中文源.txt"), "1\n2\n3\n");
+    await commitAll(repo, "add 中文源");
+    const wt = await worktree("feat/copy-cn");
+    await writeFile(join(wt, "中文源.txt"), "1\nTWO\n3\n");
+    await writeFile(join(wt, "中文副本.txt"), "1\n2\n3\n");
+    await commitAll(wt, "copy cn");
+    const id = await pr.open("T-copy-cn", wt, "feat/copy-cn");
+    const d = await pr.diff(id);
+    const by = Object.fromEntries(d.files.map((f) => [f.path, f]));
+    expect(by["中文副本.txt"]).toMatchObject({
+      path: "中文副本.txt",
+      status: "added",
+      additions: 0,
+      deletions: 0,
+      old_path: "中文源.txt",
+    });
+    expect(by["中文副本.txt"]!.patch).toContain("copy from");
+    expect(by["中文副本.txt"]!.patch).not.toContain("+TWO");
+    expect(by["中文源.txt"]).toMatchObject({ status: "modified" });
+  });
+  it("T-131：目标文件名带空格（header 不转义）的复制同样只留复制块", async () => {
+    const wt = await worktree("feat/copy-space");
+    const original = await readFile(join(repo, "a.txt"), "utf8");
+    await writeFile(join(wt, "a.txt"), "1\nTWO\n3\n");
+    await writeFile(join(wt, "copy a b.txt"), original);
+    await commitAll(wt, "copy space");
+    const id = await pr.open("T-copy-space", wt, "feat/copy-space");
+    const d = await pr.diff(id);
+    const by = Object.fromEntries(d.files.map((f) => [f.path, f]));
+    expect(by["copy a b.txt"]).toMatchObject({
+      path: "copy a b.txt",
+      status: "added",
+      old_path: "a.txt",
+    });
+    expect(by["copy a b.txt"]!.patch).toContain("copy from a.txt");
+    expect(by["copy a b.txt"]!.patch).not.toContain("+TWO");
+  });
   it("package.json 改名成 x.json 时带 old_path", async () => {
     // package.json 必须先在 base（main）上，相对 base 的 rename 才会被 -M 检出
     await writeFile(join(repo, "package.json"), '{\n  "name": "demo"\n}\n');
