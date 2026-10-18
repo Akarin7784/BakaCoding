@@ -66,10 +66,18 @@ export type ModelCall = (
  */
 export type IsRateLimited = (target: { provider: string; model: string }) => MaybePromise<boolean>;
 
-/** 模块 6 PrProvider 的子集。 */
+/** 模块 6 PrProvider 方法的可选参数（T-122）：7 把 `review` 的 signal 原样透传下去。 */
+export interface ReviewPrCallOptions {
+  signal?: AbortSignal;
+}
+
+/**
+ * 模块 6 PrProvider 的子集。`review` 给了 signal 时，`checks` / `diff` 的第二个参数传
+ * `{ signal }`（T-122，模块 6 的 T-102a / T-110 起支持请求级超时与取消）；没给就不传第二个参数。
+ */
 export interface ReviewPrSource {
-  diff(pr_id: string): Promise<Diff>;
-  checks(pr_id: string): Promise<CheckResultLike[]>;
+  diff(pr_id: string, opts?: ReviewPrCallOptions): Promise<Diff>;
+  checks(pr_id: string, opts?: ReviewPrCallOptions): Promise<CheckResultLike[]>;
 }
 
 /**

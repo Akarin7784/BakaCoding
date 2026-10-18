@@ -247,8 +247,16 @@ export function createReviewPool(deps: ReviewPoolDeps): ReviewPool {
   }
 
   async function reviewInner(input: ReviewInput): Promise<ReviewResult> {
+    // T-122：7 的 signal 也透传给 6 的 checks / diff（T-102a / T-110 支持请求级超时与取消）；
+    // 没给 signal 时只传 pr_id，与之前逐参相同
+    const { signal } = input;
+    const prOpts = signal ? { signal } : undefined;
     // 7-3：先看 CI；有失败的 check 直接判不过，不调模型；在跑或没配 CI 不等
-    const checks = await deps.pr.checks(input.pr_id);
+    const checks = await (prOpts
+      ? deps.pr.checks(input.pr_id, prOpts)
+      : deps.pr.checks(input.pr_id));
+    // 6 收到中止会抛 signal.reason；注入的替身没理会 signal、取消后才返回时同样丢弃结果
+    throwIfAborted(signal);
     const failed = checks.filter(
       (c) =>
         c.conclusion !== null &&
@@ -265,10 +273,10 @@ export function createReviewPool(deps: ReviewPoolDeps): ReviewPool {
       };
     }
 
-    const diff = await deps.pr.diff(input.pr_id);
+    const diff = await (prOpts ? deps.pr.diff(input.pr_id, prOpts) : deps.pr.diff(input.pr_id));
+    throwIfAborted(signal);
     const prompt = buildPrompt(await deps.promptTemplate("reviewer"), input, diff, nonce);
 
-    const { signal } = input;
     let held: Member | undefined = await acquire(picker(input.ticket, input.ctx), signal);
     try {
       let member: Member = held;

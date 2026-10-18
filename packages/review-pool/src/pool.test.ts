@@ -87,8 +87,16 @@ function setup(over: Partial<ReviewPoolDeps> & { outputs?: string[]; manual?: bo
     return { output: outputs.shift() ?? PASS };
   });
   const pr = {
-    diff: vi.fn(async () => DIFF),
-    checks: vi.fn(async () => checks),
+    diff: vi.fn(async (_pr_id: string, _opts?: { signal?: AbortSignal }) => {
+      void _pr_id;
+      void _opts;
+      return DIFF;
+    }),
+    checks: vi.fn(async (_pr_id: string, _opts?: { signal?: AbortSignal }) => {
+      void _pr_id;
+      void _opts;
+      return checks;
+    }),
   };
   const deps: ReviewPoolDeps = {
     getConfig: () => config,
@@ -641,6 +649,102 @@ describe("signal 透传给 1 的 call()（T-044）", () => {
       }),
     });
     await expect(t.pool.review(input("T-S6"))).rejects.toBe(e);
+  });
+});
+
+describe("signal 透传给 6 的 checks / diff（T-122）", () => {
+  it("没给 signal 时只传 pr_id 一个参数", async () => {
+    const t = setup();
+    await t.pool.review(input("T-P1"));
+    expect(vi.mocked(t.pr.checks).mock.calls[0]).toHaveLength(1);
+    expect(vi.mocked(t.pr.diff).mock.calls[0]).toHaveLength(1);
+    expect(t.pr.checks).toHaveBeenCalledWith("pr-T-P1");
+    expect(t.pr.diff).toHaveBeenCalledWith("pr-T-P1");
+  });
+
+  it("给了 signal 时 checks / diff 的第二参都是 { signal }，且是同一个对象", async () => {
+    const t = setup();
+    const ac = new AbortController();
+    await t.pool.review({ ...input("T-P2"), signal: ac.signal });
+    const checksArg = vi.mocked(t.pr.checks).mock.calls[0]![1];
+    const diffArg = vi.mocked(t.pr.diff).mock.calls[0]![1];
+    expect(checksArg?.signal).toBe(ac.signal);
+    expect(diffArg?.signal).toBe(ac.signal);
+  });
+
+  it("checks 在途时中止：6 抛 signal.reason，7 原样抛，不读 diff、不调模型、pending 回 0", async () => {
+    let seen: AbortSignal | undefined;
+    const pr = {
+      diff: vi.fn(async () => DIFF),
+      checks: vi.fn(
+        (_pr_id: string, opts?: { signal?: AbortSignal }) =>
+          new Promise<CheckResult[]>((_, reject) => {
+            seen = opts?.signal;
+            opts!.signal!.addEventListener("abort", () => reject(opts!.signal!.reason));
+          }),
+      ),
+    };
+    const t = setup({ pr });
+    const ac = new AbortController();
+    const reason = new Error("stop");
+    const p = t.pool.review({ ...input("T-P3"), signal: ac.signal });
+    await until(() => seen !== undefined);
+    ac.abort(reason);
+    await expect(p).rejects.toBe(reason);
+    expect(seen).toBe(ac.signal);
+    expect(pr.diff).not.toHaveBeenCalled();
+    expect(t.calls).toHaveLength(0);
+    expect(t.pool.backlog().pending).toBe(0);
+  });
+
+  it("checks 不理会 signal、中止后才返回：7 丢弃结果照常抛 signal.reason，不读 diff", async () => {
+    let resolveChecks!: (c: CheckResult[]) => void;
+    const pr = {
+      diff: vi.fn(async () => DIFF),
+      checks: vi.fn(
+        () =>
+          new Promise<CheckResult[]>((r) => {
+            resolveChecks = r;
+          }),
+      ),
+    };
+    const t = setup({ pr });
+    const ac = new AbortController();
+    const reason = new Error("stop");
+    const p = t.pool.review({ ...input("T-P4"), signal: ac.signal });
+    await until(() => resolveChecks !== undefined);
+    ac.abort(reason);
+    resolveChecks([]);
+    await expect(p).rejects.toBe(reason);
+    expect(pr.diff).not.toHaveBeenCalled();
+    expect(t.calls).toHaveLength(0);
+    expect(t.pool.backlog().pending).toBe(0);
+  });
+
+  it("diff 在途时中止：同样抛 signal.reason，不调模型、不占成员", async () => {
+    let seen: AbortSignal | undefined;
+    const pr = {
+      checks: vi.fn(async () => [] as CheckResult[]),
+      diff: vi.fn(
+        (_pr_id: string, opts?: { signal?: AbortSignal }) =>
+          new Promise<Diff>((resolve, reject) => {
+            if (!opts?.signal) return resolve(DIFF);
+            seen = opts.signal;
+            opts.signal.addEventListener("abort", () => reject(opts.signal!.reason));
+          }),
+      ),
+    };
+    const t = setup({ pr });
+    const ac = new AbortController();
+    const reason = new Error("stop");
+    const p = t.pool.review({ ...input("T-P5"), signal: ac.signal });
+    await until(() => seen !== undefined);
+    ac.abort(reason);
+    await expect(p).rejects.toBe(reason);
+    expect(t.calls).toHaveLength(0);
+    expect(t.pool.backlog().pending).toBe(0);
+    // 没有成员被占住：下一单照常评审
+    expect((await t.pool.review(input("T-P6"))).reviewer).toBe("reviewer-1");
   });
 });
 
