@@ -286,6 +286,8 @@ describe("handler 参数：第一个是 event，渲染进程参数从第二个�
     expect(backend.supervisorChat).toHaveBeenCalledWith({ text: "hi", project_id: "p-2" });
     // T-072：三个无参数通道（主进程自己弹对话框；这里对话框取消）
     await expect(api.importProject()).resolves.toEqual({ ok: false, canceled: true });
+    // T-081：没有待创建配置的目录时拒绝
+    await expect(api.createDefaultConfig()).resolves.toMatchObject({ ok: false });
     await expect(api.exportDiagnostics()).resolves.toEqual({
       ok: false,
       canceled: true,
@@ -448,6 +450,7 @@ describe("preload 暴露的只读 API", () => {
     expect(Object.keys(api).sort()).toEqual([
       "checkRepo",
       "clearSecret",
+      "createDefaultConfig",
       "createMainBranch",
       "decideHighRisk",
       "exportDiagnostics",

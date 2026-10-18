@@ -142,15 +142,20 @@ describe("checkProjectDir（T-072）", () => {
     expect(checkProjectDir(repo({ git: false }), env)).toEqual({ ok: true, notGit: true });
   });
 
-  it("缺配置文件：missing 列出并写中文原因；不是 git 仓库不算缺（UI-03b）", () => {
+  it("缺配置文件：missing 列出并写中文原因（T-081 合成一句）；不是 git 仓库不算缺（UI-03b）", () => {
     const r = checkProjectDir(repo({ git: false, models: false, pricing: false }), env);
     expect(r).toEqual({
       ok: false,
       missing: ["config/models.json", "config/pricing.json"],
-      reason: "缺少 config/models.json；缺少 config/pricing.json",
+      notGit: true,
+      reason: "缺少 config/models.json、config/pricing.json",
     });
     const r2 = checkProjectDir(repo({ pricing: false }), env);
     expect(r2.ok === false && r2.missing).toEqual(["config/pricing.json"]);
+    // 是 git 仓库时不带 notGit（T-081 才给「用默认模板创建」）
+    const r3 = checkProjectDir(repo({ models: false }), env);
+    expect(r3).toMatchObject({ ok: false, reason: "缺少 config/models.json" });
+    expect(r3).not.toHaveProperty("notGit");
   });
 
   it("models.json 不合法 / pricing.json 坏：用 3 的 validate / loadPricing，错误脱敏", () => {

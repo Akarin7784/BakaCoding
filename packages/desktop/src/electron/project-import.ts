@@ -44,9 +44,21 @@ export function repoLockedBy(
 export const REPO_LOCKED_REASON =
   "仓库已被启动参数 / 环境变量锁定（--repo、BAKACODING_REPO，或绝对路径的 --db、BAKACODING_DB_PATH），不能在界面里切换项目";
 
-/** notGit（UI-03b）：配置都对、只是还不是 Git 仓库——照样导入，导入后进项目准备页初始化 */
+/**
+ * notGit（UI-03b）：不是 Git 仓库——配置都对时照样导入，导入后进项目准备页初始化；
+ * 配置也缺时不进 `missing`（不再算缺），单独在失败结果里带上，供 T-081 判断不给「用默认模板创建」。
+ */
 export type DirCheck =
-  { ok: true; note?: string; notGit?: true } | { ok: false; missing?: string[]; reason?: string };
+  | { ok: true; note?: string; notGit?: true }
+  | {
+      ok: false;
+      missing?: string[];
+      reason?: string;
+      /** T-081：--config / BAKACODING_CONFIG 指向的文件不存在（补模板也过不了，不给按钮） */
+      envConfigMissing?: true;
+      /** UI-03b / T-081：不是 Git 仓库（写不了 .git/info/exclude，不给「用默认模板创建」） */
+      notGit?: true;
+    };
 
 export type ConfigSource = "--config" | "BAKACODING_CONFIG";
 
@@ -116,13 +128,16 @@ export function checkProjectDir(
   if (!existsSync(pricing)) missing.push(PRICING_FILE);
   const envMissing = !!source && !existsSync(models);
   if (missing.length || envMissing) {
-    const names = missing.map((m) => `缺少 ${m}`);
+    // T-081：缺的配置文件合成一句，只说一遍（UI-03b 起 `.git` 不算缺）
+    const names = missing.length ? [`缺少 ${missing.join("、")}`] : [];
     // 路径只写一次
     if (envMissing) names.push(`当前使用 ${source} 指定的配置，但文件不存在：${models}`);
     else if (note) names.push(note);
     return {
       ok: false,
       ...(missing.length && { missing }),
+      ...(envMissing && { envConfigMissing: true as const }),
+      ...(notGit && { notGit: true as const }),
       reason: clean(names.join("；")),
     };
   }

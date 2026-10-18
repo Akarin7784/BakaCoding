@@ -6,6 +6,7 @@ import type { DesktopSettings } from "../shared/api.js";
 import { CONFIG_ENV, REPO_ENV } from "./backend.js";
 import type { BackendSwitcher } from "./backend-switcher.js";
 import { DB_PATH_ENV } from "./config.js";
+import type { EnsureExcludeLines } from "./default-config.js";
 
 /** 设置页列出的非密钥变量（密钥变量取 3 的 SECRET_NAMES）。 */
 export const NON_SECRET_ENV_NAMES = [REPO_ENV, CONFIG_ENV, DB_PATH_ENV] as const;
@@ -27,6 +28,10 @@ export interface ProjectSettingsDeps {
   /** 导入成功后记下仓库路径（userData） */
   saveLastRepo(repo: string): void;
   now?: () => Date;
+  /** T-081：默认模板目录（main 按打包 / 开发决定；测试注入） */
+  templateDir?: string;
+  /** T-081：追加 .git/info/exclude 行（T-082 的模块 4 实现，main.ts 注入真实函数）。未注入时跳过 */
+  ensureExcludeLines?: EnsureExcludeLines;
 }
 
 /** 名字 + 已设 / 未设；值绝不出主进程。 */
