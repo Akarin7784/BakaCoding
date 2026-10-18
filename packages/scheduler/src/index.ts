@@ -23,6 +23,7 @@ export {
   SYNC_BACKOFF_MAX_MS,
   DEFAULT_EXCLUSIVE_ZONES,
   WHOLE_REPO_SCOPE,
+  LOCK_WAIT_AGING_ROUNDS,
 } from "./scheduler.js";
 export {
   globToRegExp,
