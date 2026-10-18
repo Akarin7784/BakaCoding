@@ -32,6 +32,11 @@ const UNSAFE = [
   "src/@(a/b)",
   "src/{.,a}/x",
   "src/+(..)/x",
+  // T-119：`..` 只有整段才是上级目录；组里的 `..` 展开后可能变成一段，照样不安全
+  "src/a/..",
+  "src/{a,..}/x",
+  "src/[..]/x",
+  "src/{a,..b}/x",
   "",
 ];
 const SAFE = [
@@ -42,6 +47,11 @@ const SAFE = [
   "**/package.json",
   ".github/**",
   "a.b.ts",
+  // T-119：文件名里连续两个点是普通字符，不是上级目录
+  "a..b.txt",
+  "src/a..b.ts",
+  "docs/v1..v2.md",
+  "src/..hidden/x",
 ];
 
 describe("isUnsafeGlob", () => {
@@ -172,9 +182,9 @@ describe("越界写申请", () => {
     expect(warns.some((w) => w.includes("src/../**"))).toBe(true);
   });
 
-  it("目标路径本身不能表达成安全范围（文件名带 ..）：直接拒绝，不发申请", async () => {
-    const { reg } = quietRegistry();
-    const b = bus(["**"]);
+  it("T-119：文件名本身带 `..`（a..b.txt）能申请扩大范围，批准后正常写入", async () => {
+    const { reg, warns } = quietRegistry();
+    const b = bus(["a..b.txt"]);
     const t = createTools({
       ticket_id: "T-d",
       worktree_path: ws,
@@ -182,10 +192,27 @@ describe("越界写申请", () => {
       registry: reg,
       scope_requests: { bus: b, ctx },
     });
-    expect(code(await t.write({ file_path: "a..b.txt", content: "x" }))).toBe(
+    const r = await t.write({ file_path: "a..b.txt", content: "x" });
+    expect(r.ok).toBe(true);
+    expect(b.published).toBe(1);
+    expect(warns).toEqual([]);
+    expect(existsSync(join(ws, "a..b.txt"))).toBe(true);
+  });
+
+  it("T-119：登记清单时 `src/a..b.ts` 这类文件名带 `..` 的 glob 不再被丢弃", async () => {
+    const { reg, warns } = quietRegistry();
+    const t = createTools({
+      ticket_id: "T-dd",
+      worktree_path: ws,
+      permission_list: [{ glob: "src/a..b.ts", level: "rw" }],
+      registry: reg,
+    });
+    expect(warns).toEqual([]);
+    expect(reg.get("T-dd")).toEqual([{ glob: "src/a..b.ts", level: "rw" }]);
+    expect((await t.write({ file_path: "src/a..b.ts", content: "x" })).ok).toBe(true);
+    expect(code(await t.write({ file_path: "src/other.ts", content: "x" }))).toBe(
       "FS_PERMISSION_DENIED",
     );
-    expect(b.published).toBe(0);
   });
 
   it("T-054：字面名为 docs/** 或 ** 的文件不发申请，直接拒绝，之后 docs 下其他文件仍不可写", async () => {
