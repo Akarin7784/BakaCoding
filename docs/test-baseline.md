@@ -46,6 +46,8 @@
 | 组合根 | `app/src/user-main-worktree.test.ts` | 3 | 路径分隔符×3 | 同上 |
 | 组合根 | `app/src/repo-git.test.ts` | 1 | git 输出 `C:/` 与原生 `\` 不一致 | 断言前 `path.normalize` |
 
+> 复核补充（2026-10-18）：模块 9 的 `scheduler/src/local-first-merge.test.ts`「T-079 检出带未合入提交的功能分支…」在机器负载高时会偶发 5s 超时 + teardown `EBUSY`（main `b620fdc` 上单文件复跑 2 次里 1 次复现，整包串行跑则通过；PR 分支上也同样偶发）。属**非确定性**，不入门禁基线；按门禁规则先串行复跑再判，建议随 T-123 / Windows 基线单一起放宽超时或加重试清理。
+
 ## 4. 归因桶（合计 55）
 
 | 归因 | 条数 | 说明 |
