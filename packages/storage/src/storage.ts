@@ -31,6 +31,11 @@ export interface StorageOptions {
   path: string;
   /** 完整提示词和输出的保留天数，取配置 `diagnostics.retention_days`，默认 30。 */
   retention_days?: number;
+  /**
+   * 自动清理过期提示词和输出的间隔（毫秒，T-118），默认 24 小时；0 关闭自动清理。
+   * 打开写库后先清一次（补上停机期间过期的数据），之后按这个间隔清。只读打开不清理。
+   */
+  purge_interval_ms?: number;
   /** 落库前的轻脱敏，默认用模块 3 的 `redact(text, "light")`。 */
   redact?: (text: string) => string;
   /** 写入者标识，默认随机 UUID。 */
@@ -404,6 +409,10 @@ function open(options: StorageOptions, ro: boolean): Storage {
   const owner = options.owner ?? randomUUID();
   const ttl = options.lease_ttl_ms ?? 30_000;
   const retentionDays = options.retention_days ?? 30;
+  const purgeInterval = options.purge_interval_ms ?? DAY_MS;
+  if (!Number.isInteger(purgeInterval) || purgeInterval < 0) {
+    throw new RangeError(`purge_interval_ms 必须是非负整数，收到 ${purgeInterval}`);
+  }
   const light = options.redact ?? ((t: string) => redactText(t, "light").text);
   const logger = options.logger ?? { warn: (m: string) => console.warn(m) };
 
@@ -1030,6 +1039,25 @@ function open(options: StorageOptions, ro: boolean): Storage {
     return { purged_calls: res.changes };
   });
 
+  // ---------- 保留期自动清理（T-118） ----------
+  // 打开写库时先清一次（补上停机期间过期的数据），之后按 purge_interval_ms 定时清；
+  // 失败只记日志、不挡启动，也不影响别的写操作。只读打开不跑。
+  let purgeTimer: ReturnType<typeof setInterval> | undefined;
+  if (!ro && purgeInterval > 0) {
+    const sweep = (): void => {
+      try {
+        purgeExpired();
+      } catch (e) {
+        logger.warn(
+          `[storage] 自动清理过期提示词失败（${e instanceof Error ? e.name : typeof e}）`,
+        );
+      }
+    };
+    sweep();
+    purgeTimer = setInterval(sweep, purgeInterval);
+    purgeTimer.unref();
+  }
+
   // ---------- 台账 ----------
   const ledgerAppend = write("ledger.append", (entry: LedgerEntry) => {
     const e = LedgerEntrySchema.parse(entry);
@@ -1199,6 +1227,8 @@ function open(options: StorageOptions, ro: boolean): Storage {
     close() {
       if (closed) return;
       if (timer) clearInterval(timer);
+      if (purgeTimer) clearInterval(purgeTimer);
+      purgeTimer = undefined;
       try {
         if (!ro) db.prepare("DELETE FROM lease WHERE id = 1 AND owner = ?").run(owner);
       } finally {
