@@ -302,7 +302,8 @@ describe("project:createDefaultConfig IPC（T-081）", () => {
     const r = await invoke(IPC_CHANNELS.projectCreateDefaultConfig);
     expect(r.ok).toBe(true);
     expect(r.ok && r.note).toContain("没能写入 .git/info/exclude（EACCES）");
-    expect(JSON.stringify(r)).not.toContain(d);
+    // project.path 本来就是 d，只断言提示里不带路径
+    expect(r.ok && r.note).not.toContain(d);
   });
 
   it("ensureExcludeLines 返回 false（T-082 约定：不是 git 仓库、不抛错）：同样只提醒、不挡导入", async () => {
