@@ -7,16 +7,18 @@ import { cn } from "../lib/utils";
 import { MERGE_COPY, RESUBMIT_COPY } from "../lib/copy";
 import { ticketWarningLabel } from "./Escalations";
 import type { ProjectView } from "../mock/types";
-import { poolRowLabel, type PoolRow } from "../lib/poolState";
+import { poolRowLabel, poolRowTitle, type PoolRow } from "../lib/poolState";
 
 /** 编码池行的外部输入（UI-06b）：live 时由 pool:state + 快照算出；没有就回退 view.pool（假数据）。 */
 export type PoolLive = { ok: true; row: PoolRow } | { ok: false; reason: string };
 
 function LivePool({ pool }: { pool: PoolLive }) {
   if (!pool.ok) return <span className="text-muted-foreground">{pool.reason}</span>;
+  const title = poolRowTitle(pool.row);
   return (
     <span
       data-backpressure={pool.row.backpressure ? "on" : "off"}
+      title={title || undefined}
       className={cn(
         "transition-colors duration-300",
         pool.row.backpressure ? "text-accent" : "text-muted-foreground",

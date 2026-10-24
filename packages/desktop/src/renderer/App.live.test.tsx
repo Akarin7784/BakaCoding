@@ -522,7 +522,7 @@ describe("编码池行接 pool:state（UI-06b）", () => {
       fireEvent.click(await screen.findByRole("button", { name: /real-proj/ }));
       fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
       const pool = screen.getByTestId("pool-status");
-      await waitFor(() => expect(pool.textContent).toBe("并发 1/4 · 限流 0 · 反压 关"));
+      await waitFor(() => expect(pool.textContent).toBe("并发 1/4 · 反压 关"));
       const calls = getPoolState.mock.calls.length;
       await act(async () => {
         await vi.advanceTimersByTimeAsync(60_000);
@@ -537,7 +537,9 @@ describe("编码池行接 pool:state（UI-06b）", () => {
           last_seq: 5,
         }),
       );
-      await waitFor(() => expect(pool.textContent).toBe("并发 2/4 · 限流 2 · 反压 开"));
+      await waitFor(() =>
+        expect(pool.textContent).toBe("并发 2/4 · 反压 开 · 评审积压：暂停派单、今日预算已用完"),
+      );
       expect(getPoolState.mock.calls.length).toBeGreaterThan(calls);
       expect(within(pool).getByText(/反压 开/).className).toContain("text-accent");
     } finally {
