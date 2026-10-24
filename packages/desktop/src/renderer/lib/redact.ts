@@ -5,7 +5,8 @@
 // 11 的 redactPaths 依赖 node:os，渲染进程用不了，这里只保留最常见的几类路径（主进程下发的需求详情已经过完整的 sanitizeChatReason）。
 import { redact } from "@bakacoding/config-budget/dist/redact.js";
 
-const STOP = String.raw`\s"'\x60<>()\[\]{},;|`;
+// 停止字符：空白、引号、括号、ASCII 与全角标点（中文句子里路径后面紧跟「，」「。」时不吞掉后文）
+const STOP = String.raw`\s"'\x60<>()\[\]{},;|，。；：、！？（）「」『』《》“”‘’`;
 const PATH_RE = new RegExp(
   String.raw`(?<![\p{L}\p{N}_.\/\\~\]:])(?:file:\/\/?[^${STOP}]*|~[\\/][^${STOP}]*|[A-Za-z]:\\[^${STOP}]*|\/[\p{L}\p{N}._~@%+=-][^${STOP}]*)`,
   "gu",

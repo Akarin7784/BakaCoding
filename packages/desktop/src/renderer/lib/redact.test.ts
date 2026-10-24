@@ -10,6 +10,12 @@ describe("redactForView", () => {
     expect(out).not.toMatch(/eva|\/tmp|~\//);
     expect(out.split(REDACTED_PATH).length - 1).toBe(4);
   });
+  it("中文句子里路径后紧跟全角标点时不吞后文", () => {
+    expect(redactForView("日志里有 /home/eva/a/.env，第 1 次重写。")).toBe(
+      `日志里有 ${REDACTED_PATH}，第 1 次重写。`,
+    );
+  });
+
   it("遮掉密钥类文本", () => {
     expect(redactForView("Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456")).not.toContain(
       "abcdefghijklmnopqrstuvwxyz123456",
