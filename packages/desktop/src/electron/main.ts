@@ -19,6 +19,7 @@ import {
   serveSecretProvider,
   serveSupervisorChat,
   serveSupervisorHistory,
+  serveSupervisorSplit,
   serveSyncState,
   serveAbout,
   serveModelSettings,
@@ -186,6 +187,7 @@ if (!gotLock) {
     });
     const stopSupervisorChat = serveSupervisorChat(ipcMain, backend);
     const stopSupervisorHistory = serveSupervisorHistory(ipcMain, backend);
+    const stopSupervisorSplit = serveSupervisorSplit(ipcMain, backend);
     // UI-07a：设置 › 关于
     const stopAbout = serveAbout(ipcMain, () => ({
       version: app.getVersion(),
@@ -265,6 +267,7 @@ if (!gotLock) {
         stopProjectSettings();
         stopSupervisorChat();
         stopSupervisorHistory();
+        stopSupervisorSplit();
         stopAbout();
         stopWindowTheme();
         nativeTheme.off("updated", onNativeTheme);

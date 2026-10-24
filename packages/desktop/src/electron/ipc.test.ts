@@ -20,6 +20,7 @@ import {
   serveSecretProvider,
   serveSupervisorChat,
   serveSupervisorHistory,
+  serveSupervisorSplit,
   serveSyncState,
   serveAbout,
   serveModelSettings,
@@ -84,6 +85,11 @@ function fakeBackend(over: Partial<BackendHandle> = {}): BackendHandle {
       reply: { text: "好的", kind: "answer" as const },
     })),
     supervisorHistory: vi.fn(async () => ({ ok: true as const, messages: [] })),
+    supervisorSplit: vi.fn(async () => ({
+      ok: true as const,
+      requirement_id: "req-1",
+      ticket_ids: ["T-1"],
+    })),
     // T-072：serveProjectSettings 用到的成员（BackendSwitcher 的 switchTo 也放进来）
     repoRoot: vi.fn(() => "/repo"),
     prMode: vi.fn(() => "local" as const),
@@ -149,6 +155,8 @@ const SERVE: Record<string, (ipc: IpcMainLike, backend: BackendHandle) => () => 
   serveSupervisorChat: (ipc, backend) => serveSupervisorChat(ipc, backend),
   // UI-04a：主管对话历史
   serveSupervisorHistory: (ipc, backend) => serveSupervisorHistory(ipc, backend),
+  // UI-04c：重试拆单
+  serveSupervisorSplit: (ipc, backend) => serveSupervisorSplit(ipc, backend),
   // UI-07a：设置 › 关于
   serveAbout: (ipc) => serveAbout(ipc, () => ({ version: "1.0.0", commit: "cbd3b41" })),
   // UI-07b：设置 › 模型；仓库不存在，读 / 写都在形状检查后失败，链路测试只看往返
@@ -345,6 +353,15 @@ describe("handler 参数：第一个是 event，渲染进程参数从第二个�
       messages: [],
     });
     expect(backend.supervisorHistory).toHaveBeenCalledWith({ before: "m-1", limit: 50 });
+    // UI-04c：重试拆单走 supervisor:split，参数原样到后端
+    await expect(
+      api.supervisorSplit({ project_id: "p-2", text: "做个登录页", requirement_id: "req-1" }),
+    ).resolves.toEqual({ ok: true, requirement_id: "req-1", ticket_ids: ["T-1"] });
+    expect(backend.supervisorSplit).toHaveBeenCalledWith({
+      project_id: "p-2",
+      text: "做个登录页",
+      requirement_id: "req-1",
+    });
     // T-072：三个无参数通道（主进程自己弹对话框；这里对话框取消）
     await expect(api.importProject()).resolves.toEqual({ ok: false, canceled: true });
     // T-081：没有待创建配置的目录时拒绝
@@ -598,6 +615,7 @@ describe("preload 暴露的只读 API", () => {
       "setSecret",
       "setWindowTheme",
       "supervisorChat",
+      "supervisorSplit",
       "testProvider",
     ]);
     expect(Object.isFrozen(api)).toBe(true);

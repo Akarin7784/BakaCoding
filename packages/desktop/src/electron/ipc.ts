@@ -1,4 +1,5 @@
 // 把只读数据与后端状态通过 IPC 推给渲染进程。
+import { toSplitRequest } from "./supervisor-chat.js";
 import { aboutInfo, type RawAbout } from "./about.js";
 import { modelSettingsHandlers, type ModelSettingsDeps } from "./model-settings.js";
 import { projectListHandlers, type ProjectListDeps } from "./project-list-ipc.js";
@@ -6,6 +7,7 @@ import {
   IPC_CHANNELS,
   type DesktopChatResult,
   type DesktopHistoryResult,
+  type DesktopSplitResult,
   type DesktopDecideHighRiskResult,
   type DesktopExportOptions,
   type DesktopExportResult,
@@ -685,4 +687,18 @@ export function isStrictIsoDateTime(v: unknown): v is string {
   if (Number(h) > 23 || Number(mi) > 59 || Number(sec ?? 0) > 59) return false;
   if (oh !== undefined && (Number(oh) > 23 || Number(om) > 59)) return false;
   return !Number.isNaN(Date.parse(v));
+}
+
+/** 重试拆单 IPC（UI-04c）：invoke `supervisor:split` → backend.supervisorSplit → 10 的 split()，不经 chat。 */
+export function serveSupervisorSplit(
+  ipc: IpcMainLike,
+  backend: Pick<BackendHandle, "supervisorSplit">,
+): () => void {
+  ipc.handle(IPC_CHANNELS.supervisorSplit, async (...args: unknown[]) => {
+    const result: DesktopSplitResult = await backend.supervisorSplit(toSplitRequest(args[1]));
+    return result;
+  });
+  return () => {
+    ipc.removeHandler(IPC_CHANNELS.supervisorSplit);
+  };
 }

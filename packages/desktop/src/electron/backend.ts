@@ -42,12 +42,19 @@ import type {
   DesktopRepoSource,
   DesktopChatResult,
   DesktopHistoryResult,
+  DesktopSplitRequest,
+  DesktopSplitResult,
   DesktopDecideHighRiskResult,
   DesktopExportOptions,
   DesktopSyncState,
 } from "../shared/api.js";
 import { DB_PATH_ENV, DEFAULT_DB_RELATIVE, resolveDbPath } from "./config.js";
-import { createSerialQueue, runSupervisorChat, runSupervisorHistory } from "./supervisor-chat.js";
+import {
+  createSerialQueue,
+  runSupervisorChat,
+  runSupervisorHistory,
+  runSupervisorSplit,
+} from "./supervisor-chat.js";
 import { backendErrorDetail } from "./backend-error.js";
 import { sanitizeReloadReason } from "./backend-switcher.js";
 import { errorDetail, toDesktopSyncState, unavailableSyncState } from "./sync-state.js";
@@ -190,6 +197,8 @@ export interface BackendHandle {
   supervisorChat(message: UserMessage): Promise<DesktopChatResult>;
   /** 主管对话历史（UI-04a）：转给 10 的 history()；只读回空列表，抛错为 ok:false（已脱敏） */
   supervisorHistory(query: unknown): Promise<DesktopHistoryResult>;
+  /** 重试拆单（UI-04c）：转给 10 的 split()，与 chat 同一条串行队列；只读回固定失败，抛错为 ok:false（已脱敏） */
+  supervisorSplit(request: DesktopSplitRequest): Promise<DesktopSplitResult>;
   /**
    * 测试连接（UI-03b，`provider:test`）：live 时转给组合根同一个网关的 testConnection（1 的语义不变），
    * 只读（没有网关）时回 `unavailable`，不发请求。
@@ -843,6 +852,12 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
       return chatQueue(() => {
         const sup = app?.supervisor;
         return runSupervisorChat(sup ? (m) => sup.chat(m) : undefined, message, env, reason);
+      });
+    },
+    supervisorSplit(request: DesktopSplitRequest): Promise<DesktopSplitResult> {
+      return chatQueue(() => {
+        const sup = app?.supervisor;
+        return runSupervisorSplit(sup ? (r) => sup.split(r) : undefined, request, env);
       });
     },
     async supervisorHistory(query: unknown): Promise<DesktopHistoryResult> {

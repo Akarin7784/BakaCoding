@@ -3,6 +3,7 @@ import type { Project } from "@bakacoding/config-budget";
 import type { PendingHighRisk } from "@bakacoding/supervisor";
 import type { BackendHandle, BackendStatus, NotifyMessage, RepoSource } from "./backend.js";
 import { errorDetail, sanitizeSyncErrorMessage, unavailableSyncState } from "./sync-state.js";
+import { SPLIT_READONLY_REASON } from "./supervisor-chat.js";
 
 export type SwitchResult =
   | { ok: true; project: Project }
@@ -477,6 +478,9 @@ export class BackendSwitcher implements BackendHandle {
   supervisorHistory(query: unknown) {
     return this.current.supervisorHistory(query);
   }
+  supervisorSplit(request: Parameters<BackendHandle["supervisorSplit"]>[0]) {
+    return this.current.supervisorSplit(request);
+  }
   listProjects() {
     return this.current.listProjects();
   }
@@ -529,6 +533,7 @@ export function readonlyBackend(
     syncState: () => unavailableSyncState(reason),
     supervisorChat: async () => ({ ok: false, reason: `只读模式：${reason}` }),
     supervisorHistory: async () => ({ ok: true, messages: [] }),
+    supervisorSplit: async () => ({ ok: false, reason: SPLIT_READONLY_REASON }),
     repoRoot: () => repo,
     prMode: () => "local",
     busyCount: () => 0,
