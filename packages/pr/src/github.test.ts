@@ -1824,8 +1824,7 @@ describe("T-136：事件在 signal 上下文之外发布", () => {
     const reason = new Error("stop sync");
     const calls: Promise<unknown>[] = [];
     let seen = 0;
-    let p!: GithubPrProvider;
-    p = provider({
+    const p: GithubPrProvider = provider({
       publish: (e) => {
         events.push(e);
         seen++;
