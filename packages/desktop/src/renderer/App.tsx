@@ -10,7 +10,8 @@ import type {
 } from "../shared/api";
 import { ConversationList, type Selection } from "./components/Sidebar";
 import { SupervisorChat } from "./components/SupervisorChat";
-import { ProjectGroup } from "./components/ProjectGroup";
+import { ProjectPage } from "./components/ProjectPage";
+import { listRequirements } from "./lib/requirementList";
 import { RightPanel } from "./components/RightPanel";
 import { UnattributedPanel } from "./components/Escalations";
 import { HighRiskPanel } from "./components/HighRiskPanel";
@@ -82,7 +83,7 @@ export function App(props: AppProps) {
   const api = props.api === undefined ? globalThis.window?.bakacoding : (props.api ?? undefined);
   const live = useDesktopData(api);
   const projects = props.projects ?? live?.projects ?? mock.projects;
-  const flashCalls = props.flashCalls ?? live?.flashCalls ?? mock.flashCalls;
+  // UI-05e：项目页不再平铺项目群消息，闪调摘要暂不展示（flashCalls 入参保留，待定，见 PR 开放问题）
   const unattributed = props.unattributed ?? live?.unattributed ?? [];
   const unattributedWarnings = props.unattributedWarnings ?? live?.unattributedWarnings ?? [];
   // UI-05c：需求页的数据——当前状态只看快照 tickets，事件只给标记 / 时间线
@@ -146,6 +147,24 @@ export function App(props: AppProps) {
 
   // UI-05d：左栏红点（高风险待裁决 / 有单上报）
   const attention = useMemo(() => attentionOf(tickets, highRisk.items), [tickets, highRisk.items]);
+  // UI-05e：左栏每个项目下的需求列表（和项目页同一套排序 / 命名）
+  const sidebarRequirements = useMemo(
+    () =>
+      Object.fromEntries(
+        projects.map((p) => {
+          const pid = p.project.payload.project_id;
+          return [pid, listRequirements(pid, tickets, events, attention.requirements)];
+        }),
+      ),
+    [projects, tickets, events, attention.requirements],
+  );
+  /** UI-05e：左栏 / 项目页点需求：选中所属项目，再打开 #requirement=<id> */
+  const openRequirementOf = (projectId: string, rid: string) => {
+    setPrepOpen(false);
+    setSelection({ kind: "project", projectId });
+    setLastProjectId(projectId);
+    openRequirement(rid);
+  };
 
   /** Ctrl+N：回到主管对话并把光标放进输入框（新需求只能在主管对话里提，§3） */
   const newRequirement = useCallback(() => {
@@ -291,6 +310,10 @@ export function App(props: AppProps) {
         selection={selection}
         onSelect={select}
         attention={attention.projects}
+        requirements={sidebarRequirements}
+        requirementAttention={attention.requirements}
+        currentRequirement={showRequirement ? requirementId : null}
+        onOpenRequirement={openRequirementOf}
         collapsed={layout.sidebarCollapsed}
         onToggleCollapsed={layout.toggleSidebar}
         onNewRequirement={newRequirement}
@@ -355,11 +378,16 @@ export function App(props: AppProps) {
           />
         ) : showProject ? (
           <>
-            <ProjectGroup
+            {/* UI-05e：项目页 = 需求列表总览（§4.3），点开进需求页 */}
+            <ProjectPage
               view={current}
-              calls={flashCalls}
-              readonly={backendReadonly}
-              showHeader={false}
+              tickets={tickets}
+              events={events}
+              attention={attention.requirements}
+              onOpenRequirement={(rid) =>
+                openRequirementOf(current.project.payload.project_id, rid)
+              }
+              onNewRequirement={newRequirement}
             />
             {/* 选中项目时也能和主管说话，消息带上这个项目（T-072） */}
             <SupervisorChat
