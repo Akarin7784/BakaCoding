@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`0d1e097` · main 上测试：154 个测试文件 / 2637 passed + 2 skipped 个测试（Linux 全量；Windows 基线见 `docs/test-baseline.md`） · 更新日期：2026-10-24（UTC+8）
+> 上次更新时 main：`318d42c` · main 上测试：156 个测试文件 / 2653 passed + 2 skipped 个测试（Linux 全量；Windows 基线见 `docs/test-baseline.md`） · 更新日期：2026-10-24（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -206,7 +206,7 @@ flowchart BT
 | UI-04b | 模块 12 主管输入框：自建 `Composer`（圆角 16，左下项目 chip 用 DropdownMenu、复用 `project:list`、含「不指定」、记住上次项目；右下 `ArrowUp` 图标发送，空内容 / 只读置灰；Enter 发送、Shift+Enter 换行），替换 `SupervisorChat` 旧输入区；补 `BackendSwitcher.supervisorHistory` 转发用例；modules.md §12 同步。合入后 main `ba97c5f`，测试 149 个文件 / 2578 passed + 2 skipped 个 | 12 | 界面与诊断开发 | 已合入 | #226 | `ba97c5f` |
 | UI-04c | 模块 12 主管回复卡片：新增 `MessageItem` 按 `ChatReply.kind` 呈现（answer 文本 / ask_project 项目按钮带 `project_id` 重发 / decision_saved「已记下」/ dispatched「已派单」卡片，暂不显示「查看需求」/ split_failed「重试拆单」），历史同一渲染；新 IPC `supervisor:split` 直调 10 的 `split()`，text 取所回答的用户消息、`requirement_id` 原样传回、原因过 `sanitizeChatReason`；三点等待、失败气泡「没发出去 · 重试」、空状态三个示例（只填不发）；modules.md §12 同步 | 12 | 界面与诊断开发。合入后 main `be51e07`，测试 152 个文件 / 2612 passed + 2 skipped 个 | 已合入 | #232 | `be51e07` |
 | UI-05a | 模块 12 需求页数据：`UI_EVENT_TYPES` 加 `ticket_status_changed`（reader 白名单下发）；新只读 IPC `requirement:detail`（2 的 `listTickets({requirement_id})` + `listPrRounds`，白名单字段：需求原文、拆单摘要、单号与状态、各轮评审、需求名首行截 80 字；不下发 `fields`、不含评审上限；文本过 `sanitizeChatReason`；错误固定文案）；preload / switcher / main 接线；modules.md §12 同步 | 12。合入后 main `70a0f17`，测试 154 个文件 / 2627 passed + 2 skipped 个 | 界面与诊断开发 | 已合入 | #235 | `70a0f17` |
-| UI-05b | 模块 12 组件：`TicketStepper`（五步步骤条，当前步只看快照 `tickets` 状态；`ticket_status_changed` 按 ticket_id 过滤只打「冲突」「重新评审」标记；评审步「第 N 轮 / 上限」，上限走 props；上报整行标红 +「需要你处理」回调）+ `lib/copy.ts` 的 `STEPPER_COPY`；`StatusIcon` 沿用 UI-01；不接页面；modules.md §12 同步 | 12 | 界面与诊断开发 | 待评审 | #241 | — |
+| UI-05b | 模块 12 组件：`TicketStepper`（五步步骤条，当前步只看快照 `tickets` 状态；`ticket_status_changed` 按 ticket_id 过滤只打「冲突」「重新评审」标记；评审步「第 N 轮 / 上限」，上限走 props；上报整行标红 +「需要你处理」回调）+ `lib/copy.ts` 的 `STEPPER_COPY`；`StatusIcon` 沿用 UI-01；不接页面；modules.md §12 同步。合入后 main `318d42c`，测试 156 个文件 / 2653 passed + 2 skipped 个 | 12 | 界面与诊断开发 | 已合入 | #241 | 318d42c |
 | T-090 | 模块 2 + 3：账本汇总。`LedgerStore.totalsByProject(project_id)`（按 `requirements` 关联项目、全部时间累计、四个角色都列，未登记需求不计入任何项目，未知项目全 0，写入方和只读连接都有）；库升级到 v5，只加 `ledger(requirement_id)` 索引；模块 3 新增 `ledgerSummary(ledger, { project_id }) → { project }`（不带当日花费，当日只看 `budget:status`）；`project_id` 不合法报 `invalid_project_id`；modules.md §2、§3 同步。合入后 main `d76072f`，测试 131 个文件 / 2380 个 | 2、3 | 基础层开发 | 已合入 | #200 | `d76072f` |
 | T-092 | 模块 10：主管 1:1 历史。可选 `SupervisorDeps.chatLog`（2 的 append / list，组合根注入 storage）；`chat` 先存用户消息再存回复，模型失败只留用户消息，重试沿用调用方 `message_id` 幂等；新增 `history({ before?, limit? })` 升序；10 生成单调 message_id（时钟回拨不倒退）；`ChatReply.kind` 与 `ChatReplyKind` 编译期互相可赋值断言；补 takeOver 失败 + awaiting_adopt 合并文案用例；modules.md §10 同步。全仓 128 文件 / 2366 通过、2 跳过。合入后 main `721a16c`，测试 132 个文件 / 2387 个 | 10 | 编排层开发 | 已合入 | #199 | `721a16c` |
 | T-142 | 模块 2 + types：项目记录删除与 `repo_path`。新增项目级事件 `project_removed { project_id }` 和写入方专用 `removeProject(project_id) → { removed }`（只删记录，不动仓库，不删历史事件；未知项目 `{ removed: false }`；删后新的 `project_created` 可重新登记）；`listProjects` 不返回已删除项目并带 `repo_path`；`repo_path` 不进事件，由写入方专用 `setProjectRepoPath(project_id, path。合入后 main `4155018`，测试 136 个文件 / 2432 passed + 2 skipped 个 | null) → { updated }` 写入（未知或已删项目 `{ updated: false }`，`path` 不合法报 `invalid_repo_path`）；库升级到 v6（`projects.repo_path` 可空）；`project_id` 不合法报 `invalid_project_id`；modules.md §2 与事件清单同步。须在 T-143 之后合入 | 2、types | 已合入 | #204 | `4155018` |
@@ -220,7 +220,7 @@ flowchart BT
 | T-152 | 模块 2：`supervisor_messages` 加可空列 `in_reply_to`（库升级到 v7，不加索引和外键）；`SupervisorMessage.in_reply_to?: string \| null`，写入可不传（按 null），读出总带、旧记录为 null，非空字符串以外报 `invalid_message`，幂等先写为准；modules.md §2 同步。须先于 T-150 合入。合入后 main `f02f59b`，测试 153 个文件 / 2617 passed + 2 skipped 个 | 2 | 基础层开发 | 已合入 #234 | `f02f59b` | |
 | T-150 | 模块 10：主管回复落库时带 `in_reply_to` = 对应用户消息 id（用户消息为 null），`history()` 原样返回；补用例：回复指向用户消息、同 id 幂等重试后回复仍指向原用户消息（反向检查：回复写 null 两条变红）；modules.md §10 同步 | 10。合入后 main `0405e63`，测试 154 个文件 / 2629 passed + 2 skipped 个 | 编排层开发 | 已合入 #237 | `0405e63` | — |
 | T-151 | 模块 12：历史里的 `split_failed` 按回复的 `in_reply_to` 找对应用户消息补「重试拆单」（项目先回复后用户消息；null / 无字段 / 找不到 / 无项目不显示，不猜）；live 回复统一写 `in_reply_to`；补 #235 两个 P3 测试（先脱敏再截 80 字、20000 上限）；modules.md §12 同步。合入后 main `0d1e097`，测试 154 个文件 / 2637 passed + 2 skipped 个 | 12 | 界面与诊断开发 | 已合入 | #240 | 0d1e097 |
-| T-153 | 桌面端：设置 › 预算 `spendHint` / `spendResubmit` 文案「复投」改为「重写」（§5.6），补 `BUDGET_COPY` 不含「复投」的用例 | 12 | 界面与诊断开发 | 待评审 | #243 | — |
+| T-153 | 桌面端：设置 › 预算 `spendHint` / `spendResubmit` 文案「复投」改为「重写」（§5.6），补 `BUDGET_COPY` 不含「复投」的用例。合入后 main `a6caab4`，测试 155 个文件 / 2638 passed + 2 skipped 个 | 12 | 界面与诊断开发 | 已合入 | #243 | a6caab4 |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
