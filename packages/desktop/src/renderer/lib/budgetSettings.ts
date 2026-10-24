@@ -1,4 +1,5 @@
 // UI-07c：设置 › 预算的纯逻辑（文案、金额 / 比例换算、低于今日已花费的判断），组件和测试共用。
+import { EXTERNAL_CONFIG_READONLY_HINT } from "../../shared/config-text";
 export { parseBudgetUsd } from "./repoPrep";
 
 export const BUDGET_COPY = {
@@ -14,7 +15,8 @@ export const BUDGET_COPY = {
   todayUnavailable: "后端只读，暂时取不到今天已花费。",
   belowToday: (spent: string) =>
     `每日预算低于今天已花费（${spent}）：可以保存，但保存并重载后今天就算超出预算。`,
-  readonlyHint: "配置由启动参数锁定，这里不能改。要改请直接编辑那个文件，再完全关掉程序重开。",
+  // UI-07d：07b / 07c 统一只读提示
+  readonlyHint: EXTERNAL_CONFIG_READONLY_HINT,
 } as const;
 
 /** 微美元 → 「$1.5」这样的美元文本（去掉多余的 0，最多 6 位小数） */

@@ -41,6 +41,12 @@ export const IPC_CHANNELS = {
   projectCreateDefaultConfig: "bakacoding:project:create-default-config",
   /** invoke：选保存路径，导出诊断包（T-072；T-130 起可带可选粒度参数）。 */
   diagnosticsExport: "bakacoding:diagnostics:export",
+  /** invoke：设置 › 项目（UI-07d）：已导入项目列表（名称、仓库路径；已移除的不返回）；无参数。 */
+  projectList: "bakacoding:project:list",
+  /** invoke：设置 › 项目（UI-07d）：移除一条项目记录（参数 project_id；不删文件、不删历史事件），成功后发 project_removed。 */
+  projectRemove: "bakacoding:project:remove",
+  /** invoke：设置 › 项目（UI-07d）：打开项目所在文件夹（参数 project_id，路径由主进程按记录取，界面传不了路径）。 */
+  projectOpenFolder: "bakacoding:project:open-folder",
   /** invoke：打开数据目录（userData，状态 / 标记文件所在；T-130，无参数）。 */
   diagnosticsOpenDataDir: "bakacoding:diagnostics:open-data-dir",
   /** invoke：只读设置（仓库、环境变量是否已设、本地 / GitHub 模式）（T-072）。 */
@@ -96,6 +102,21 @@ export type WindowThemeSource = (typeof WINDOW_THEME_SOURCES)[number];
 
 /** window:theme 的结果：dark 为主进程应用后 nativeTheme.shouldUseDarkColors。 */
 export type DesktopWindowThemeResult = { ok: true; dark: boolean } | { ok: false; reason: string };
+
+/** 设置 › 项目（UI-07d）的一行：repo_path 来自模块 2（T-142 / T-145），老记录为 null。只给界面显示，不进事件、日志和诊断包。 */
+export interface DesktopProjectRow {
+  project_id: string;
+  name: string;
+  repo_path: string | null;
+}
+/** project:list 的结果；后端只读（没有存储）时 ok:false，reason 为固定文案。 */
+export type DesktopProjectListResult =
+  { ok: true; projects: DesktopProjectRow[] } | { ok: false; reason: string };
+/** project:remove 的结果：removed:false = 记录本来就不在；失败 reason 为固定文案，不带路径。 */
+export type DesktopProjectRemoveResult =
+  { ok: true; removed: boolean } | { ok: false; reason: string };
+/** project:open-folder 的结果；失败 reason 为固定文案，不带路径。 */
+export type DesktopProjectOpenFolderResult = { ok: true } | { ok: false; reason: string };
 
 /** 界面关心的事件类型；其余事件主进程不下发。 */
 export const UI_EVENT_TYPES = [
@@ -561,6 +582,12 @@ export interface BakaDesktopApi {
   openDataDir(): Promise<DesktopOpenDataDirResult>;
   /** 只读设置（T-072）。 */
   getSettings(): Promise<DesktopSettings>;
+  /** 设置 › 项目（UI-07d）：已导入项目列表；旧版 preload / 测试假 API 可以没有。 */
+  listProjects?(): Promise<DesktopProjectListResult>;
+  /** 设置 › 项目（UI-07d）：移除项目记录（界面先二次确认）；旧版 preload / 测试假 API 可以没有。 */
+  removeProject?(project_id: string): Promise<DesktopProjectRemoveResult>;
+  /** 设置 › 项目（UI-07d）：打开项目所在文件夹；旧版 preload / 测试假 API 可以没有。 */
+  openProjectFolder?(project_id: string): Promise<DesktopProjectOpenFolderResult>;
   /** 设置 › 关于（UI-07a）；旧版 preload / 测试假 API 可以没有。 */
   getAbout?(): Promise<DesktopAbout>;
   /** 设置 › 模型（UI-07b）：取当前配置供编辑；旧版 preload / 测试假 API 可以没有。 */

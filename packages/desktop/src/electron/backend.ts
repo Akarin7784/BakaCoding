@@ -1,4 +1,5 @@
 // T-063：桌面主进程后端——拿写入锁、组装组合根、takeOver；失败则退回只读。
+import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { copyFile, lstat, mkdtemp, rm, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -30,6 +31,7 @@ import { HighRiskDecisionError } from "@bakacoding/scheduler";
 import {
   openStorage,
   StorageLeaseError,
+  type ProjectRow,
   type Storage,
   type StorageHealth,
 } from "@bakacoding/storage";
@@ -167,6 +169,16 @@ export interface BackendHandle {
   chatInFlight(): boolean;
   /** 用本后端的总线调 3 的 importProject（发 project_created）；只读抛错（T-072） */
   importCurrentRepo(): Promise<Project>;
+  /**
+   * UI-07d：已导入项目（存储的 listProjects，已移除的不在里面），带 repo_path 供设置页显示。
+   * 后端只读、没有存储时返回 null。repo_path 只给主进程 / 界面，不写日志。
+   */
+  listProjects(): ProjectRow[] | null;
+  /**
+   * UI-07d：移除项目记录——先调存储的 removeProject（只删记录，不动仓库、不删历史事件），
+   * 删掉了再由 12 发 project_removed（只带 project_id，不带路径）。只读时 reject。
+   */
+  removeProject(project_id: string): Promise<{ removed: boolean }>;
   /**
    * 用 11 的 exportPackage 导出当前仓库项目的诊断包，复制到 target（T-072）。
    * T-130：`options.scope` 可带粒度（时间段 / 单张单 / 需求单），省略 = 最近 24 小时。
@@ -767,6 +779,28 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
         );
       }
       return project;
+    },
+    listProjects(): ProjectRow[] | null {
+      return storage ? storage.listProjects() : null;
+    },
+    async removeProject(project_id: string): Promise<{ removed: boolean }> {
+      const live = app;
+      const s = storage;
+      if (!live || !s) throw new Error(reason ? `只读模式：${reason}` : "只读模式：后端未接线");
+      const r = s.removeProject(project_id);
+      if (r.removed) {
+        // 记录已删；事件只带 project_id（2 的订阅再删一次是空操作），路径不进事件
+        await live.bus.publish({
+          type: "project_removed",
+          trace_id: randomUUID(),
+          span_id: randomUUID(),
+          parent_span_id: null,
+          requirement_id: null,
+          ticket_id: null,
+          payload: { project_id },
+        });
+      }
+      return { removed: r.removed };
     },
     async exportDiagnostics(
       target: string,

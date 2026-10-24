@@ -1,4 +1,5 @@
 // UI-07b：设置 › 模型的纯逻辑（文案、保存结果说明），组件和测试共用。
+import { EXTERNAL_CONFIG_READONLY_HINT } from "../../shared/config-text";
 import type {
   DesktopConfigSource,
   DesktopModelForm,
@@ -15,7 +16,8 @@ export const MODEL_COPY = {
   sourceRepo: "配置来源：仓库里的 config/models.json",
   sourceArg: "配置来源：启动参数 --config 指定的文件（只读）",
   sourceEnv: "配置来源：环境变量 BAKACODING_CONFIG 指定的文件（只读）",
-  readonlyHint: "配置由启动参数锁定，这里不能改。要改请直接编辑那个文件，再完全关掉程序重开。",
+  // UI-07d：07b / 07c 统一只读提示
+  readonlyHint: EXTERNAL_CONFIG_READONLY_HINT,
   save: "保存并重载",
   saveQueued: "保存，等当前单跑完后重载",
   confirmQueued: (n: number) =>

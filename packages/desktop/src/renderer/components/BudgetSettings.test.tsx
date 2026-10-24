@@ -98,7 +98,7 @@ describe("设置 › 预算", () => {
   it("--config 锁定时只读：控件禁用、没有保存按钮", async () => {
     const a = api(status({ source: "--config", readonly: true }));
     render(<BudgetSettings api={a} />);
-    expect(await screen.findByTestId("budget-readonly")).toBeTruthy();
+    expect(text(await screen.findByTestId("budget-readonly"))).toBe("配置来自外部文件，此页只读");
     expect(daily().disabled).toBe(true);
     expect(ratio().disabled).toBe(true);
     expect((screen.getByRole("switch") as HTMLButtonElement).disabled).toBe(true);

@@ -474,6 +474,12 @@ export class BackendSwitcher implements BackendHandle {
   supervisorChat(message: Parameters<BackendHandle["supervisorChat"]>[0]) {
     return this.current.supervisorChat(message);
   }
+  listProjects() {
+    return this.current.listProjects();
+  }
+  removeProject(project_id: string) {
+    return this.current.removeProject(project_id);
+  }
   exportDiagnostics(...args: Parameters<BackendHandle["exportDiagnostics"]>) {
     return this.current.exportDiagnostics(...args);
   }
@@ -523,6 +529,8 @@ export function readonlyBackend(
     runningTicketIds: () => [],
     chatInFlight: () => false,
     importCurrentRepo: unavailable,
+    listProjects: () => null,
+    removeProject: unavailable,
     exportDiagnostics: unavailable,
     testConnection: async () => ({ ok: false, reason: "unavailable" }),
     budgetState: async () => null,

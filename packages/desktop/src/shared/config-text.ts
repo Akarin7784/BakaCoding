@@ -48,3 +48,6 @@ export const BUDGET_STATUS_TEXT = {
   invalid_config: "当前配置不合法，请先在项目准备页修好再来这里改预算",
   failed: "读取预算失败，请重试",
 } as const;
+
+/** UI-07d：设置 › 模型 / 预算在外部配置（--config / BAKACODING_CONFIG）下的统一只读提示。 */
+export const EXTERNAL_CONFIG_READONLY_HINT = "配置来自外部文件，此页只读";

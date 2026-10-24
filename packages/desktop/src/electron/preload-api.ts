@@ -9,6 +9,9 @@ import {
   type DesktopExportResult,
   type DesktopImportResult,
   type DesktopOpenDataDirResult,
+  type DesktopProjectListResult,
+  type DesktopProjectOpenFolderResult,
+  type DesktopProjectRemoveResult,
   type DesktopAbout,
   type DesktopBudgetSaveInput,
   type DesktopBudgetStatusResult,
@@ -109,6 +112,14 @@ export function createDesktopApi(ipc: IpcRendererLike, platform: string): BakaDe
     openDataDir: () =>
       ipc.invoke(IPC_CHANNELS.diagnosticsOpenDataDir) as Promise<DesktopOpenDataDirResult>,
     getSettings: () => ipc.invoke(IPC_CHANNELS.settingsGet) as Promise<DesktopSettings>,
+    listProjects: () => ipc.invoke(IPC_CHANNELS.projectList) as Promise<DesktopProjectListResult>,
+    removeProject: (project_id: string) =>
+      ipc.invoke(IPC_CHANNELS.projectRemove, project_id) as Promise<DesktopProjectRemoveResult>,
+    openProjectFolder: (project_id: string) =>
+      ipc.invoke(
+        IPC_CHANNELS.projectOpenFolder,
+        project_id,
+      ) as Promise<DesktopProjectOpenFolderResult>,
     getAbout: () => ipc.invoke(IPC_CHANNELS.appAbout) as Promise<DesktopAbout>,
     getModelConfig: () =>
       ipc.invoke(IPC_CHANNELS.settingsConfigGet) as Promise<DesktopModelConfigResult>,
