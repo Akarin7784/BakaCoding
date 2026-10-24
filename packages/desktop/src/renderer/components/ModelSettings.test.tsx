@@ -81,7 +81,7 @@ describe("设置 › 模型", () => {
     const a = api(loaded({ source: "--config", readonly: true }));
     render(<ModelSettings api={a} />);
     expect(text(await screen.findByTestId("model-source"))).toContain("--config");
-    expect(text(screen.getByTestId("model-readonly"))).toContain("锁定");
+    expect(text(screen.getByTestId("model-readonly"))).toBe("配置来自外部文件，此页只读");
     expect(screen.queryByTestId("model-save")).toBeNull();
     expect(screen.queryByText("添加评审")).toBeNull();
     expect((screen.getByLabelText("deepseek-flash 高峰输出") as HTMLInputElement).disabled).toBe(

@@ -21,6 +21,7 @@ import {
   serveSyncState,
   serveAbout,
   serveModelSettings,
+  serveProjectList,
   serveWindowTheme,
 } from "./ipc.js";
 import { titleBarOverlayFor, usesTitleBarOverlay, windowChromeOptions } from "./window-chrome.js";
@@ -235,6 +236,12 @@ if (!gotLock) {
       // UI-07c：今天已花费原样取 3 的 budgetState()（只读后端回 null）
       budgetState: () => backend.budgetState(),
     });
+    // UI-07d：设置 › 项目（列表 / 移除 / 打开所在文件夹）；路径只在主进程里用，失败一律固定文案
+    const stopProjectList = serveProjectList(ipcMain, {
+      backend,
+      openPath: (p) => shell.openPath(p),
+      warn: (m) => console.warn(m),
+    });
     // UI-03b：密钥项与测试连接；标记文件放 userData（不在仓库里），值只交给 3
     const stopSecretProvider = serveSecretProvider(ipcMain, {
       secretDeps: { markerPath: path.join(userData, SECRET_MARKER_FILE) },
@@ -262,6 +269,7 @@ if (!gotLock) {
         stopRepoFix();
         stopSecretProvider();
         stopModelSettings();
+        stopProjectList();
         reader.close();
       },
       warn: (m) => console.warn(`[desktop] ${m}`),

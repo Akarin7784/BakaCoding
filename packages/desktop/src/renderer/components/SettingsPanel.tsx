@@ -3,6 +3,7 @@
 // UI-07a：放在设置弹层里（embedded）时改成左侧 7 个标签（§4.6）；单独使用时仍是原来的一整页。
 // UI-07b：「模型」标签换成可编辑的 ModelSettings（settings:config-get / settings:save）。
 // UI-07c：「预算」标签换成可编辑的 BudgetSettings（budget:status / settings:save）。
+// UI-07d：「项目」标签加已导入项目列表（project:list / project:remove / project:open-folder）。
 import { useState, type ReactNode } from "react";
 import type { BakaDesktopApi } from "../../shared/api";
 import {
@@ -25,6 +26,7 @@ import { WIZARD_COPY } from "../lib/secretItem";
 import { BudgetSettings } from "./BudgetSettings";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
 import { ModelSettings } from "./ModelSettings";
+import { ProjectList } from "./ProjectList";
 import { ModelSetupWizard, type WizardApi } from "./ModelSetupWizard";
 import { SecretItem } from "./SecretItem";
 import { SettingsAbout } from "./SettingsExtras";
@@ -186,6 +188,9 @@ export function SettingsPanel({
         <>
           {loading}
           {project}
+          {desktopApi?.listProjects && (
+            <ProjectList api={desktopApi} readonly={settings?.mode === "readonly"} />
+          )}
           {paths}
         </>,
       ),

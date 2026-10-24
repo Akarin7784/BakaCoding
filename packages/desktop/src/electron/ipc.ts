@@ -1,6 +1,7 @@
 // 把只读数据与后端状态通过 IPC 推给渲染进程。
 import { aboutInfo, type RawAbout } from "./about.js";
 import { modelSettingsHandlers, type ModelSettingsDeps } from "./model-settings.js";
+import { projectListHandlers, type ProjectListDeps } from "./project-list-ipc.js";
 import {
   IPC_CHANNELS,
   type DesktopChatResult,
@@ -531,6 +532,22 @@ export function serveModelSettings(ipc: IpcMainLike, deps: ModelSettingsDeps): (
     ipc.removeHandler(IPC_CHANNELS.settingsConfigGet);
     ipc.removeHandler(IPC_CHANNELS.settingsSave);
     ipc.removeHandler(IPC_CHANNELS.budgetStatus);
+  };
+}
+
+/**
+ * 设置 › 项目（UI-07d）：`project:list`（无参数）、`project:remove`（project_id）、`project:open-folder`（project_id）。
+ * 逻辑在 project-list-ipc.ts：打开文件夹只认 project_id，路径由主进程按记录取并检查绝对路径、存在；失败固定文案不带路径。
+ */
+export function serveProjectList(ipc: IpcMainLike, deps: ProjectListDeps): () => void {
+  const h = projectListHandlers(deps);
+  ipc.handle(IPC_CHANNELS.projectList, () => h.list());
+  ipc.handle(IPC_CHANNELS.projectRemove, (...args: unknown[]) => h.remove(args[1]));
+  ipc.handle(IPC_CHANNELS.projectOpenFolder, (...args: unknown[]) => h.openFolder(args[1]));
+  return () => {
+    ipc.removeHandler(IPC_CHANNELS.projectList);
+    ipc.removeHandler(IPC_CHANNELS.projectRemove);
+    ipc.removeHandler(IPC_CHANNELS.projectOpenFolder);
   };
 }
 

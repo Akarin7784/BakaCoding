@@ -22,6 +22,7 @@ import {
   serveSyncState,
   serveAbout,
   serveModelSettings,
+  serveProjectList,
   serveWindowTheme,
   type IpcMainLike,
 } from "./ipc.js";
@@ -93,6 +94,16 @@ function fakeBackend(over: Partial<BackendHandle> = {}): BackendHandle {
       waitingChat: false,
     })),
     reconnect: vi.fn(async () => ({ state: "reloaded" as const })),
+    // UI-07d：设置 › 项目
+    listProjects: vi.fn(() => [
+      {
+        project_id: "p-1",
+        name: "demo",
+        created_at: "2026-10-24T00:00:00.000Z",
+        repo_path: "/abs/demo",
+      },
+    ]),
+    removeProject: vi.fn(async () => ({ removed: true })),
     ...over,
   };
   return new Proxy(base as BackendHandle, {
@@ -187,6 +198,9 @@ const SERVE: Record<string, (ipc: IpcMainLike, backend: BackendHandle) => () => 
         clearUserSecret: async () => ({ ok: true as const }),
       },
     }),
+  // UI-07d：设置 › 项目；打开文件夹注入假的 openPath / isDirectory
+  serveProjectList: (ipc, backend) =>
+    serveProjectList(ipc, { backend, openPath: async () => "", isDirectory: () => true }),
   serveProjectSettings: (ipc, backend) =>
     serveProjectSettings(ipc, {
       backend: backend as unknown as ProjectSettingsDeps["backend"],
@@ -389,6 +403,14 @@ describe("handler 参数：第一个是 event，渲染进程参数从第二个�
       latency_ms: 5,
       cost_micro_usd: 1,
     });
+    // UI-07d：设置 › 项目（列表无参数；移除 / 打开文件夹只传 project_id）
+    await expect(api.listProjects!()).resolves.toEqual({
+      ok: true,
+      projects: [{ project_id: "p-1", name: "demo", repo_path: "/abs/demo" }],
+    });
+    await expect(api.removeProject!("p-1")).resolves.toEqual({ ok: true, removed: true });
+    expect(backend.removeProject).toHaveBeenCalledWith("p-1");
+    await expect(api.openProjectFolder!("p-1")).resolves.toEqual({ ok: true });
     // 以 IPC_CHANNELS 为准：新增 invoke 通道而这里没往返、或主进程没注册，都会失败
     expect([...seen].sort()).toEqual(INVOKE_CHANNELS);
     expect([...handlers.keys()].sort()).toEqual(INVOKE_CHANNELS);
@@ -522,6 +544,7 @@ describe("preload 暴露的只读 API", () => {
       "initRepo",
       "initialCommit",
       "listInitialFiles",
+      "listProjects",
       "markSupervisorReady",
       "onPendingHighRisk",
       "onQuitting",
@@ -529,9 +552,11 @@ describe("preload 暴露的只读 API", () => {
       "onSyncState",
       "onUpdate",
       "openDataDir",
+      "openProjectFolder",
       "platform",
       "reconnectBackend",
       "reloadBackend",
+      "removeProject",
       "saveBudget",
       "saveModelConfig",
       "secretStatus",
