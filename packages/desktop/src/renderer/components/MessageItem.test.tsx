@@ -198,41 +198,94 @@ describe("SupervisorChat 接回复卡片（UI-04c）", () => {
     expect(supervisorSplit).toHaveBeenCalledWith({ project_id: "p-1", text: "做个导出" });
   });
 
-  it("历史里的 split_failed 没有可靠的「回答哪条」关联：不显示「重试拆单」", async () => {
-    const getSupervisorHistory = vi.fn(async () => ({
-      ok: true as const,
-      messages: [
-        {
-          message_id: "h-u1",
-          project_id: "p-1",
-          role: "user" as const,
-          kind: null,
-          content: "老需求",
-          requirement_id: null,
-          ticket_ids: [],
-          created_at: 1,
-        },
-        {
-          message_id: "h-u1-r",
-          project_id: "p-1",
-          role: "supervisor" as const,
-          kind: "split_failed" as const,
-          content: "拆不动",
-          requirement_id: "req-1",
-          ticket_ids: [],
-          created_at: 2,
-        },
+  describe("T-151：历史里的 split_failed 按 in_reply_to 重试拆单", () => {
+    const user = (id: string, content: string, project_id: string | null = "p-1") => ({
+      message_id: id,
+      project_id,
+      role: "user" as const,
+      kind: null,
+      content,
+      requirement_id: null,
+      ticket_ids: [],
+      created_at: 1,
+      in_reply_to: null,
+    });
+    const failed = (extra: Record<string, unknown>) => ({
+      message_id: "h-r",
+      project_id: "p-1" as string | null,
+      role: "supervisor" as const,
+      kind: "split_failed" as const,
+      content: "拆不动",
+      requirement_id: "req-1" as string | null,
+      ticket_ids: [],
+      created_at: 3,
+      ...extra,
+    });
+    function renderHistory(messages: unknown[]) {
+      const supervisorSplit = vi.fn(async (): Promise<DesktopSplitResult> => ({
+        ok: true,
+        requirement_id: "req-1",
+        ticket_ids: ["T-1"],
+      }));
+      const supervisorChat = vi.fn();
+      const getSupervisorHistory = vi.fn(async () => ({ ok: true as const, messages }));
+      render(
+        <SupervisorChat
+          store={new ChatStore()}
+          api={
+            {
+              getSupervisorHistory,
+              supervisorSplit,
+              supervisorChat,
+              listProjects,
+            } as never
+          }
+        />,
+      );
+      return { supervisorSplit, supervisorChat };
+    }
+
+    it("按 in_reply_to 取原文（不取前面最近一条），走 split、requirement_id 原样带回、不走 chat", async () => {
+      const { supervisorSplit, supervisorChat } = renderHistory([
+        user("h-u1", "老需求原文"),
+        user("h-u2", "后来的闲聊"),
+        failed({ in_reply_to: "h-u1" }),
+      ]);
+      fireEvent.click(await screen.findByRole("button", { name: "重试拆单" }));
+      await waitFor(() => expect(supervisorSplit).toHaveBeenCalledTimes(1));
+      expect(supervisorSplit).toHaveBeenCalledWith({
+        project_id: "p-1",
+        text: "老需求原文",
+        requirement_id: "req-1",
+      });
+      expect(supervisorChat).not.toHaveBeenCalled();
+    });
+
+    it("回复没有项目时用那条用户消息的项目", async () => {
+      const { supervisorSplit } = renderHistory([
+        user("h-u1", "老需求", "p-2"),
+        failed({ in_reply_to: "h-u1", project_id: null, requirement_id: null }),
+      ]);
+      fireEvent.click(await screen.findByRole("button", { name: "重试拆单" }));
+      await waitFor(() =>
+        expect(supervisorSplit).toHaveBeenCalledWith({ project_id: "p-2", text: "老需求" }),
+      );
+    });
+
+    it.each([
+      ["in_reply_to 为 null", [user("h-u1", "老需求"), failed({ in_reply_to: null })]],
+      ["没有 in_reply_to 字段", [user("h-u1", "老需求"), failed({})]],
+      ["找不到对应用户消息", [user("h-u1", "老需求"), failed({ in_reply_to: "h-gone" })]],
+      [
+        "回复和用户消息都没有项目",
+        [user("h-u1", "老需求", null), failed({ in_reply_to: "h-u1", project_id: null })],
       ],
-    }));
-    render(
-      <SupervisorChat
-        store={new ChatStore()}
-        api={{ getSupervisorHistory, supervisorSplit: vi.fn(), listProjects }}
-      />,
-    );
-    expect(await screen.findByText("拆不动")).toBeTruthy();
-    expect(screen.getByTestId("chat-reply").dataset.kind).toBe("split_failed");
-    expect(screen.queryByRole("button", { name: "重试拆单" })).toBeNull();
+    ])("%s：不显示「重试拆单」", async (_name, messages) => {
+      renderHistory(messages);
+      expect(await screen.findByText("拆不动")).toBeTruthy();
+      expect(screen.getByTestId("chat-reply").dataset.kind).toBe("split_failed");
+      expect(screen.queryByRole("button", { name: "重试拆单" })).toBeNull();
+    });
   });
 
   it("等待回复：三个点", async () => {

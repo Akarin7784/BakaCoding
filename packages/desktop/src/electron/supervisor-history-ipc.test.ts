@@ -35,6 +35,21 @@ describe("runSupervisorHistory（UI-04a）", () => {
     expect(r).toEqual({ ok: true, messages: [msg("m-1"), msg("m-1-r", "supervisor")] });
   });
 
+  it("T-151：in_reply_to 原样透传（有值 / null / 没有该字段）", () => {
+    const reply = {
+      ...msg("m-1-r", "supervisor"),
+      kind: "split_failed" as const,
+      in_reply_to: "m-1",
+    };
+    const user = { ...msg("m-1"), in_reply_to: null };
+    const old = msg("m-0");
+    const r = runSupervisorHistory(() => [old, user, reply], undefined, ENV);
+    if (!r.ok) throw new Error("应成功");
+    expect(r.messages[2]!.in_reply_to).toBe("m-1");
+    expect(r.messages[1]!.in_reply_to).toBeNull();
+    expect("in_reply_to" in r.messages[0]!).toBe(false);
+  });
+
   it("before / limit 透传；limit 夹到 1..200，非法字段丢掉", () => {
     const history = vi.fn(() => []);
     runSupervisorHistory(history, { before: "m-9", limit: 20 }, ENV);
