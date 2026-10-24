@@ -2,6 +2,7 @@
 // 以及今天已花费（只取 budget:status，即 3 的 budgetState()）。新预算低于今天已花费时只警告、不拦。
 // 保存走 settings:save 的 { budget }（校验 → 写 config/models.json → 07b 的重载规则）；
 // --config / BAKACODING_CONFIG 锁定时整页只读。
+// UI-07e：budget-today 下面接 ProjectSpend（各项目累计花费，只取 ledger:summary）。
 import { useEffect, useState } from "react";
 import { Lock, TriangleAlert } from "lucide-react";
 import type {
@@ -17,11 +18,15 @@ import {
   parseRatio,
 } from "../lib/budgetSettings";
 import { MODEL_COPY, saveNotice, sourceText, type SaveNotice } from "../lib/modelSettings";
+import { ProjectSpend } from "./ProjectSpend";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Switch } from "./ui/switch";
 
-export type BudgetSettingsApi = Pick<BakaDesktopApi, "getBudgetStatus" | "saveBudget">;
+export type BudgetSettingsApi = Pick<
+  BakaDesktopApi,
+  "getBudgetStatus" | "saveBudget" | "getLedgerSummary"
+>;
 type Loaded = Extract<DesktopBudgetStatusResult, { ok: true }>;
 
 function Err({ id, text }: { id: string; text: string | undefined }) {
@@ -152,6 +157,8 @@ export function BudgetSettings({ api }: { api?: BudgetSettingsApi }) {
           <span className="text-muted-foreground">{BUDGET_COPY.todayUnavailable}</span>
         )}
       </div>
+
+      <ProjectSpend api={api} />
 
       <div>
         <label htmlFor="budget-daily" className="mb-1 block text-xs text-muted-foreground">
