@@ -6,7 +6,7 @@ import type {
   DesktopSupervisorMessage,
   UiEvent,
 } from "../../shared/api";
-import { summarizeCalls, usageLine, type CallWindow } from "../lib/callUsage";
+import { summarizeCalls, usageLine, type CallScope } from "../lib/callUsage";
 import {
   CHAT_HISTORY_PAGE,
   answeredUserMessage,
@@ -114,23 +114,28 @@ export function SupervisorChat({
   }, [store, initial, getHistory]);
   const { items: messages, pending } = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const [draft, setDraft] = useState("");
-  // UI-06e：本次等待的开始时间（计时用）和上一次等待的窗口（结束后算 token / 费用）
+  // UI-06e：本次等待的开始时间（计时用）；回复到达后按回复的 requirement_id 和到达时间算 token / 费用
   const [startedAt, setStartedAt] = useState<number | undefined>(undefined);
-  const [lastWindow, setLastWindow] = useState<CallWindow | null>(null);
+  const [lastCall, setLastCall] = useState<CallScope | null>(null);
   const startRef = useRef<number | undefined>(undefined);
+  /** 本次回复的 requirement_id（失败或回复不带时为 null）；回复一到就写入 */
+  const replyReqRef = useRef<string | null>(null);
   useEffect(() => {
     if (pending) {
       const t = now();
       startRef.current = t;
+      replyReqRef.current = null;
       setStartedAt(t);
-      setLastWindow(null);
+      setLastCall(null);
     } else if (startRef.current !== undefined) {
-      setLastWindow({ from: startRef.current, to: now() });
+      const requirement_id = replyReqRef.current;
+      // 回复不带 requirement_id：只显示用时，不显示用量
+      setLastCall(requirement_id ? { requirement_id, until: now() } : null);
       startRef.current = undefined;
       setStartedAt(undefined);
     }
   }, [pending, now]);
-  const usage = !pending && lastWindow && events ? summarizeCalls(events, lastWindow) : null;
+  const usage = lastCall && events ? summarizeCalls(events, lastCall) : null;
   useEffect(() => {
     if (prefill === null) return;
     setDraft(prefill);
@@ -190,6 +195,7 @@ export function SupervisorChat({
     const retry = { message_id, text, ...(project_id && { project_id }) };
     try {
       const r = await api.supervisorChat({ text, message_id, ...(project_id && { project_id }) });
+      replyReqRef.current = r.ok ? (r.reply.requirement_id ?? null) : null;
       item = r.ok
         ? {
             // T-149：用 10 返回的回复自身 id（T-148）和历史去重，不假定 id 格式
