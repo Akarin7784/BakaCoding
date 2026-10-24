@@ -274,6 +274,43 @@ describe("@bakacoding/storage", () => {
     ).toEqual(["T-1"]);
   });
 
+  it("T-133 setTicketField：只改 fields 里的一个键，其他键和其他列原样保留", () => {
+    const s = open();
+    s.saveTicket({
+      ...ticket(),
+      fields: {
+        write_scope: ["src/**"],
+        depends_on: ["T-0"],
+        priority: "normal",
+        interface_notes: ["旧说明"],
+      },
+    });
+    expect(s.setTicketField("T-1", "interface_notes", ["新说明", "第二条"])).toBe(true);
+    let row = s.getTicket("T-1")!;
+    expect(row.fields).toMatchObject({
+      write_scope: ["src/**"],
+      depends_on: ["T-0"],
+      priority: "normal",
+      interface_notes: ["新说明", "第二条"],
+    });
+    expect(row.permission_list).toEqual([{ glob: "src/**", level: "rw" }]);
+    // 传 undefined 删掉这个键，别的键不动
+    expect(s.setTicketField("T-1", "interface_notes", undefined)).toBe(true);
+    row = s.getTicket("T-1")!;
+    expect("interface_notes" in (row.fields as object)).toBe(false);
+    expect(row.fields!.write_scope).toEqual(["src/**"]);
+  });
+
+  it("T-133 setTicketField：单不存在 / fields 为 null / 键名不合法时不动数据", () => {
+    const s = open();
+    s.saveTicket(ticket());
+    expect(s.setTicketField("T-404", "interface_notes", ["x"])).toBe(false);
+    // 旧单没有结构化字段：不创建不完整的 fields（否则 10 会判 fields_invalid）
+    expect(s.setTicketField("T-1", "interface_notes", ["x"])).toBe(false);
+    expect(s.getTicket("T-1")!.fields).toBeNull();
+    expect(() => s.setTicketField("T-1", "bad.key", 1)).toThrow(/键名不合法/);
+  });
+
   it("主管决策记忆按项目保存和读取", () => {
     const s = open();
     s.saveDecision({
