@@ -9,7 +9,7 @@ export const EventCommonSchema = TraceSchema.extend({
   seq: z.number().int().nonnegative(),
   ts: IsoUtcSchema,
   requirement_id: Id.nullable().describe(
-    "所属需求；只有项目级事件（PROJECT_LEVEL_EVENT_TYPES：project_created / review_backlog / supervisor_backlog）可以为 null，其他事件必填",
+    "所属需求；只有项目级事件（PROJECT_LEVEL_EVENT_TYPES：project_created / project_removed / review_backlog / supervisor_backlog）可以为 null，其他事件必填",
   ),
   ticket_id: Id.nullable(),
 });
@@ -17,6 +17,7 @@ export const EventCommonSchema = TraceSchema.extend({
 /** 不属于任何需求的项目级事件：只有这些事件的 `requirement_id` 可以为 null。 */
 export const PROJECT_LEVEL_EVENT_TYPES = [
   "project_created",
+  "project_removed",
   "review_backlog",
   "supervisor_backlog",
 ] as const;
@@ -57,6 +58,10 @@ export const ProjectCreatedSchema = projectEv("project_created", {
   name: z.string().min(1),
   language: z.string().min(1),
   has_github_remote: z.boolean(),
+});
+/** T-142：项目记录已删除。只删记录，不动仓库，不删历史事件；之后再发 project_created 可重新登记。 */
+export const ProjectRemovedSchema = projectEv("project_removed", {
+  project_id: Id,
 });
 export const CallCompletedSchema = ev("call_completed", {
   role: RoleSchema,
@@ -193,6 +198,7 @@ export const TicketStatusChangedSchema = ev("ticket_status_changed", {
 
 export const EventSchema = z.discriminatedUnion("type", [
   ProjectCreatedSchema,
+  ProjectRemovedSchema,
   CallCompletedSchema,
   WriteScopeRequestedSchema,
   WriteScopeGrantedSchema,
