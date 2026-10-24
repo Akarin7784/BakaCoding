@@ -4,7 +4,7 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { ActivityFeed, ACTIVITY_COLLAPSE_CHARS } from "./ActivityFeed";
-import { projects } from "../mock/data";
+import { projects, tickets } from "../mock/data";
 import type { ProjectView } from "../mock/types";
 
 afterEach(cleanup);
@@ -40,9 +40,14 @@ describe("ActivityFeed（T-127）", () => {
     expect(screen.getByTestId("activity-filter").textContent).toContain("全部");
   });
 
-  it("底部状态行只列在跑的单", () => {
-    render(<ActivityFeed project={todo} />);
-    expect(screen.getByTestId("activity-status").textContent).toBe("T-2 重写");
+  it("底部状态行只列在跑的单，来自快照 tickets（UI-06a，不读 prs）", () => {
+    render(<ActivityFeed project={{ ...todo, prs: [] }} tickets={tickets} />);
+    expect(screen.getByTestId("activity-status").textContent).toBe("T-2 重新评审");
+  });
+
+  it("没有在跑的单时显示空闲（prs 里有在跑的也不算）", () => {
+    render(<ActivityFeed project={todo} tickets={tickets.filter((t) => t.status === "merged")} />);
+    expect(screen.getByTestId("activity-status").textContent).toBe("没有在跑的单");
   });
 
   it("长正文可展开 / 收起", () => {

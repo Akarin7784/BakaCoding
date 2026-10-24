@@ -18,7 +18,8 @@ describe("RightPanel 编码池行（UI-06b）", () => {
     render(
       <RightPanel
         view={view}
-        onOpenTopic={() => {}}
+        tickets={[]}
+        onOpenTicket={() => {}}
         pool={row(true, ["review_backlog_pause", "daily_budget"])}
       />,
     );
@@ -30,7 +31,12 @@ describe("RightPanel 编码池行（UI-06b）", () => {
 
   it("只降并发：反压关、不用强调色、行里不标原因，悬停仍列出", () => {
     render(
-      <RightPanel view={view} onOpenTopic={() => {}} pool={row(false, ["review_backlog_halve"])} />,
+      <RightPanel
+        view={view}
+        tickets={[]}
+        onOpenTicket={() => {}}
+        pool={row(false, ["review_backlog_halve"])}
+      />,
     );
     const el = screen.getByText("并发 1/4 · 反压 关");
     expect(el.className).not.toContain("text-accent");
@@ -38,17 +44,22 @@ describe("RightPanel 编码池行（UI-06b）", () => {
   });
 
   it("无原因：反压关，没有悬停提示", () => {
-    render(<RightPanel view={view} onOpenTopic={() => {}} pool={row(false, [])} />);
+    render(<RightPanel view={view} tickets={[]} onOpenTicket={() => {}} pool={row(false, [])} />);
     expect(screen.getByText("并发 1/4 · 反压 关").hasAttribute("title")).toBe(false);
   });
 
   it("ok:false 显示原因；不给 pool 时回退 view.pool", () => {
     render(
-      <RightPanel view={view} onOpenTopic={() => {}} pool={{ ok: false, reason: "不可用X" }} />,
+      <RightPanel
+        view={view}
+        tickets={[]}
+        onOpenTicket={() => {}}
+        pool={{ ok: false, reason: "不可用X" }}
+      />,
     );
     expect(screen.getByTestId("pool-status").textContent).toBe("不可用X");
     cleanup();
-    render(<RightPanel view={view} onOpenTopic={() => {}} />);
+    render(<RightPanel view={view} tickets={[]} onOpenTicket={() => {}} />);
     expect(screen.getByTestId("pool-status").textContent).toContain("并发 ");
   });
 });

@@ -17,7 +17,8 @@ import { UnattributedPanel } from "./components/Escalations";
 import { HighRiskPanel } from "./components/HighRiskPanel";
 import { RequirementPage } from "./components/RequirementPage";
 import { useRequirementRoute } from "./lib/requirementRoute";
-import { REQUIREMENT_MENU_COPY as M, REQUIREMENT_PAGE_COPY } from "./lib/copy";
+import { REQUIREMENT_MENU_COPY as M, REQUIREMENT_PAGE_COPY, TICKET_LIST_COPY } from "./lib/copy";
+import { EmptyState } from "./components/EmptyState";
 import { useDesktopData } from "./data/useDesktopData";
 import { usePendingHighRisk } from "./data/usePendingHighRisk";
 import { useSyncState } from "./data/useSyncState";
@@ -131,22 +132,25 @@ export function App(props: AppProps) {
   const [selection, setSelection] = useState<Selection>({ kind: "supervisor" });
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [panelTab, setPanelTab] = useState<RightPanelTab>("overview");
-  const [lastProjectId, setLastProjectId] = useState<string | undefined>(
-    projects[0]?.project.payload.project_id,
-  );
+  /** UI-06a：主管对话里右面板跟随输入框 chip 选中的项目（不再回退到最后一个项目） */
+  const [chatProjectId, setChatProjectId] = useState<string | undefined>(undefined);
+  /** UI-06a：从右面板单列表点进需求页时选中的单 */
+  const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
 
   /** UI-05c：需求页走路由 #requirement=<id>（左栏的需求列表留给 05e，「查看需求」按钮留给 05f） */
   const [requirementId, openRequirement] = useRequirementRoute();
   const select = (s: Selection) => {
     setPrepOpen(false);
     openRequirement(null);
+    setSelectedTicketId(null);
     setSelection(s);
-    if (s.kind === "project") setLastProjectId(s.projectId);
   };
   const currentId =
     selection.kind === "project"
       ? selection.projectId
-      : (lastProjectId ?? projects[0]?.project.payload.project_id);
+      : selection.kind === "supervisor"
+        ? chatProjectId
+        : undefined;
   const current = projects.find((p) => p.project.payload.project_id === currentId);
   const showProject = selection.kind === "project" && current !== undefined;
   // T-127：动态标签的小点——面板开着且停在动态标签才算已读（§4.5.1）
@@ -173,10 +177,10 @@ export function App(props: AppProps) {
     [projects, tickets, events, attention.requirements],
   );
   /** UI-05e：左栏 / 项目页点需求：选中所属项目，再打开 #requirement=<id> */
-  const openRequirementOf = (projectId: string, rid: string) => {
+  const openRequirementOf = (projectId: string, rid: string, ticketId: string | null = null) => {
     setPrepOpen(false);
     setSelection({ kind: "project", projectId });
-    setLastProjectId(projectId);
+    setSelectedTicketId(ticketId);
     openRequirement(rid);
   };
 
@@ -186,6 +190,7 @@ export function App(props: AppProps) {
     if (pid) openRequirementOf(pid, rid);
     else {
       setPrepOpen(false);
+      setSelectedTicketId(null);
       openRequirement(rid);
     }
   };
@@ -195,6 +200,7 @@ export function App(props: AppProps) {
   const askSupervisor = (text: string) => {
     setPrepOpen(false);
     openRequirement(null);
+    setSelectedTicketId(null);
     setSelection({ kind: "supervisor" });
     setChatPrefill(text);
     setTimeout(() => {
@@ -408,6 +414,7 @@ export function App(props: AppProps) {
         ) : showRequirement ? (
           <RequirementPage
             requirementId={requirementId}
+            selectedTicketId={selectedTicketId}
             tickets={tickets}
             events={events}
             api={api}
@@ -463,6 +470,7 @@ export function App(props: AppProps) {
             requirementNameOf={requirementNameOf}
             prefill={chatPrefill}
             onPrefillUsed={clearPrefill}
+            onChipProjectChange={setChatProjectId}
           />
         )}
       </main>
@@ -474,23 +482,25 @@ export function App(props: AppProps) {
         onTabChange={setPanelTab}
         insetRight={inset.right}
         activityDot={activityDot}
-        activity={<ActivityFeed project={current} />}
+        activity={<ActivityFeed project={current} tickets={tickets} />}
         overview={
           current ? (
             <RightPanel
               view={current}
               readonly={backendReadonly}
               pool={poolLive}
-              onOpenTopic={(rid) => {
-                select({ kind: "project", projectId: current.project.payload.project_id });
+              tickets={tickets}
+              exportBusy={actions.busy === "export"}
+              onOpenTicket={(rid, tid) => {
+                openRequirementOf(current.project.payload.project_id, rid, tid);
                 if (layout.drawer) layout.setRightPanelOpen(false);
-                setTimeout(
-                  () =>
-                    document.getElementById(`topic-${rid}`)?.scrollIntoView({ behavior: "smooth" }),
-                  0,
-                );
               }}
+              onExportTicket={(tid) =>
+                void actions.exportDiagnostics({ scope: { kind: "ticket", ticket_id: tid } })
+              }
             />
+          ) : projects.length > 0 ? (
+            <EmptyState title={TICKET_LIST_COPY.noProject} />
           ) : null
         }
       />

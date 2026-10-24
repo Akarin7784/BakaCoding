@@ -114,6 +114,9 @@ function fakeApi(snap: DesktopSnapshot) {
   return { api, push: (u: DesktopUpdate) => listeners.forEach((l) => l(u)) };
 }
 
+const ticketRow = (id: string) =>
+  screen.getAllByTestId("ticket-row").find((el) => el.dataset.ticket === id) as HTMLElement;
+
 describe("渲染进程从 preload API 读真实数据", () => {
   it("有 window.bakacoding 时不用假数据：项目、需求、PR 状态都来自快照", async () => {
     const { api } = fakeApi(snapshot);
@@ -128,10 +131,12 @@ describe("渲染进程从 preload API 读真实数据", () => {
     expect(row.dataset.category).toBe("attention");
 
     fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
-    expect(screen.getByText("编码中").getAttribute("data-tone")).toBe("accent");
-    const esc = screen.getAllByText("需要人工介入").find((el) => el.dataset.status === "escalated");
-    expect(esc?.getAttribute("data-tone")).toBe("danger");
-    expect(screen.getByText("×3")).toBeTruthy();
+    // UI-06a：右面板单列表来自快照 tickets（状态图标 + ×重写次数）
+    const t1 = ticketRow("T-1");
+    expect(within(t1).getByRole("img", { name: "编码中" }).dataset.tone).toBe("accent");
+    const t2 = ticketRow("T-2");
+    expect(within(t2).getByRole("img", { name: "需要人工介入" }).dataset.tone).toBe("danger");
+    expect(t2.textContent).toContain("×3");
     expect(screen.getByTestId("pool-status").textContent).toContain("未接入");
   });
 
@@ -170,7 +175,9 @@ describe("渲染进程从 preload API 读真实数据", () => {
     await waitFor(() => expect(openRow("R-1").textContent).toContain("全部合入"));
     expect(openRow("R-1").dataset.category).toBe("done");
     fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
-    expect(screen.getByText("已合入").getAttribute("data-tone")).toBe("foreground");
+    expect(within(ticketRow("T-1")).getByRole("img", { name: "已合入" }).dataset.tone).toBe(
+      "foreground",
+    );
   });
 
   it("库还不存在时提示路径；api 为 null 时退回假数据", async () => {
@@ -322,8 +329,8 @@ describe("UI-05f：需求页（api mock）", () => {
     window.location.hash = "";
   });
 
-  function reqApi() {
-    const { api } = fakeApi(snapshot);
+  function reqApi(snap: DesktopSnapshot = snapshot) {
+    const { api } = fakeApi(snap);
     const exportDiagnostics = vi.fn(async () => ({ ok: true as const, path: "/tmp/d.zip" }));
     const getRequirementDetail = vi.fn(async () => ({
       ok: true as const,
@@ -372,6 +379,19 @@ describe("UI-05f：需求页（api mock）", () => {
     );
   });
 
+  it("UI-06a：右面板单列表行内导出：api.exportDiagnostics 收到 ticket scope", async () => {
+    const { api, exportDiagnostics } = reqApi();
+    render(<App api={api as unknown as BakaDesktopApi} />);
+    fireEvent.click(await screen.findByRole("button", { name: /real-proj/ }));
+    fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
+    fireEvent.click(screen.getByRole("button", { name: "导出 T-2 诊断包" }));
+    await waitFor(() =>
+      expect(exportDiagnostics).toHaveBeenCalledWith({
+        scope: { kind: "ticket", ticket_id: "T-2" },
+      }),
+    );
+  });
+
   it("「⋯」追问：回主管对话，输入框预填需求，不自动发送", async () => {
     const { api } = reqApi();
     const supervisorChat = vi.fn();
@@ -394,6 +414,51 @@ describe("UI-05f：需求页（api mock）", () => {
       'textarea[data-composer="supervisor"]',
     )!;
     await waitFor(() => expect(box.value).toBe("T-2（需求「真实单一」）需要我处理："));
+  });
+});
+
+describe("UI-06a P3：取不到需求名时草稿退回需求号", () => {
+  afterEach(() => {
+    window.location.hash = "";
+  });
+  // 单子标题全空白 → requirementName 为空 → requirementNameOf 退回需求号
+  const nameless: DesktopSnapshot = {
+    ...snapshot,
+    tickets: snapshot.tickets.map((t) => ({ ...t, title: "   " })),
+  };
+  const api = () => {
+    const { api } = fakeApi(nameless);
+    const getRequirementDetail = vi.fn(async () => ({
+      ok: true as const,
+      detail: {
+        requirement_id: "R-1",
+        name: "",
+        requirement_text: "做两张单",
+        decomposition_summary: "拆成两张",
+        tickets: [],
+      },
+    }));
+    return { ...api, getRequirementDetail } as unknown as BakaDesktopApi;
+  };
+  const composer = () =>
+    document.querySelector<HTMLTextAreaElement>('textarea[data-composer="supervisor"]')!;
+  const open = async () => {
+    render(<App api={api()} />);
+    fireEvent.click(await screen.findByRole("button", { name: /real-proj/ }));
+    fireEvent.click(openRow("R-1"));
+  };
+
+  it("「追问」草稿写需求号", async () => {
+    await open();
+    fireEvent.keyDown(await screen.findByTestId("requirement-menu"), { key: "Enter" });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "在主管对话里追问" }));
+    await waitFor(() => expect(composer().value).toBe("关于需求「R-1」（R-1）："));
+  });
+
+  it("「需要你处理」草稿写需求号", async () => {
+    await open();
+    fireEvent.click(await screen.findByRole("button", { name: "需要你处理" }));
+    await waitFor(() => expect(composer().value).toBe("T-2（需求「R-1」）需要我处理："));
   });
 });
 
