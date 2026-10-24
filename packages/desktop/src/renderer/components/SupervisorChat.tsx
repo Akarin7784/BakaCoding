@@ -151,8 +151,8 @@ export function SupervisorChat({
             ticket_ids: [...(r.reply.ticket_ids ?? [])],
             created_at: Date.now(),
             reply: r.reply,
-            // UI-04c：记下回答的是哪条用户消息（重试拆单取它的原文）
-            inReplyTo: message_id,
+            // UI-04c / T-151：回答的是哪条用户消息（与 10 落库的 in_reply_to 一致）
+            in_reply_to: message_id,
           }
         : {
             message_id: `${message_id}-e`,

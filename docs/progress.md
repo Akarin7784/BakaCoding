@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`0405e63` · main 上测试：154 个测试文件 / 2629 passed + 2 skipped 个测试（Linux 全量；Windows 基线见 `docs/test-baseline.md`） · 更新日期：2026-10-24（UTC+8）
+> 上次更新时 main：`0d1e097` · main 上测试：154 个测试文件 / 2637 passed + 2 skipped 个测试（Linux 全量；Windows 基线见 `docs/test-baseline.md`） · 更新日期：2026-10-24（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -218,6 +218,7 @@ flowchart BT
 | T-149 | 模块 12：`sanitizeChatReason` 先过模块 11 的 `redactPaths`（与 FullRedactor 同一套规则），再走密钥值 / light / 截断；补 POSIX、Windows、UNC、home、`~` 路径用例。渲染端实时回复改按 `reply.message_id`（T-148）和历史去重，删掉 `replyMessageId` 及 `<id>-r` 假定；补「回复 id 与用户 id 无关仍去重」用例（均做反向检查） | 12 | 界面与诊断开发。合入后 main `9032d3f`，测试 150 个文件 / 2587 passed + 2 skipped 个 | 已合入 | #229 | `9032d3f` |
 | T-152 | 模块 2：`supervisor_messages` 加可空列 `in_reply_to`（库升级到 v7，不加索引和外键）；`SupervisorMessage.in_reply_to?: string \| null`，写入可不传（按 null），读出总带、旧记录为 null，非空字符串以外报 `invalid_message`，幂等先写为准；modules.md §2 同步。须先于 T-150 合入。合入后 main `f02f59b`，测试 153 个文件 / 2617 passed + 2 skipped 个 | 2 | 基础层开发 | 已合入 #234 | `f02f59b` | |
 | T-150 | 模块 10：主管回复落库时带 `in_reply_to` = 对应用户消息 id（用户消息为 null），`history()` 原样返回；补用例：回复指向用户消息、同 id 幂等重试后回复仍指向原用户消息（反向检查：回复写 null 两条变红）；modules.md §10 同步 | 10。合入后 main `0405e63`，测试 154 个文件 / 2629 passed + 2 skipped 个 | 编排层开发 | 已合入 #237 | `0405e63` | — |
+| T-151 | 模块 12：历史里的 `split_failed` 按回复的 `in_reply_to` 找对应用户消息补「重试拆单」（项目先回复后用户消息；null / 无字段 / 找不到 / 无项目不显示，不猜）；live 回复统一写 `in_reply_to`；补 #235 两个 P3 测试（先脱敏再截 80 字、20000 上限）；modules.md §12 同步。合入后 main `0d1e097`，测试 154 个文件 / 2637 passed + 2 skipped 个 | 12 | 界面与诊断开发 | 已合入 | #240 | 0d1e097 |
 | T-153 | 桌面端：设置 › 预算 `spendHint` / `spendResubmit` 文案「复投」改为「重写」（§5.6），补 `BUDGET_COPY` 不含「复投」的用例 | 12 | 界面与诊断开发 | 待评审 | #243 | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。

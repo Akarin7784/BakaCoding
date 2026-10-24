@@ -127,6 +127,47 @@ describe("readRequirementDetail（UI-05a）", () => {
     expect(r.detail.name).not.toContain("第二行");
   });
 
+  it("T-151：需求名先脱敏再截——脱敏后变长的首行，最终仍不超过 80 字", () => {
+    s = openStorage({ path: path.join(dir, "store.db") });
+    // 73 字（不截）；短路径脱敏成「[REDACTED:abs_path]」后变成 90 字，只有先脱敏再截才能压回 80 字
+    const line = `${"长".repeat(70)} /a`;
+    expect([...line].length).toBe(73);
+    s.saveTicket({
+      ticket_id: "T-7",
+      project_id: "P-1",
+      requirement_id: "R-7",
+      base_commit: "a".repeat(40),
+      permission_list: [],
+      context_snippets: [],
+      created_at: "2026-10-24T01:00:00.000Z",
+      ticket_text: line,
+    });
+    const r = readRequirementDetail(s, { requirement_id: "R-7" }, ENV);
+    if (!r.ok) throw new Error("应成功");
+    expect(r.detail.name).toContain("[REDACTE");
+    expect(r.detail.name).not.toContain("/a");
+    expect([...r.detail.name].length).toBeLessThanOrEqual(80);
+  });
+
+  it("T-151：需求原文用 20000 上限——超过 2000 字的原文不被截断", () => {
+    s = openStorage({ path: path.join(dir, "store.db") });
+    const text = `长需求 ${"字".repeat(3000)} 结尾`;
+    s.saveTicket({
+      ticket_id: "T-8",
+      project_id: "P-1",
+      requirement_id: "R-8",
+      base_commit: "a".repeat(40),
+      permission_list: [],
+      context_snippets: [],
+      created_at: "2026-10-24T01:00:00.000Z",
+      ticket_text: "短标题",
+      fields: { requirement_text: text },
+    });
+    const r = readRequirementDetail(s, { requirement_id: "R-8" }, ENV);
+    if (!r.ok) throw new Error("应成功");
+    expect(r.detail.requirement_text).toBe(text);
+  });
+
   it("没有 requirement_text / 摘要时为 null；旧单 fields 为 null 也能读", () => {
     s = openStorage({ path: path.join(dir, "store.db") });
     s.saveTicket({
