@@ -483,6 +483,11 @@ export function App(props: AppProps) {
               pool={poolLive}
               tickets={tickets}
               {...(api?.getGitStatus ? { gitStatus, sync: syncState } : {})}
+              {...(api?.mergeMain && {
+                // UI-06d：审查通过的 head 目前没有来源（10 不对外暴露），先传 null，按钮禁用并提示先审查
+                mainMergeHead: null,
+                onMergeMain: (head_sha: string) => api.mergeMain!({ head_sha }),
+              })}
               exportBusy={actions.busy === "export"}
               onOpenTicket={(rid, tid) => {
                 openRequirementOf(current.project.payload.project_id, rid, tid);

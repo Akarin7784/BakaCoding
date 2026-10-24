@@ -11,6 +11,7 @@ import {
   type DesktopPoolStateResult,
   type DesktopRequirementDetailResult,
   type DesktopGitStatusResult,
+  type DesktopMainMergeResult,
   type DesktopDecideHighRiskResult,
   type DesktopExportOptions,
   type DesktopExportResult,
@@ -717,6 +718,20 @@ export function serveGitStatus(
   });
   return () => {
     ipc.removeHandler(IPC_CHANNELS.gitStatus);
+  };
+}
+
+/** 合入 main IPC（UI-06d，写）：invoke `main:merge` → backend.mainMerge(args[1])。 */
+export function serveMainMerge(
+  ipc: IpcMainLike,
+  backend: Pick<BackendHandle, "mainMerge">,
+): () => void {
+  ipc.handle(IPC_CHANNELS.mainMerge, async (...args: unknown[]) => {
+    const result: DesktopMainMergeResult = await backend.mainMerge(args[1]);
+    return result;
+  });
+  return () => {
+    ipc.removeHandler(IPC_CHANNELS.mainMerge);
   };
 }
 

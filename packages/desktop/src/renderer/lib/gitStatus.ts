@@ -44,3 +44,24 @@ export function gitSyncView(state: DesktopSyncState | null): GitSyncView {
         : null;
   return { lastSync, error };
 }
+
+/** UI-06d：Git 区「合入 main」入口与状态文案（错误文案由主进程 main:merge 给出固定 reason）。 */
+export const MAIN_MERGE_COPY = {
+  merging: "正在合入 main…",
+  needsReview: "集成分支审查通过后才能合入",
+  nothingAhead: "集成分支没有新提交，不用合入",
+  supervisorMode: "由主管审过后自动合入 main",
+  notified: "没有合入，已转为通知",
+  failed: "合入 main 失败",
+  merged: (sha: string) => `已合入 main（${sha.slice(0, 7)}）`,
+} as const;
+
+/** 合入按钮为什么不能点；能点为 null。 */
+export function mainMergeBlocker(
+  r: Extract<DesktopGitStatusResult, { ok: true }>,
+  reviewedHead: string | null | undefined,
+): string | null {
+  if (r.ahead === 0) return MAIN_MERGE_COPY.nothingAhead;
+  if (!reviewedHead) return MAIN_MERGE_COPY.needsReview;
+  return null;
+}
