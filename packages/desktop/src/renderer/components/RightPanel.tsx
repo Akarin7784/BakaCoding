@@ -13,7 +13,7 @@ import { poolRowLabel, type PoolRow } from "../lib/poolState";
 export type PoolLive = { ok: true; row: PoolRow } | { ok: false; reason: string };
 
 function LivePool({ pool }: { pool: PoolLive }) {
-  if (!pool.ok) return <span className="text-muted-foreground">编码池状态：{pool.reason}</span>;
+  if (!pool.ok) return <span className="text-muted-foreground">{pool.reason}</span>;
   return (
     <span
       data-backpressure={pool.row.backpressure ? "on" : "off"}

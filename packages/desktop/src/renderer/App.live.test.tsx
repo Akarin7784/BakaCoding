@@ -556,7 +556,7 @@ describe("编码池行接 pool:state（UI-06b）", () => {
     fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
     await waitFor(() =>
       expect(screen.getByTestId("pool-status").textContent).toBe(
-        "编码池状态：编码池状态暂不可用（后端只读或未接线）",
+        "编码池状态暂不可用（后端只读或未接线）",
       ),
     );
   });
@@ -570,7 +570,7 @@ describe("编码池行接 pool:state（UI-06b）", () => {
     fireEvent.click(await screen.findByRole("button", { name: /real-proj/ }));
     fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
     await waitFor(() =>
-      expect(screen.getByTestId("pool-status").textContent).toBe("编码池状态：读取编码池状态失败"),
+      expect(screen.getByTestId("pool-status").textContent).toBe("读取编码池状态失败"),
     );
   });
 });

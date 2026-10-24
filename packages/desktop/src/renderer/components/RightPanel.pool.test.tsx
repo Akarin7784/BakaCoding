@@ -37,7 +37,7 @@ describe("RightPanel 编码池行（UI-06b）", () => {
     render(
       <RightPanel view={view} onOpenTopic={() => {}} pool={{ ok: false, reason: "不可用X" }} />,
     );
-    expect(screen.getByTestId("pool-status").textContent).toBe("编码池状态：不可用X");
+    expect(screen.getByTestId("pool-status").textContent).toBe("不可用X");
     cleanup();
     render(<RightPanel view={view} onOpenTopic={() => {}} />);
     expect(screen.getByTestId("pool-status").textContent).toContain("并发 ");
