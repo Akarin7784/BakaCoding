@@ -104,6 +104,15 @@ function fakeBackend(over: Partial<BackendHandle> = {}): BackendHandle {
       },
     ]),
     removeProject: vi.fn(async () => ({ removed: true })),
+    // UI-07e：ledger:summary
+    ledgerStore: vi.fn(() => ({
+      totalsByProject: async () => ({
+        total_micro_usd: 1_500_000,
+        resubmit_micro_usd: 0,
+        entries: 2,
+        by_role: { coder: 1_500_000, sub_agent: 0, reviewer: 0, supervisor: 0 },
+      }),
+    })),
     ...over,
   };
   return new Proxy(base as BackendHandle, {
@@ -411,6 +420,20 @@ describe("handler 参数：第一个是 event，渲染进程参数从第二个�
     await expect(api.removeProject!("p-1")).resolves.toEqual({ ok: true, removed: true });
     expect(backend.removeProject).toHaveBeenCalledWith("p-1");
     await expect(api.openProjectFolder!("p-1")).resolves.toEqual({ ok: true });
+    // UI-07e：设置 › 预算 各项目累计花费（无参数；不带路径）
+    await expect(api.getLedgerSummary!()).resolves.toEqual({
+      ok: true,
+      projects: [
+        {
+          project_id: "p-1",
+          name: "demo",
+          total_micro_usd: 1_500_000,
+          resubmit_micro_usd: 0,
+          entries: 2,
+          by_role: { coder: 1_500_000, sub_agent: 0, reviewer: 0, supervisor: 0 },
+        },
+      ],
+    });
     // 以 IPC_CHANNELS 为准：新增 invoke 通道而这里没往返、或主进程没注册，都会失败
     expect([...seen].sort()).toEqual(INVOKE_CHANNELS);
     expect([...handlers.keys()].sort()).toEqual(INVOKE_CHANNELS);
@@ -534,6 +557,7 @@ describe("preload 暴露的只读 API", () => {
       "getAbout",
       "getBackendStatus",
       "getBudgetStatus",
+      "getLedgerSummary",
       "getModelConfig",
       "getPendingHighRisk",
       "getSettings",

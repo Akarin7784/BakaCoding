@@ -17,6 +17,13 @@ export const BUDGET_COPY = {
     `每日预算低于今天已花费（${spent}）：可以保存，但保存并重载后今天就算超出预算。`,
   // UI-07d：07b / 07c 统一只读提示
   readonlyHint: EXTERNAL_CONFIG_READONLY_HINT,
+  // UI-07e：§4.6「本项目已花费（来自台账）」
+  spendTitle: "本项目已花费（来自台账）",
+  spendHint: "每个已导入项目全部时间的累计花费，含复投；已移除的项目不显示。今天已花费见上方。",
+  spendLoading: "读取项目花费中…",
+  spendFailed: "读取项目花费失败，请重试。",
+  spendEmpty: "还没有已导入的项目。",
+  spendResubmit: (usd: string) => `（含复投 $${usd}）`,
 } as const;
 
 /** 微美元 → 「$1.5」这样的美元文本（去掉多余的 0，最多 6 位小数） */

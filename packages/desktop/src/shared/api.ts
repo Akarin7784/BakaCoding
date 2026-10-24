@@ -9,7 +9,7 @@ import type {
   UserMessage,
 } from "@bakacoding/supervisor";
 import type { Project } from "@bakacoding/config-budget";
-import type { BakaEvent, TicketStatus } from "@bakacoding/types";
+import type { BakaEvent, Role, TicketStatus } from "@bakacoding/types";
 
 /** IPC 通道名。 */
 export const IPC_CHANNELS = {
@@ -68,6 +68,11 @@ export const IPC_CHANNELS = {
    * （原样取自 3 的 budgetState()，不另算；只读后端时为 null）；无参数。报错已脱敏、不带路径。
    */
   budgetStatus: "bakacoding:budget:status",
+  /**
+   * invoke：设置 › 预算（UI-07e）：每个已导入项目全部时间的累计花费（3 的 ledgerSummary，来自台账）；
+   * 已移除的项目不返回，不带路径、不带当日花费（当日只看 budget:status）；无参数。
+   */
+  ledgerSummary: "bakacoding:ledger:summary",
   /** invoke：界面主题偏好同步给主进程，设置 nativeTheme.themeSource 和标题栏按钮颜色（UI-02）。 */
   windowTheme: "bakacoding:window:theme",
   /** invoke：同一仓库停掉再起来；有在途单则排队，空闲后自动执行（T-093）。 */
@@ -115,6 +120,18 @@ export type DesktopProjectListResult =
 /** project:remove 的结果：removed:false = 记录本来就不在；失败 reason 为固定文案，不带路径。 */
 export type DesktopProjectRemoveResult =
   { ok: true; removed: boolean } | { ok: false; reason: string };
+/** 设置 › 预算「本项目已花费（来自台账）」的一行（UI-07e）：只有 id、名称和累计数，不带路径。 */
+export interface DesktopProjectSpendRow {
+  project_id: string;
+  name: string;
+  total_micro_usd: number;
+  resubmit_micro_usd: number;
+  entries: number;
+  by_role: Record<Role, number>;
+}
+/** ledger:summary 的结果；后端只读或抛错时 ok:false，reason 为固定文案。 */
+export type DesktopLedgerSummaryResult =
+  { ok: true; projects: DesktopProjectSpendRow[] } | { ok: false; reason: string };
 /** project:open-folder 的结果；失败 reason 为固定文案，不带路径。 */
 export type DesktopProjectOpenFolderResult = { ok: true } | { ok: false; reason: string };
 
@@ -596,6 +613,8 @@ export interface BakaDesktopApi {
   saveModelConfig?(input: DesktopModelSaveInput): Promise<DesktopModelSaveResult>;
   /** 设置 › 预算（UI-07c）：每日预算设置和今天已花费；旧版 preload / 测试假 API 可以没有。 */
   getBudgetStatus?(): Promise<DesktopBudgetStatusResult>;
+  /** 设置 › 预算（UI-07e）：各项目累计花费（来自台账）；旧版 preload / 测试假 API 可以没有。 */
+  getLedgerSummary?(): Promise<DesktopLedgerSummaryResult>;
   /** 设置 › 预算（UI-07c）：同 settings:save，只写 config/models.json 的 budget 段再重载。 */
   saveBudget?(input: DesktopBudgetSaveInput): Promise<DesktopModelSaveResult>;
   /** 主题偏好同步给主进程（UI-02）；旧版 preload / 测试假 API 可以没有。 */

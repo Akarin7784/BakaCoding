@@ -3,7 +3,9 @@
 // 所有失败一律固定文案，repo_path 不进返回的 reason、不写日志。
 import { statSync } from "node:fs";
 import path from "node:path";
+import { ledgerSummary } from "@bakacoding/config-budget";
 import type {
+  DesktopLedgerSummaryResult,
   DesktopProjectListResult,
   DesktopProjectOpenFolderResult,
   DesktopProjectRemoveResult,
@@ -20,10 +22,12 @@ export const PROJECT_TEXT = {
   badPath: "记录的仓库路径不是绝对路径",
   missing: "仓库文件夹不存在或不是文件夹",
   openFailed: "打开文件夹失败",
+  ledgerReadonly: "后端只读，读不到台账",
+  ledgerFailed: "读取项目花费失败",
 } as const;
 
 export interface ProjectListDeps {
-  backend: Pick<BackendHandle, "listProjects" | "removeProject" | "status">;
+  backend: Pick<BackendHandle, "listProjects" | "removeProject" | "status" | "ledgerStore">;
   /** main 注入 shell.openPath；返回空串表示成功，否则是错误信息（不透出） */
   openPath(p: string): Promise<string>;
   /** 测试注入；默认 statSync(p).isDirectory()，不存在为 false */
@@ -63,6 +67,35 @@ export function projectListHandlers(deps: ProjectListDeps) {
   };
   return {
     list,
+    /**
+     * UI-07e：ledger:summary。对 listProjects() 里的每个项目调 3 的 ledgerSummary（已移除的项目不在列表里，
+     * 也就不显示）；只拷 id、名称和累计字段，不带 repo_path、不带当日花费。
+     */
+    async summary(): Promise<DesktopLedgerSummaryResult> {
+      const ledger = deps.backend.ledgerStore();
+      const rows = deps.backend.listProjects();
+      if (!ledger || !rows) return { ok: false, reason: PROJECT_TEXT.ledgerReadonly };
+      try {
+        const projects = [];
+        for (const r of rows) {
+          const { project } = await ledgerSummary(ledger, { project_id: r.project_id });
+          projects.push({
+            project_id: r.project_id,
+            name: r.name,
+            total_micro_usd: project.total_micro_usd,
+            resubmit_micro_usd: project.resubmit_micro_usd,
+            entries: project.entries,
+            by_role: { ...project.by_role },
+          });
+        }
+        return { ok: true, projects };
+      } catch (e) {
+        warn(
+          `读取项目花费失败（${e instanceof Error ? e.name.replace(/[^A-Za-z0-9_]/g, "") : "Error"}）`,
+        );
+        return { ok: false, reason: PROJECT_TEXT.ledgerFailed };
+      }
+    },
     async remove(id: unknown): Promise<DesktopProjectRemoveResult> {
       if (!validId(id)) return { ok: false, reason: PROJECT_TEXT.invalidId };
       if (deps.backend.status().mode !== "live")

@@ -22,6 +22,7 @@ function deps(over: Partial<ProjectListDeps> = {}) {
         row("p-4", ""),
       ]),
       removeProject: vi.fn(async () => ({ removed: true })),
+      ledgerStore: vi.fn(() => null),
     },
     openPath: vi.fn(async () => ""),
     isDirectory: vi.fn(() => true),
