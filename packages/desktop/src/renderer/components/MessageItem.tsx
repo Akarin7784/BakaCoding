@@ -24,6 +24,8 @@ export interface MessageItemProps {
   onRetrySplit?: () => void;
   /** UI-05f：dispatched「查看需求」；不给或没有需求号就不显示按钮 */
   onOpenRequirement?: (requirement_id: string) => void;
+  /** UI-05g：需求名（第一张单原文第一行，先脱敏再截 80 字）；不给或取不到就显示需求号 */
+  requirementNameOf?: (requirement_id: string) => string;
 }
 
 export function MessageItem({
@@ -33,6 +35,7 @@ export function MessageItem({
   onPickProject,
   onRetrySplit,
   onOpenRequirement,
+  requirementNameOf,
 }: MessageItemProps) {
   return (
     <div data-testid="chat-reply" data-kind={reply.kind} className="flex gap-2 text-sm">
@@ -46,6 +49,7 @@ export function MessageItem({
           onPickProject={onPickProject}
           onRetrySplit={onRetrySplit}
           onOpenRequirement={onOpenRequirement}
+          requirementNameOf={requirementNameOf}
         />
       </div>
     </div>
@@ -59,8 +63,12 @@ function KindExtra({
   onPickProject,
   onRetrySplit,
   onOpenRequirement,
+  requirementNameOf,
 }: Required<Pick<MessageItemProps, "reply" | "projects" | "disabled">> &
-  Pick<MessageItemProps, "onPickProject" | "onRetrySplit" | "onOpenRequirement">) {
+  Pick<
+    MessageItemProps,
+    "onPickProject" | "onRetrySplit" | "onOpenRequirement" | "requirementNameOf"
+  >) {
   switch (reply.kind) {
     case "answer":
       return null;
@@ -111,7 +119,8 @@ function KindExtra({
           </div>
           {reply.requirement_id && (
             <p className="text-xs text-muted-foreground" data-testid="chat-requirement">
-              {CHAT_COPY.requirement} {reply.requirement_id}
+              {CHAT_COPY.requirement}{" "}
+              {requirementNameOf?.(reply.requirement_id) || reply.requirement_id}
             </p>
           )}
           <p className="text-xs">{CHAT_COPY.ticketCount(ids.length)}</p>
