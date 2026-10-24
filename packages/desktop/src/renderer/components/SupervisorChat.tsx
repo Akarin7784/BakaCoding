@@ -3,7 +3,6 @@ import { AlertCircle, Download, FolderOpen, Loader2, Send, Settings } from "luci
 import type { BakaDesktopApi, DesktopSupervisorMessage } from "../../shared/api";
 import {
   CHAT_HISTORY_PAGE,
-  replyMessageId,
   storedReply,
   supervisorChatStore,
   type ChatItem,
@@ -116,7 +115,8 @@ export function SupervisorChat({
       const r = await api.supervisorChat({ text, message_id, ...(project_id && { project_id }) });
       item = r.ok
         ? {
-            message_id: replyMessageId(message_id),
+            // T-149：用 10 返回的回复自身 id（T-148）和历史去重，不假定 id 格式
+            message_id: r.reply.message_id,
             project_id: r.reply.project_id ?? null,
             role: "supervisor",
             kind: r.reply.kind,

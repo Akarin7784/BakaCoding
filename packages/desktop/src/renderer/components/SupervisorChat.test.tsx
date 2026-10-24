@@ -144,6 +144,37 @@ describe("SupervisorChat 接 supervisor:chat（T-071）", () => {
 });
 
 describe("SupervisorChat 历史与重试（UI-04a）", () => {
+  it("实时回复按 reply.message_id 和历史去重，不假定 `<id>-r`（T-149）", async () => {
+    const getSupervisorHistory = vi.fn(async () => ({
+      ok: true as const,
+      messages: [
+        {
+          message_id: "srv-7f3a",
+          project_id: null,
+          role: "supervisor" as const,
+          kind: "answer" as const,
+          content: "已落库的回复",
+          requirement_id: null,
+          ticket_ids: [],
+          created_at: 1,
+        },
+      ],
+    }));
+    const supervisorChat = vi.fn(async (): Promise<DesktopChatResult> => ({
+      ok: true,
+      reply: { kind: "answer", text: "已落库的回复", message_id: "srv-7f3a" },
+    }));
+    render(
+      <SupervisorChat store={new ChatStore()} api={{ supervisorChat, getSupervisorHistory }} />,
+    );
+    expect(await screen.findByText("已落库的回复")).toBeTruthy();
+    type("再问一次");
+    await waitFor(() => expect(supervisorChat).toHaveBeenCalledTimes(1));
+    await screen.findByText("再问一次");
+    await waitFor(() => expect(screen.queryByLabelText("发送")).toBeTruthy());
+    expect(screen.getAllByTestId("chat-reply")).toHaveLength(1);
+  });
+
   it("挂载时取首屏 50 条历史并显示；主管消息按存储的 kind 渲染", async () => {
     const getSupervisorHistory = vi.fn(async () => ({
       ok: true as const,

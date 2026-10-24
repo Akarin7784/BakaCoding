@@ -32,9 +32,6 @@ export interface ChatSnapshot {
   loadingOlder: boolean;
 }
 
-/** 10 给主管回复的 message_id：用户消息 id 加 `-r`（T-092），界面据此和历史去重。 */
-export const replyMessageId = (userMessageId: string): string => `${userMessageId}-r`;
-
 /** 主管回复在历史里的展示形状（kind 为 null 的旧记录按「回答」显示）。 */
 export function storedReply(m: DesktopSupervisorMessage): ChatReply {
   return {
