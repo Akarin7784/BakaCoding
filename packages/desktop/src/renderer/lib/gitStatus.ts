@@ -1,15 +1,11 @@
 // UI-06c：右面板 Git 区文案。
 import type {
   DesktopGitStatusResult,
-  DesktopIntegrationReviewResult,
   DesktopMainMergeResult,
   DesktopSyncState,
+  IntegrationBlockCode,
 } from "../../shared/api.js";
 
-type IntegrationBlockReason = Extract<
-  Extract<DesktopIntegrationReviewResult, { ok: true }>["review"],
-  { result: "blocked" }
->["reasons"][number];
 import { describeSyncState, formatClock, SYNC_AUTH_STOPPED_HINT } from "./sync-labels";
 
 export const GIT_COPY = {
@@ -74,8 +70,8 @@ export const INTEGRATION_REVIEW_COPY = {
   failed: "审查集成分支失败",
 } as const;
 
-/** IntegrationBlockReason.code → 固定文案（穷举）。 */
-export const INTEGRATION_BLOCK_TEXT: Record<IntegrationBlockReason["code"], string> = {
+/** 原因码（IntegrationBlockCode） → 固定文案（穷举）。 */
+export const INTEGRATION_BLOCK_TEXT: Record<IntegrationBlockCode, string> = {
   nothing_to_merge: "集成分支没有新改动，不用审查",
   tickets_in_flight: "还有需求单在进行中，等它们完成后再审查",
   ci_failed: "CI 没通过，修好后再审查",
@@ -85,8 +81,8 @@ export const INTEGRATION_BLOCK_TEXT: Record<IntegrationBlockReason["code"], stri
 };
 
 /** blocked 的展示：每个原因一条固定文案，去重；没有原因时给通用一句。 */
-export function integrationBlockedLines(reasons: readonly IntegrationBlockReason[]): string[] {
-  const lines = [...new Set(reasons.map((r) => INTEGRATION_BLOCK_TEXT[r.code]).filter(Boolean))];
+export function integrationBlockedLines(codes: readonly IntegrationBlockCode[]): string[] {
+  const lines = [...new Set(codes.map((c) => INTEGRATION_BLOCK_TEXT[c]).filter(Boolean))];
   return lines.length ? lines : [INTEGRATION_BLOCK_TEXT.review_failed];
 }
 

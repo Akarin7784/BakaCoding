@@ -7,6 +7,7 @@ import type {
   DesktopGitStatusResult,
   DesktopIntegrationReviewResult,
   DesktopMainMergeResult,
+  IntegrationBlockCode,
 } from "../../shared/api";
 import { INTEGRATION_BLOCK_TEXT, INTEGRATION_REVIEW_COPY, MAIN_MERGE_COPY } from "../lib/gitStatus";
 import { READONLY_COPY } from "../lib/readonly";
@@ -23,25 +24,12 @@ const st: DesktopGitStatusResult = {
   ahead: 3,
   main_merge: "user",
 };
-const OK: DesktopIntegrationReviewResult = {
+const OK: DesktopIntegrationReviewResult = { ok: true, review: { result: "ok", head_sha: SHA } };
+/** 原始 10 的原因（含单号、链接等）→ 主进程只传原因码；渲染端只拿得到码。 */
+type RawReason = { code: IntegrationBlockCode } & Record<string, unknown>;
+const blocked = (reasons: readonly RawReason[]): DesktopIntegrationReviewResult => ({
   ok: true,
-  review: {
-    result: "ok",
-    pr_id: "pr-int",
-    head_sha: SHA,
-    base_sha: "b".repeat(40),
-    summary: "原文 /home/secret 不该显示",
-    ci: "green",
-  },
-};
-const blocked = (
-  reasons: Extract<
-    Extract<DesktopIntegrationReviewResult, { ok: true }>["review"],
-    { result: "blocked" }
-  >["reasons"],
-): DesktopIntegrationReviewResult => ({
-  ok: true,
-  review: { result: "blocked", pr_id: null, head_sha: null, reasons },
+  review: { result: "blocked", reasons: reasons.map((r) => r.code) },
 });
 const panel = (p: Partial<Parameters<typeof RightPanel>[0]> = {}) =>
   render(

@@ -689,9 +689,9 @@ describe("UI-03：日志里的错误与 backendErrorDetail 同一套脱敏", () 
         };
       },
     });
-    await expect(be.integrationReview({ project_id: "P-9" })).resolves.toEqual({
+    await expect(be.integrationReview({ project_id: "P-9" })).resolves.toStrictEqual({
       ok: true,
-      review,
+      review: { result: "ok", head_sha: SHA },
     });
     expect(reviewCalls).toEqual([{ project_id: "P-9" }]);
     await expect(be.mainMerge({ head_sha: SHA.toUpperCase() })).resolves.toEqual({

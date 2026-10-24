@@ -744,14 +744,7 @@ describe("UI-06c：右面板 Git 区（git:status + 同步状态）", () => {
     const SHA = "c".repeat(40);
     const reviewIntegration = vi.fn(async () => ({
       ok: true as const,
-      review: {
-        result: "ok" as const,
-        pr_id: "pr-int",
-        head_sha: SHA,
-        base_sha: "b".repeat(40),
-        summary: "可以",
-        ci: "green" as const,
-      },
+      review: { result: "ok" as const, head_sha: SHA },
     }));
     const mergeMain = vi.fn(async () => ({ ok: true as const, result: "notified" as const }));
     Object.assign(api, { reviewIntegration, mergeMain });
