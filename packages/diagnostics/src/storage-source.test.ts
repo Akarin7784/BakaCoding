@@ -7,7 +7,7 @@ import { CREDENTIAL_CASES } from "@bakacoding/config-budget";
 import { openStorage, type Storage } from "@bakacoding/storage";
 import type { BakaEvent, DiagnosticsSource } from "@bakacoding/types";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildPackage, exportPackage, readPackage, readZip } from "./index.js";
+import { buildPackage, exportPackage, FullRedactor, readPackage, readZip } from "./index.js";
 
 const FAKE_SK = `sk-${"FAKEstorage0000".repeat(2)}`;
 const FAKE_IP = "10.20.30.40";
@@ -95,7 +95,8 @@ function ticket(ticket_id: string, requirement_id: string, created_at: string, p
     base_commit: SHA,
     permission_list: [{ glob: "src/**", level: "rw" }],
     context_snippets: [
-      { path: "src/a.ts", content: `// 服务器 ${FAKE_IP}\n` },
+      // T-159：群消息原文不再进包，home 路径的完整脱敏改由上下文片段（代码，照常进包）覆盖
+      { path: "src/a.ts", content: `// 服务器 ${FAKE_IP}，日志在 /home/${FAKE_HOME_USER}/logs\n` },
       { path: "src/.env", content: "SHOULD_NOT_EXPORT=1\n" },
     ],
     ci_checks: [{ name: "ci", conclusion: "success" }],
@@ -279,11 +280,10 @@ describe("端到端：从存储导出诊断包", () => {
     }
     // 事件确实进了包（不是靠没导出来"通过"）
     const pkg = await readPackage(zip_path);
-    expect(pkg.manifest.schema).toBe("bakacoding-diag/v1.1");
+    expect(pkg.manifest.schema).toBe("bakacoding-diag/v1.2");
     const msg = pkg.events.find((e) => e.type === "group_message");
-    expect(msg?.type === "group_message" && msg.payload.content).toBe(
-      "部署在 [REDACTED:ipv4]，日志在 [REDACTED:home_path]/logs",
-    );
+    // T-159：群消息原文不进包，只剩摘要
+    expect(msg?.payload.content).toMatchObject({ len: expect.any(Number) });
     // 落库时轻脱敏已去掉 sk- key；内网 IP 和 home 路径只在导出的完整脱敏里去掉，并计入报告
     expect(pkg.redaction_report.ipv4).toBeGreaterThan(0);
     expect(pkg.redaction_report.home_path).toBeGreaterThan(0);
@@ -431,28 +431,15 @@ describe("凭据 URL 各种写法不进诊断包（T-060）", () => {
     ).toHaveLength(2);
   });
 
-  it.each(ALLOW)("%s：放行的写法不被当成凭据 URL", async (_label, text) => {
-    storage.ingest(
-      ev("escalated", "2026-10-10T01:00:00.999Z", "R-1", "T-2", { detail: `push 失败：${text}` }),
-    );
-    const { zip_path } = await exportT2();
-    const pkg = await readPackage(zip_path);
-    const esc = pkg.events.find((e) => e.type === "escalated" && e.ticket_id === "T-2");
-    const detail = esc?.type === "escalated" ? (esc.payload.detail ?? "") : "";
+  // T-159：escalated.detail 进包时已换成摘要，放行规则直接对导出用的 FullRedactor 验证。
+  it.each(ALLOW)("%s：放行的写法不被当成凭据 URL", (_label, text) => {
+    const detail = new FullRedactor().text(`push 失败：${text}`);
     expect(detail.startsWith("push 失败：")).toBe(true);
     expect(detail).not.toContain("[REDACTED:url_credentials]");
   });
 
-  it("40 位十六进制用户名由 url_credentials 规则拦下，不是碰巧被邮箱规则抹掉", async () => {
-    storage.ingest(
-      ev("escalated", "2026-10-10T01:00:00.999Z", "R-1", "T-2", {
-        detail: `push 失败：https://${HEX40}@github.com/o/r`,
-      }),
-    );
-    const { zip_path } = await exportT2();
-    const pkg = await readPackage(zip_path);
-    const esc = pkg.events.find((e) => e.type === "escalated" && e.ticket_id === "T-2");
-    const detail = esc?.type === "escalated" ? (esc.payload.detail ?? "") : "";
+  it("40 位十六进制用户名由 url_credentials 规则拦下，不是碰巧被邮箱规则抹掉", () => {
+    const detail = new FullRedactor().text(`push 失败：https://${HEX40}@github.com/o/r`);
     expect(detail).not.toContain(HEX40);
     expect(detail).toContain("[REDACTED:url_credentials]");
     expect(detail).not.toContain("[REDACTED:email]");

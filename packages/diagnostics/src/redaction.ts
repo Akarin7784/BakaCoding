@@ -1,4 +1,5 @@
 import { redact } from "@bakacoding/config-budget";
+import { isIssuedDigest } from "./digest.js";
 import { PATH_RULES, redactPaths, type PathRule } from "./path-redaction.js";
 import type { RedactionReport } from "./schema.js";
 
@@ -59,6 +60,8 @@ export class FullRedactor {
   }
 
   private walk(v: unknown): unknown {
+    // T-159：本次导出生成的原文摘要只含码点数和 hmac，原样保留，避免被规则误改。
+    if (isIssuedDigest(v)) return { len: v.len, hmac: v.hmac };
     if (typeof v === "string") return this.text(v);
     if (Array.isArray(v)) return v.map((x) => this.walk(x));
     if (v !== null && typeof v === "object") {

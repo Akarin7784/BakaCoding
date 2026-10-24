@@ -168,10 +168,12 @@ describe("T-143：诊断包去掉 repo_path", () => {
     expect(hasKeyDeep(pkg.manifest, "repo_path")).toBe(false);
     // 其余字段照常保留。
     const gm = pkg.events[1]!.payload as unknown as {
-      content: string;
+      content: unknown;
       nested: { list: { keep: string }[]; deeper: { a: { b: object } } };
     };
-    expect(gm.content).toBe("派单");
+    // T-159：content 是摘要（2 个码点），不是原文。
+    expect(gm.content).toMatchObject({ len: 2 });
+    expect(JSON.stringify(gm.content)).not.toContain("派单");
     expect(gm.nested.list[0]).toEqual({ keep: "保留" });
     expect(gm.nested.deeper.a.b).toEqual({});
     expect(pkg.events[0]!.payload).toMatchObject({ project_id: PROJECT, name: "demo" });

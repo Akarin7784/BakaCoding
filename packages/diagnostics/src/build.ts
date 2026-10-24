@@ -1,8 +1,10 @@
 import type { BakaEvent, Diff, DiffFile } from "@bakacoding/types";
+import { Digester, EVENT_TEXT_FIELDS, TEXT_DIGEST_NOTE } from "./digest.js";
 import { FullRedactor, safeZipPath } from "./redaction.js";
 import {
   DIAG_SCHEMA,
   type CostSummary,
+  type DiagEvent,
   type DiagEventFilter,
   type DiagManifest,
   type DiagPackage,
@@ -149,7 +151,8 @@ class RawFiles {
 }
 
 /**
- * 组装内存中的诊断包：取数、按范围过滤、完整脱敏、统计。所有字符串（含原始文件和路径）都过 redact(…, "full")。
+ * 组装内存中的诊断包：取数、按范围过滤、原文摘要、完整脱敏、统计。所有字符串（含原始文件和路径）都过 redact(…, "full")。
+ * 对话 / 提示词 / 模型输出 / 评审文本（EVENT_TEXT_FIELDS、ticket_text 等）在脱敏前换成 TextDigest，原文不进包（T-159）。
  */
 export async function buildPackage(opts: ExportOptions, deps: ExportDeps): Promise<DiagPackage> {
   validateOptions(opts);
@@ -165,6 +168,8 @@ export async function buildPackage(opts: ExportOptions, deps: ExportDeps): Promi
     .sort((a, b) => a.ticket_id.localeCompare(b.ticket_id));
 
   const r = new FullRedactor();
+  // T-159：对话 / 提示词等原文先在脱敏前取摘要，原文不进包；salt 只在这个对象里，导出完即丢。
+  const dg = new Digester();
   const raw = new RawFiles(r);
   const costs = costsFromEvents(events);
   let excluded_context_env_files = 0;
@@ -180,7 +185,15 @@ export async function buildPackage(opts: ExportOptions, deps: ExportDeps): Promi
           ...rd.diff,
           files: rd.diff.files.map((f) => ({ ...f, patch: "" })),
         };
-        return { ...rd, diff, diff_file };
+        return {
+          ...rd,
+          fail_reasons: rd.fail_reasons.map((x) => dg.digest(x)),
+          ...(rd.review_comments !== undefined
+            ? { review_comments: dg.digest(rd.review_comments) }
+            : {}),
+          diff,
+          diff_file,
+        };
       });
     // .env 类上下文文件整个不进包，只计数。
     const context_files: string[] = [];
@@ -193,8 +206,9 @@ export async function buildPackage(opts: ExportOptions, deps: ExportDeps): Promi
       ticket_id: tid,
       requirement_id: t.requirement_id,
       created_at: t.created_at,
-      ticket_text: t.ticket_text,
-      decomposition_summary: t.decomposition_summary,
+      ticket_text: dg.digest(t.ticket_text),
+      decomposition_summary:
+        t.decomposition_summary === undefined ? undefined : dg.digest(t.decomposition_summary),
       status: t.status,
       outcome: t.outcome,
       base_commit: t.base_commit,
@@ -234,7 +248,11 @@ export async function buildPackage(opts: ExportOptions, deps: ExportDeps): Promi
     }
   }
 
-  const redactedEvents = events.map((e) => r.deep(e));
+  const redactedEvents: DiagEvent[] = events.map((e) => {
+    const keys = EVENT_TEXT_FIELDS[e.type];
+    const payload = keys ? dg.fields(e.payload, keys) : e.payload;
+    return r.deep({ ...e, payload } as DiagEvent);
+  });
   const redactedCosts = [...costs.values()].map((c) => r.deep(c));
   const created_at = (deps.now?.() ?? new Date()).toISOString();
   const manifestBody = r.deep({
@@ -245,6 +263,7 @@ export async function buildPackage(opts: ExportOptions, deps: ExportDeps): Promi
     include_full_repo,
     created_at,
     redaction: "full" as const,
+    text_digest: TEXT_DIGEST_NOTE,
     excluded_env_files,
     excluded_context_env_files,
     stats: computeStats(records),

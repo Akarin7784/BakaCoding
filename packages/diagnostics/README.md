@@ -8,14 +8,19 @@
 - 默认只带每轮 diff 和上下文片段；`include_full_repo: true` 才带 `repo/`。
 - `.env` 类文件默认整个不进包：任何一段路径是 `.env`、`.env.*`、`.envrc` 或 `.envrc.*`（大小写不敏感）。完整仓库和上下文片段都适用；manifest 只记个数（完整仓库 `excluded_env_files`，上下文片段 `excluded_context_env_files`），不记路径。
 - `diff_file`、`context_files`、`manifest.files` 与 zip 条目名逐字一致，不做二次脱敏。
-- `toSweBenchJsonl(package)`：只转人工补填过 `eval_task` 的单。
+- **诊断包不含对话和提示词原文**（T-159，schema v1.2）。下列字段在完整脱敏之前换成摘要 `{ "len": 码点数, "hmac": "HMAC-SHA256(salt, UTF-8 原文) 的十六进制" }`：
+  - 事件：`call_completed` 的 `prompt` / `output`（成功、失败、取消的调用都算）、`group_message.content`、`interface_changed.summary`、`escalated.detail`、`ticket_warning.detail`、`write_scope_requested.reason` / `write_scope_denied.reason`（清单见 `digest.ts` 的 `EVENT_TEXT_FIELDS`）；
+  - 单子：`ticket_text`、`decomposition_summary`、每轮 `fail_reasons` 的每一条、`review_comments`。
+  - salt 每个包导出时 `crypto.randomBytes(32)` 生成，只在内存里，用完即弃，**不写进包**；同一包内同文同 hmac（可看出两处是不是同一段话），不同包之间不能对照。`manifest.text_digest` 写明这一方式，不含 salt。
+  - 照常保留：diff、上下文片段、完整仓库（代码）、路径和 glob、CI、`eval_task`、`project_created.name`、错误码、各种 id 和枚举。没有带原文导出的选项。
+- `toSweBenchJsonl(package)`：只转人工补填过 `eval_task` 的单。`problem_statement` 一律为空串：包里没有题面，题面须由用户从自己本地的日志补上；复现同样需要用户自己的本地日志。
 
-zip 结构（schema `bakacoding-diag/v1.1`；`readPackage` 也能读 `bakacoding-diag/v1` 旧包）：
+zip 结构（schema `bakacoding-diag/v1.2`；`readPackage` 也能读 `bakacoding-diag/v1` / `v1.1` 旧包，旧包的文本字段仍是字符串）：
 
 ```
-manifest.json            schema、项目、范围、文件清单、统计
-events.jsonl             范围内的事件
-tickets.jsonl            每张单：原文、拆单摘要、结果标签、权限清单、各轮评审、合并结果、CI、费用、eval_task
+manifest.json            schema、项目、范围、文件清单、统计、text_digest 说明
+events.jsonl             范围内的事件（对话 / 提示词等文本字段为摘要）
+tickets.jsonl            每张单：需求原文和拆单摘要（均为摘要）、结果标签、权限清单、各轮评审、合并结果、CI、费用、eval_task
 costs.jsonl              按单汇总的费用（复投单列）
 redaction_report.json    规则名 → 命中次数
 raw/<ticket>/r<n>.diff   每轮 diff

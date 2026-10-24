@@ -28,6 +28,9 @@ function finalPatch(pkg: DiagPackage, t: DiagTicket): string {
 /**
  * 把诊断包转成 SWE-bench 风格 JSONL：只转带 eval_task 的单（标记进评测集、人工补填过的单）。
  * 输入是已脱敏的包，输出不会再引入原文。
+ *
+ * T-159：诊断包不含对话和提示词原文，ticket_text 只有摘要，所以 problem_statement 一律为空串。
+ * 题面须由用户从自己本地的日志（本机存储里的需求单原文）补上；复现也需要用户自己的本地日志。
  */
 export function toSweBenchJsonl(pkg: DiagPackage): string {
   const repo = pkg.manifest.repo ?? pkg.manifest.project_id;
@@ -39,7 +42,8 @@ export function toSweBenchJsonl(pkg: DiagPackage): string {
         instance_id: `${pkg.manifest.project_id}__${t.ticket_id}`,
         repo,
         base_commit: t.base_commit,
-        problem_statement: t.ticket_text,
+        // 题面不在包里：须由用户从本地日志补填（见上方说明）。
+        problem_statement: "",
         version: "",
         patch: finalPatch(pkg, t),
         test_patch: task.test_patch ?? "",
