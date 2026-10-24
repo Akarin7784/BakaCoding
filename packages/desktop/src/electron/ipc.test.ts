@@ -21,6 +21,7 @@ import {
   serveSupervisorChat,
   serveSyncState,
   serveAbout,
+  serveModelSettings,
   serveWindowTheme,
   type IpcMainLike,
 } from "./ipc.js";
@@ -126,6 +127,18 @@ const SERVE: Record<string, (ipc: IpcMainLike, backend: BackendHandle) => () => 
   serveSupervisorChat: (ipc, backend) => serveSupervisorChat(ipc, backend),
   // UI-07a：设置 › 关于
   serveAbout: (ipc) => serveAbout(ipc, () => ({ version: "1.0.0", commit: "cbd3b41" })),
+  // UI-07b：设置 › 模型；仓库不存在，读 / 写都在形状检查后失败，链路测试只看往返
+  serveModelSettings: (ipc) =>
+    serveModelSettings(ipc, {
+      repoRoot: () => "/nonexistent-ui07b",
+      repoSource: () => "arg",
+      argv: [],
+      env: {},
+      running: () => 0,
+      reload: async () => ({ state: "reloaded" as const }),
+      writeConfig: async () => ({ ok: true as const }),
+      writePricing: async () => ({ ok: true as const }),
+    }),
   serveWindowTheme: (ipc) =>
     serveWindowTheme(ipc, { setThemeSource: (s) => s === "dark", applyTitleBar: () => {} }),
   serveBackendReload: (ipc, backend) =>
@@ -312,6 +325,13 @@ describe("handler 参数：第一个是 event，渲染进程参数从第二个�
     await expect(api.getSettings()).resolves.toMatchObject({ repo: "/repo", mode: "local" });
     // UI-07a：关于（无参数）
     await expect(api.getAbout!()).resolves.toMatchObject({ version: "1.0.0", commit: "cbd3b41" });
+    // UI-07b：设置 › 模型
+    await expect(api.getModelConfig!()).resolves.toMatchObject({ ok: false, code: "read_failed" });
+    await expect(api.saveModelConfig!({ form: {} as never, pricing: {} })).resolves.toMatchObject({
+      ok: false,
+      code: "invalid_input",
+      written: [],
+    });
     // UI-02：主题同步
     await expect(api.setWindowTheme!("dark")).resolves.toEqual({ ok: true, dark: true });
     // T-093：重载 / 重新连接（无参数）
@@ -484,6 +504,7 @@ describe("preload 暴露的只读 API", () => {
       "exportDiagnostics",
       "getAbout",
       "getBackendStatus",
+      "getModelConfig",
       "getPendingHighRisk",
       "getSettings",
       "getSnapshot",
@@ -503,6 +524,7 @@ describe("preload 暴露的只读 API", () => {
       "platform",
       "reconnectBackend",
       "reloadBackend",
+      "saveModelConfig",
       "secretStatus",
       "setSecret",
       "setWindowTheme",
