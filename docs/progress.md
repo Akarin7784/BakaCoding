@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`f823b8c` · main 上测试：123 个测试文件 / 2283（2281 过 + 2 skip） 个测试（Linux 全量；Windows 基线见 `docs/test-baseline.md`） · 更新日期：2026-10-24（UTC+8）
+> 上次更新时 main：`e018573` · main 上测试：124 个测试文件 / 2293 个测试（Linux 全量；Windows 基线见 `docs/test-baseline.md`） · 更新日期：2026-10-24（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -187,6 +187,7 @@ flowchart BT
 | T-135 | 模块 12：修 main `11fb8fe` 上一直红的 T-126 用例（`default-config.test.ts`）：原断言整个 IPC 响应不含临时仓库路径，但 `project.path` 本就是该路径；改为只断言 `r.note` 不带路径。只改测试，产品代码不变；反向检查：把 fs 报错 message 拼进 note，2 条用例变红。合入后 main `9de547e`，测试 122 个文件 / 2270（2268 过 + 2 skip） 个 | 12 | 已合入 | #175 | `9de547e` |
 | T-133 | 模块 2 / 8：接口变更说明持久化。2 新增 `setTicketField`（IMMEDIATE 事务只改 `fields` 一个键，单不存在 / fields 为 null 或损坏返回 false 不动数据）；8 的说明写进 `fields.interface_notes`（`storageTicketInterfaceNotes`），跨重启不丢，单条截到 4096 码点，编码在途到达的说明不被本轮清掉、已交付的不重复带；modules.md §2 / §8 / 组合根同步。合入后 main `bbc9df9`，测试 122 个文件 / 2281（2279 过 + 2 skip） 个 | 2、8 | 编排层开发 | 已合入 | #169 | `bbc9df9` |
 | T-129 | 模块 2：`openStorage` 迁移失败（如旧库重复 seq 升级 v2 中止）时先关数据库句柄再抛原错误，避免 Windows 上库文件被占用、临时目录删不掉；补 2 条用例（释放后能删目录、只读能打开旧库且停在 v1）。注：Linux 上句柄不阻止删文件，反向检查（去掉 `db.close()`）在 Linux 不变红，只在 Windows 有效。合入后 main `f823b8c`，测试 123 个文件 / 2283（2281 过 + 2 skip） 个 | 2 | 基础层开发 | 已合入 | #172 | `f823b8c` |
+| T-130 | 诊断面板：按工单/需求/时间范围导出、打开数据目录。合入后 main `e018573`，测试 124 个文件 / 2293 个 | 12 | 界面与诊断开发 | 已合入 | #173 | `e018573` |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
