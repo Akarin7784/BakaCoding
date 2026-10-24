@@ -11,6 +11,7 @@ export function usePendingHighRisk(
     ticket_id: string,
     pr_id: string,
     decision: "release" | "reject",
+    detail?: string,
   ) => Promise<{ ok: true } | { ok: false; code: string; message: string }>;
   live: boolean;
 } {
@@ -35,11 +36,11 @@ export function usePendingHighRisk(
   }, [api]); // initial 只在无 api 时作假数据；有 api 后以主进程推送为准
 
   const decide = useCallback(
-    async (ticket_id: string, pr_id: string, decision: "release" | "reject") => {
+    async (ticket_id: string, pr_id: string, decision: "release" | "reject", detail?: string) => {
       if (!api?.decideHighRisk) {
         return { ok: false as const, code: "unavailable", message: "高风险裁决不可用" };
       }
-      const r = await api.decideHighRisk(ticket_id, pr_id, decision);
+      const r = await api.decideHighRisk(ticket_id, pr_id, decision, detail);
       if (r.ok) return { ok: true as const };
       return { ok: false as const, code: r.code, message: r.message };
     },

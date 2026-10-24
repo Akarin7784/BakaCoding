@@ -128,7 +128,9 @@ describe("按钮（§5.3）", () => {
       /variant:\s*"danger"|variant=["']danger["']|bg-danger(?![\w-])/.test(readFileSync(f, "utf8")),
     );
     // UI-08：全局状态点「需要你处理」是红色实心小圆点（§4.8），不是按钮；浅红横幅底 bg-danger-soft 不算
+    // UI-05d：左栏项目行「需要你处理」红点（§4.4「左栏该需求显示红点」），同样是小圆点、不是按钮
     expect(users.map((f) => relative(RENDERER, f)).sort()).toEqual([
+      "components/Sidebar.tsx",
       "components/StatusDot.tsx",
       "components/ui/button.tsx",
       "components/ui/dialog.tsx",

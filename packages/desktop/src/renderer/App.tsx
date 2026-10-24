@@ -46,6 +46,7 @@ import { useLayout } from "./lib/useLayout";
 import { useShortcuts } from "./lib/shortcuts";
 import * as mock from "./mock/data";
 import { failureText } from "../shared/error-text";
+import { attentionOf } from "./lib/attention";
 import type {
   EscalationView,
   FlashCallSummary,
@@ -142,6 +143,9 @@ export function App(props: AppProps) {
     selection.kind === "project" && current
       ? highRisk.items.filter((i) => i.project_id === current.project.payload.project_id)
       : highRisk.items;
+
+  // UI-05d：左栏红点（高风险待裁决 / 有单上报）
+  const attention = useMemo(() => attentionOf(tickets, highRisk.items), [tickets, highRisk.items]);
 
   /** Ctrl+N：回到主管对话并把光标放进输入框（新需求只能在主管对话里提，§3） */
   const newRequirement = useCallback(() => {
@@ -286,6 +290,7 @@ export function App(props: AppProps) {
         }
         selection={selection}
         onSelect={select}
+        attention={attention.projects}
         collapsed={layout.sidebarCollapsed}
         onToggleCollapsed={layout.toggleSidebar}
         onNewRequirement={newRequirement}
@@ -337,6 +342,9 @@ export function App(props: AppProps) {
             tickets={tickets}
             events={events}
             api={api}
+            highRisk={highRisk.items}
+            onDecideHighRisk={highRisk.decide}
+            readonly={backendReadonly}
           />
         ) : selection.kind === "unattributed" ? (
           <UnattributedPanel

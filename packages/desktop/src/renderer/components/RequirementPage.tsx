@@ -4,11 +4,13 @@
 // - 单子进度：每张单一行 TicketStepper，当前状态只看快照 tickets；事件只给 stepper 打标记。
 // - 评审上限：settings:config-get 的 pipeline.resubmit_limits.review + 1（查证见 lib/reviewLimit.ts）。
 // - 时间线：按 requirement_id 聚合，相邻模型调用折叠成一行（lib/requirementTimeline.ts）。
-// 「查看需求」按钮、「⋯」菜单留给 05f；高风险卡片挪进来留给 05d（顶部高风险横条不动）。
+// - 高风险待办卡片（UI-05d）：本需求的单有待裁决高风险 PR 时，在单子进度上方显示；顶部高风险横条保留兜底。
+// 「查看需求」按钮、「⋯」菜单留给 05f。
 import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import type {
   BakaDesktopApi,
+  DesktopPendingHighRisk,
   DesktopRequirementDetailResult,
   TicketView,
   UiEvent,
@@ -19,7 +21,9 @@ import { redactForView } from "../lib/redact";
 import { buildTimeline, type TimelineItem } from "../lib/requirementTimeline";
 import { reviewResubmitLimitOf, reviewRoundLimit } from "../lib/reviewLimit";
 import { cn } from "../lib/utils";
+import { highRiskOfRequirement } from "../lib/attention";
 import { AgentIcon } from "./AgentIcon";
+import { RequirementHighRiskCards, type HighRiskDecide } from "./RequirementHighRiskCard";
 import { TicketStepper } from "./TicketStepper";
 import { Button } from "./ui/button";
 
@@ -124,6 +128,9 @@ export function RequirementPage({
   events,
   api,
   onEscalationAction,
+  highRisk = [],
+  onDecideHighRisk,
+  readonly = false,
 }: {
   requirementId: string;
   /** 快照里的需求单（页面自己按 requirement_id 过滤） */
@@ -132,6 +139,11 @@ export function RequirementPage({
   events: readonly UiEvent[];
   api?: Pick<BakaDesktopApi, "getRequirementDetail" | "getModelConfig"> | undefined;
   onEscalationAction?: (ticket_id: string) => void;
+  /** 全部待裁决高风险（页面自己按本需求的单号过滤） */
+  highRisk?: readonly DesktopPendingHighRisk[];
+  onDecideHighRisk?: HighRiskDecide;
+  /** 后端只读时禁用裁决按钮 */
+  readonly?: boolean;
 }) {
   const [detail, setDetail] = useState<DetailState>({ state: "loading" });
   const [resubmitLimit, setResubmitLimit] = useState(() => reviewResubmitLimitOf(null));
@@ -166,6 +178,10 @@ export function RequirementPage({
   const mine = useMemo(
     () => tickets.filter((t) => t.requirement_id === requirementId),
     [tickets, requirementId],
+  );
+  const myHighRisk = useMemo(
+    () => highRiskOfRequirement(requirementId, tickets, highRisk),
+    [requirementId, tickets, highRisk],
   );
   const timeline = useMemo(() => buildTimeline(requirementId, events), [requirementId, events]);
   const splitAt = fmtTime(mine.map((t) => t.created_at).sort()[0]);
@@ -210,6 +226,14 @@ export function RequirementPage({
               </p>
             )}
           </header>
+
+          {onDecideHighRisk && (
+            <RequirementHighRiskCards
+              items={myHighRisk}
+              disabled={readonly}
+              onDecide={onDecideHighRisk}
+            />
+          )}
 
           <section aria-label={C.tickets} className="space-y-1">
             <h3 className="text-xs font-medium text-muted-foreground">{C.tickets}</h3>
