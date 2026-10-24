@@ -50,9 +50,11 @@ export function readonlyDetailText(s: DesktopBackendStatus): string {
 /**
  * 只读原因对应的一键修复（UI-03，`docs/ui-design.md` §4.1）：按主进程给的错误码路由——
  * 组合根 RepoNotReadyError 的 `no_commits` / `no_main`（错误名必须对上），以及「不是 Git 仓库」的 `not_git`。
+ * T-113：嵌套仓库 `nested_repo` 也进准备页（git 项上给固定提示、不给初始化）；本仓库缺配置 / 配置不合法
+ * （`config_missing` / `config_invalid`）进准备页的「生成配置」。
  * 仓库来源是当前工作目录（或不明）时一律不给路由（见 repoSourceWritable）。
  */
-export type RepoFixRoute = "init_repo" | "initial_commit" | "create_main";
+export type RepoFixRoute = "init_repo" | "init_config" | "initial_commit" | "create_main";
 
 /**
  * 仓库来源能不能在界面里初始化 / 首次提交（UI-03a 评审 B1）：来源是当前工作目录（Windows 双击启动时是解压目录）
@@ -74,7 +76,8 @@ export function repoFixRoute(s: DesktopBackendStatus): RepoFixRoute | null {
 function rawRepoFixRoute(s: DesktopBackendStatus): RepoFixRoute | null {
   if (s.mode !== "readonly" || !s.error) return null;
   const { name, code } = s.error;
-  if (code === "not_git") return "init_repo";
+  if (code === "not_git" || code === "nested_repo") return "init_repo";
+  if (code === "config_missing" || code === "config_invalid") return "init_config";
   if (name !== "RepoNotReadyError") return null;
   if (code === "no_commits") return "initial_commit";
   if (code === "no_main") return "create_main";

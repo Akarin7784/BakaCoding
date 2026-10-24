@@ -11,7 +11,10 @@ import {
   listInitialCommitFiles as listInitialCommitFilesDefault,
   RepoFixError,
 } from "@bakacoding/app";
+import { CONFIG_FIX_TEXT, NESTED_REPO_REASON } from "../shared/config-text.js";
+import type { ConfigFixHandlers } from "./config-fix.js";
 import type {
+  DesktopConfigFixResult,
   DesktopGitIdentity,
   DesktopRepoSource,
   DesktopReloadResult,
@@ -46,6 +49,8 @@ export interface RepoFixDeps {
   /** 写操作成功后调（BackendSwitcher.reconnect，与只读横幅「重新连接」同一条路径） */
   reconnect(): Promise<DesktopReloadResult>;
   fns?: Partial<RepoFixFns>;
+  /** T-113：生成配置（repo:init-config）与 repo:check 里的配置状态；不给时 initConfig 回 unavailable、check 不带 config */
+  config?: ConfigFixHandlers;
 }
 
 /** 一次首次提交最多带的文件数（防止渲染进程塞超大数组）。 */
@@ -69,6 +74,13 @@ const FIX_CODES: ReadonlySet<string> = new Set<ModuleFixCode>([
   "timeout",
   "git_failed",
 ]);
+
+/** 嵌套仓库（T-113）：repo:init 主进程先查 checkRepo 就拒绝时回这一句（与 4 的 RepoFixError("nested_repo") 同一固定文案） */
+export const NESTED_REPO_FAILURE: DesktopRepoFixFailure = {
+  ok: false,
+  code: "nested_repo",
+  reason: NESTED_REPO_REASON,
+};
 
 /** 失败一律用 RepoFixError 的固定文案；不是 RepoFixError（或码不认识）的记成 git_failed，不带原始信息。 */
 export function repoFixFailure(e: unknown): DesktopRepoFixFailure {
@@ -155,6 +167,7 @@ export interface RepoFixHandlers {
   listInitialFiles(): Promise<DesktopRepoFilesResult>;
   initialCommit(arg: unknown): Promise<DesktopRepoFixResult>;
   createMain(): Promise<DesktopRepoFixResult>;
+  initConfig(arg: unknown): Promise<DesktopConfigFixResult>;
 }
 
 /** 五个通道的处理函数（不抛过 IPC）。写操作成功后 reconnect；reconnect 自己出错按 failed 回，修复本身仍算成功。 */
@@ -177,9 +190,20 @@ export function repoFixHandlers(deps: RepoFixDeps): RepoFixHandlers {
       try {
         const root = deps.repoRoot();
         const r = await fns.checkRepo(root);
+        // T-113：git 项过了才带配置状态（准备页顺序 git → 配置 → 提交）
+        const gitOk = r.items.find((i) => i.id === "git")?.ok === true;
+        let config;
+        if (gitOk && deps.config) {
+          try {
+            config = deps.config.inspect();
+          } catch {
+            config = undefined;
+          }
+        }
         return {
           ok: true,
           folder: repoFolderName(root),
+          ...(config && { config }),
           check: {
             items: r.items.map((i) => ({
               id: i.id,
@@ -203,6 +227,10 @@ export function repoFixHandlers(deps: RepoFixDeps): RepoFixHandlers {
       const identity = parseIdentity(o.identity);
       if (identity === "invalid") return fail("invalid_identity");
       try {
+        // T-113：嵌套仓库主进程先拒绝（纵深防御；T-114 起 4 的 initRepo 自己也会抛 nested_repo）
+        const r = await fns.checkRepo(deps.repoRoot());
+        const git = r.items.find((i) => i.id === "git");
+        if (git && !git.ok && git.code === "nested_repo") return NESTED_REPO_FAILURE;
         await fns.initRepo(deps.repoRoot(), identity ? { identity } : {});
       } catch (e) {
         return repoFixFailure(e);
@@ -242,6 +270,12 @@ export function repoFixHandlers(deps: RepoFixDeps): RepoFixHandlers {
         return repoFixFailure(e);
       }
       return { ok: true, from, reload: await reconnect() };
+    },
+    async initConfig(arg) {
+      if (!writable()) return { ok: false, code: "cwd_repo", reason: CWD_REPO_REASON };
+      if (!deps.config)
+        return { ok: false, code: "unavailable", reason: CONFIG_FIX_TEXT.unavailable };
+      return deps.config.initConfig(arg);
     },
   };
 }

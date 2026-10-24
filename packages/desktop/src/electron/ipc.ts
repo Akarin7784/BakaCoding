@@ -557,7 +557,7 @@ export function serveWindowTheme(ipc: IpcMainLike, deps: WindowThemeDeps): () =>
 
 /**
  * 项目准备页的仓库检查与修复 IPC（UI-03a）：`repo:check` / `repo:init` / `repo:list-initial-files` /
- * `repo:initial-commit` / `repo:create-main`，都作用于当前后端的仓库根。参数在主进程做类型校验；
+ * `repo:initial-commit` / `repo:create-main`，以及 T-113 的 `repo:init-config`，都作用于当前后端的仓库根。参数在主进程做类型校验；
  * 失败回 `{ ok: false, code, reason }`（RepoFixError 固定文案）；写操作成功后自动 `backend:reconnect`。
  */
 export function serveRepoFix(ipc: IpcMainLike, deps: RepoFixDeps): () => void {
@@ -568,12 +568,14 @@ export function serveRepoFix(ipc: IpcMainLike, deps: RepoFixDeps): () => void {
   ipc.handle(IPC_CHANNELS.repoListInitialFiles, () => h.listInitialFiles());
   ipc.handle(IPC_CHANNELS.repoInitialCommit, (...args: unknown[]) => h.initialCommit(args[1]));
   ipc.handle(IPC_CHANNELS.repoCreateMain, () => h.createMain());
+  ipc.handle(IPC_CHANNELS.repoInitConfig, (...args: unknown[]) => h.initConfig(args[1]));
   return () => {
     ipc.removeHandler(IPC_CHANNELS.repoCheck);
     ipc.removeHandler(IPC_CHANNELS.repoInit);
     ipc.removeHandler(IPC_CHANNELS.repoListInitialFiles);
     ipc.removeHandler(IPC_CHANNELS.repoInitialCommit);
     ipc.removeHandler(IPC_CHANNELS.repoCreateMain);
+    ipc.removeHandler(IPC_CHANNELS.repoInitConfig);
   };
 }
 

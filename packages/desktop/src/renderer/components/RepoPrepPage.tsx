@@ -1,9 +1,11 @@
 // UI-03a：项目准备页（docs/ui-design.md §4.1）。从只读横幅「准备仓库」进来，逐项检查当前仓库：
-// git → commit → main → ignored，前一项不过后面灰掉；没通过的第一项给主按钮，写操作都先弹确认框。
+// git → 模型配置（T-113）→ commit → main → ignored，前一项不过后面灰掉；没通过的第一项给主按钮，写操作都先弹确认框。
 import { useCallback, useEffect, useState } from "react";
 import { ArrowLeft, Circle, CircleAlert, CircleCheck, FolderClosed, RefreshCw } from "lucide-react";
 import type {
   BakaDesktopApi,
+  DesktopConfigCheck,
+  DesktopConfigFixResult,
   DesktopRepoCheck,
   DesktopRepoFilesResult,
   DesktopRepoFixResult,
@@ -12,6 +14,8 @@ import { failureText } from "../../shared/error-text";
 import { notifyError, notifyOk } from "../lib/notify";
 import type { RepoFixRoute } from "../lib/readonly";
 import {
+  CONFIG_COPY,
+  configPlan,
   EXCLUDED_REASON,
   firstFailing,
   fixFailureReason,
@@ -21,6 +25,7 @@ import {
   identityValid,
   ITEM_COPY,
   missingIdentity,
+  parseBudgetUsd,
   PREP_COPY,
   prepItems,
   ROUTE_ITEM,
@@ -45,11 +50,17 @@ import { WIZARD_COPY } from "../lib/secretItem";
 
 export type RepoPrepApi = Pick<
   BakaDesktopApi,
-  "checkRepo" | "initRepo" | "listInitialFiles" | "initialCommit" | "createMainBranch"
+  | "checkRepo"
+  | "initRepo"
+  | "listInitialFiles"
+  | "initialCommit"
+  | "createMainBranch"
+  | "initConfig"
 > &
   Partial<WizardApi>;
 
 type Fix = "git" | "commit" | "main";
+type DialogId = Fix | "config";
 
 const OK_TEXT: Record<Fix, string> = {
   git: "已初始化 Git",
@@ -102,10 +113,15 @@ export function RepoPrepPage({
   onFixed?: () => void | Promise<void>;
 }) {
   const [check, setCheck] = useState<DesktopRepoCheck | null>(null);
+  const [config, setConfig] = useState<DesktopConfigCheck | null>(null);
+  const [budget, setBudget] = useState("");
+  const [confirmOverwrite, setConfirmOverwrite] = useState(false);
+  /** 这次生成过配置：页面上写明那两个文件没有提交进仓库 */
+  const [generated, setGenerated] = useState(false);
   const [folder, setFolder] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [dialog, setDialog] = useState<Fix | null>(null);
+  const [dialog, setDialog] = useState<DialogId | null>(null);
   const [busy, setBusy] = useState(false);
   const [files, setFiles] = useState<DesktopRepoFilesResult | null>(null);
   const [identity, setIdentity] = useState({ name: "", email: "" });
@@ -118,6 +134,7 @@ export function RepoPrepPage({
       const r = await api.checkRepo();
       if (r.ok) {
         setCheck(r.check);
+        setConfig(r.config ?? null);
         setFolder(typeof r.folder === "string" ? r.folder : null);
         setError(null);
       } else setError(r.reason);
@@ -132,8 +149,11 @@ export function RepoPrepPage({
     void recheck();
   }, [recheck]);
 
-  const open = async (fix: Fix) => {
+  const open = async (fix: DialogId) => {
     setIdentity({ name: "", email: "" });
+    // 预算不预填：每次打开都是空的
+    setBudget("");
+    setConfirmOverwrite(false);
     setFiles(null);
     setDialog(fix);
     if (fix === "commit" && api.listInitialFiles) {
@@ -167,8 +187,38 @@ export function RepoPrepPage({
     }
   };
 
-  const items = check ? prepItems(check) : [];
-  const first = check ? firstFailing(check) : null;
+  const runConfig = async (req: { daily_micro_usd?: number; confirm_overwrite?: boolean }) => {
+    setBusy(true);
+    try {
+      const r: DesktopConfigFixResult | undefined = await api.initConfig?.(req);
+      if (!r) return;
+      if (!r.ok) {
+        notifyError(failureText(CONFIG_COPY.failPrefix, r.reason));
+        return;
+      }
+      setDialog(null);
+      if (r.written.length > 0) setGenerated(true);
+      if (r.reload.state === "failed")
+        notifyError(failureText(`${CONFIG_COPY.ok}，但重新连接失败`, r.reload.reason));
+      else notifyOk(CONFIG_COPY.ok);
+      await onFixed?.();
+    } catch {
+      notifyError(`${CONFIG_COPY.failPrefix}：和主进程通信失败，请重试`);
+    } finally {
+      setBusy(false);
+      await recheck();
+    }
+  };
+
+  const items = check ? prepItems(check, config ?? undefined) : [];
+  const first = check ? firstFailing(check, config ?? undefined) : null;
+  const plan = config ? configPlan(config) : null;
+  const micro = parseBudgetUsd(budget);
+  const canGenerate =
+    !!plan &&
+    plan.create.length + plan.overwrite.length > 0 &&
+    (!plan.needBudget || micro !== null) &&
+    (plan.overwrite.length === 0 || confirmOverwrite);
   const highlight: RepoItemId | null = route ? ROUTE_ITEM[route] : null;
   const missingAll = check ? missingIdentity(check.identity) : [];
   // 表单里只显示缺的字段（UI-03b：只缺一项时只填那一项）
@@ -241,13 +291,21 @@ export function RepoPrepPage({
                   <p className="mt-0.5 text-xs text-muted-foreground">{it.note}</p>
                 )}
                 {it.state === "blocked" && <p className="mt-0.5 text-xs">{PREP_COPY.blocked}</p>}
+                {it.id === "config" && it.state === "ok" && generated && (
+                  <p
+                    data-testid="config-not-committed"
+                    className="mt-0.5 text-xs text-muted-foreground"
+                  >
+                    {CONFIG_COPY.notCommitted}
+                  </p>
+                )}
               </div>
               {it.state === "fail" && it.action && (
                 <Button
                   size="sm"
                   variant={first === it.id ? "primary" : "secondary"}
-                  disabled={busy}
-                  onClick={() => void open(it.id as Fix)}
+                  disabled={busy || it.disabled === true}
+                  onClick={() => void open(it.id as DialogId)}
                 >
                   {it.action}
                 </Button>
@@ -305,6 +363,100 @@ export function RepoPrepPage({
         </DialogContent>
       </Dialog>
 
+      {/* 生成配置（T-113）：预算必填不预填；覆盖不合法的文件要勾确认（先备份） */}
+      <Dialog open={dialog === "config"} onOpenChange={(o) => !o && !busy && setDialog(null)}>
+        <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{CONFIG_COPY.title}</DialogTitle>
+            <DialogDescription>{CONFIG_COPY.intro}</DialogDescription>
+          </DialogHeader>
+          <TargetFolder folder={folder} />
+          {plan && plan.create.length > 0 && (
+            <section aria-label={CONFIG_COPY.create} data-testid="config-create">
+              <h3 className="mb-1 font-medium">{CONFIG_COPY.create}</h3>
+              <ul className="rounded-lg border border-border px-3 py-2 font-mono text-xs">
+                {plan.create.map((f) => (
+                  <li key={f}>{f}</li>
+                ))}
+              </ul>
+            </section>
+          )}
+          {plan && plan.overwrite.length > 0 && (
+            <section aria-label={CONFIG_COPY.overwrite} data-testid="config-overwrite">
+              <h3 className="mb-1 font-medium">{CONFIG_COPY.overwrite}</h3>
+              <ul className="rounded-lg border border-border px-3 py-2 font-mono text-xs">
+                {plan.overwrite.map((f) => (
+                  <li key={f}>{f}</li>
+                ))}
+              </ul>
+              <p className="mt-1 text-xs text-muted-foreground">{CONFIG_COPY.backupNote}</p>
+              {config && config.errors.length > 0 && (
+                <details className="mt-1 text-xs">
+                  <summary className="cursor-pointer text-muted-foreground">
+                    {CONFIG_COPY.errorsTitle}（{config.errors.length}）
+                  </summary>
+                  <ul className="mt-1 max-h-24 overflow-y-auto break-words">
+                    {config.errors.map((e, i) => (
+                      <li key={i}>{e}</li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </section>
+          )}
+          {plan?.needBudget && (
+            <label className="flex flex-col gap-1">
+              <span className="font-medium">{CONFIG_COPY.budgetLabel}</span>
+              <Input
+                name="daily-budget"
+                inputMode="decimal"
+                autoComplete="off"
+                required
+                aria-invalid={budget.trim() !== "" && micro === null}
+                value={budget}
+                onChange={(e) => setBudget(e.target.value)}
+              />
+              <span className="text-xs text-muted-foreground">
+                {budget.trim() !== "" && micro === null
+                  ? CONFIG_COPY.budgetInvalid
+                  : CONFIG_COPY.budgetHint}
+              </span>
+            </label>
+          )}
+          {plan && plan.overwrite.length > 0 && (
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                name="confirm-overwrite"
+                className="size-4 accent-[var(--color-foreground)]"
+                checked={confirmOverwrite}
+                onChange={(e) => setConfirmOverwrite(e.target.checked)}
+              />
+              <span>{CONFIG_COPY.confirm}</span>
+            </label>
+          )}
+          <p data-testid="config-exclude-note" className="text-muted-foreground">
+            {CONFIG_COPY.notCommitted}
+          </p>
+          <DialogFooter>
+            <Button variant="secondary" disabled={busy} onClick={() => setDialog(null)}>
+              {PREP_COPY.cancel}
+            </Button>
+            <Button
+              disabled={busy || !canGenerate}
+              onClick={() =>
+                void runConfig({
+                  ...(plan?.needBudget && micro !== null && { daily_micro_usd: micro }),
+                  ...(plan && plan.overwrite.length > 0 && { confirm_overwrite: confirmOverwrite }),
+                })
+              }
+            >
+              {busy ? CONFIG_COPY.busy : CONFIG_COPY.title}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* 首次提交 */}
       <Dialog open={dialog === "commit"} onOpenChange={(o) => !o && !busy && setDialog(null)}>
         <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-lg">
@@ -318,6 +470,11 @@ export function RepoPrepPage({
           <p data-testid="unstaged-note" className="text-muted-foreground">
             {PREP_COPY.unstagedNote}
           </p>
+          {generated && (
+            <p data-testid="commit-config-note" className="text-muted-foreground">
+              {CONFIG_COPY.notCommitted}
+            </p>
+          )}
           <CommitBody
             files={files}
             missing={missing}

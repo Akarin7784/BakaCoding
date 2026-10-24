@@ -33,6 +33,11 @@ import {
   startBackend,
   exportScope,
 } from "./backend.js";
+import {
+  CONFIG_INVALID_REASON,
+  CONFIG_MISSING_REASON,
+  NESTED_REPO_REASON,
+} from "../shared/config-text.js";
 
 const examplePath = fileURLToPath(
   new URL("../../../../config/models.example.json", import.meta.url),
@@ -488,11 +493,54 @@ describe("UI-03：只读原因按 RepoNotReadyError 的 message / 不是 Git 仓
     await be.stop();
   });
 
-  it("是 Git 仓库但缺 config/models.json：照旧报配置校验失败", async () => {
+  it("T-113：是 Git 仓库但缺 config/models.json：报 config_missing（准备页「生成配置」），不再只写 ConfigError", async () => {
     const root = unpreparedRepo("no_main");
     rmSync(join(root, "config"), { recursive: true, force: true });
     const be = await start(root);
-    expect(be.status().reason).toBe("配置校验失败（ConfigError）");
+    expect(be.status().reason).toBe(CONFIG_MISSING_REASON);
+    expect(be.status().error).toEqual({
+      name: "Error",
+      message: CONFIG_MISSING_REASON,
+      code: "config_missing",
+    });
+    await be.stop();
+  });
+
+  it("T-113：config/models.json 不合法：报 config_invalid，原因是固定文案（不带配置值）", async () => {
+    const root = unpreparedRepo("no_main");
+    writeFileSync(
+      join(root, "config", "models.json"),
+      '{"providers": "sk-should-not-leak-1234567890"}',
+    );
+    const be = await start(root);
+    const st = be.status();
+    expect(st.reason).toBe(CONFIG_INVALID_REASON);
+    expect(st.error?.code).toBe("config_invalid");
+    expect(JSON.stringify(st)).not.toContain("should-not-leak");
+    await be.stop();
+  });
+
+  it("T-113：checkRepo 说是嵌套仓库（T-114 的 nested_repo）：只读原因是固定提示，进准备页", async () => {
+    const root = unpreparedRepo("not_git");
+    rmSync(join(root, "config"), { recursive: true, force: true });
+    const be = await startBackend({
+      argv: [`--repo=${root}`],
+      env: { DEEPSEEK_API_KEY: "sk-ui03-test" },
+      cwd: root,
+      pricingPath,
+      logger: { warn: () => {} },
+      checkRepo: (async () => ({
+        items: [{ id: "git", ok: false, code: "nested_repo", detail: "x" }],
+        current_branch: null,
+        identity: { name: false, email: false },
+      })) as never,
+    });
+    expect(be.status().reason).toBe(NESTED_REPO_REASON);
+    expect(be.status().error).toEqual({
+      name: "Error",
+      message: NESTED_REPO_REASON,
+      code: "nested_repo",
+    });
     await be.stop();
   });
 
@@ -781,7 +829,8 @@ describe("T-128：诊断包保留天数取自配置", () => {
         },
       });
       expect(backend.status().mode, name).toBe("readonly");
-      expect(backend.status().reason, name).toContain("ConfigError");
+      // T-113 起本仓库缺配置 / 配置不合法给准备页固定文案（缺少模型配置 / 模型配置不合法），不再是 ConfigError 原文
+      expect(backend.status().reason, name).toMatch(/模型配置/);
       expect(opened, name).toHaveLength(0);
       expect(existsSync(db), name).toBe(false);
       await backend.stop();

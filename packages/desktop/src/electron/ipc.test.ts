@@ -144,6 +144,17 @@ const SERVE: Record<string, (ipc: IpcMainLike, backend: BackendHandle) => () => 
         initialCommit: async () => ({ commit: "c0ffee" }),
         createMainBranch: async () => ({ from: "master" }),
       },
+      // T-113：生成配置注入假的，只看参数原样到主进程
+      config: {
+        inspect: () => ({ models: "ok", pricing: "ok", models_external: false, errors: [] }),
+        initConfig: async (arg: unknown) => ({
+          ok: true as const,
+          written: ["models" as const],
+          backups: [JSON.stringify(arg)],
+          excluded: true,
+          reload: { state: "reloaded" as const },
+        }),
+      },
     }),
   // UI-03b：3 的密钥函数注入假的，链路测试只看参数往返
   serveSecretProvider: (ipc) =>
@@ -323,6 +334,16 @@ describe("handler 参数：第一个是 event，渲染进程参数从第二个�
       from: "master",
       reload: { state: "reloaded" },
     });
+    // T-113：生成配置
+    await expect(api.initConfig!({ daily_micro_usd: 7, confirm_overwrite: true })).resolves.toEqual(
+      {
+        ok: true,
+        written: ["models"],
+        backups: ['{"daily_micro_usd":7,"confirm_overwrite":true}'],
+        excluded: true,
+        reload: { state: "reloaded" },
+      },
+    );
     // UI-03b：密钥与测试连接
     const st = { set: true, source: "bakacoding", last4: "WXYZ" };
     await expect(api.secretStatus!("DEEPSEEK_API_KEY")).resolves.toEqual({ ok: true, status: st });
@@ -462,6 +483,7 @@ describe("preload 暴露的只读 API", () => {
       "getSnapshot",
       "getSyncState",
       "importProject",
+      "initConfig",
       "initRepo",
       "initialCommit",
       "listInitialFiles",
