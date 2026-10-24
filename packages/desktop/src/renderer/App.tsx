@@ -22,6 +22,7 @@ import { EmptyState } from "./components/EmptyState";
 import { useDesktopData } from "./data/useDesktopData";
 import { usePendingHighRisk } from "./data/usePendingHighRisk";
 import { useSyncState } from "./data/useSyncState";
+import { useGitStatus } from "./data/useGitStatus";
 import { useProjectActions } from "./data/useProjectActions";
 import { useBackendStatus } from "./data/useBackendStatus";
 import { useQuitting } from "./data/useQuitting";
@@ -100,6 +101,8 @@ export function App(props: AppProps) {
   );
   const highRisk = usePendingHighRisk(api, props.pendingHighRisk ?? []);
   const syncState = useSyncState(api, props.syncState ?? null);
+  // UI-06c：Git 区随快照（tickets 引用变）和同步状态更新重新取，不轮询
+  const gitStatus = useGitStatus(api, live?.events, live?.tickets, syncState);
   const backend = useBackendStatus(api);
   /** UI-03a：项目准备页（从只读横幅「准备仓库」进来，占内容区；左栏选别的就关掉） */
   const [prepOpen, setPrepOpen] = useState(false);
@@ -336,7 +339,6 @@ export function App(props: AppProps) {
           <StatusDot
             level={level}
             backend={backend.status}
-            sync={syncState}
             db={live?.db}
             attention={attentionItems(statusInput)}
             running={runningCount(projects)}
@@ -475,6 +477,7 @@ export function App(props: AppProps) {
               view={current}
               readonly={backendReadonly}
               tickets={tickets}
+              {...(api?.getGitStatus ? { gitStatus, sync: syncState } : {})}
               exportBusy={actions.busy === "export"}
               onOpenTicket={(rid, tid) => {
                 openRequirementOf(current.project.payload.project_id, rid, tid);

@@ -561,3 +561,105 @@ describe("UI-05g：派单卡片需求名、Ctrl+N、查看需求选中项目、�
     await waitFor(() => expect(document.activeElement).toBe(composer()));
   });
 });
+
+describe("UI-06c：右面板 Git 区（git:status + 同步状态）", () => {
+  const sync = {
+    available: true as const,
+    enabled: true,
+    last_ok_at: "2026-10-17T14:59:00.000Z",
+    last_error: null,
+    consecutive_failures: 0,
+    rate_limited_until: null,
+    next_at: null,
+  };
+  function gitApi() {
+    const { api, push } = fakeApi(snapshot);
+    const syncListeners = new Set<(s: typeof sync) => void>();
+    let ahead = 2;
+    const getGitStatus = vi.fn(async () => ({
+      ok: true as const,
+      current_branch: "feat/x",
+      integration_branch: "bakacoding/integration",
+      ahead: ahead++,
+      main_merge: "user" as const,
+    }));
+    Object.assign(api, {
+      getGitStatus,
+      getSyncState: async () => sync,
+      onSyncState: (l: (s: typeof sync) => void) => {
+        syncListeners.add(l);
+        return () => syncListeners.delete(l);
+      },
+    });
+    return {
+      api,
+      push,
+      getGitStatus,
+      pushSync: (s: typeof sync) => syncListeners.forEach((l) => l(s)),
+    };
+  }
+
+  it("显示当前分支、集成领先 main、上次同步；快照 / 同步更新时重取，不轮询", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const { api, push, getGitStatus, pushSync } = gitApi();
+      window.bakacoding = api;
+      render(<App />);
+      fireEvent.click(await screen.findByRole("button", { name: /real-proj/ }));
+      fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
+      const git = await screen.findByTestId("git-live");
+      await waitFor(() =>
+        expect(within(git).getByTestId("git-current").textContent).toBe("当前 feat/x"),
+      );
+      expect(within(git).getByTestId("git-ahead").textContent).toContain("领先 main");
+      expect(within(git).getByTestId("sync-last-ok").textContent).toContain("上次成功");
+      // 合入 main 按钮留给 06d
+      expect(within(git).queryByRole("button")).toBeNull();
+      const calls = getGitStatus.mock.calls.length;
+      // 不轮询：一分钟没有事件不重取
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      expect(getGitStatus.mock.calls.length).toBe(calls);
+      // 快照更新 → 重取
+      act(() => push({ db: snapshot.db, events: [], tickets: [...snapshot.tickets], last_seq: 4 }));
+      await waitFor(() => expect(getGitStatus.mock.calls.length).toBe(calls + 1));
+      // 新事件 → 重取
+      act(() =>
+        push({
+          db: snapshot.db,
+          events: [{ ...events[3]!, event_id: "evt-9", seq: 9 } as UiEvent],
+          last_seq: 9,
+        }),
+      );
+      await waitFor(() => expect(getGitStatus.mock.calls.length).toBe(calls + 2));
+      // 同步更新 → 重取
+      act(() => pushSync({ ...sync, last_ok_at: "2026-10-17T15:00:00.000Z" }));
+      await waitFor(() => expect(getGitStatus.mock.calls.length).toBe(calls + 3));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ok:false：显示固定原因；分离 HEAD 显示说明", async () => {
+    const { api } = gitApi();
+    api.getGitStatus = vi.fn(async () => ({ ok: false as const, reason: "还没有集成分支" }));
+    window.bakacoding = api;
+    const { unmount } = render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /real-proj/ }));
+    fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
+    expect((await screen.findByTestId("git-unavailable")).textContent).toBe("还没有集成分支");
+    unmount();
+    api.getGitStatus = vi.fn(async () => ({
+      ok: true as const,
+      current_branch: null,
+      integration_branch: "bakacoding/integration",
+      ahead: 0,
+      main_merge: "user" as const,
+    }));
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /real-proj/ }));
+    fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
+    expect((await screen.findByTestId("git-current")).textContent).toContain("分离 HEAD");
+  });
+});

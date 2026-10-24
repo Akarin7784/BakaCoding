@@ -15,7 +15,9 @@ import {
   statusFilterOptions,
   type TicketStatusFilter,
 } from "../lib/ticketList";
-import type { TicketView } from "../../shared/api";
+import type { DesktopGitStatusResult, DesktopSyncState, TicketView } from "../../shared/api";
+import { GIT_COPY, gitAheadLabel, gitCurrentLabel } from "../lib/gitStatus";
+import { SyncStatus } from "./SyncStatus";
 import type { ProjectView } from "../mock/types";
 
 function Flag({ on, label }: { on: boolean; label: string }) {
@@ -41,6 +43,46 @@ function TicketWarning({ codes }: { codes: string[] }) {
 }
 
 /**
+ * UI-06c：真实 Git 区——git:status（当前分支、集成领先 main）+ 同步状态（从左下状态卡挪来，含上次成功同步时间）。
+ * 「合入 main」按钮留给 06d。
+ */
+function LiveGit({
+  status,
+  sync,
+}: {
+  status: DesktopGitStatusResult | "loading";
+  sync: DesktopSyncState | null;
+}) {
+  return (
+    <div data-testid="git-live" className="space-y-2">
+      {status === "loading" ? (
+        <p className="text-xs text-muted-foreground">{GIT_COPY.loading}</p>
+      ) : status.ok ? (
+        <>
+          <div data-testid="git-current" className="flex items-center gap-2">
+            <GitBranch size={14} strokeWidth={1.5} aria-hidden />
+            {gitCurrentLabel(status)}
+          </div>
+          <div data-testid="git-ahead" className="flex items-center gap-2">
+            <GitBranch size={14} strokeWidth={1.5} aria-hidden />
+            {gitAheadLabel(status)}
+          </div>
+        </>
+      ) : (
+        <p data-testid="git-unavailable" className="text-xs text-muted-foreground">
+          {status.reason}
+        </p>
+      )}
+      {sync && (
+        <div className="-mx-4 [&_section]:border-b-0">
+          <SyncStatus state={sync} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * 右面板「概览」标签的内容（§4.5）：跟随当前项目；主管对话里跟随输入框选中的项目。外壳见 RightPanelShell（UI-02）。
  * UI-06a：需求单列表只看快照 tickets（状态图标 + 脱敏标题 + ×重写次数，可按状态筛选）。
  */
@@ -51,6 +93,8 @@ export function RightPanel({
   onExportTicket,
   exportBusy = false,
   readonly = false,
+  gitStatus,
+  sync = null,
 }: {
   view: ProjectView;
   /** 快照 tickets（全部项目；这里按当前项目过滤） */
@@ -62,6 +106,10 @@ export function RightPanel({
   exportBusy?: boolean;
   /** 后端只读（UI-08）：合入 main、导出禁用并说明 */
   readonly?: boolean;
+  /** UI-06c：接了 git:status 时传（null = 读取中）；不传（undefined）= 示例数据 */
+  gitStatus?: DesktopGitStatusResult | null;
+  /** UI-06c：同步状态（从左下状态卡挪到 Git 区） */
+  sync?: DesktopSyncState | null;
 }) {
   const { pool, git } = view;
   const projectId = view.project.payload.project_id;
@@ -89,7 +137,9 @@ export function RightPanel({
       <Separator />
       <div className="space-y-2 px-4 py-3">
         <div className="text-xs text-muted-foreground">Git · {view.project.payload.name}</div>
-        {git ? (
+        {gitStatus !== undefined ? (
+          <LiveGit status={gitStatus ?? "loading"} sync={sync} />
+        ) : git ? (
           <>
             <div className="flex items-center gap-2">
               <GitBranch size={14} strokeWidth={1.5} aria-hidden />

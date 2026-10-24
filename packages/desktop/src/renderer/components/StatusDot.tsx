@@ -1,12 +1,11 @@
 // UI-08：全局状态点 + 状态卡（§4.8）。左栏底部齿轮旁：灰 = 空闲，强调色呼吸 = 有单在跑，红 = 有需要你处理的事。
-// 点开状态卡：后端模式、同步状态、数据库路径、待处理事项、未归属上报数（原「未归属」入口并到这里）。
+// 点开状态卡：后端模式、数据库路径、待处理事项、未归属上报数（原「未归属」入口并到这里）。
 import { useState } from "react";
 import { ChevronRight, Inbox } from "lucide-react";
-import type { DesktopBackendStatus, DesktopSnapshot, DesktopSyncState } from "../../shared/api.js";
+import type { DesktopBackendStatus, DesktopSnapshot } from "../../shared/api.js";
 import { GLOBAL_LEVEL_LABEL, type GlobalLevel } from "../lib/globalStatus";
 import { readonlyReason } from "../lib/readonly";
 import { cn } from "../lib/utils";
-import { SyncStatus } from "./SyncStatus";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
@@ -28,7 +27,6 @@ function dbText(db: DesktopSnapshot["db"] | null | undefined): string {
 export function StatusDot({
   level,
   backend,
-  sync,
   db,
   attention,
   running,
@@ -38,7 +36,6 @@ export function StatusDot({
 }: {
   level: GlobalLevel;
   backend: DesktopBackendStatus | null;
-  sync: DesktopSyncState | null;
   db: DesktopSnapshot["db"] | null | undefined;
   attention: string[];
   running: number;
@@ -91,11 +88,6 @@ export function StatusDot({
             <span data-testid="status-db">{dbText(db)}</span>
           </Row>
         </dl>
-        {sync && (
-          <div className="-mx-3 mt-1 border-t border-border [&_section]:border-b-0">
-            <SyncStatus state={sync} />
-          </div>
-        )}
         <button
           type="button"
           className="mt-2 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-hover focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-50"
