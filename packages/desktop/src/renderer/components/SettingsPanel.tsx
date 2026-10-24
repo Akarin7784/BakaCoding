@@ -1,6 +1,7 @@
 // T-072：只读设置页——当前仓库、环境变量是否已设（只显示名字）、本地 / GitHub 模式。
 // UI-03b：主进程有 secret:* 时密钥那几行换成可保存 / 清除的密钥项，并能打开模型设置向导（测试连接）。
 // UI-07a：放在设置弹层里（embedded）时改成左侧 7 个标签（§4.6）；单独使用时仍是原来的一整页。
+// UI-07b：「模型」标签换成可编辑的 ModelSettings（settings:config-get / settings:save）。
 import { useState, type ReactNode } from "react";
 import type { BakaDesktopApi } from "../../shared/api";
 import {
@@ -21,6 +22,7 @@ import {
 } from "../../shared/api";
 import { WIZARD_COPY } from "../lib/secretItem";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
+import { ModelSettings } from "./ModelSettings";
 import { ModelSetupWizard, type WizardApi } from "./ModelSetupWizard";
 import { SecretItem } from "./SecretItem";
 import { SettingsAbout } from "./SettingsExtras";
@@ -190,7 +192,7 @@ export function SettingsPanel({
         "模型",
         <Cpu strokeWidth={1.5} />,
         <>
-          <p className="text-muted-foreground">各角色用哪个模型的设置在后续版本提供。</p>
+          <ModelSettings {...(desktopApi && { api: desktopApi })} />
           {wizardButton}
         </>,
       ),
