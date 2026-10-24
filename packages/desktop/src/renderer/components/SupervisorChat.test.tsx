@@ -14,17 +14,24 @@ afterEach(() => {
 const MID = expect.stringMatching(/^u-/);
 
 const replies: ChatReply[] = [
-  { kind: "answer", text: "这是回答" },
-  { kind: "ask_project", text: "是哪个项目？" },
-  { kind: "decision_saved", text: "已记下这条项目决策", project_id: "P-1" },
+  { kind: "answer", message_id: "ui-r1", text: "这是回答" },
+  { kind: "ask_project", message_id: "ui-r2", text: "是哪个项目？" },
+  { kind: "decision_saved", message_id: "ui-r3", text: "已记下这条项目决策", project_id: "P-1" },
   {
     kind: "dispatched",
+    message_id: "ui-r4",
     text: "已拆成 2 张单",
     project_id: "P-1",
     requirement_id: "r",
     ticket_ids: ["T-1", "T-2"],
   },
-  { kind: "split_failed", text: "拆单 3 次都不合法", project_id: "P-1", requirement_id: "r" },
+  {
+    kind: "split_failed",
+    message_id: "ui-r5",
+    text: "拆单 3 次都不合法",
+    project_id: "P-1",
+    requirement_id: "r",
+  },
 ];
 const LABEL: Record<ChatReply["kind"], string> = {
   answer: "回答",
@@ -224,7 +231,10 @@ describe("SupervisorChat 历史与重试（UI-04a）", () => {
     const supervisorChat = vi
       .fn<(m: UserMessage) => Promise<DesktopChatResult>>()
       .mockResolvedValueOnce({ ok: false, reason: "网络错误" })
-      .mockResolvedValueOnce({ ok: true, reply: { kind: "answer", text: "好了" } });
+      .mockResolvedValueOnce({
+        ok: true,
+        reply: { kind: "answer", text: "好了", message_id: "ui-retry-ok" },
+      });
     render(<SupervisorChat store={new ChatStore()} api={{ supervisorChat }} />);
     type("再试试");
     fireEvent.click(await screen.findByTestId("chat-retry"));

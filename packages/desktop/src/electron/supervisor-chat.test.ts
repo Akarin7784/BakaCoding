@@ -11,17 +11,24 @@ const SECRET = "plainvalue-QwErTy-778899";
 const env = { DEEPSEEK_API_KEY: SECRET, HOME: "/home/x" };
 
 const replies: ChatReply[] = [
-  { kind: "answer", text: "你好" },
-  { kind: "ask_project", text: "是哪个项目？" },
-  { kind: "decision_saved", text: "已记下", project_id: "P-1" },
+  { kind: "answer", message_id: "ipc-r1", text: "你好" },
+  { kind: "ask_project", message_id: "ipc-r2", text: "是哪个项目？" },
+  { kind: "decision_saved", message_id: "ipc-r3", text: "已记下", project_id: "P-1" },
   {
     kind: "dispatched",
+    message_id: "ipc-r4",
     text: "已拆成 2 张单",
     project_id: "P-1",
     requirement_id: "req-1",
     ticket_ids: ["T-1", "T-2"],
   },
-  { kind: "split_failed", text: "拆单 3 次都不合法", project_id: "P-1", requirement_id: "req-2" },
+  {
+    kind: "split_failed",
+    message_id: "ipc-r5",
+    text: "拆单 3 次都不合法",
+    project_id: "P-1",
+    requirement_id: "req-2",
+  },
 ];
 
 function harness(backend: { supervisorChat(m: UserMessage): Promise<DesktopChatResult> }) {
