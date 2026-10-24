@@ -77,7 +77,12 @@ describe("T-092 主管对话落库", () => {
     const t = setup();
     t.outputs.push(answer("你好呀"));
     const r = await t.sup.chat({ text: "你好", project_id: "p1" });
-    expect(r).toEqual({ message_id: expect.any(String), kind: "answer", text: "你好呀" });
+    expect(r).toEqual({
+      message_id: expect.any(String),
+      kind: "answer",
+      text: "你好呀",
+      requirement_id: expect.stringMatching(/^req-/),
+    });
     const h = t.sup.history();
     expect(h.map((m) => [m.role, m.kind, m.content, m.project_id])).toEqual([
       ["user", null, "你好", "p1"],
@@ -157,6 +162,7 @@ describe("T-092 主管对话落库", () => {
       message_id: expect.any(String),
       kind: "answer",
       text: "好",
+      requirement_id: expect.stringMatching(/^req-/),
     });
     expect(t.sup.history()).toEqual([]);
     expect(t.storage.listSupervisorMessages()).toEqual([]);
@@ -175,7 +181,12 @@ describe("T-144 主管对话落库跟进", () => {
     });
     t.outputs.push(answer("照常回复"));
     const r = await t.sup.chat({ text: "你好" });
-    expect(r).toEqual({ message_id: expect.any(String), kind: "answer", text: "照常回复" });
+    expect(r).toEqual({
+      message_id: expect.any(String),
+      kind: "answer",
+      text: "照常回复",
+      requirement_id: expect.stringMatching(/^req-/),
+    });
     expect(t.warns.filter((m) => m.includes("主管对话落库失败"))).toHaveLength(2);
   });
 
