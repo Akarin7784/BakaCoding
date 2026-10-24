@@ -10,6 +10,7 @@ import type { HighRiskFile, HighRiskReason } from "@bakacoding/sub-agent";
 import type {
   ChatReply,
   HighRiskDecisionResult,
+  IntegrationReview,
   MainMergeErrorCode,
   PendingHighRisk,
   UserMessage,
@@ -64,6 +65,11 @@ export const IPC_CHANNELS = {
    * MainMergeError.code 映射成固定文案；只读 / 未接线固定 ok:false；不带路径和原始错误。
    */
   mainMerge: "bakacoding:main:merge",
+  /**
+   * UI-06d2：审查集成分支（写）。调 10 的 reviewIntegration({project_id})，结果只回 ok/head_sha 和 blocked 的原因码
+   * （ticket_ids、check url、detail、file 不出主进程）；抛错映射固定文案；只读 / 未接线固定 ok:false。
+   */
+  integrationReview: "bakacoding:integration:review",
   /**
    * invoke：编码池状态（UI-06b，只读）：原样取 9 的 backpressureState()，无参数。
    * 后端只读 / 未接线固定 ok:false；抛错 ok:false + 固定文案，不带路径。
@@ -691,6 +697,10 @@ export interface BakaDesktopApi {
   getGitStatus?(): Promise<DesktopGitStatusResult>;
   /** 合入 main（UI-06d，写）；失败以 ok:false 返回（固定文案），不抛过 IPC。旧 preload 可以没有。 */
   mergeMain?(request: DesktopMainMergeRequest): Promise<DesktopMainMergeResult>;
+  /** UI-06d2：integration:review */
+  reviewIntegration?(
+    request: DesktopIntegrationReviewRequest,
+  ): Promise<DesktopIntegrationReviewResult>;
   /** 取编码池状态（UI-06b，只读）；旧版 preload 可以没有。失败以 ok:false 返回，不抛过 IPC。 */
   getPoolState?(): Promise<DesktopPoolStateResult>;
   /** 取主管对话历史（UI-04a）；失败以 ok:false 返回，不抛过 IPC。 */
@@ -848,6 +858,22 @@ export type DesktopMainMergeResult =
   | { ok: true; result: "merged"; sha: string }
   | { ok: true; result: "notified" }
   | { ok: false; code: MainMergeErrorCode | "invalid"; reason: string };
+/** `integration:review` 参数（UI-06d2）。 */
+export interface DesktopIntegrationReviewRequest {
+  project_id?: string;
+}
+/** 10 的集成审查不通过原因码（只有码，不带单号、CI 链接、detail、file）。 */
+export type IntegrationBlockCode = Extract<
+  IntegrationReview,
+  { result: "blocked" }
+>["reasons"][number]["code"];
+/** 给渲染进程的审查结果：主进程从 10 的 IntegrationReview 里只挑 head_sha 和原因码。 */
+export type DesktopIntegrationReview =
+  { result: "ok"; head_sha: string } | { result: "blocked"; reasons: IntegrationBlockCode[] };
+/** `integration:review` 结果（UI-06d2）：review 只含 result + head_sha / 原因码；失败 reason 是固定文案。 */
+export type DesktopIntegrationReviewResult =
+  | { ok: true; review: DesktopIntegrationReview }
+  | { ok: false; code: MainMergeErrorCode; reason: string };
 /**
  * `pool:state` 结果（UI-06b）：state 原样是 9 的 `BackpressureState`（不改 9 的接口）。
  * 后端只读 / 未接线固定 ok:false；抛错 ok:false，reason 为固定文案。

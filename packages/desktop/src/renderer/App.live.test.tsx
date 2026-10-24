@@ -739,6 +739,33 @@ describe("UI-06c：右面板 Git 区（git:status + 同步状态）", () => {
     }
   });
 
+  it("UI-06d2：审查集成分支带当前项目 project_id；ok 的 head_sha 透传给 main:merge", async () => {
+    const { api } = gitApi();
+    const SHA = "c".repeat(40);
+    const reviewIntegration = vi.fn(async () => ({
+      ok: true as const,
+      review: { result: "ok" as const, head_sha: SHA },
+    }));
+    const mergeMain = vi.fn(async () => ({ ok: true as const, result: "notified" as const }));
+    Object.assign(api, { reviewIntegration, mergeMain });
+    window.bakacoding = api;
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /real-proj/ }));
+    fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
+    const git = await screen.findByTestId("git-live");
+    const merge = await within(git).findByTestId("main-merge-button");
+    expect((merge as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => fireEvent.click(within(git).getByTestId("integration-review")));
+    expect(reviewIntegration).toHaveBeenCalledWith({ project_id: "P-1" });
+    await waitFor(() =>
+      expect((within(git).getByTestId("main-merge-button") as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
+    );
+    await act(async () => fireEvent.click(within(git).getByTestId("main-merge-button")));
+    expect(mergeMain).toHaveBeenCalledWith({ head_sha: SHA });
+  });
+
   it("ok:false：显示固定原因；分离 HEAD 显示说明", async () => {
     const { api } = gitApi();
     api.getGitStatus = vi.fn(async () => ({ ok: false as const, reason: "还没有集成分支" }));

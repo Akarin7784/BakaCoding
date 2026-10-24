@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Download, GitBranch, GitMerge, RefreshCw, TriangleAlert } from "lucide-react";
+import { Download, GitBranch, GitMerge, RefreshCw, ShieldCheck, TriangleAlert } from "lucide-react";
 import { Button } from "./ui/button";
 import { READONLY_COPY } from "../lib/readonly";
 import { Separator } from "./ui/separator";
@@ -17,13 +17,17 @@ import {
 } from "../lib/ticketList";
 import type {
   DesktopGitStatusResult,
+  DesktopIntegrationReviewResult,
   DesktopMainMergeResult,
   DesktopSyncState,
   TicketView,
 } from "../../shared/api";
 import {
   GIT_COPY,
+  INTEGRATION_REVIEW_COPY,
   MAIN_MERGE_COPY,
+  integrationBlockedLines,
+  mergeInvalidatesReview,
   gitAheadLabel,
   gitCurrentLabel,
   gitSyncView,
@@ -82,20 +86,33 @@ function TicketWarning({ codes }: { codes: string[] }) {
 export type MainMergeUi =
   { kind: "idle" } | { kind: "merging" } | { kind: "done"; result: DesktopMainMergeResult };
 
+/** UI-06d2：审查集成分支的界面状态。 */
+export type IntegrationReviewUi =
+  | { kind: "idle" }
+  | { kind: "reviewing" }
+  | { kind: "done"; result: DesktopIntegrationReviewResult };
+
 function MainMergeEntry({
   status,
   readonly,
-  reviewedHead,
+  reviewedHead: initialHead,
   onMergeMain,
+  onReviewIntegration,
   initial,
+  reviewInitial,
 }: {
   status: Extract<DesktopGitStatusResult, { ok: true }>;
   readonly: boolean;
   reviewedHead: string | null | undefined;
   onMergeMain?: (head_sha: string) => Promise<DesktopMainMergeResult>;
+  onReviewIntegration?: () => Promise<DesktopIntegrationReviewResult>;
   initial?: MainMergeUi;
+  reviewInitial?: IntegrationReviewUi;
 }) {
   const [ui, setUi] = useState<MainMergeUi>(initial ?? { kind: "idle" });
+  const [review, setReview] = useState<IntegrationReviewUi>(reviewInitial ?? { kind: "idle" });
+  // UI-06d2：审查 ok 时保存的 head_sha（透传给 main:merge）；stale_head / not_reviewed 时清掉
+  const [reviewedHead, setReviewedHead] = useState<string | null>(initialHead ?? null);
   if (status.main_merge === "supervisor")
     return (
       <p data-testid="main-merge-auto" className="text-xs text-muted-foreground">
@@ -106,33 +123,101 @@ function MainMergeEntry({
     ? READONLY_COPY.mergeMainDisabled
     : mainMergeBlocker(status, reviewedHead);
   const merging = ui.kind === "merging";
+  const reviewing = review.kind === "reviewing";
   const run = async () => {
     if (!onMergeMain || !reviewedHead) return;
     setUi({ kind: "merging" });
+    let result: DesktopMainMergeResult;
     try {
-      setUi({ kind: "done", result: await onMergeMain(reviewedHead) });
+      result = await onMergeMain(reviewedHead);
     } catch {
-      setUi({ kind: "done", result: { ok: false, code: "error", reason: MAIN_MERGE_COPY.failed } });
+      result = { ok: false, code: "error", reason: MAIN_MERGE_COPY.failed };
     }
+    if (mergeInvalidatesReview(result)) {
+      setReviewedHead(null);
+      setReview({ kind: "idle" });
+    }
+    setUi({ kind: "done", result });
   };
+  const runReview = async () => {
+    if (!onReviewIntegration) return;
+    setReview({ kind: "reviewing" });
+    setReviewedHead(null);
+    let result: DesktopIntegrationReviewResult;
+    try {
+      result = await onReviewIntegration();
+    } catch {
+      result = { ok: false, code: "error", reason: INTEGRATION_REVIEW_COPY.failed };
+    }
+    if (result.ok && result.review.result === "ok") {
+      setReviewedHead(result.review.head_sha);
+      setUi({ kind: "idle" });
+    }
+    setReview({ kind: "done", result });
+  };
+  const rv = review.kind === "done" ? review.result : null;
   const r = ui.kind === "done" ? ui.result : null;
   return (
     <div data-testid="main-merge" className="space-y-1">
-      <Button
-        variant="secondary"
-        size="sm"
-        disabled={blocker !== null || merging || !onMergeMain}
-        aria-busy={merging || undefined}
-        title={blocker ?? undefined}
-        onClick={() => void run()}
-      >
-        {merging ? (
-          <RefreshCw strokeWidth={1.5} className="animate-spin" />
+      <div className="flex flex-wrap gap-2">
+        <Button
+          data-testid="integration-review"
+          variant="secondary"
+          size="sm"
+          disabled={readonly || reviewing || merging || !onReviewIntegration}
+          aria-busy={reviewing || undefined}
+          onClick={() => void runReview()}
+        >
+          {reviewing ? (
+            <RefreshCw strokeWidth={1.5} className="animate-spin" />
+          ) : (
+            <ShieldCheck strokeWidth={1.5} />
+          )}
+          {reviewing ? INTEGRATION_REVIEW_COPY.reviewing : INTEGRATION_REVIEW_COPY.action}
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          data-testid="main-merge-button"
+          disabled={blocker !== null || merging || !onMergeMain}
+          aria-busy={merging || undefined}
+          title={blocker ?? undefined}
+          onClick={() => void run()}
+        >
+          {merging ? (
+            <RefreshCw strokeWidth={1.5} className="animate-spin" />
+          ) : (
+            <GitMerge strokeWidth={1.5} />
+          )}
+          {merging ? MAIN_MERGE_COPY.merging : MERGE_COPY.mergeMainAction}
+        </Button>
+      </div>
+      {rv &&
+        (rv.ok ? (
+          rv.review.result === "ok" ? (
+            reviewedHead && (
+              <p
+                data-testid="integration-review-ok"
+                role="status"
+                className="text-xs text-muted-foreground"
+              >
+                {INTEGRATION_REVIEW_COPY.passed}
+              </p>
+            )
+          ) : (
+            <div data-testid="integration-review-blocked" role="alert" className="space-y-0.5">
+              {integrationBlockedLines(rv.review.reasons).map((line) => (
+                <p key={line} className="text-xs text-danger">
+                  {line}
+                </p>
+              ))}
+            </div>
+          )
         ) : (
-          <GitMerge strokeWidth={1.5} />
-        )}
-        {merging ? MAIN_MERGE_COPY.merging : MERGE_COPY.mergeMainAction}
-      </Button>
+          <p data-testid="integration-review-error" role="alert" className="text-xs text-danger">
+            {rv.reason}
+          </p>
+        ))}
       {blocker && !merging && (
         <p data-testid="main-merge-hint" className="text-xs text-muted-foreground">
           {blocker}
@@ -162,14 +247,18 @@ function LiveGit({
   readonly = false,
   reviewedHead,
   onMergeMain,
+  onReviewIntegration,
   mergeInitial,
+  reviewInitial,
 }: {
   status: DesktopGitStatusResult | "loading";
   sync: DesktopSyncState | null;
   readonly?: boolean;
   reviewedHead?: string | null;
   onMergeMain?: (head_sha: string) => Promise<DesktopMainMergeResult>;
+  onReviewIntegration?: () => Promise<DesktopIntegrationReviewResult>;
   mergeInitial?: MainMergeUi;
+  reviewInitial?: IntegrationReviewUi;
 }) {
   const syncView = gitSyncView(sync);
   return (
@@ -191,7 +280,9 @@ function LiveGit({
             readonly={readonly}
             reviewedHead={reviewedHead}
             {...(onMergeMain && { onMergeMain })}
+            {...(onReviewIntegration && { onReviewIntegration })}
             {...(mergeInitial && { initial: mergeInitial })}
+            {...(reviewInitial && { reviewInitial })}
           />
         </>
       ) : (
@@ -233,7 +324,9 @@ export function RightPanel({
   pool: poolLive,
   mainMergeHead,
   onMergeMain,
+  onReviewIntegration,
   mainMergeInitial,
+  reviewInitial,
 }: {
   view: ProjectView;
   /** 快照 tickets（全部项目；这里按当前项目过滤） */
@@ -251,12 +344,16 @@ export function RightPanel({
   sync?: DesktopSyncState | null;
   /** UI-06b：真实编码池状态；不给时回退 view.pool */
   pool?: PoolLive | null;
-  /** UI-06d：审查通过的集成分支 head（40 位 sha）；没有 = 按钮禁用并提示先审查 */
+  /** UI-06d：初始的审查通过 head（40 位 sha）；UI-06d2 起由「审查集成分支」得到，这里只作初值 */
   mainMergeHead?: string | null;
   /** UI-06d：点「合入 main」→ main:merge；不给 = 按钮禁用 */
   onMergeMain?: (head_sha: string) => Promise<DesktopMainMergeResult>;
+  /** UI-06d2：点「审查集成分支」→ integration:review；ok 时保存 head_sha 给合入用；不给 = 按钮禁用 */
+  onReviewIntegration?: () => Promise<DesktopIntegrationReviewResult>;
   /** 仅测试 / 截图用：合入区初始状态 */
   mainMergeInitial?: MainMergeUi;
+  /** 仅测试 / 截图用：审查区初始状态 */
+  reviewInitial?: IntegrationReviewUi;
 }) {
   const { pool, git } = view;
   const projectId = view.project.payload.project_id;
@@ -293,7 +390,9 @@ export function RightPanel({
             readonly={readonly}
             reviewedHead={mainMergeHead}
             {...(onMergeMain && { onMergeMain })}
+            {...(onReviewIntegration && { onReviewIntegration })}
             {...(mainMergeInitial && { mergeInitial: mainMergeInitial })}
+            {...(reviewInitial && { reviewInitial })}
           />
         ) : git ? (
           <>

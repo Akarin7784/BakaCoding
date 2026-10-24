@@ -3,6 +3,7 @@ import { POOL_STATE_UNAVAILABLE } from "./pool-state.js";
 import { REQUIREMENT_DETAIL_UNAVAILABLE } from "./requirement-detail.js";
 import { GIT_STATUS_UNAVAILABLE } from "./git-status.js";
 import { MAIN_MERGE_UNAVAILABLE } from "./main-merge.js";
+import { INTEGRATION_REVIEW_UNAVAILABLE } from "./integration-review.js";
 import type { Project } from "@bakacoding/config-budget";
 import type { PendingHighRisk } from "@bakacoding/supervisor";
 import type { BackendHandle, BackendStatus, NotifyMessage, RepoSource } from "./backend.js";
@@ -494,6 +495,9 @@ export class BackendSwitcher implements BackendHandle {
   mainMerge(input: unknown) {
     return this.current.mainMerge(input);
   }
+  integrationReview(input: unknown) {
+    return this.current.integrationReview(input);
+  }
   poolState() {
     return this.current.poolState();
   }
@@ -553,6 +557,11 @@ export function readonlyBackend(
     requirementDetail: async () => ({ ok: false, reason: REQUIREMENT_DETAIL_UNAVAILABLE }),
     gitStatus: async () => ({ ok: false, reason: GIT_STATUS_UNAVAILABLE }),
     mainMerge: async () => ({ ok: false, code: "unavailable", reason: MAIN_MERGE_UNAVAILABLE }),
+    integrationReview: async () => ({
+      ok: false,
+      code: "unavailable",
+      reason: INTEGRATION_REVIEW_UNAVAILABLE,
+    }),
     poolState: async () => ({ ok: false, reason: POOL_STATE_UNAVAILABLE }),
     repoRoot: () => repo,
     prMode: () => "local",

@@ -24,6 +24,7 @@ import {
   serveRequirementDetail,
   serveGitStatus,
   serveMainMerge,
+  serveIntegrationReview,
   servePoolState,
   serveSyncState,
   serveAbout,
@@ -92,6 +93,11 @@ function fakeBackend(over: Partial<BackendHandle> = {}): BackendHandle {
     requirementDetail: vi.fn(async () => ({ ok: false as const, reason: "找不到这个需求" })),
     gitStatus: vi.fn(async () => ({ ok: false as const, reason: "Git 状态暂不可用" })),
     mainMerge: vi.fn(async () => ({ ok: true as const, result: "notified" as const })),
+    integrationReview: vi.fn(async () => ({
+      ok: false as const,
+      code: "unavailable" as const,
+      reason: "审查集成分支暂不可用",
+    })),
     poolState: vi.fn(async () => ({ ok: false as const, reason: "编码池状态暂不可用" })),
     supervisorSplit: vi.fn(async () => ({
       ok: true as const,
@@ -169,6 +175,7 @@ const SERVE: Record<string, (ipc: IpcMainLike, backend: BackendHandle) => () => 
   serveGitStatus: (ipc, backend) => serveGitStatus(ipc, backend),
   // UI-06d：合入 main（写）
   serveMainMerge: (ipc, backend) => serveMainMerge(ipc, backend),
+  serveIntegrationReview: (ipc, backend) => serveIntegrationReview(ipc, backend),
   // UI-06b：编码池状态
   servePoolState: (ipc, backend) => servePoolState(ipc, backend),
   // UI-07a：设置 › 关于
@@ -392,6 +399,13 @@ describe("handler 参数：第一个是 event，渲染进程参数从第二个�
       result: "notified",
     });
     expect(backend.mainMerge).toHaveBeenCalledWith({ head_sha: sha });
+    // UI-06d2：审查集成分支参数原样到后端
+    await expect(api.reviewIntegration!({ project_id: "p-2" })).resolves.toEqual({
+      ok: false,
+      code: "unavailable",
+      reason: "审查集成分支暂不可用",
+    });
+    expect(backend.integrationReview).toHaveBeenCalledWith({ project_id: "p-2" });
     // UI-06b：编码池状态（无参数）
     await expect(api.getPoolState!()).resolves.toEqual({
       ok: false,
@@ -649,6 +663,7 @@ describe("preload 暴露的只读 API", () => {
       "reconnectBackend",
       "reloadBackend",
       "removeProject",
+      "reviewIntegration",
       "saveBudget",
       "saveModelConfig",
       "secretStatus",

@@ -57,22 +57,18 @@ describe("runMainMerge", () => {
     });
   });
 
-  it.each([
-    undefined,
-    null,
-    {},
-    { head_sha: 1 },
-    { head_sha: "abc1234" },
-    { head_sha: SHA.toUpperCase() },
-  ])("参数不对（%j）→ invalid，不调 mergeMain", async (input) => {
-    const fn = vi.fn();
-    await expect(runMainMerge(fn, input)).resolves.toEqual({
-      ok: false,
-      code: "invalid",
-      reason: MAIN_MERGE_INVALID,
-    });
-    expect(fn).not.toHaveBeenCalled();
-  });
+  it.each([undefined, null, {}, { head_sha: 1 }, { head_sha: "abc1234" }, { head_sha: SHA + "0" }])(
+    "参数不对（%j）→ invalid，不调 mergeMain",
+    async (input) => {
+      const fn = vi.fn();
+      await expect(runMainMerge(fn, input)).resolves.toEqual({
+        ok: false,
+        code: "invalid",
+        reason: MAIN_MERGE_INVALID,
+      });
+      expect(fn).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(CODES)("MainMergeError %s → 固定文案，不透出原始 message", async (code) => {
     const fn = vi.fn(async () => {

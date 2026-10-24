@@ -23,6 +23,7 @@ import {
   serveRequirementDetail,
   serveGitStatus,
   serveMainMerge,
+  serveIntegrationReview,
   servePoolState,
   serveSyncState,
   serveAbout,
@@ -195,6 +196,7 @@ if (!gotLock) {
     const stopRequirementDetail = serveRequirementDetail(ipcMain, backend);
     const stopGitStatus = serveGitStatus(ipcMain, backend);
     const stopMainMerge = serveMainMerge(ipcMain, backend);
+    const stopIntegrationReview = serveIntegrationReview(ipcMain, backend);
     const stopPoolState = servePoolState(ipcMain, backend);
     // UI-07a：设置 › 关于
     const stopAbout = serveAbout(ipcMain, () => ({
@@ -279,6 +281,7 @@ if (!gotLock) {
         stopRequirementDetail();
         stopGitStatus();
         stopMainMerge();
+        stopIntegrationReview();
         stopPoolState();
         stopAbout();
         stopWindowTheme();

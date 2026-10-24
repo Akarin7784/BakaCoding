@@ -12,6 +12,7 @@ import {
   type DesktopRequirementDetailResult,
   type DesktopGitStatusResult,
   type DesktopMainMergeResult,
+  type DesktopIntegrationReviewResult,
   type DesktopDecideHighRiskResult,
   type DesktopExportOptions,
   type DesktopExportResult,
@@ -732,6 +733,20 @@ export function serveMainMerge(
   });
   return () => {
     ipc.removeHandler(IPC_CHANNELS.mainMerge);
+  };
+}
+
+/** 审查集成分支 IPC（UI-06d2，写）：invoke `integration:review` → backend.integrationReview(args[1])。 */
+export function serveIntegrationReview(
+  ipc: IpcMainLike,
+  backend: Pick<BackendHandle, "integrationReview">,
+): () => void {
+  ipc.handle(IPC_CHANNELS.integrationReview, async (...args: unknown[]) => {
+    const result: DesktopIntegrationReviewResult = await backend.integrationReview(args[1]);
+    return result;
+  });
+  return () => {
+    ipc.removeHandler(IPC_CHANNELS.integrationReview);
   };
 }
 
