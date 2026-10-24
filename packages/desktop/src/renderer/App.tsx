@@ -11,13 +11,13 @@ import type {
 import { ConversationList, type Selection } from "./components/Sidebar";
 import { SupervisorChat } from "./components/SupervisorChat";
 import { ProjectPage } from "./components/ProjectPage";
-import { listRequirements } from "./lib/requirementList";
+import { listRequirements, requirementName } from "./lib/requirementList";
 import { RightPanel } from "./components/RightPanel";
 import { UnattributedPanel } from "./components/Escalations";
 import { HighRiskPanel } from "./components/HighRiskPanel";
 import { RequirementPage } from "./components/RequirementPage";
 import { useRequirementRoute } from "./lib/requirementRoute";
-import { REQUIREMENT_PAGE_COPY } from "./lib/copy";
+import { REQUIREMENT_MENU_COPY as M, REQUIREMENT_PAGE_COPY } from "./lib/copy";
 import { useDesktopData } from "./data/useDesktopData";
 import { usePendingHighRisk } from "./data/usePendingHighRisk";
 import { useSyncState } from "./data/useSyncState";
@@ -164,6 +164,36 @@ export function App(props: AppProps) {
     setSelection({ kind: "project", projectId });
     setLastProjectId(projectId);
     openRequirement(rid);
+  };
+
+  /** UI-05f：「已派单」卡片「查看需求」：快照里找得到所属项目就一并选中 */
+  const viewRequirement = (rid: string) => {
+    const pid = tickets.find((t) => t.requirement_id === rid)?.project_id;
+    if (pid) openRequirementOf(pid, rid);
+    else {
+      setPrepOpen(false);
+      openRequirement(rid);
+    }
+  };
+  /** UI-05f：需求页追问 / 需要你处理：回主管对话，草稿带上下文（只填不发），光标放进输入框 */
+  const [chatPrefill, setChatPrefill] = useState<string | null>(null);
+  const clearPrefill = useCallback(() => setChatPrefill(null), []);
+  const askSupervisor = (text: string) => {
+    setPrepOpen(false);
+    openRequirement(null);
+    setSelection({ kind: "supervisor" });
+    setChatPrefill(text);
+    setTimeout(() => {
+      globalThis.document
+        ?.querySelector<HTMLTextAreaElement>('[data-composer="supervisor"]')
+        ?.focus();
+    }, 0);
+  };
+  const requirementNameOf = (rid: string) => {
+    const first = tickets
+      .filter((t) => t.requirement_id === rid)
+      .sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0))[0];
+    return first ? requirementName(first.title) || rid : rid;
   };
 
   /** Ctrl+N：回到主管对话并把光标放进输入框（新需求只能在主管对话里提，§3） */
@@ -368,6 +398,12 @@ export function App(props: AppProps) {
             highRisk={highRisk.items}
             onDecideHighRisk={highRisk.decide}
             readonly={backendReadonly}
+            onEscalationAction={(tid) =>
+              askSupervisor(M.escalationDraft(tid, requirementNameOf(requirementId)))
+            }
+            onAsk={() => askSupervisor(M.askDraft(requirementNameOf(requirementId), requirementId))}
+            onExport={(scope) => void actions.exportDiagnostics({ scope })}
+            exportBusy={actions.busy === "export"}
           />
         ) : selection.kind === "unattributed" ? (
           <UnattributedPanel
@@ -396,6 +432,7 @@ export function App(props: AppProps) {
               api={api}
               projectId={current.project.payload.project_id}
               readonly={backendReadonly}
+              onOpenRequirement={viewRequirement}
             />
           </>
         ) : (
@@ -405,6 +442,9 @@ export function App(props: AppProps) {
             busy={actions.busy === "create-config" ? "import" : actions.busy}
             api={api}
             readonly={backendReadonly}
+            onOpenRequirement={viewRequirement}
+            prefill={chatPrefill}
+            onPrefillUsed={clearPrefill}
           />
         )}
       </main>
