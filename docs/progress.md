@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`61a76be` · main 上测试：129 个测试文件 / 2373 个测试（Linux 全量；Windows 基线见 `docs/test-baseline.md`） · 更新日期：2026-10-24（UTC+8）
+> 上次更新时 main：`d76072f` · main 上测试：131 个测试文件 / 2380 个测试（Linux 全量；Windows 基线见 `docs/test-baseline.md`） · 更新日期：2026-10-24（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -198,7 +198,7 @@ flowchart BT
 | T-141 | 模块 10：T-117 跟进，没注入 `adopt` 时 `awaiting_adopt` 单的下游不再交 9 卡 `waiting`。新增内部 `awaitingIds`，`failedDepOf` 一并检查；下游进 `held`（`blocked_by` 直接依赖）并 `holdOnce` 通知一次，孙单经 `blockedIds` 挂起；接口不变，modules.md §10 补一句；补 3 条用例（子单挂起、三层链、注入 adopt 行为不变），反向检查去掉 `awaitingIds` 判断 → 前两条变红。全仓 126 文件 / 2348 通过、2 跳过。合入后 main `83d3ec9`，测试 126 个文件 / 2348 个 | 10 | 编排层开发 | 已合入 | #193 | `83d3ec9` |
 | T-091 | 模块 2：主管 1:1 对话存储（新表 `supervisor_messages`，库升级到 v4）：`appendSupervisorMessage(msg) → { inserted }`（只有写入方，`message_id` 幂等、先写为准，role / kind 不符报 `invalid_message`，content 轻脱敏）、`listSupervisorMessages({ project_id?, before?, limit? })`（写入方和只读连接都有，按 `created_at`、`message_id` 升序，`before` 游标不存在报 `invalid_cursor`，limit 默认 50 / 最大 200）；新增 `StorageError { code }`；modules.md §2 同步。合入后 main `c08f322`，测试 127 个文件 / 2359 个 | 2 | 基础层开发 | 已合入 | #195 | `c08f322` |
 | UI-07a | 模块 12 设置弹层左侧标签（`docs/ui-design.md` §4.6）：7 个竖排标签 通用 / 项目 / 模型 / 预算 / 密钥 / 诊断 / 关于（Radix Tabs，方向键 / Home / End）；诊断复用 `DiagnosticsPanel`，模型 / 预算先放占位（表单在 UI-07b / UI-07c）；新 IPC `app:about`（版本号、commit、运行时版本，主进程白名单过滤，不带路径）；测试覆盖标签切换、键盘导航、不回显密钥值、about 不带路径；modules.md §12、ui-design §4.6（总预算→每日预算，记下 UI-07 决定）同步。合入后 main `61a76be`，测试 129 个文件 / 2373 个 | 12 | 界面与诊断开发 | 已合入 | #196 | `61a76be` |
-| T-090 | 模块 2 + 3：账本汇总。`LedgerStore.totalsByProject(project_id)`（按 `requirements` 关联项目、全部时间累计、四个角色都列，未登记需求不计入任何项目，未知项目全 0，写入方和只读连接都有）；库升级到 v5，只加 `ledger(requirement_id)` 索引；模块 3 新增 `ledgerSummary(ledger, { project_id }) → { project }`（不带当日花费，当日只看 `budget:status`）；`project_id` 不合法报 `invalid_project_id`；modules.md §2、§3 同步 | 2、3 | 基础层开发 | 待评审 #200 | #200 | — |
+| T-090 | 模块 2 + 3：账本汇总。`LedgerStore.totalsByProject(project_id)`（按 `requirements` 关联项目、全部时间累计、四个角色都列，未登记需求不计入任何项目，未知项目全 0，写入方和只读连接都有）；库升级到 v5，只加 `ledger(requirement_id)` 索引；模块 3 新增 `ledgerSummary(ledger, { project_id }) → { project }`（不带当日花费，当日只看 `budget:status`）；`project_id` 不合法报 `invalid_project_id`；modules.md §2、§3 同步。合入后 main `d76072f`，测试 131 个文件 / 2380 个 | 2、3 | 基础层开发 | 已合入 | #200 | `d76072f` |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
