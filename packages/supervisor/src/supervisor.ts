@@ -1647,6 +1647,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         requirement_id: null,
         ticket_ids: [],
         created_at: u.created_at,
+        in_reply_to: null,
       });
       const reply = await chatBody(msg);
       // 回复 id 由用户消息 id 推出（`<id>-r`）：重试时与上次已存的回复同 id，靠存储幂等去重；
@@ -1663,6 +1664,8 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         requirement_id: reply.requirement_id ?? null,
         ticket_ids: reply.ticket_ids ?? [],
         created_at: r.created_at,
+        // T-150：回复指向它对应的用户消息；重试同 id 时存储先写为准，仍指向原来那条
+        in_reply_to: userId,
       });
       return { ...reply, message_id: replyId };
     } finally {
