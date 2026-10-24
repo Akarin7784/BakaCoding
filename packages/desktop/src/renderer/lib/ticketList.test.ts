@@ -28,7 +28,11 @@ const tickets: TicketView[] = [
 
 describe("projectTicketRows", () => {
   it("只列当前项目，按创建时间升序；没有项目时为空", () => {
-    expect(projectTicketRows(tickets, "P-1").map((r) => r.ticket_id)).toEqual(["T-1", "T-2", "T-3"]);
+    expect(projectTicketRows(tickets, "P-1").map((r) => r.ticket_id)).toEqual([
+      "T-1",
+      "T-2",
+      "T-3",
+    ]);
     expect(projectTicketRows(tickets, "P-2").map((r) => r.ticket_id)).toEqual(["X-1"]);
     expect(projectTicketRows(tickets, undefined)).toEqual([]);
   });

@@ -95,14 +95,39 @@ describe("RightPanel 单列表（UI-06a）", () => {
 
   it("只读或正在导出时行内导出禁用", () => {
     const { rerender } = render(
-      <RightPanel view={view} tickets={tickets} onOpenTicket={() => {}} onExportTicket={() => {}} readonly />,
+      <RightPanel
+        view={view}
+        tickets={tickets}
+        onOpenTicket={() => {}}
+        onExportTicket={() => {}}
+        readonly
+      />,
     );
-    expect((screen.getByRole("button", { name: "导出 T-1 诊断包" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(
+      (screen.getByRole("button", { name: "导出 T-1 诊断包" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
     rerender(
-      <RightPanel view={view} tickets={tickets} onOpenTicket={() => {}} onExportTicket={() => {}} exportBusy />,
+      <RightPanel
+        view={view}
+        tickets={tickets}
+        onOpenTicket={() => {}}
+        onExportTicket={() => {}}
+        exportBusy
+      />,
     );
-    expect((screen.getByRole("button", { name: "导出 T-1 诊断包" }) as HTMLButtonElement).disabled).toBe(true);
-    rerender(<RightPanel view={view} tickets={tickets} onOpenTicket={() => {}} onExportTicket={() => {}} />);
-    expect((screen.getByRole("button", { name: "导出 T-1 诊断包" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(
+      (screen.getByRole("button", { name: "导出 T-1 诊断包" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    rerender(
+      <RightPanel
+        view={view}
+        tickets={tickets}
+        onOpenTicket={() => {}}
+        onExportTicket={() => {}}
+      />,
+    );
+    expect(
+      (screen.getByRole("button", { name: "导出 T-1 诊断包" }) as HTMLButtonElement).disabled,
+    ).toBe(false);
   });
 });

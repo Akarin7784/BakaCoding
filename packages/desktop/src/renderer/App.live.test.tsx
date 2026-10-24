@@ -115,9 +115,7 @@ function fakeApi(snap: DesktopSnapshot) {
 }
 
 const ticketRow = (id: string) =>
-  screen
-    .getAllByTestId("ticket-row")
-    .find((el) => el.dataset.ticket === id) as HTMLElement;
+  screen.getAllByTestId("ticket-row").find((el) => el.dataset.ticket === id) as HTMLElement;
 
 describe("渲染进程从 preload API 读真实数据", () => {
   it("有 window.bakacoding 时不用假数据：项目、需求、PR 状态都来自快照", async () => {

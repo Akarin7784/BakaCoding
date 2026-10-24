@@ -55,9 +55,9 @@ describe("右面板点单（UI-06a）", () => {
     openPanel();
     clickTicket("T-1");
     expect(window.location.hash).toBe("#requirement=req-1");
-    expect(
-      document.querySelector<HTMLElement>('[data-ticket-item="T-1"]')!.dataset.selected,
-    ).toBe("true");
+    expect(document.querySelector<HTMLElement>('[data-ticket-item="T-1"]')!.dataset.selected).toBe(
+      "true",
+    );
     // 离开主管对话，左栏高亮所属项目下的需求行
     const nav = screen.getByRole("navigation", { name: "对话列表" });
     expect(
@@ -84,7 +84,7 @@ describe("右面板点单（UI-06a）", () => {
     fireEvent.click(screen.getByRole("button", { name: /baka-todo/ }));
     fireEvent.click(document.querySelector<HTMLElement>('[data-requirement="req-1"]')!);
     expect(window.location.hash).toBe("#requirement=req-1");
-    expect(document.querySelector('[data-ticket-item][data-selected]')).toBeNull();
+    expect(document.querySelector("[data-ticket-item][data-selected]")).toBeNull();
   });
 });
 
@@ -106,9 +106,10 @@ describe("主管对话里右面板跟随输入框选中的项目（UI-06a）", (
     openPanel();
     const panel = screen.getByRole("complementary", { name: "右面板" });
     expect(within(panel).getByTestId("project-overview")).toBeTruthy();
-    expect(within(panel).getAllByTestId("ticket-row").map((r) => r.dataset.ticket)).toEqual([
-      "T-1",
-      "T-2",
-    ]);
+    expect(
+      within(panel)
+        .getAllByTestId("ticket-row")
+        .map((r) => r.dataset.ticket),
+    ).toEqual(["T-1", "T-2"]);
   });
 });
