@@ -55,6 +55,8 @@ export interface SupervisorChatProps {
   /** UI-05f：「已派单」卡片「查看需求」 */
   onOpenRequirement?: (requirement_id: string) => void;
   /** UI-05f：从需求页追问 / 需要你处理带回的草稿（只填输入框，不发送）；用过后回调 onPrefillUsed */
+  /** UI-05g：dispatched 卡片显示需求名（同项目页规则）；不给或取不到就显示需求号 */
+  requirementNameOf?: (requirement_id: string) => string;
   prefill?: string | null;
   onPrefillUsed?: () => void;
 }
@@ -73,6 +75,7 @@ export function SupervisorChat({
   busy = null,
   readonly = false,
   onOpenRequirement,
+  requirementNameOf,
   prefill = null,
   onPrefillUsed,
 }: SupervisorChatProps) {
@@ -325,6 +328,7 @@ export function SupervisorChat({
                   projects={projectRows}
                   disabled={pending || readonly}
                   {...(onOpenRequirement && { onOpenRequirement })}
+                  {...(requirementNameOf && { requirementNameOf })}
                   onPickProject={(p) => {
                     if (readonly || store.getSnapshot().pending) return;
                     void deliver(p.name, store.newMessageId(), p.project_id);

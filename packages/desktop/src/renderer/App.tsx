@@ -198,13 +198,15 @@ export function App(props: AppProps) {
 
   /** Ctrl+N：回到主管对话并把光标放进输入框（新需求只能在主管对话里提，§3） */
   const newRequirement = useCallback(() => {
+    // UI-05g：也清掉 #requirement 路由，否则需求页还盖在主管对话上
+    openRequirement(null);
     setSelection({ kind: "supervisor" });
     setTimeout(() => {
       globalThis.document
         ?.querySelector<HTMLTextAreaElement>('[data-composer="supervisor"]')
         ?.focus();
     }, 0);
-  }, []);
+  }, [openRequirement]);
   const openSettings = () => void actions.openSettings();
 
   useShortcuts(
@@ -433,6 +435,7 @@ export function App(props: AppProps) {
               projectId={current.project.payload.project_id}
               readonly={backendReadonly}
               onOpenRequirement={viewRequirement}
+              requirementNameOf={requirementNameOf}
             />
           </>
         ) : (
@@ -443,6 +446,7 @@ export function App(props: AppProps) {
             api={api}
             readonly={backendReadonly}
             onOpenRequirement={viewRequirement}
+            requirementNameOf={requirementNameOf}
             prefill={chatPrefill}
             onPrefillUsed={clearPrefill}
           />
