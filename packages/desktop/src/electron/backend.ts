@@ -747,7 +747,20 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
     async importCurrentRepo(): Promise<Project> {
       const live = app;
       if (!live) throw new Error(reason ? `只读模式：${reason}` : "只读模式：后端未接线");
-      return doImport(repoRoot, { publish: (e) => live.bus.publish(e) });
+      // T-145：publish 等落库订阅处理完才返回，所以这里 project_created 已落库；
+      // 再写仓库路径（不进事件）。写不进只记一条不带路径的 warn，导入照样成功。
+      const project = await doImport(repoRoot, { publish: (e) => live.bus.publish(e) });
+      try {
+        const r = storage?.setProjectRepoPath(project.project_id, repoRoot);
+        if (!r?.updated) logger.warn("记录项目仓库路径失败：项目记录不存在");
+      } catch (e) {
+        const code = (e as { code?: unknown } | null)?.code;
+        const name = e instanceof Error ? e.name.replace(/[^A-Za-z0-9_]/g, "") : "Error";
+        logger.warn(
+          `记录项目仓库路径失败：${typeof code === "string" && /^[a-z_]+$/.test(code) ? code : name}`,
+        );
+      }
+      return project;
     },
     async exportDiagnostics(
       target: string,

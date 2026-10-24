@@ -204,6 +204,7 @@ flowchart BT
 | T-142 | 模块 2 + types：项目记录删除与 `repo_path`。新增项目级事件 `project_removed { project_id }` 和写入方专用 `removeProject(project_id) → { removed }`（只删记录，不动仓库，不删历史事件；未知项目 `{ removed: false }`；删后新的 `project_created` 可重新登记）；`listProjects` 不返回已删除项目并带 `repo_path`；`repo_path` 不进事件，由写入方专用 `setProjectRepoPath(project_id, path。合入后 main `4155018`，测试 136 个文件 / 2432 passed + 2 skipped 个 | null) → { updated }` 写入（未知或已删项目 `{ updated: false }`，`path` 不合法报 `invalid_repo_path`）；库升级到 v6（`projects.repo_path` 可空）；`project_id` 不合法报 `invalid_project_id`；modules.md §2 与事件清单同步。须在 T-143 之后合入 | 2、types | 已合入 | #204 | `4155018` |
 | T-143 | 模块 11：诊断包导出时按字段名整段去掉 `repo_path`（事件、单子记录、费用、manifest 任意嵌套深度，不看事件类型，null 也去；新导出 `DROPPED_KEYS`）；项目记录（2 的 `projects` 表）v1 不导出，用例锁住；用例覆盖 POSIX / Windows / UNC / `~` / 带空格路径，整个 zip 搜不到原路径；modules.md §11 同步。须先于 T-142 合入。合入后 main `9fbface`，测试 133 个文件 / 2392 passed + 2 skipped 个 | 11 | 已合入 | #202 | `9fbface` |
 | T-144 | 模块 10：T-092 跟进。主管回复 id 改为 `<用户 message_id>-r`，重试时上次已存的回复靠存储幂等去重，历史不再出现两条回复；补用例：chatLog.append 抛错时 chat 照常返回并记 warn、同 id 重试只留一条用户消息和一条回复、生成 id 时回复排在用户消息之后（三条均做反向检查）；modules.md §10 同步。合入后 main `c7e927f`，测试 135 个文件 / 2420 passed + 2 skipped 个 | 10 | 编排层开发 | 已合入 | #205 | `c7e927f` |
+| T-145 | 模块 12（方案 B，不改 §3 接口）：`importCurrentRepo()` 在 3 的 `importProject` 成功、`project_created` 已落库后调 2 的 `setProjectRepoPath(project_id, repoRoot)` 写入用户选的仓库路径；路径不进事件；返回 `updated:false` 或抛错只记一条不带路径的 warn，导入照样成功；移除后再导入会重新写入；modules.md §12 同步 | 12 | 基础层开发 | 待评审 #N | | |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
