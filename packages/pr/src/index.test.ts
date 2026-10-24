@@ -1,6 +1,6 @@
 import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PrStatusSchema } from "@bakacoding/types";
 import { chmod } from "node:fs/promises";
@@ -321,12 +321,11 @@ describe("merge 落到 target 的三种情况", () => {
     await writeFile(join(repo, "T-13.txt"), "local untracked\n");
     const before = (await git(repo, ["rev-parse", "main"])).stdout;
     const r = await pr.merge(id, "main");
-    expect(r).toEqual({
-      merged: false,
-      conflict: false,
-      reason: "target_dirty",
-      worktree_path: repo,
-    });
+    expect(r).toMatchObject({ merged: false, conflict: false, reason: "target_dirty" });
+    // T-134：worktree_path 来自 `git worktree list --porcelain`，Windows 上是正斜杠、POSIX 是原生路径，
+    // 生产按原样回传（不改生产代码）；这里统一 resolve 成平台绝对路径再比。
+    expect(r.worktree_path).toBeDefined();
+    expect(resolve(r.worktree_path!)).toBe(resolve(repo));
     expect((await git(repo, ["rev-parse", "main"])).stdout).toBe(before);
     expect(await readFile(join(repo, "T-13.txt"), "utf8")).toBe("local untracked\n");
     expect((await store.get(id))?.status).toBe("open");
