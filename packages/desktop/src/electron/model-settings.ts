@@ -10,6 +10,7 @@
 import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import {
+  ConfigSchema,
   formatConfigIssue,
   PricingSchema,
   SECRET_NAMES,
@@ -175,7 +176,7 @@ export function modelSettingsHandlers(deps: ModelSettingsDeps) {
         const o = isObj(v) ? v : {};
         pricing[name] = { peak: rateOf(o.peak), offpeak: rateOf(o.offpeak) };
       }
-      const result: DesktopModelConfigResult = {
+      const result: Extract<DesktopModelConfigResult, { ok: true }> = {
         ok: true,
         source: ext ?? "repo",
         readonly: ext !== null,
@@ -184,6 +185,12 @@ export function modelSettingsHandlers(deps: ModelSettingsDeps) {
         pricing,
         running: Math.max(0, deps.running() | 0),
       };
+      // UI-05c：复投上限按 3 的 schema 解析（没写时是 schema 默认值）；解析不出就不带，界面用默认值
+      const parsed = ConfigSchema.safeParse(raw);
+      if (parsed.success)
+        result.pipeline = {
+          resubmit_limits: { review: parsed.data.pipeline.resubmit_limits.review },
+        };
       // 兜底：配置里的键名（服务商 id、模型名）万一就是某个密钥的值，整段换掉，绝不回给界面
       const secrets = secretValues(deps.env, credNames);
       if (secrets.length === 0) return result;
