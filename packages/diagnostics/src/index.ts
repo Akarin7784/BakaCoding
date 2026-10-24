@@ -8,6 +8,12 @@ export { exportPackage, packageToZip, readPackage, zipToPackage } from "./pack.j
 export { toSweBenchJsonl, type SweBenchInstance } from "./swebench.js";
 export { DROPPED_KEYS, FullRedactor, safeZipPath } from "./redaction.js";
 export { PATH_RULES, redactPaths, type PathRule, type PathRedactResult } from "./path-redaction.js";
+export {
+  redactPathsPure,
+  FULLWIDTH_STOP,
+  MAX_GAP_WORDS,
+  type PurePathRedactOptions,
+} from "./path-redaction-core.js";
 export { readZip, writeZip, type ZipEntry } from "./zip.js";
 
 // modules.md 写的名字是 export；它是保留字，只能以导出别名提供：import { export as exportDiag }。
