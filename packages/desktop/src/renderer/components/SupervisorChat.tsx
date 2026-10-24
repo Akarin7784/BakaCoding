@@ -73,7 +73,6 @@ export interface SupervisorChatProps {
   now?: () => number;
 }
 
-/** 主管 1:1：唯一可输入的地方。一次只发一条（chat 有状态），等上一条回来才能再发。 */
 /** UI-10：离底部这么近（像素）以内算「在底部」，新消息会跟到底。 */
 export const FOLLOW_THRESHOLD_PX = 48;
 
@@ -81,6 +80,7 @@ export function isNearBottom(el: Pick<HTMLElement, "scrollTop" | "scrollHeight" 
   return el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_THRESHOLD_PX;
 }
 
+/** 主管 1:1：唯一可输入的地方。一次只发一条（chat 有状态），等上一条回来才能再发。 */
 export function SupervisorChat({
   initial,
   api,
