@@ -1810,3 +1810,86 @@ describe("T-110：signal 不跨调用串（AsyncLocalStorage）", () => {
     await expect(p).rejects.toBe(reason);
   });
 });
+
+describe("T-136：事件在 signal 上下文之外发布", () => {
+  /**
+   * 真实路径：带 signal 的 sync 发现 PR 被手动关闭 → 发 escalated(github_manual)。订阅方先中止外层 signal，
+   * 再用各种方式调 6 的 diff（不传 signal）；这些调用都不应拿到 sync 的 signal。
+   */
+  async function run(start: (call: () => Promise<unknown>) => void) {
+    const { branch } = await ticketPr("T-136", { from: "main" });
+    const { id } = await ticketPr("T-136o", { from: "main" });
+    gh.pulls.find((p) => p.head === branch)!.state = "closed";
+    const ctl = new AbortController();
+    const reason = new Error("stop sync");
+    const calls: Promise<unknown>[] = [];
+    let seen = 0;
+    let p!: GithubPrProvider;
+    p = provider({
+      publish: (e) => {
+        events.push(e);
+        seen++;
+        ctl.abort(reason);
+        start(() => {
+          const c = p.diff(id);
+          calls.push(c);
+          return c;
+        });
+      },
+    });
+    const want = await p.diff(id);
+    expect(want.files.map((f) => f.path)).toEqual(["T-136o.txt"]);
+    await p.sync({ signal: ctl.signal }).catch((e: unknown) => {
+      // 外层确实被中止：sync 原样抛 reason，或带着已收集变化抛 SyncPartialError（cause 为 reason）
+      if (e !== reason && !(e instanceof SyncPartialError && e.cause === reason)) throw e;
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(seen).toBe(1);
+    expect(events[0]!.payload.reason).toBe("github_manual");
+    expect(calls).toHaveLength(1);
+    expect(ctl.signal.aborted).toBe(true);
+    await expect(calls[0]).resolves.toEqual(want);
+  }
+
+  it("订阅方里同步调 6（不传 signal）：外层 abort 后不被中止", async () => {
+    await run((call) => {
+      void call().catch(() => undefined);
+    });
+  });
+  it("订阅方里 setTimeout 后再调 6：不被中止", async () => {
+    await run((call) => {
+      setTimeout(() => void call().catch(() => undefined), 0);
+    });
+  });
+  it("订阅方里 queueMicrotask 后再调 6：不被中止", async () => {
+    await run((call) => {
+      queueMicrotask(() => void call().catch(() => undefined));
+    });
+  });
+  it("订阅方里没 await 的 promise 续延里调 6：不被中止", async () => {
+    await run((call) => {
+      void Promise.resolve().then(() => call().catch(() => undefined));
+    });
+  });
+  it("publish 仍被 await，异步失败原样传给 sync 的调用方", async () => {
+    const { branch } = await ticketPr("T-136b", { from: "main" });
+    gh.pulls.find((p) => p.head === branch)!.state = "closed";
+    const boom = new Error("publish failed");
+    let done = false;
+    const p = provider({
+      publish: async () => {
+        await new Promise((r) => setTimeout(r, 10));
+        done = true;
+        throw boom;
+      },
+    });
+    const err = await p.sync().then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(done).toBe(true);
+    // 异步 publish 仍被 await：失败在 sync 返回前到达，按原逻辑包成 SyncPartialError（cause 为原错误）
+    expect(err).toBeInstanceOf(SyncPartialError);
+    expect((err as SyncPartialError).cause).toBe(boom);
+  });
+});
