@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } from "electron";
 import { SECRET_MARKER_FILE, writePricing } from "@bakacoding/config-budget";
 import { checkRepo, ensureExcludeLines, writeConfig } from "@bakacoding/app";
+import { buildCommit } from "./about.js";
 import { configFixHandlers, configTemplateDir } from "./config-fix.js";
 import { lastRepoForStart, resolveRepoDbPath, startBackend, type RepoSource } from "./backend.js";
 import {
@@ -18,6 +19,7 @@ import {
   serveSecretProvider,
   serveSupervisorChat,
   serveSyncState,
+  serveAbout,
   serveWindowTheme,
 } from "./ipc.js";
 import { titleBarOverlayFor, usesTitleBarOverlay, windowChromeOptions } from "./window-chrome.js";
@@ -180,6 +182,14 @@ if (!gotLock) {
       },
     });
     const stopSupervisorChat = serveSupervisorChat(ipcMain, backend);
+    // UI-07a：设置 › 关于
+    const stopAbout = serveAbout(ipcMain, () => ({
+      version: app.getVersion(),
+      commit: buildCommit(),
+      electron: process.versions.electron,
+      chrome: process.versions.chrome,
+      node: process.versions.node,
+    }));
     const stopWindowTheme = serveWindowTheme(ipcMain, {
       setThemeSource(source) {
         nativeTheme.themeSource = source;
@@ -231,6 +241,7 @@ if (!gotLock) {
         stopSyncState();
         stopProjectSettings();
         stopSupervisorChat();
+        stopAbout();
         stopWindowTheme();
         nativeTheme.off("updated", onNativeTheme);
         stopBackendReload();

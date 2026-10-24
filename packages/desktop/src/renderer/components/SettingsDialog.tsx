@@ -1,5 +1,5 @@
 // UI-02 设置弹层外壳（§4.6）：居中 880×600，Ctrl+, 或左栏底部齿轮打开。
-// 7 个标签与可编辑内容在 UI-07；这一版里面放现有的只读设置页 + 主题切换。
+// UI-07a：里面是左侧 7 个标签（SettingsPanel embedded）；模型 / 预算的可编辑表单在 UI-07b / UI-07c。
 import type { BakaDesktopApi, DesktopSettings } from "../../shared/api";
 import type { WizardApi } from "./ModelSetupWizard";
 import { SettingsPanel } from "./SettingsPanel";
@@ -30,7 +30,7 @@ export function SettingsDialog({
       >
         <DialogTitle className="sr-only">设置</DialogTitle>
         <DialogDescription className="sr-only">
-          查看当前仓库、模式、密钥是否已设与主题
+          通用、项目、模型、预算、密钥、诊断、关于
         </DialogDescription>
         <SettingsPanel
           settings={settings}
