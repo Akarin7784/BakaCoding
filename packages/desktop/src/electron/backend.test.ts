@@ -659,6 +659,50 @@ describe("UI-03：日志里的错误与 backendErrorDetail 同一套脱敏", () 
     await be.stop();
   });
 
+  it("UI-06d2：live 时 integrationReview / mainMerge 接 10 的 reviewIntegration / mergeMain，参数透传", async () => {
+    const { root } = gitRepoWithConfig();
+    const SHA = "d".repeat(40);
+    const review = {
+      result: "ok" as const,
+      pr_id: "pr-int",
+      head_sha: SHA,
+      base_sha: "b".repeat(40),
+      summary: "可以",
+      ci: "none" as const,
+    };
+    const reviewCalls: unknown[] = [];
+    const mergeCalls: unknown[] = [];
+    const be = await startBackend({
+      argv: [`--repo=${root}`],
+      env: { DEEPSEEK_API_KEY: "sk-06d2" },
+      cwd: root,
+      pricingPath,
+      logger: { warn: () => {} },
+      onAssembled: (app) => {
+        app.supervisor.reviewIntegration = async (o) => {
+          reviewCalls.push(o);
+          return review;
+        };
+        app.supervisor.mergeMain = async (o) => {
+          mergeCalls.push(o);
+          return { result: "merged", pr_id: "pr-int", sha: SHA };
+        };
+      },
+    });
+    await expect(be.integrationReview({ project_id: "P-9" })).resolves.toEqual({
+      ok: true,
+      review,
+    });
+    expect(reviewCalls).toEqual([{ project_id: "P-9" }]);
+    await expect(be.mainMerge({ head_sha: SHA.toUpperCase() })).resolves.toEqual({
+      ok: true,
+      result: "merged",
+      sha: SHA,
+    });
+    expect(mergeCalls).toEqual([{ by: "user", head_sha: SHA }]);
+    await be.stop();
+  });
+
   it("pendingHighRisk 抛错：warn 只有一行脱敏字符串", async () => {
     const { root } = gitRepoWithConfig();
     const calls: unknown[][] = [];

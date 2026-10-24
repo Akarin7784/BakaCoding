@@ -148,6 +148,21 @@ describe("审查集成分支（UI-06d2）", () => {
     );
   });
 
+  it("已审查通过后重新审查：审查中合入禁用；blocked 则旧 sha 作废", async () => {
+    let next: (r: DesktopIntegrationReviewResult) => void = () => {};
+    const onReviewIntegration = vi
+      .fn<() => Promise<DesktopIntegrationReviewResult>>()
+      .mockResolvedValueOnce(OK)
+      .mockImplementationOnce(() => new Promise((r) => (next = r)));
+    panel({ onReviewIntegration, onMergeMain: async () => ({ ok: true, result: "notified" }) });
+    await act(async () => fireEvent.click(reviewBtn()));
+    expect(mergeBtn().disabled).toBe(false);
+    fireEvent.click(reviewBtn());
+    expect(mergeBtn().disabled).toBe(true);
+    await act(async () => next(blocked([{ code: "ci_pending", checks: [] }])));
+    expect(mergeBtn().disabled).toBe(true);
+  });
+
   it.each(["stale_head", "not_reviewed"] as const)(
     "main:merge 返回 %s → 清掉 sha，合入回到禁用并提示先审查；可重新审查",
     async (code) => {

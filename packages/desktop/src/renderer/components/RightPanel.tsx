@@ -179,7 +179,7 @@ function MainMergeEntry({
           variant="secondary"
           size="sm"
           data-testid="main-merge-button"
-          disabled={blocker !== null || merging || reviewing || !onMergeMain}
+          disabled={blocker !== null || merging || !onMergeMain}
           aria-busy={merging || undefined}
           title={blocker ?? undefined}
           onClick={() => void run()}
