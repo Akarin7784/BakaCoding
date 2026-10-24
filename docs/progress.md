@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`e00baa6` · main 上测试：167 个测试文件 / 2746 passed + 2 skipped 个测试（Linux 全量；Windows 基线见 `docs/test-baseline.md`） · 更新日期：2026-10-24（UTC+8）
+> 上次更新时 main：`436ab8f` · main 上测试：168 个测试文件 / 2755 passed + 2 skipped 个测试（Linux 全量；Windows 基线见 `docs/test-baseline.md`） · 更新日期：2026-10-24（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -227,7 +227,7 @@ flowchart BT
 | T-151 | 模块 12：历史里的 `split_failed` 按回复的 `in_reply_to` 找对应用户消息补「重试拆单」（项目先回复后用户消息；null / 无字段 / 找不到 / 无项目不显示，不猜）；live 回复统一写 `in_reply_to`；补 #235 两个 P3 测试（先脱敏再截 80 字、20000 上限）；modules.md §12 同步。合入后 main `0d1e097`，测试 154 个文件 / 2637 passed + 2 skipped 个 | 12 | 界面与诊断开发 | 已合入 | #240 | 0d1e097 |
 | T-153 | 桌面端：设置 › 预算 `spendHint` / `spendResubmit` 文案「复投」改为「重写」（§5.6），补 `BUDGET_COPY` 不含「复投」的用例。合入后 main `a6caab4`，测试 155 个文件 / 2638 passed + 2 skipped 个 | 12 | 界面与诊断开发 | 已合入 | #243 | a6caab4 |
 | T-154 | 模块 11 抽出不依赖 node 的纯函数路径脱敏 `redactPathsPure`（`path-redaction-core.ts`），主进程 `redactPaths` 转给它（输出不变），渲染进程 `redactForView` 改用它（保留全角标点截止）；补 T-147 三条已接受限制的注释和测试；modules.md §11 / §12 同步。合入后 main `cf2b1d7`，测试 162 个文件 / 2698 passed + 2 skipped 个 | 11、12 | 界面与诊断开发 | 已合入 | #246 | cf2b1d7 |
-| T-155 | 模块 4：新增只读 `branchStatus(dir, { base_branch?, integration_branch?, timeout_ms? }?) → { current_branch: string \| null, ahead }`（ahead = `rev-list --count main..bakacoding/integration`，分离 HEAD 时 current_branch 为 null），失败抛 `BranchStatusError`（not_git / nested_repo / invalid_branch / no_base / no_integration / timeout / git_failed，消息不带路径和值）；补真实临时仓库用例（均做反向检查）；modules.md §4 同步。给 UI-06c `git:status` 用 | 4 | 基础层开发 | 待评审 #259 | | |
+| T-155 | 模块 4：新增只读 `branchStatus(dir, { base_branch?, integration_branch?, timeout_ms? }?) → { current_branch: string \| null, ahead }`（ahead = `rev-list --count main..bakacoding/integration`，分离 HEAD 时 current_branch 为 null），失败抛 `BranchStatusError`（not_git / nested_repo / invalid_branch / no_base / no_integration / timeout / git_failed，消息不带路径和值）；补真实临时仓库用例（均做反向检查）；modules.md §4 同步。给 UI-06c `git:status` 用。合入后 main `436ab8f`，测试 168 个文件 / 2755 passed + 2 skipped 个 | 4 | 基础层开发 | 已合入 | #259 | 436ab8f |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
