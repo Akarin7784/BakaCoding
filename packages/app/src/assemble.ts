@@ -537,6 +537,7 @@ export async function assemble(deps: AppDeps): Promise<App> {
     getConfig: () => config,
     promptTemplate: () => deps.promptTemplate("supervisor"),
     storage,
+    chatLog: storage,
     enqueue: (t) => scheduler.enqueue(withGrantedScopes(t)),
     adopt: (t) => adopt(withGrantedScopes(t)),
     recoverMergeFollowup: (t, info) => scheduler.recoverMergeFollowup(t, info),

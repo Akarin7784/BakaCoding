@@ -83,6 +83,13 @@ export class StorageError extends Error {
  */
 export type ChatReplyKind =
   "answer" | "ask_project" | "decision_saved" | "dispatched" | "split_failed";
+/** T-090：project_id 为空或不是字符串；消息不带值。 */
+function invalidProjectId(): TypeError & { code: "invalid_project_id" } {
+  return Object.assign(new TypeError("project_id 须为非空字符串"), {
+    code: "invalid_project_id" as const,
+  });
+}
+
 export const CHAT_REPLY_KINDS: readonly ChatReplyKind[] = [
   "answer",
   "ask_project",
@@ -428,7 +435,7 @@ export type ReadonlyStorage = Pick<
   | "close"
 > & {
   prStore<T extends PrRecordLike>(): Pick<PrRecordStore<T>, "get" | "list">;
-  readonly ledger: Pick<LedgerStore, "totalsByDay" | "totalsByTicket">;
+  readonly ledger: Pick<LedgerStore, "totalsByDay" | "totalsByTicket" | "totalsByProject">;
 };
 
 const ROUNDS_SQL = "SELECT record FROM pr_rounds WHERE ticket_id = ? ORDER BY round";
@@ -1251,11 +1258,11 @@ function open(options: StorageOptions, ro: boolean): Storage {
   const totalsSql = `SELECT COALESCE(SUM(cost_micro_usd), 0) AS total_micro_usd,
       COALESCE(SUM(CASE WHEN is_resubmit = 1 THEN cost_micro_usd ELSE 0 END), 0) AS resubmit_micro_usd,
       COUNT(*) AS entries FROM ledger`;
-  const ledgerTotals = (where: string, arg: string): LedgerBreakdown => {
-    const t = db.prepare(`${totalsSql} WHERE ${where} = ?`).get(arg) as LedgerTotals;
+  const ledgerTotals = (cond: string, arg: string): LedgerBreakdown => {
+    const t = db.prepare(`${totalsSql} WHERE ${cond}`).get(arg) as LedgerTotals;
     const by_role = Object.fromEntries(ROLES.map((r) => [r, 0])) as LedgerBreakdown["by_role"];
     const rows = db
-      .prepare(`SELECT role, SUM(cost_micro_usd) AS c FROM ledger WHERE ${where} = ? GROUP BY role`)
+      .prepare(`SELECT role, SUM(cost_micro_usd) AS c FROM ledger WHERE ${cond} GROUP BY role`)
       .all(arg) as { role: Role; c: number }[];
     for (const r of rows) by_role[r.role] = r.c;
     return { ...t, by_role };
@@ -1267,10 +1274,18 @@ function open(options: StorageOptions, ro: boolean): Storage {
     async totalsByDay(day) {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(day))
         throw new RangeError(`day 须为 YYYY-MM-DD（UTC），收到 ${day}`);
-      return ledgerTotals("day", day);
+      return ledgerTotals("day = ?", day);
     },
     async totalsByTicket(ticket_id) {
-      return ledgerTotals("ticket_id", ticket_id);
+      return ledgerTotals("ticket_id = ?", ticket_id);
+    },
+    async totalsByProject(project_id) {
+      if (typeof project_id !== "string" || project_id === "") throw invalidProjectId();
+      // 只算 requirements 里登记到该项目的需求；没登记的需求不计入任何项目（T-090）
+      return ledgerTotals(
+        "requirement_id IN (SELECT requirement_id FROM requirements WHERE project_id = ?)",
+        project_id,
+      );
     },
   };
 

@@ -3,7 +3,11 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { HighRiskDecisionError, type SchedulerTicket } from "@bakacoding/scheduler";
 import type { StoredTicket } from "@bakacoding/storage";
 import { highRiskEvidence, type HighRiskReason, type SubAgentTicket } from "@bakacoding/sub-agent";
-import type { TicketFields } from "@bakacoding/storage";
+import type {
+  ChatReplyKind as StorageChatReplyKind,
+  SupervisorMessage,
+  TicketFields,
+} from "@bakacoding/storage";
 import {
   untrustedNotice,
   wrapUntrusted,
@@ -136,6 +140,14 @@ const TAKEOVER_ADOPT: ReadonlySet<TicketStatus> = new Set<TicketStatus>([
 ]);
 
 type EscalationReason = EventOf<"escalated">["payload"]["reason"];
+
+/**
+ * T-092：10 的 `ChatReply["kind"]` 和 2 里单独写的 `ChatReplyKind` 必须完全一致（互相可赋值）。
+ * 任一边单独增删 kind，这里 typecheck 就报错。不导出。
+ */
+type MutuallyAssignable<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+const CHAT_REPLY_KIND_IN_SYNC: MutuallyAssignable<ChatReply["kind"], StorageChatReplyKind> = true;
+void CHAT_REPLY_KIND_IN_SYNC;
 
 /** 失败单重拆（T-041b，提案 §3）：评审超限、编码池失败、冲突超限。 */
 const RESPLIT_REASONS: ReadonlySet<EscalationReason> = new Set<EscalationReason>([
@@ -1573,11 +1585,81 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     };
   }
 
+  // ---------- 主管 1:1 对话落库（T-092） ----------
+
+  /** 上一个 message_id 的毫秒数和同毫秒序号：保证本进程生成的 id 与 created_at 都不倒退 */
+  let lastMsgMs = 0;
+  let msgSeq = 0;
+  /**
+   * 生成 `m<13 位毫秒>-<6 位序号>-<随机>` 和对应的 created_at：同一毫秒内序号递增；
+   * 时钟回拨时沿用上一个毫秒继续加序号，所以按 (created_at, message_id) 排序与生成顺序一致。
+   */
+  function nextMessage(ms: number): { message_id: string; created_at: number } {
+    if (ms > lastMsgMs) {
+      lastMsgMs = ms;
+      msgSeq = 0;
+    } else {
+      msgSeq++;
+    }
+    const pad = (n: number, w: number) => String(n).padStart(w, "0");
+    return {
+      message_id: `m${pad(lastMsgMs, 13)}-${pad(msgSeq, 6)}-${randomBytes(3).toString("hex")}`,
+      created_at: lastMsgMs,
+    };
+  }
+
+  /** 落库失败只记 warn，不挡对话（存储幂等：同一 message_id 再写返回 inserted:false，不算错） */
+  function logChat(m: SupervisorMessage): void {
+    const log = deps.chatLog;
+    if (!log) return;
+    try {
+      log.appendSupervisorMessage(m);
+    } catch (err) {
+      logger.warn(`主管对话落库失败（${m.role}）`, err);
+    }
+  }
+
+  function history(opts: { before?: string; limit?: number } = {}): SupervisorMessage[] {
+    const log = deps.chatLog;
+    if (!log) return [];
+    return log.listSupervisorMessages({
+      ...(opts.before !== undefined ? { before: opts.before } : {}),
+      ...(opts.limit !== undefined ? { limit: opts.limit } : {}),
+    });
+  }
+
   async function chat(msg: UserMessage): Promise<ChatReply> {
     chatSplitInflight++;
     void emitSupervisorBacklog();
     try {
-      return await chatBody(msg);
+      // 先存用户消息（重试时调用方带回同一个 message_id，存储按幂等忽略），模型失败时只留这一条
+      const u = nextMessage(clock().getTime());
+      const userId = msg.message_id || u.message_id;
+      logChat({
+        message_id: userId,
+        project_id: msg.project_id ?? null,
+        role: "user",
+        kind: null,
+        content: msg.text,
+        requirement_id: null,
+        ticket_ids: [],
+        created_at: u.created_at,
+      });
+      const reply = await chatBody(msg);
+      // 调用方自带的 message_id 不一定按字典序排在 10 生成的 id 前面：同毫秒时把回复推后 1 毫秒
+      const at = clock().getTime();
+      const r = nextMessage(msg.message_id ? Math.max(at, u.created_at + 1) : at);
+      logChat({
+        message_id: r.message_id,
+        project_id: reply.project_id ?? msg.project_id ?? null,
+        role: "supervisor",
+        kind: reply.kind,
+        content: reply.text,
+        requirement_id: reply.requirement_id ?? null,
+        ticket_ids: reply.ticket_ids ?? [],
+        created_at: r.created_at,
+      });
+      return reply;
     } finally {
       chatSplitInflight = Math.max(0, chatSplitInflight - 1);
       void emitSupervisorBacklog();
@@ -2275,6 +2357,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
 
   return {
     chat,
+    history,
     split,
     start,
     createManualTicket,
