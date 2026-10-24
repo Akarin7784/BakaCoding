@@ -608,6 +608,13 @@ describe("diagnostics:export 粒度与数据目录（T-130）", () => {
       { scope: { kind: "ticket", ticket_id: 7 } },
       { scope: { kind: "requirement" } },
       { scope: { kind: "time_range", from: "nope", to: "2026-10-18T00:00:00Z" } },
+      { scope: { kind: "time_range", from: "2026-10-17", to: "2026-10-18T00:00:00Z" } },
+      { scope: { kind: "time_range", from: "10/17/2026", to: "2026-10-18T00:00:00Z" } },
+      { scope: { kind: "time_range", from: "Sat Oct 17 2026", to: "2026-10-18T00:00:00Z" } },
+      { scope: { kind: "time_range", from: "2026-10-17 08:00", to: "2026-10-18T00:00:00Z" } },
+      { scope: { kind: "time_range", from: "2026-10-17T08:00:00", to: "2026-10-18T00:00:00Z" } },
+      { scope: { kind: "time_range", from: "2026-02-30T00:00:00Z", to: "2026-10-18T00:00:00Z" } },
+      { scope: { kind: "time_range", from: "2026-10-17T24:00:00Z", to: "2026-10-18T00:00:00Z" } },
       { scope: { kind: "time_range", from: "2026-10-18T02:00:00Z", to: "2026-10-18T01:00:00Z" } },
       { scope: { kind: "weird" } },
     ];
@@ -650,5 +657,34 @@ describe("diagnostics:export 粒度与数据目录（T-130）", () => {
     stop();
     expect(handlers.has(IPC_CHANNELS.diagnosticsExport)).toBe(false);
     expect(handlers.has(IPC_CHANNELS.diagnosticsOpenDataDir)).toBe(false);
+  });
+});
+
+const { isStrictIsoDateTime } = ipcModule;
+
+describe("isStrictIsoDateTime（T-137）", () => {
+  it("接受带时区的 ISO 日期时间", () => {
+    for (const v of [
+      "2026-10-18T00:00:00Z",
+      "2026-10-18T00:00:00.000Z",
+      "2026-10-18T08:00+08:00",
+      "2024-02-29T12:30:45-05:30",
+    ])
+      expect(isStrictIsoDateTime(v)).toBe(true);
+  });
+  it("拒绝 Date.parse 会放过的非 ISO 写法和不存在的日期", () => {
+    for (const v of [
+      "2026-10-18",
+      "10/18/2026",
+      "Sat Oct 18 2026",
+      "2026-10-18 08:00",
+      "2026-10-18T08:00:00",
+      "2026-02-30T00:00:00Z",
+      "2025-02-29T00:00:00Z",
+      "2026-10-18T24:00:00Z",
+      " 2026-10-18T00:00:00Z",
+      7,
+    ])
+      expect(isStrictIsoDateTime(v)).toBe(false);
   });
 });
