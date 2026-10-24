@@ -308,7 +308,7 @@ export function parseExportOptions(
       : { ok: false };
   }
   if (s.kind === "time_range") {
-    const validIso = (v: unknown) => typeof v === "string" && !Number.isNaN(Date.parse(v));
+    const validIso = isStrictIsoDateTime;
     if (!validIso(s.from) || !validIso(s.to)) return { ok: false };
     if (Date.parse(s.from as string) > Date.parse(s.to as string)) return { ok: false };
     return {
@@ -590,4 +590,26 @@ export function serveSecretProvider(ipc: IpcMainLike, deps: SecretProviderDeps):
     ipc.removeHandler(IPC_CHANNELS.secretClear);
     ipc.removeHandler(IPC_CHANNELS.providerTest);
   };
+}
+
+/**
+ * 严格 ISO 8601 日期时间（T-137）：必须带时间和时区（Z 或 ±HH:MM），
+ * 日期要真实存在（拒绝 2026-02-30 这种 Date.parse 会顺延的值）。
+ */
+const ISO_DATETIME_RE =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?(Z|[+-](\d{2}):(\d{2}))$/;
+
+export function isStrictIsoDateTime(v: unknown): v is string {
+  if (typeof v !== "string") return false;
+  const m = ISO_DATETIME_RE.exec(v);
+  if (!m) return false;
+  const [, y, mo, d, h, mi, sec, , oh, om] = m;
+  const year = Number(y);
+  const month = Number(mo);
+  const day = Number(d);
+  if (month < 1 || month > 12 || day < 1) return false;
+  if (day > new Date(Date.UTC(year, month, 0)).getUTCDate()) return false;
+  if (Number(h) > 23 || Number(mi) > 59 || Number(sec ?? 0) > 59) return false;
+  if (oh !== undefined && (Number(oh) > 23 || Number(om) > 59)) return false;
+  return !Number.isNaN(Date.parse(v));
 }
