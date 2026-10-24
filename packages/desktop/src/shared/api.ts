@@ -10,6 +10,10 @@ import type {
 } from "@bakacoding/supervisor";
 import type { Project } from "@bakacoding/config-budget";
 import type { BakaEvent, Role, TicketStatus } from "@bakacoding/types";
+import type { SupervisorMessage as StoredSupervisorMessage } from "@bakacoding/storage";
+
+/** 主管对话里存下来的一条消息（UI-04a，原样取自 2 / 10 的 SupervisorMessage）。 */
+export type DesktopSupervisorMessage = StoredSupervisorMessage;
 
 /** IPC 通道名。 */
 export const IPC_CHANNELS = {
@@ -35,6 +39,11 @@ export const IPC_CHANNELS = {
   syncStateUpdate: "bakacoding:sync:state-update",
   /** invoke：主管 1:1 对话，转给 10 的 chat()（T-071）。 */
   supervisorChat: "bakacoding:supervisor:chat",
+  /**
+   * invoke：主管 1:1 对话历史（UI-04a），转给 10 的 history()；参数 `{before?, limit?}`（limit 默认 50）。
+   * 整条对话一条流，不按项目筛选；只读后端回空列表；失败原因已脱敏、不带路径。
+   */
+  supervisorHistory: "bakacoding:supervisor:history",
   /** invoke：选目录导入项目，切换后端到该仓库（T-072）。 */
   projectImport: "bakacoding:project:import",
   /** invoke：对上次导入失败（只缺配置）的目录用默认模板补配置，再完成导入；无参数（T-081）。 */
@@ -390,6 +399,15 @@ export type ChatReplyKind = ChatReply["kind"];
  * 只读 / 未接线 / chat() 抛错都是 ok:false，reason 已在主进程脱敏、截到 CHAT_REASON_MAX 字。
  */
 export type DesktopChatResult = { ok: true; reply: ChatReply } | { ok: false; reason: string };
+/** `supervisor:history` 的参数（UI-04a）：before 为 message_id 游标，limit 默认 50。 */
+export interface DesktopHistoryQuery {
+  before?: string;
+  limit?: number;
+}
+/** `supervisor:history` 的结果（UI-04a）：按时间正序；只读为 ok:true 空列表；reason 已脱敏截断。 */
+export type DesktopHistoryResult =
+  | { ok: true; messages: DesktopSupervisorMessage[] }
+  | { ok: false; reason: string };
 /** `project:import` 结果（T-072）：project 原样取自 3 的 importProject；note 为补充说明（如在用 BAKACODING_CONFIG）。 */
 export type DesktopImportResult =
   | { ok: true; project: Project; note?: string }
@@ -589,6 +607,8 @@ export interface BakaDesktopApi {
   onSyncState(listener: (state: DesktopSyncState) => void): () => void;
   /** 发一条消息给主管（T-071）；失败以 ok:false 返回，不抛过 IPC。 */
   supervisorChat(message: UserMessage): Promise<DesktopChatResult>;
+  /** 取主管对话历史（UI-04a）；失败以 ok:false 返回，不抛过 IPC。 */
+  getSupervisorHistory(query?: DesktopHistoryQuery): Promise<DesktopHistoryResult>;
   /** 选目录导入项目（T-072）。 */
   importProject(): Promise<DesktopImportResult>;
   /** 对上次导入时选的目录用默认模板补配置并完成导入（T-081）；目录由主进程记住，不从界面传。 */
