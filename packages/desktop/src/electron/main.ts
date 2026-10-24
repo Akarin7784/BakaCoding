@@ -20,6 +20,7 @@ import {
   serveSupervisorChat,
   serveSyncState,
   serveAbout,
+  serveModelSettings,
   serveWindowTheme,
 } from "./ipc.js";
 import { titleBarOverlayFor, usesTitleBarOverlay, windowChromeOptions } from "./window-chrome.js";
@@ -221,6 +222,17 @@ if (!gotLock) {
         ensureExcludeLines,
       }),
     });
+    // UI-07b：设置 › 模型；保存后走 backend.reload()（有在途单时排队）
+    const stopModelSettings = serveModelSettings(ipcMain, {
+      repoRoot: () => backend.repoRoot(),
+      repoSource: () => backend.status().repoSource,
+      argv: process.argv,
+      env: process.env,
+      running: () => backend.runningCount() + (backend.chatInFlight() ? 1 : 0),
+      reload: () => backend.reload(),
+      writeConfig,
+      writePricing,
+    });
     // UI-03b：密钥项与测试连接；标记文件放 userData（不在仓库里），值只交给 3
     const stopSecretProvider = serveSecretProvider(ipcMain, {
       secretDeps: { markerPath: path.join(userData, SECRET_MARKER_FILE) },
@@ -247,6 +259,7 @@ if (!gotLock) {
         stopBackendReload();
         stopRepoFix();
         stopSecretProvider();
+        stopModelSettings();
         reader.close();
       },
       warn: (m) => console.warn(`[desktop] ${m}`),
