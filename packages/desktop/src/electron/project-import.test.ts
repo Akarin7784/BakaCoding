@@ -1241,3 +1241,35 @@ describe("导入不是 Git 仓库的文件夹（UI-03b）", () => {
     expect(switchTo).toHaveBeenCalledWith(path.resolve(b));
   });
 });
+
+describe("T-140：另外指定的 models 不合法时也报 pricing 的问题", () => {
+  const cases = [
+    { git: true, pricing: "missing" },
+    { git: true, pricing: "invalid" },
+    { git: false, pricing: "missing" },
+    { git: false, pricing: "invalid" },
+  ] as const;
+  for (const k of cases) {
+    it(`${k.git ? "Git 仓库" : "不是 Git 仓库"}，pricing ${k.pricing === "missing" ? "缺了" : "不合法"}`, () => {
+      const r = repo({ git: k.git, pricing: k.pricing !== "missing" });
+      if (k.pricing === "invalid") writeFileSync(join(r, "config", "pricing.json"), "{ not json");
+      const cfg = join(tmp("bc-cfg-"), "models.json");
+      writeFileSync(cfg, "{ not json");
+      for (const [e, a] of [
+        [{ BAKACODING_CONFIG: cfg }, []],
+        [{}, [`--config=${cfg}`]],
+      ] as const) {
+        const c = checkProjectDir(r, e, a);
+        expect(c.ok).toBe(false);
+        if (c.ok) return;
+        expect(c.reason).toContain("config/pricing.json");
+        if (k.pricing === "missing") expect(c.reason).toContain("缺少 config/pricing.json");
+        else expect(c.reason).toMatch(/config\/pricing\.json 校验失败/);
+        if (k.git && k.pricing === "missing") expect(c.missing).toEqual(["config/pricing.json"]);
+        // 另外指定的 models 的问题照样报（Git 仓库缺 pricing 时先给 T-081 的缺文件结果，只带来源说明）
+        if (!(k.git && k.pricing === "missing")) expect(c.reason).toMatch(/models\.json/);
+        expect(c.reason).toContain("指定的配置");
+      }
+    });
+  }
+});
