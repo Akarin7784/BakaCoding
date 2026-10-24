@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { App } from "./App";
 
 afterEach(cleanup);
@@ -25,17 +25,18 @@ describe("桌面界面壳子", () => {
     expect(screen.getByText("加个导出按钮")).toBeTruthy();
   });
 
-  it("项目群只读：群里没有输入框（下方是主管对话，T-072），话题可折叠，Flash 调用默认折叠", () => {
+  it("项目页只读：页里没有输入框（下方是主管对话，T-072），列出需求，点开进需求页", () => {
     render(<App />);
     openProject();
-    const group = screen.getByRole("region", { name: "项目群" });
-    expect(group.querySelector("textarea")).toBeNull();
+    const page = screen.getByRole("region", { name: "项目页" });
+    expect(page.querySelector("textarea")).toBeNull();
     expect(screen.getAllByRole("textbox")).toHaveLength(1);
     expect(screen.getByLabelText("发给主管")).toBeTruthy();
-    expect(document.getElementById("topic-req-1")?.tagName).toBe("DETAILS");
-    const calls = screen.getAllByTestId("flash-calls");
-    expect(calls.length).toBeGreaterThan(0);
-    for (const c of calls) expect((c as HTMLDetailsElement).open).toBe(false);
+    expect(within(page).getAllByTestId("requirement-row").length).toBeGreaterThan(0);
+    fireEvent.click(page.querySelector<HTMLElement>('[data-requirement="req-1"]')!);
+    expect(window.location.hash).toBe("#requirement=req-1");
+    expect(screen.queryByRole("region", { name: "项目页" })).toBeNull();
+    window.history.replaceState(null, "", "/");
   });
 
   it("打开右侧边栏后三栏齐全：编码池状态、Git 区、PR 列表", () => {
@@ -50,10 +51,9 @@ describe("桌面界面壳子", () => {
     expect(screen.getByText("×1")).toBeTruthy();
   });
 
-  it("主管带星标，副 Agent 同一机器人图标不带星", () => {
+  it("主管带星标（副 Agent 图标在需求页时间线里，AgentIcon 测试覆盖）", () => {
     render(<App />);
     openProject();
     expect(screen.getAllByTestId("icon-supervisor").length).toBeGreaterThan(0);
-    expect(screen.getAllByTestId("icon-agent").length).toBeGreaterThan(0);
   });
 });

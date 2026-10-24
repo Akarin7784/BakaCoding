@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { App } from "./App";
 import { HIGH_RISK_CARD_COPY, REQUIREMENT_PAGE_COPY, STEPPER_COPY } from "./lib/copy";
 import { parseRequirementHash, requirementHash } from "./lib/requirementRoute";
+import { SIDEBAR_STORAGE_KEY } from "./lib/layout";
 
 afterEach(() => {
   cleanup();
@@ -65,13 +66,46 @@ describe("UI-05d 需求页高风险 + 左栏红点", () => {
     expect(screen.queryByRole("region", { name: HIGH_RISK_CARD_COPY.label })).toBeNull();
   });
 
-  it("左栏：有待裁决的项目带红点，没有时不带", () => {
+  it("左栏（UI-05e）：红点标在需要处理的需求行上，项目行展开时不重复标；没有待裁决时都不带", () => {
     render(<App api={null} pendingHighRisk={pending} />);
-    expect(screen.getByRole("button", { name: /baka-todo\s*（需要你处理）/ })).toBeTruthy();
-    expect(screen.getAllByTestId("attention-dot")).toHaveLength(1);
-    expect(screen.getByRole("button", { name: "baka-blog" })).toBeTruthy();
+    const nav = screen.getByRole("navigation");
+    const req2 = nav.querySelector<HTMLElement>('[data-requirement="req-2"]')!;
+    const req1 = nav.querySelector<HTMLElement>('[data-requirement="req-1"]')!;
+    expect(req2.querySelector('[data-testid="requirement-attention-dot"]')).toBeTruthy();
+    expect(req2.textContent).toContain("（需要你处理）");
+    expect(req1.querySelector('[data-testid="requirement-attention-dot"]')).toBeNull();
+    expect(screen.queryByTestId("attention-dot")).toBeNull();
+    expect(screen.getByRole("button", { name: "baka-todo" })).toBeTruthy();
+    cleanup();
+    render(<App api={null} pendingHighRisk={[]} />);
+    expect(screen.queryByTestId("requirement-attention-dot")).toBeNull();
+    expect(screen.queryByTestId("attention-dot")).toBeNull();
+  });
+
+  it("左栏收起：需求行不列，项目图标上带汇总红点；没有待裁决时不带", () => {
+    localStorage.setItem(SIDEBAR_STORAGE_KEY, "1");
+    render(<App api={null} pendingHighRisk={pending} />);
+    expect(screen.queryByTestId("requirement-attention-dot")).toBeNull();
+    const dots = screen.getAllByTestId("attention-dot");
+    expect(dots).toHaveLength(1);
+    expect(dots[0]!.className).toContain("absolute");
+    expect(dots[0]!.closest("button")?.textContent).toContain("baka-todo");
     cleanup();
     render(<App api={null} pendingHighRisk={[]} />);
     expect(screen.queryByTestId("attention-dot")).toBeNull();
+    localStorage.removeItem(SIDEBAR_STORAGE_KEY);
+  });
+
+  it("左栏点需求：进需求页（#requirement=<id>），这一行标为当前", () => {
+    render(<App api={null} pendingHighRisk={[]} />);
+    const nav = screen.getByRole("navigation");
+    fireEvent.click(nav.querySelector<HTMLElement>('[data-requirement="req-1"]')!);
+    expect(window.location.hash).toBe(requirementHash("req-1"));
+    expect(nav.querySelector('[data-requirement="req-1"]')?.getAttribute("aria-current")).toBe(
+      "page",
+    );
+    expect(
+      screen.getByRole("button", { name: "baka-todo" }).getAttribute("aria-current"),
+    ).toBeNull();
   });
 });

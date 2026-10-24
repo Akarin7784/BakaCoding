@@ -74,7 +74,7 @@ describe("左栏：收起 / 展开、持久化、断点", () => {
     const btn = within(sidebar()).getByRole("button", { name: /baka-todo/ });
     expect(btn.getAttribute("title")).toBe("baka-todo");
     fireEvent.click(btn);
-    expect(screen.getByRole("region", { name: "项目群" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "项目页" })).toBeTruthy();
   });
 
   it("窗口 < 1024 自动收起；窄时临时展开不改偏好；变宽后回到偏好", () => {
@@ -236,12 +236,12 @@ describe("全局快捷键", () => {
   it("Ctrl+N 回到主管对话并聚焦输入框", async () => {
     render(<App api={null} />);
     fireEvent.click(within(sidebar()).getByRole("button", { name: /baka-todo/ }));
-    expect(screen.getByRole("region", { name: "项目群" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "项目页" })).toBeTruthy();
     press("n");
     await waitFor(() =>
       expect(document.activeElement?.getAttribute("data-composer")).toBe("supervisor"),
     );
-    expect(screen.queryByRole("region", { name: "项目群" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "项目页" })).toBeNull();
   });
 
   it("不带 Ctrl 的同名键不触发；输入框里 Enter 仍是发送", () => {
@@ -276,7 +276,7 @@ describe("现有界面都挂进新骨架", () => {
     expect(screen.getByTestId("title-bar").textContent).toContain("主管");
 
     fireEvent.click(within(sidebar()).getByRole("button", { name: /baka-todo/ }));
-    expect(within(main).getByRole("region", { name: "项目群" })).toBeTruthy();
+    expect(within(main).getByRole("region", { name: "项目页" })).toBeTruthy();
     expect(screen.getByTestId("title-bar").textContent).toContain("# baka-todo");
     // 选中项目时仍能和主管说话
     expect(within(main).getByRole("textbox", { name: "发给主管" })).toBeTruthy();

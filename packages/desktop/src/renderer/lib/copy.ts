@@ -194,6 +194,22 @@ export const HIGH_RISK_CARD_COPY = {
   rejectPlaceholder: "写一句为什么拒绝（会转给主管）",
   confirmReject: "确认拒绝",
   cancel: "取消",
-  stalePr: "PR 已更新，请重新查看",
   attentionDot: "需要你处理",
+} as const;
+
+/** UI-05e：项目页（§4.3）、左栏需求列表。 */
+export const PROJECT_PAGE_COPY = {
+  label: "项目页",
+  list: "需求列表",
+  tickets: (n: number) => `${n} 张单`,
+  allMerged: "全部合入",
+  needsYou: (n: number) => `${n} 张单需要你处理`,
+  highRisk: "高风险 PR 待你裁决",
+  yesterday: "昨天",
+  filter: { active: "进行中", attention: "需要处理", done: "已完成" },
+  filterAll: "全部",
+  empty: "还没有需求，去主管对话里提一个",
+  emptyAction: "去主管对话",
+  emptyFiltered: "这一类没有需求",
+  sidebarList: (project: string) => `${project} 的需求`,
 } as const;

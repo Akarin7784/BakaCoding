@@ -95,6 +95,12 @@ async function openUnattributed() {
   return await screen.findByRole("button", { name: /未归属上报/ });
 }
 
+function openRow(rid: string): HTMLElement {
+  return document.querySelector<HTMLElement>(
+    `[data-testid="requirement-row"][data-requirement="${rid}"]`,
+  )!;
+}
+
 function fakeApi(snap: DesktopSnapshot) {
   const listeners = new Set<(u: DesktopUpdate) => void>();
   const api: BakaDesktopApi = {
@@ -109,16 +115,17 @@ function fakeApi(snap: DesktopSnapshot) {
 }
 
 describe("渲染进程从 preload API 读真实数据", () => {
-  it("有 window.bakacoding 时不用假数据：项目、话题、Flash 调用、PR 状态都来自快照", async () => {
+  it("有 window.bakacoding 时不用假数据：项目、需求、PR 状态都来自快照", async () => {
     const { api } = fakeApi(snapshot);
     window.bakacoding = api;
     render(<App />);
     const btn = await screen.findByRole("button", { name: /real-proj/ });
     expect(screen.queryByRole("button", { name: /baka-todo/ })).toBeNull();
     fireEvent.click(btn);
-    expect(screen.getByText("T-1：真实派单")).toBeTruthy();
-    expect(document.getElementById("topic-R-1")?.tagName).toBe("DETAILS");
-    expect(screen.getByTestId("flash-calls").textContent).toContain("真实输出");
+    // UI-05e：项目页列需求（名字取第一张单的第一行），消息和 Flash 调用在需求页（RequirementPage 测试覆盖）
+    const row = openRow("R-1");
+    expect(row.textContent).toContain("真实单一");
+    expect(row.dataset.category).toBe("attention");
 
     fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
     expect(screen.getByText("编码中").getAttribute("data-tone")).toBe("accent");
@@ -135,7 +142,7 @@ describe("渲染进程从 preload API 读真实数据", () => {
     expect(alert.textContent).toContain("需要人工介入 · T-2 · 评审重写超限");
   });
 
-  it("增量更新：新群消息和单状态变化即时显示", async () => {
+  it("增量更新：单状态变化即时反映到项目页需求行", async () => {
     const { api, push } = fakeApi(snapshot);
     render(<App api={api} />);
     fireEvent.click(await screen.findByRole("button", { name: /real-proj/ }));
@@ -159,7 +166,9 @@ describe("渲染进程从 preload API 读真实数据", () => {
         last_seq: 5,
       }),
     );
-    await waitFor(() => expect(screen.getByText("T-1 增量回报")).toBeTruthy());
+    // UI-05e：项目页的需求行即时跟着单状态变
+    await waitFor(() => expect(openRow("R-1").textContent).toContain("全部合入"));
+    expect(openRow("R-1").dataset.category).toBe("done");
     fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
     expect(screen.getByText("已合入").getAttribute("data-tone")).toBe("foreground");
   });

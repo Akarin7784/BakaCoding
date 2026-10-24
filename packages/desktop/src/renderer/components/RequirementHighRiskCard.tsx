@@ -47,9 +47,7 @@ function Card({
         ...(decision === "reject" ? [reason.trim()] : []),
       );
       if (!r.ok) {
-        setError(
-          r.code === "stale_pr" ? C.stalePr : highRiskDecisionErrorLabel(r.code) || r.message,
-        );
+        setError(highRiskDecisionErrorLabel(r.code) || r.message);
       }
     } catch {
       setError(highRiskDecisionErrorLabel("unavailable"));
