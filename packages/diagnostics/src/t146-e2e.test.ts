@@ -23,6 +23,9 @@ const PATHS = {
   windowsSlash: "D:/evat146/repo",
   unc: "\\\\evat146-server\\share\\repo",
   fileUrl: "file:///var/evat146/a.ts",
+  // T-147：带空格的路径，空格后的片段（Data Disk、Program Files）也不能出现。
+  spaced: "/Volumes/evat146 Data Disk/repo x/a.ts",
+  spacedWin: "C:\\Program Files\\evat146 App\\x",
   // home 内的相对部分（proj/x.ts）不算敏感，和模块 3 的 home_path 行为一致；只要求 home 本身不出现。
   home: join(HOME, "proj", "x.ts"),
 } as const;
@@ -48,6 +51,8 @@ function makeEvents(): BakaEvent[] {
         flash_calls: [],
         extra_path: PATHS.posix,
         extra: { win: PATHS.windows, list: [PATHS.unc, PATHS.windowsSlash, PATHS.fileUrl] },
+        spaced: `打开 ${PATHS.spaced} 失败`,
+        spaced_quoted: `"${PATHS.spacedWin}"`,
         [PATHS.posix]: "路径当键名",
       },
       cwd: PATHS.posix,
@@ -105,6 +110,11 @@ describe("T-146：诊断包里任何位置都没有绝对路径和 home 目录",
       "evat146",
       HOME,
       JSON.stringify(HOME).slice(1, -1),
+      "Data Disk",
+      "Disk/repo",
+      "repo x",
+      "Program Files",
+      "App\\x",
       ...VALUES.flatMap((p) => [p, JSON.stringify(p).slice(1, -1)]),
     ];
     const latin = bytes.toString("latin1");
