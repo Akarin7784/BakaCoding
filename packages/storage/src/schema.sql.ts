@@ -223,4 +223,6 @@ export const MIGRATIONS: Migration[] = [
   );
   CREATE INDEX supervisor_messages_order ON supervisor_messages(created_at, message_id);
   `,
+  /* v5（T-090）：按项目汇总台账要按 requirement_id 关联 requirements，只加索引，不改表 */
+  `CREATE INDEX ledger_requirement ON ledger(requirement_id);`,
 ];
