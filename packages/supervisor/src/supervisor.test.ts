@@ -1594,6 +1594,70 @@ describe("T-041b 重启接管补跑", () => {
     expect(r.held).toEqual([{ ticket_id: "req-1-1", blocked_by: ["req-1-9"] }]);
     expect(r.enqueued).toEqual([]);
   });
+  it("T-141：没注入 adopt 时，awaiting_adopt 单的下游不交给 9、进 held 并通知一次", async () => {
+    const t = setup({
+      rows: [
+        row("req-1-1", "merge_queued", f({ write_scope: ["lib/a/**"] })),
+        row("req-1-2", "pending", f({ write_scope: ["lib/b/**"], depends_on: ["req-1-1"] })),
+      ],
+    });
+    t.deps.adopt = undefined;
+    const enq = vi.fn();
+    t.deps.enqueue = enq;
+    const { sup } = withDeps(t);
+    const r = await sup.takeOver();
+    expect(r.awaiting_adopt).toEqual(["req-1-1"]);
+    expect(r.held).toEqual([{ ticket_id: "req-1-2", blocked_by: ["req-1-1"] }]);
+    expect(r.enqueued).toEqual([]);
+    expect(enq).not.toHaveBeenCalled();
+    expect(t.notified.at(-1)!.text).toMatch(
+      /req-1-1 已在合并队列里，但本次重启没有接回（没注入 adopt）/,
+    );
+    const n = t.notified.length;
+    await sup.takeOver();
+    expect(t.notified.length).toBe(n);
+  });
+
+  it("T-141：三层链，没注入 adopt 时孙单也挂起", async () => {
+    const t = setup({
+      rows: [
+        row("req-1-1", "merge_queued", f({ write_scope: ["lib/a/**"] })),
+        row("req-1-2", "pending", f({ write_scope: ["lib/b/**"], depends_on: ["req-1-1"] })),
+        row("req-1-3", "pending", f({ write_scope: ["lib/c/**"], depends_on: ["req-1-2"] })),
+      ],
+    });
+    t.deps.adopt = undefined;
+    const enq = vi.fn();
+    t.deps.enqueue = enq;
+    const { sup } = withDeps(t);
+    const r = await sup.takeOver();
+    expect(r.awaiting_adopt).toEqual(["req-1-1"]);
+    expect(r.held).toEqual([
+      { ticket_id: "req-1-2", blocked_by: ["req-1-1"] },
+      { ticket_id: "req-1-3", blocked_by: ["req-1-2"] },
+    ]);
+    expect(enq).not.toHaveBeenCalled();
+  });
+
+  it("T-141：注入了 adopt 时行为不变，下游照常交给 9", async () => {
+    const t = setup({
+      rows: [
+        row("req-1-1", "merge_queued", f({ write_scope: ["lib/a/**"] })),
+        row("req-1-2", "pending", f({ write_scope: ["lib/b/**"], depends_on: ["req-1-1"] })),
+      ],
+    });
+    t.deps.adopt = vi.fn();
+    const enq = t.enqueued;
+    t.deps.enqueue = (x) => {
+      enq.push(x);
+    };
+    const { sup } = withDeps(t);
+    const r = await sup.takeOver();
+    expect(r.adopted).toEqual(["req-1-1"]);
+    expect(r.awaiting_adopt).toEqual([]);
+    expect(r.enqueued).toEqual(["req-1-2"]);
+    expect(r.held).toEqual([]);
+  });
 });
 
 describe("T-041c 高风险 PR 裁决", () => {
