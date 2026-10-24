@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { BakaEvent } from "@bakacoding/types";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BakaDesktopApi, DesktopSnapshot, DesktopUpdate, UiEvent } from "../shared/api";
@@ -114,6 +114,11 @@ function fakeApi(snap: DesktopSnapshot) {
   return { api, push: (u: DesktopUpdate) => listeners.forEach((l) => l(u)) };
 }
 
+const ticketRow = (id: string) =>
+  screen
+    .getAllByTestId("ticket-row")
+    .find((el) => el.dataset.ticket === id) as HTMLElement;
+
 describe("渲染进程从 preload API 读真实数据", () => {
   it("有 window.bakacoding 时不用假数据：项目、需求、PR 状态都来自快照", async () => {
     const { api } = fakeApi(snapshot);
@@ -128,10 +133,12 @@ describe("渲染进程从 preload API 读真实数据", () => {
     expect(row.dataset.category).toBe("attention");
 
     fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
-    expect(screen.getByText("编码中").getAttribute("data-tone")).toBe("accent");
-    const esc = screen.getAllByText("需要人工介入").find((el) => el.dataset.status === "escalated");
-    expect(esc?.getAttribute("data-tone")).toBe("danger");
-    expect(screen.getByText("×3")).toBeTruthy();
+    // UI-06a：右面板单列表来自快照 tickets（状态图标 + ×重写次数）
+    const t1 = ticketRow("T-1");
+    expect(within(t1).getByRole("img", { name: "编码中" }).dataset.tone).toBe("accent");
+    const t2 = ticketRow("T-2");
+    expect(within(t2).getByRole("img", { name: "需要人工介入" }).dataset.tone).toBe("danger");
+    expect(t2.textContent).toContain("×3");
     expect(screen.getByTestId("pool-status").textContent).toContain("未接入");
   });
 
@@ -170,7 +177,9 @@ describe("渲染进程从 preload API 读真实数据", () => {
     await waitFor(() => expect(openRow("R-1").textContent).toContain("全部合入"));
     expect(openRow("R-1").dataset.category).toBe("done");
     fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
-    expect(screen.getByText("已合入").getAttribute("data-tone")).toBe("foreground");
+    expect(within(ticketRow("T-1")).getByRole("img", { name: "已合入" }).dataset.tone).toBe(
+      "foreground",
+    );
   });
 
   it("库还不存在时提示路径；api 为 null 时退回假数据", async () => {
@@ -368,6 +377,19 @@ describe("UI-05f：需求页（api mock）", () => {
     await waitFor(() =>
       expect(exportDiagnostics).toHaveBeenCalledWith({
         scope: { kind: "requirement", requirement_id: "R-1" },
+      }),
+    );
+  });
+
+  it("UI-06a：右面板单列表行内导出：api.exportDiagnostics 收到 ticket scope", async () => {
+    const { api, exportDiagnostics } = reqApi();
+    render(<App api={api as unknown as BakaDesktopApi} />);
+    fireEvent.click(await screen.findByRole("button", { name: /real-proj/ }));
+    fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
+    fireEvent.click(screen.getByRole("button", { name: "导出 T-2 诊断包" }));
+    await waitFor(() =>
+      expect(exportDiagnostics).toHaveBeenCalledWith({
+        scope: { kind: "ticket", ticket_id: "T-2" },
       }),
     );
   });

@@ -110,6 +110,8 @@ describe("左栏：收起 / 展开、持久化、断点", () => {
 describe("右面板：开关、停靠与抽屉", () => {
   it("默认关；≥ 1200 停靠在右侧，宽 360；有 概览 / 动态 两个标签", () => {
     render(<App api={null} />);
+    // UI-06a：主管对话里不再回退到最后一个项目，先选项目
+    fireEvent.click(screen.getByRole("button", { name: /baka-todo/ }));
     expect(screen.queryByRole("complementary", { name: "右面板" })).toBeNull();
     const toggle = screen.getByRole("button", { name: "打开右面板" });
     expect(toggle.getAttribute("aria-pressed")).toBe("false");
@@ -132,18 +134,21 @@ describe("右面板：开关、停靠与抽屉", () => {
 
   it("动态标签接活动流：显示 Agent 消息与底部状态行（T-127）", async () => {
     render(<App api={null} />);
+    fireEvent.click(screen.getByRole("button", { name: /baka-todo/ }));
     fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
     const tab = screen.getByRole("tab", { name: "动态" });
     fireEvent.mouseDown(tab);
     fireEvent.click(tab);
     await waitFor(() => expect(screen.getByTestId("activity-feed")).toBeTruthy());
     expect(screen.getAllByTestId("activity-item")).toHaveLength(5);
-    expect(screen.getByTestId("activity-status").textContent).toBe("T-2 重写");
+    // UI-06a：状态行来自快照 tickets（mock 里 T-2 重新评审）
+    expect(screen.getByTestId("activity-status").textContent).toBe("T-2 重新评审");
   });
 
   it("面板关着时来了新消息：右面板开关亮小点，打开看过动态后熄灭（T-127）", async () => {
     const base = mockProjects[0]!;
     const { rerender } = render(<App api={null} />);
+    fireEvent.click(screen.getByRole("button", { name: /baka-todo/ }));
     expect(screen.queryByTestId("right-panel-dot")).toBeNull();
 
     const last = base.messages.at(-1)!;

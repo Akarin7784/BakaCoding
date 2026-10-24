@@ -10,7 +10,7 @@ import type {
 } from "../shared/api";
 import { App } from "./App";
 import { toast, Toaster } from "./components/ui/sonner";
-import { projects as mockProjects } from "./mock/data";
+import { projects as mockProjects, tickets as mockTickets } from "./mock/data";
 
 beforeAll(() => {
   Element.prototype.scrollIntoView ??= function () {};
@@ -183,7 +183,7 @@ describe("只读横幅（§4.7）", () => {
 describe("只读时禁用并说明（§4.7）", () => {
   it("输入框禁用并提示；裁决、导出、合入 main 禁用并有说明", async () => {
     const { api } = fakeApi(READONLY, { exportDiagnostics: vi.fn() });
-    renderApp({ api, projects: mockProjects, pendingHighRisk: [hr] });
+    renderApp({ api, projects: mockProjects, tickets: mockTickets, pendingHighRisk: [hr] });
     await screen.findByRole("region", { name: "只读模式" });
     const box = screen.getByRole("textbox", { name: "发给主管" }) as HTMLTextAreaElement;
     expect(box.disabled).toBe(true);
@@ -204,8 +204,10 @@ describe("只读时禁用并说明（§4.7）", () => {
     const merge = screen.getByRole("button", { name: /合入 main/ }) as HTMLButtonElement;
     expect(merge.disabled).toBe(true);
     expect(merge.title).toBe("只读模式下不能合入 main");
-    const prExport = screen.getAllByRole("button", { name: /诊断包$/ }).at(-1) as HTMLButtonElement;
+    // UI-06a：单列表行内导出（只读时禁用并说明）
+    const prExport = screen.getByRole("button", { name: "导出 T-1 诊断包" }) as HTMLButtonElement;
     expect(prExport.disabled).toBe(true);
+    expect(prExport.title).toBe("只读模式下不能导出");
   });
 
   it("不只读时这些都可用", async () => {

@@ -46,9 +46,11 @@ describe("桌面界面壳子", () => {
     expect(screen.getByRole("dialog", { name: "右面板" })).toBeTruthy();
     expect(screen.getByTestId("pool-status").textContent).toContain("并发 1/4");
     expect(screen.getByRole("button", { name: /合入 main/ })).toBeTruthy();
-    const badge = screen.getByText("重写");
-    expect(badge.getAttribute("data-tone")).toBe("accent");
-    expect(screen.getByText("×1")).toBeTruthy();
+    // UI-06a：单列表来自快照 tickets，只列当前项目
+    const rows = screen.getAllByTestId("ticket-row");
+    expect(rows.map((r) => r.dataset.ticket)).toEqual(["T-1", "T-2"]);
+    expect(within(rows[1]!).getByRole("img", { name: "重新评审" }).dataset.tone).toBe("accent");
+    expect(rows[1]!.textContent).toContain("×1");
   });
 
   it("主管带星标（副 Agent 图标在需求页时间线里，AgentIcon 测试覆盖）", () => {
