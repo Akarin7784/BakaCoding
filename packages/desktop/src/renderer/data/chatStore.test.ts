@@ -1,7 +1,7 @@
 // UI-04a：chatStore 的 hydrate / loadOlder / 按 message_id 去重。
 import { describe, expect, it, vi } from "vitest";
 import type { DesktopHistoryResult, DesktopSupervisorMessage } from "../../shared/api";
-import { CHAT_HISTORY_PAGE, ChatStore } from "./chatStore";
+import { CHAT_HISTORY_PAGE, ChatStore, storedReply } from "./chatStore";
 
 const msg = (id: string, role: "user" | "supervisor" = "user"): DesktopSupervisorMessage => ({
   message_id: id,
@@ -79,5 +79,12 @@ describe("ChatStore.loadOlder（UI-04a）", () => {
     await t.loadOlder(async () => ({ ok: false, reason: "读取对话历史失败" }));
     expect(ids(t)).toHaveLength(CHAT_HISTORY_PAGE);
     expect(t.getSnapshot().loadingOlder).toBe(false);
+  });
+});
+
+describe("storedReply（T-148）", () => {
+  it("message_id 取落库的 supervisor 消息 id，与 history 一致", () => {
+    expect(storedReply(msg("m1-r", "supervisor")).message_id).toBe("m1-r");
+    expect(storedReply(msg("任意-id", "supervisor")).message_id).toBe("任意-id");
   });
 });

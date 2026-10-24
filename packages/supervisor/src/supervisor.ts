@@ -1664,7 +1664,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         ticket_ids: reply.ticket_ids ?? [],
         created_at: r.created_at,
       });
-      return { message_id: replyId, ...reply };
+      return { ...reply, message_id: replyId };
     } finally {
       chatSplitInflight = Math.max(0, chatSplitInflight - 1);
       void emitSupervisorBacklog();
