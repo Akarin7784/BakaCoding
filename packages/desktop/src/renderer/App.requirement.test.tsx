@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { App } from "./App";
-import { REQUIREMENT_PAGE_COPY, STEPPER_COPY } from "./lib/copy";
+import { HIGH_RISK_CARD_COPY, REQUIREMENT_PAGE_COPY, STEPPER_COPY } from "./lib/copy";
 import { parseRequirementHash, requirementHash } from "./lib/requirementRoute";
 
 afterEach(() => {
@@ -35,5 +35,43 @@ describe("需求页入口（路由）", () => {
     window.location.hash = requirementHash("req-1");
     window.dispatchEvent(new HashChangeEvent("hashchange"));
     return screen.findByRole("region", { name: REQUIREMENT_PAGE_COPY.label });
+  });
+});
+
+// UI-05d：高风险卡片进需求页、顶部横条保留兜底、左栏项目红点。
+describe("UI-05d 需求页高风险 + 左栏红点", () => {
+  const pending = [
+    {
+      ticket_id: "T-2",
+      project_id: "p-todo",
+      pr_id: "pr-7",
+      reasons: ["dependency_file" as const],
+      files: [{ path: "package.json" }],
+      files_more: 0,
+      held_at: "2026-10-24T02:30:00Z",
+    },
+  ];
+
+  it("需求页里有本需求的高风险卡片，顶部横条照旧在", () => {
+    window.location.hash = requirementHash("req-2");
+    render(<App api={null} pendingHighRisk={pending} />);
+    expect(screen.getByRole("region", { name: HIGH_RISK_CARD_COPY.label })).toBeTruthy();
+    expect(screen.getByTestId("high-risk-panel")).toBeTruthy();
+  });
+
+  it("别的需求页没有这张卡片", () => {
+    window.location.hash = requirementHash("req-1");
+    render(<App api={null} pendingHighRisk={pending} />);
+    expect(screen.queryByRole("region", { name: HIGH_RISK_CARD_COPY.label })).toBeNull();
+  });
+
+  it("左栏：有待裁决的项目带红点，没有时不带", () => {
+    render(<App api={null} pendingHighRisk={pending} />);
+    expect(screen.getByRole("button", { name: /baka-todo\s*（需要你处理）/ })).toBeTruthy();
+    expect(screen.getAllByTestId("attention-dot")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "baka-blog" })).toBeTruthy();
+    cleanup();
+    render(<App api={null} pendingHighRisk={[]} />);
+    expect(screen.queryByTestId("attention-dot")).toBeNull();
   });
 });

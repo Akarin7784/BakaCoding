@@ -47,7 +47,9 @@ function Card({
         ...(decision === "reject" ? [reason.trim()] : []),
       );
       if (!r.ok) {
-        setError(r.code === "stale_pr" ? C.stalePr : highRiskDecisionErrorLabel(r.code) || r.message);
+        setError(
+          r.code === "stale_pr" ? C.stalePr : highRiskDecisionErrorLabel(r.code) || r.message,
+        );
       }
     } catch {
       setError(highRiskDecisionErrorLabel("unavailable"));
@@ -92,7 +94,11 @@ function Card({
         </p>
       )}
       {error && (
-        <p role="alert" className="mt-2 text-xs text-danger" data-testid="requirement-high-risk-error">
+        <p
+          role="alert"
+          className="mt-2 text-xs text-danger"
+          data-testid="requirement-high-risk-error"
+        >
           {error}
         </p>
       )}
@@ -116,7 +122,12 @@ function Card({
             >
               {C.confirmReject}
             </Button>
-            <Button size="sm" variant="secondary" disabled={busy} onClick={() => setRejecting(false)}>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={busy}
+              onClick={() => setRejecting(false)}
+            >
               {C.cancel}
             </Button>
           </div>
@@ -153,7 +164,12 @@ export function RequirementHighRiskCards({
       <h3 className="text-xs font-medium text-danger">{C.label}</h3>
       <ul className="space-y-2">
         {items.map((i) => (
-          <Card key={`${i.ticket_id}:${i.pr_id}`} item={i} disabled={disabled} onDecide={onDecide} />
+          <Card
+            key={`${i.ticket_id}:${i.pr_id}`}
+            item={i}
+            disabled={disabled}
+            onDecide={onDecide}
+          />
         ))}
       </ul>
     </section>

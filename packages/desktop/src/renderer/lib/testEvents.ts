@@ -1,6 +1,6 @@
 // UI-05c：需求页测试共用的事件 / 单子构造（只给测试用）。
 import type { TicketStatus } from "@bakacoding/types";
-import type { TicketView, UiEvent } from "../../shared/api";
+import type { DesktopPendingHighRisk, TicketView, UiEvent } from "../../shared/api";
 
 let seq = 0;
 const base = (requirement_id: string | null, ticket_id: string | null) => ({
@@ -59,4 +59,18 @@ export function changed(req: string | null, to: TicketStatus, ticket = "T-1"): U
     type: "ticket_status_changed",
     payload: { project_id: "p1", from: null, to },
   } as unknown as UiEvent;
+}
+
+/** UI-05d：待裁决高风险的测试数据。 */
+export function hr(over: Partial<DesktopPendingHighRisk> = {}): DesktopPendingHighRisk {
+  return {
+    ticket_id: "T-1",
+    project_id: "p1",
+    pr_id: "pr-1",
+    reasons: ["dependency_file"],
+    files: [{ path: "package.json" }],
+    files_more: 0,
+    held_at: "2026-10-24T02:30:00Z",
+    ...over,
+  };
 }
