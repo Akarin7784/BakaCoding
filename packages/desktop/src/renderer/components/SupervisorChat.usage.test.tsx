@@ -142,3 +142,16 @@ describe("UI-06e：调用计时与 token / 费用", () => {
     expect(fmtCost(Number.NaN)).toBe("$0.0000");
   });
 });
+
+describe("App 接线（UI-06e）", () => {
+  it("App 里每个 SupervisorChat 都传了 events", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("../App.tsx", import.meta.url), "utf8");
+    const uses = src
+      .split("<SupervisorChat")
+      .slice(1)
+      .map((s) => s.slice(0, s.indexOf("/>")));
+    expect(uses.length).toBeGreaterThan(0);
+    for (const u of uses) expect(u).toMatch(/\bevents=\{events\}/);
+  });
+});
