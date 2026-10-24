@@ -137,7 +137,7 @@ describe("settings:config-get", () => {
 // UI-05c P3：config-get 的可选字段 pipeline.resubmit_limits.review（评审上限来源）。
 describe("settings:config-get 的 pipeline（UI-05c）", () => {
   afterEach(() => vi.restoreAllMocks());
-  const setModels = (f: (m: Record<string, any>) => void) => {
+  const setModels = (f: (m: { pipeline: { resubmit_limits: { review?: number } } }) => void) => {
     const m = readModels();
     f(m);
     writeFileSync(join(root, "config/models.json"), JSON.stringify(m, null, 2));
