@@ -108,3 +108,29 @@ export const COMPOSER_COPY = {
   chipLabel: "选择项目",
   noProject: "不指定",
 } as const;
+
+/** UI-04c：主管回复卡片、等待、失败重试、空状态（docs/ui-design.md §4.2）。 */
+export const CHAT_COPY = {
+  decisionSaved: "已记下",
+  dispatched: "已派单",
+  /** 「已派单」卡片：拆出 N 张单 */
+  ticketCount: (n: number) => `拆出 ${n} 张单`,
+  ticketList: "单号：",
+  requirement: "需求",
+  retrySplit: "重试拆单",
+  retrySplitting: "拆单中…",
+  /** 重试拆单成功后本地补的一条（不落库） */
+  splitRetried: (n: number) => `已重新拆单，拆出 ${n} 张单。`,
+  splitFailed: "重试拆单失败",
+  pickProject: "选择项目",
+  waiting: "主管思考中",
+  sendFailed: "没发出去",
+  retry: "重试",
+  emptyTitle: "跟主管说说你想做什么",
+  emptyHint: "点一个示例填进输入框，改好再发。",
+  examples: [
+    "给商城项目加一个按手机号登录的页面",
+    "后台的订单列表加上按日期筛选",
+    "记一条决策：所有接口统一返回 snake_case 字段",
+  ],
+} as const;

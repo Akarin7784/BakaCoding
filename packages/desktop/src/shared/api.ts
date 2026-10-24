@@ -44,6 +44,11 @@ export const IPC_CHANNELS = {
    * 整条对话一条流，不按项目筛选；只读后端回空列表；失败原因已脱敏、不带路径。
    */
   supervisorHistory: "bakacoding:supervisor:history",
+  /**
+   * invoke：重试拆单（UI-04c），转给 10 的 split()；参数 `{project_id, text, requirement_id?}`。
+   * 不经 chat；只读后端回固定失败；失败原因已脱敏，结果只有需求 id 和单号，不带路径。
+   */
+  supervisorSplit: "bakacoding:supervisor:split",
   /** invoke：选目录导入项目，切换后端到该仓库（T-072）。 */
   projectImport: "bakacoding:project:import",
   /** invoke：对上次导入失败（只缺配置）的目录用默认模板补配置，再完成导入；无参数（T-081）。 */
@@ -399,6 +404,15 @@ export type ChatReplyKind = ChatReply["kind"];
  * 只读 / 未接线 / chat() 抛错都是 ok:false，reason 已在主进程脱敏、截到 CHAT_REASON_MAX 字。
  */
 export type DesktopChatResult = { ok: true; reply: ChatReply } | { ok: false; reason: string };
+/** `supervisor:split` 的参数（UI-04c）：text 取自这条回复所回答的用户消息；requirement_id 原样传回。 */
+export interface DesktopSplitRequest {
+  project_id: string;
+  text: string;
+  requirement_id?: string;
+}
+/** `supervisor:split` 的结果（UI-04c）：只带需求 id 和单号（不带推理摘要，避免路径）；reason 已脱敏。 */
+export type DesktopSplitResult =
+  { ok: true; requirement_id: string; ticket_ids: string[] } | { ok: false; reason: string };
 /** `supervisor:history` 的参数（UI-04a）：before 为 message_id 游标，limit 默认 50。 */
 export interface DesktopHistoryQuery {
   before?: string;
@@ -606,6 +620,8 @@ export interface BakaDesktopApi {
   onSyncState(listener: (state: DesktopSyncState) => void): () => void;
   /** 发一条消息给主管（T-071）；失败以 ok:false 返回，不抛过 IPC。 */
   supervisorChat(message: UserMessage): Promise<DesktopChatResult>;
+  /** 重试拆单（UI-04c）：走 supervisor:split → 10 的 split()，不经 chat；失败以 ok:false 返回。 */
+  supervisorSplit(request: DesktopSplitRequest): Promise<DesktopSplitResult>;
   /** 取主管对话历史（UI-04a）；失败以 ok:false 返回，不抛过 IPC。 */
   getSupervisorHistory(query?: DesktopHistoryQuery): Promise<DesktopHistoryResult>;
   /** 选目录导入项目（T-072）。 */

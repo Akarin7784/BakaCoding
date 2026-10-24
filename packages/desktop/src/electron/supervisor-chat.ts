@@ -1,9 +1,11 @@
 // T-071：主管 1:1 对话的主进程侧——把 10 的 chat() 包成不抛过 IPC 的结果，失败原因脱敏截断。
-import type { ChatReply, UserMessage } from "@bakacoding/supervisor";
+import type { ChatReply, SplitRequest, SplitResult, UserMessage } from "@bakacoding/supervisor";
 import type {
   DesktopChatResult,
   DesktopHistoryQuery,
   DesktopHistoryResult,
+  DesktopSplitRequest,
+  DesktopSplitResult,
   DesktopSupervisorMessage,
 } from "../shared/api.js";
 import { redactPaths } from "@bakacoding/diagnostics";
@@ -134,4 +136,55 @@ function historyErrorText(e: unknown): string {
   const name = sanitizeErrorName(e instanceof Error ? e.name : "Error");
   const code = (e as { code?: unknown } | null)?.code;
   return typeof code === "string" && /^[A-Za-z0-9_]{1,64}$/.test(code) ? `${name}(${code})` : name;
+}
+
+/** id 字段的上限（project_id / requirement_id）。 */
+const SPLIT_ID_MAX = 200;
+
+/** 把渲染进程传来的参数收成拆单请求（UI-04c）；不合法的字段丢掉，缺 project_id / text 由 runSupervisorSplit 拒绝。 */
+export function toSplitRequest(arg: unknown): DesktopSplitRequest {
+  const o = (typeof arg === "object" && arg !== null ? arg : {}) as Record<string, unknown>;
+  const id = (v: unknown) =>
+    typeof v === "string" && v && v.length <= SPLIT_ID_MAX ? v : undefined;
+  const requirement_id = id(o.requirement_id);
+  return {
+    project_id: id(o.project_id) ?? "",
+    text: typeof o.text === "string" ? o.text : "",
+    ...(requirement_id !== undefined && { requirement_id }),
+  };
+}
+
+/** 只读 / 未接线时 `supervisor:split` 的固定失败原因（UI-04c）。 */
+export const SPLIT_READONLY_REASON = "只读模式：不能重试拆单";
+
+/**
+ * 重试拆单（UI-04c）：调 10 的 split()，不经 chat。`split` 为 undefined 表示只读 / 未接线 → 固定失败。
+ * 抛错 → ok:false，reason 走 sanitizeChatReason；成功只回需求 id 和单号（summary 是模型文本，不带回）。
+ */
+export async function runSupervisorSplit(
+  split: ((r: SplitRequest) => Promise<SplitResult>) | undefined,
+  request: DesktopSplitRequest,
+  env: Readonly<Record<string, string | undefined>>,
+): Promise<DesktopSplitResult> {
+  if (!split) return { ok: false, reason: SPLIT_READONLY_REASON };
+  const text = request.text.trim();
+  if (!request.project_id) return { ok: false, reason: "没有项目，不能拆单" };
+  if (!text) return { ok: false, reason: "需求为空" };
+  if ([...text].length > CHAT_TEXT_MAX) {
+    return { ok: false, reason: `需求太长（超过 ${CHAT_TEXT_MAX} 字）` };
+  }
+  try {
+    const r = await split({
+      project_id: request.project_id,
+      text,
+      ...(request.requirement_id !== undefined && { requirement_id: request.requirement_id }),
+    });
+    return {
+      ok: true,
+      requirement_id: r.requirement_id,
+      ticket_ids: r.tickets.map((t) => t.ticket_id),
+    };
+  } catch (e) {
+    return { ok: false, reason: sanitizeChatReason(`重试拆单失败：${errorDetail(e)}`, env) };
+  }
 }

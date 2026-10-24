@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { AlertCircle, Download, FolderOpen, Loader2, Settings } from "lucide-react";
+import { AlertCircle, Download, FolderOpen, Settings } from "lucide-react";
 import type { BakaDesktopApi, DesktopProjectRow, DesktopSupervisorMessage } from "../../shared/api";
 import {
   CHAT_HISTORY_PAGE,
+  answeredUserMessage,
   storedReply,
   supervisorChatStore,
   type ChatItem,
   type ChatStore,
 } from "../data/chatStore";
-import { chatFailureText, chatReplyView, type ChatTone } from "../lib/chat-labels";
+import { chatFailureText, splitFailureText } from "../lib/chat-labels";
+import { CHAT_COPY } from "../lib/copy";
 import { cn } from "../lib/utils";
 import { CONTENT_COLUMN } from "../lib/layout";
 import { AgentIcon } from "./AgentIcon";
@@ -16,13 +18,7 @@ import { Button } from "./ui/button";
 import { READONLY_COPY } from "../lib/readonly";
 import { readLastProject, writeLastProject } from "../lib/lastProject";
 import { Composer } from "./Composer";
-
-const TONE_CLASS: Record<ChatTone, string> = {
-  normal: "text-muted-foreground",
-  ask: "text-foreground",
-  ok: "text-foreground",
-  error: "font-medium text-danger",
-};
+import { ChatEmptyState, MessageItem, WaitingDots } from "./MessageItem";
 
 export interface SupervisorChatProps {
   /** 没有 getSupervisorHistory 时（假数据 / 测试）首屏放入的消息（UI-04a：存储形状） */
@@ -33,7 +29,7 @@ export interface SupervisorChatProps {
    */
   api?:
     | (Pick<BakaDesktopApi, "supervisorChat"> &
-        Partial<Pick<BakaDesktopApi, "getSupervisorHistory" | "listProjects">>)
+        Partial<Pick<BakaDesktopApi, "getSupervisorHistory" | "listProjects" | "supervisorSplit">>)
     | undefined;
   /**
    * 界面当前选中的项目：有就作为 chip 的默认值（UI-04b）；没有就用上次用的项目（localStorage）。
@@ -155,6 +151,8 @@ export function SupervisorChat({
             ticket_ids: [...(r.reply.ticket_ids ?? [])],
             created_at: Date.now(),
             reply: r.reply,
+            // UI-04c：记下回答的是哪条用户消息（重试拆单取它的原文）
+            inReplyTo: message_id,
           }
         : {
             message_id: `${message_id}-e`,
@@ -171,6 +169,49 @@ export function SupervisorChat({
         failed: chatFailureText("和主进程通信失败，请重试"),
         created_at: Date.now(),
         retry,
+      };
+    } finally {
+      store.end();
+    }
+    store.append(item);
+  };
+
+  /**
+   * UI-04c：重试拆单走 supervisor:split（10 的 split()），不经 chat。text 取这条回复所回答的用户消息原文，
+   * requirement_id 有就原样传回。结果只在本地补一条（不落库）。
+   */
+  const retrySplit = async (
+    replyId: string,
+    req: { project_id: string; text: string; requirement_id?: string },
+  ) => {
+    const split = api?.supervisorSplit;
+    if (!split || readonly || !store.begin()) return;
+    let item: ChatItem;
+    try {
+      const r = await split(req);
+      item = r.ok
+        ? {
+            message_id: store.newMessageId(),
+            project_id: req.project_id,
+            role: "supervisor",
+            kind: "dispatched",
+            content: CHAT_COPY.splitRetried(r.ticket_ids.length),
+            requirement_id: r.requirement_id,
+            ticket_ids: [...r.ticket_ids],
+            created_at: Date.now(),
+          }
+        : {
+            message_id: `${replyId}-split-e-${Date.now()}`,
+            role: "system",
+            failed: splitFailureText(r.reason),
+            created_at: Date.now(),
+          };
+    } catch {
+      item = {
+        message_id: `${replyId}-split-e-${Date.now()}`,
+        role: "system",
+        failed: splitFailureText("和主进程通信失败，请重试"),
+        created_at: Date.now(),
       };
     } finally {
       store.end();
@@ -245,7 +286,7 @@ export function SupervisorChat({
                     <button
                       type="button"
                       data-testid="chat-retry"
-                      className="shrink-0 text-xs text-muted-foreground underline"
+                      className="shrink-0 text-xs text-danger hover:underline disabled:opacity-50"
                       disabled={pending || readonly}
                       onClick={() => {
                         const r = m.retry!;
@@ -253,34 +294,38 @@ export function SupervisorChat({
                         void deliver(r.text, r.message_id, r.project_id);
                       }}
                     >
-                      重试
+                      {CHAT_COPY.sendFailed} · {CHAT_COPY.retry}
                     </button>
                   )}
                 </div>
               );
             }
             if (m.role === "supervisor") {
-              const v = chatReplyView(m.reply ?? storedReply(m));
+              const reply = m.reply ?? storedReply(m);
+              const user =
+                reply.kind === "split_failed" ? answeredUserMessage(messages, m) : undefined;
+              const splitProject = reply.project_id ?? user?.project_id ?? undefined;
               return (
-                <div
+                <MessageItem
                   key={m.message_id}
-                  data-testid="chat-reply"
-                  data-kind={v.kind}
-                  className="flex gap-2 text-sm"
-                >
-                  <AgentIcon supervisor />
-                  <div className="min-w-0 space-y-1">
-                    <span className={cn("text-xs", TONE_CLASS[v.tone])}>{v.label}</span>
-                    <p className={cn("whitespace-pre-wrap", v.tone === "error" && "text-danger")}>
-                      {v.text}
-                    </p>
-                    {v.ticketIds.length > 0 && (
-                      <p className="text-xs text-muted-foreground" data-testid="chat-tickets">
-                        单号：{v.ticketIds.join("、")}
-                      </p>
-                    )}
-                  </div>
-                </div>
+                  reply={reply}
+                  projects={projectRows}
+                  disabled={pending || readonly}
+                  onPickProject={(p) => {
+                    if (readonly || store.getSnapshot().pending) return;
+                    void deliver(p.name, store.newMessageId(), p.project_id);
+                  }}
+                  {...(user &&
+                    splitProject &&
+                    api?.supervisorSplit && {
+                      onRetrySplit: () =>
+                        void retrySplit(m.message_id, {
+                          project_id: splitProject,
+                          text: user.content,
+                          ...(reply.requirement_id && { requirement_id: reply.requirement_id }),
+                        }),
+                    })}
+                />
               );
             }
             return (
@@ -290,16 +335,8 @@ export function SupervisorChat({
               </div>
             );
           })}
-          {pending && (
-            <div
-              role="status"
-              data-testid="chat-pending"
-              className="flex items-center gap-2 text-xs text-muted-foreground"
-            >
-              <Loader2 className="size-3 animate-spin" strokeWidth={1.5} />
-              主管思考中…
-            </div>
-          )}
+          {pending && <WaitingDots />}
+          {messages.length === 0 && !pending && <ChatEmptyState onPick={setDraft} />}
         </div>
       </div>
       <div className="px-4 pb-4 pt-2">
