@@ -79,3 +79,52 @@ describe("FullRedactor：值、键名、id 字段都过路径脱敏，DROPPED_KE
     expect(r.text("/tmp/evafake/trace")).toBe("/tmp/evafake/trace");
   });
 });
+
+// T-147：带空格的路径整条遮掉，空格后面的片段不能漏。
+describe("redactPaths：带空格的路径（T-147）", () => {
+  const cases: [string, string, string][] = [
+    ["abs_path", "POSIX 一个空格", "读 /Volumes/evafake Data Disk/x 失败"],
+    ["abs_path", "POSIX 多个空格", "/srv/evafake repo/my src dir/a.ts"],
+    ["windows_path", "Windows 反斜杠", "打开 C:\\Program Files\\evafake app\\a.exe 失败"],
+    ["windows_path", "Windows 正斜杠", "打开 D:/evafake Docs/my repo/a.ts"],
+    ["unc_path", "UNC 共享名带空格", "共享 \\\\fileserver\\evafake share\\repo x\\a"],
+    ["tilde_path", "~/ 带空格", "在 ~/evafake code/x y/z.json"],
+    ["windows_path", "双引号 Windows", '"C:\\Program Files\\evafake"'],
+    ["abs_path", "单引号 POSIX", "'/a evafake/c'"],
+    ["abs_path", "引号里最后一段带空格", 'cd "/srv/x/evafake Disk"'],
+    ["unc_path", "引号 UNC", '"\\\\srv\\evafake share"'],
+  ];
+  it.each(cases)("%s：%s", (rule, _name, input) => {
+    const { text } = redactPaths(input, { home: HOME });
+    expect(text).not.toContain("evafake");
+    expect(text).not.toMatch(/Disk|Docs|share|code|dir/);
+    expect(text).toContain(`[REDACTED:${rule}]`);
+  });
+
+  const keep: [string, string][] = [
+    [
+      "读 /srv/a.ts 失败，原因是 file not found",
+      "读 [REDACTED:abs_path] 失败，原因是 file not found",
+    ],
+    ["/srv/a.ts was not found in this run", "[REDACTED:abs_path] was not found in this run"],
+    ["打开 C:\\x\\a.exe 后崩溃 and exit", "打开 [REDACTED:windows_path] 后崩溃 and exit"],
+    ["/srv/a b/c then 看 https://x.com/a", "[REDACTED:abs_path] then 看 https://x.com/a"],
+    ["/srv/a https://x.com/a", "[REDACTED:abs_path] https://x.com/a"],
+    ["/srv/a // 注释", "[REDACTED:abs_path] // 注释"],
+    ["/srv/a\nnext/line", "[REDACTED:abs_path]\nnext/line"],
+    ["[REDACTED:home_path]/logs x/y", "[REDACTED:home_path]/logs x/y"],
+    ["/srv/a then four plain words x/y", "[REDACTED:abs_path] then four plain words x/y"],
+    ["it's 'a/b' and \"x y\"", "it's 'a/b' and \"x y\""],
+  ];
+  it.each(keep)("后面的普通句子不被吃掉：%s", (input, want) => {
+    expect(redactPaths(input, { home: HOME }).text).toBe(want);
+  });
+
+  it("长输入仍是线性的（10 万字符 2s 内）", () => {
+    const big = "/a b c d ".repeat(12500) + "x ".repeat(10000);
+    const t0 = Date.now();
+    redactPaths(big, { home: HOME });
+    redactPaths('"/a '.repeat(25000), { home: HOME });
+    expect(Date.now() - t0).toBeLessThan(2000);
+  });
+});
