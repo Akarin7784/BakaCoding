@@ -6,6 +6,7 @@ import type {
   DesktopHistoryResult,
   DesktopSupervisorMessage,
 } from "../shared/api.js";
+import { redactPaths } from "@bakacoding/diagnostics";
 import { errorDetail, sanitizeErrorName, sanitizeSyncErrorMessage } from "./sync-state.js";
 
 /** ok:false 时 reason 的上限（与同步错误同一套脱敏：先换密钥值，再 light，最后截断）。 */
@@ -13,11 +14,18 @@ export const CHAT_REASON_MAX = 2000;
 /** 单条消息的上限（码点），超了直接拒绝，不送进模型。 */
 export const CHAT_TEXT_MAX = 20000;
 
+/**
+ * T-149：先用模块 11 的路径脱敏（与 FullRedactor 同一套规则：home_dir / file_url / unc_path /
+ * windows_path / tilde_path / abs_path），再走同步错误那套（密钥值 → light → 截断）。
+ * 路径放在 light 之前，`~/…` 才会整条遮掉。`paths.home` 只给测试注入。
+ */
 export function sanitizeChatReason(
   message: string,
   env: Readonly<Record<string, string | undefined>> = {},
+  paths: { home?: string } = {},
 ): string {
-  return sanitizeSyncErrorMessage(message, env, CHAT_REASON_MAX);
+  const { text } = redactPaths(message, { home: paths.home });
+  return sanitizeSyncErrorMessage(text, env, CHAT_REASON_MAX);
 }
 
 /**
