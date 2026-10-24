@@ -179,7 +179,8 @@ function MainMergeEntry({
           variant="secondary"
           size="sm"
           data-testid="main-merge-button"
-          disabled={blocker !== null || merging || !onMergeMain}
+          /* UI-06e：审查进行中一律不能合入（不依赖 runReview 清掉 reviewedHead） */
+          disabled={blocker !== null || reviewing || merging || !onMergeMain}
           aria-busy={merging || undefined}
           title={blocker ?? undefined}
           onClick={() => void run()}
