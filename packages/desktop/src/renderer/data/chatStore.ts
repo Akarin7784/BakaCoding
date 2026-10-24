@@ -12,13 +12,12 @@ export const CHAT_HISTORY_PAGE = 50;
 
 /**
  * 存下来的消息；刚收到的主管回复另带 10 原样的 ChatReply（展示用）。
- * UI-04c：实时收到的回复带 inReplyTo = 它回答的那条用户消息的 message_id（发送时就知道，不靠 id 格式推断）；
- * 历史里取回的回复没有这个字段（2 / 10 的存储里没有「回答哪条」的关联）。
+ * T-151：「回答哪条用户消息」统一用存储字段 `in_reply_to`（T-152 / T-150）。实时回复在本地写成发送时的
+ * message_id（与 10 落库的值一致）；历史回复由 `supervisor:history` 原样带回。字段可选，旧记录为 null。
  */
 export type ChatMessageItem = DesktopSupervisorMessage & {
   reply?: ChatReply;
   failed?: undefined;
-  inReplyTo?: string;
 };
 /** 本地的失败提示（不落库）；retry 带原消息，重试时沿用同一个 message_id。 */
 export interface ChatFailedItem {
@@ -53,15 +52,16 @@ export function storedReply(m: DesktopSupervisorMessage): ChatReply {
 }
 
 /**
- * UI-04c：这条主管回复所回答的用户消息（重试拆单取它的原文）。只认实时回复记下的 inReplyTo；
- * 历史回复没有可靠关联，返回 undefined（界面不显示「重试拆单」），不按 id 格式或相邻位置猜。
+ * 这条主管回复所回答的用户消息（重试拆单取它的原文）。只认 `in_reply_to`（UI-04c / T-151）；
+ * null、没有该字段或在记录里找不到对应用户消息 → undefined（界面不显示「重试拆单」），不按 id 格式或相邻位置猜。
  */
 export function answeredUserMessage(
   items: readonly ChatItem[],
   reply: ChatMessageItem,
 ): ChatMessageItem | undefined {
-  if (reply.inReplyTo === undefined) return undefined;
-  const m = items.find((i) => i.message_id === reply.inReplyTo);
+  const target = reply.in_reply_to;
+  if (typeof target !== "string" || !target) return undefined;
+  const m = items.find((i) => i.message_id === target);
   return m && m.failed === undefined && m.role === "user" ? m : undefined;
 }
 
