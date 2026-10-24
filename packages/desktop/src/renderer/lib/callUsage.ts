@@ -6,7 +6,7 @@ import type { UiEvent } from "../../shared/api";
 export const CALL_USAGE_COPY = {
   elapsed: (s: number) => `已用 ${s} 秒`,
   usage: (tokens: string, cost: string, calls: number) =>
-    `本次 ${calls} 次调用 · ${tokens} tokens · ${cost}`,
+    `本次约 ${calls} 次调用 · ${tokens} tokens · ${cost}`,
 } as const;
 
 /** 本次等待的时间窗口（本地毫秒时间戳）。 */

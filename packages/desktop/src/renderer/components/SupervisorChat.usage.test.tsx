@@ -100,7 +100,7 @@ describe("UI-06e：调用计时与 token / 费用", () => {
       call(T0 + 60_000, "supervisor", 99999, 1, 99999),
     ]);
     expect(screen.getByTestId("chat-call-usage").textContent).toBe(
-      "本次 2 次调用 · 2.0k tokens · $0.0025",
+      "本次约 2 次调用 · 2.0k tokens · $0.0025",
     );
   });
 
