@@ -81,7 +81,7 @@ describe("需求页高风险卡片", () => {
   it("stale_pr 显示固定文案", async () => {
     page(vi.fn(async () => ({ ok: false as const, code: "stale_pr", message: "x /home/eva" })));
     fireEvent.click(within(card()).getByRole("button", { name: C.release }));
-    expect((await screen.findByRole("alert")).textContent).toBe(C.stalePr);
+    expect((await screen.findByRole("alert")).textContent).toBe("PR 已更新，请重新查看");
   });
 
   it("后端只读时按钮禁用", () => {
