@@ -562,6 +562,86 @@ describe("UI-05g：派单卡片需求名、Ctrl+N、查看需求选中项目、�
   });
 });
 
+describe("编码池行接 pool:state（UI-06b）", () => {
+  const bp = (paused: boolean, reasons: string[]) => ({
+    ok: true as const,
+    state: {
+      paused,
+      concurrency: 4,
+      reasons: reasons as never,
+      review_backlog: { pending: 0, capacity: 8 },
+      supervisor_backlog: null,
+      pending_prs: { merge_queued: 0, in_review: 0, total: 0, limit: 10, high_risk_held: 0 },
+      daily_budget_exhausted: false,
+    },
+  });
+
+  it("首读按快照 coding 数显示；快照更新才重取（不轮询），反压开整行强调色", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const { api, push } = fakeApi(snapshot);
+      let current = bp(false, []);
+      const getPoolState = vi.fn(async () => current);
+      api.getPoolState = getPoolState;
+      render(<App api={api} />);
+      fireEvent.click(await screen.findByRole("button", { name: /real-proj/ }));
+      fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
+      const pool = screen.getByTestId("pool-status");
+      await waitFor(() => expect(pool.textContent).toBe("并发 1/4 · 反压 关"));
+      const calls = getPoolState.mock.calls.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      expect(getPoolState.mock.calls.length).toBe(calls); // 不轮询
+      current = bp(true, ["review_backlog_pause", "daily_budget"]);
+      act(() =>
+        push({
+          db: snapshot.db,
+          events: [],
+          tickets: [snapshot.tickets[0]!, { ...snapshot.tickets[1]!, status: "coding" }],
+          last_seq: 5,
+        }),
+      );
+      await waitFor(() =>
+        expect(pool.textContent).toBe("并发 2/4 · 反压 开 · 评审积压：暂停派单、今日预算已用完"),
+      );
+      expect(getPoolState.mock.calls.length).toBeGreaterThan(calls);
+      expect(within(pool).getByText(/反压 开/).className).toContain("text-accent");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ok:false（只读）显示原因，不回退假数据", async () => {
+    const { api } = fakeApi(snapshot);
+    api.getPoolState = async () => ({
+      ok: false,
+      reason: "编码池状态暂不可用（后端只读或未接线）",
+    });
+    render(<App api={api} />);
+    fireEvent.click(await screen.findByRole("button", { name: /real-proj/ }));
+    fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("pool-status").textContent).toBe(
+        "编码池状态暂不可用（后端只读或未接线）",
+      ),
+    );
+  });
+
+  it("getPoolState 抛错 → 固定文案", async () => {
+    const { api } = fakeApi(snapshot);
+    api.getPoolState = async () => {
+      throw new Error("/secret/path boom");
+    };
+    render(<App api={api} />);
+    fireEvent.click(await screen.findByRole("button", { name: /real-proj/ }));
+    fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("pool-status").textContent).toBe("读取编码池状态失败"),
+    );
+  });
+});
+
 describe("UI-06c：右面板 Git 区（git:status + 同步状态）", () => {
   const sync = {
     available: true as const,

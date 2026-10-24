@@ -1,3 +1,4 @@
+import { POOL_STATE_UNAVAILABLE } from "./pool-state.js";
 import { execFileSync } from "node:child_process";
 import {
   copyFileSync,
@@ -128,6 +129,14 @@ describe("startBackend（T-063）", () => {
       expect(typeof st.enabled).toBe("boolean");
       expect(st.consecutive_failures).toBe(0);
     }
+    // UI-06b：live 时 pool:state 原样来自 9 的 backpressureState()
+    const pool = await backend.poolState();
+    expect(pool.ok).toBe(true);
+    if (pool.ok) {
+      expect(typeof pool.state.paused).toBe("boolean");
+      expect(typeof pool.state.concurrency).toBe("number");
+      expect(Array.isArray(pool.state.reasons)).toBe(true);
+    }
     const ro = openStorageReadonly({ path: db, logger: { warn: () => {} } });
     const seq = ro.maxSeq();
     expect(seq === null || typeof seq === "number").toBe(true);
@@ -202,6 +211,8 @@ describe("startBackend（T-063）", () => {
       available: false,
       reason: "只读模式：缺少环境变量 DEEPSEEK_API_KEY",
     });
+    // UI-06b：只读时 pool:state 固定 ok:false
+    expect(await backend.poolState()).toEqual({ ok: false, reason: POOL_STATE_UNAVAILABLE });
     await backend.stop();
   });
 

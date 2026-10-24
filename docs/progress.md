@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`f05a5d6` · main 上测试：171 个测试文件 / 2778 passed + 2 skipped 个测试（Linux 全量；Windows 基线见 `docs/test-baseline.md`） · 更新日期：2026-10-24（UTC+8）
+> 上次更新时 main：`d64dbf2` · main 上测试：175 个测试文件 / 2806 passed + 2 skipped 个测试（Linux 全量；Windows 基线见 `docs/test-baseline.md`） · 更新日期：2026-10-24（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -210,6 +210,7 @@ flowchart BT
 | UI-05c | 模块 12 需求页 `RequirementPage`：原文（超 3 行折叠）/ 拆单时间 / 摘要（默认折叠），每张单一行 `TicketStepper`（状态只看快照），评审上限 = `settings:config-get` 新增可选 `pipeline.resubmit_limits.review` + 1，时间线按 `requirement_id` 聚合、Flash 调用折叠、合并只显示「已合入」，文本全脱敏；路由 `#requirement=<id>` 打开；后端只读时固定提示；mock「复投」→「重写」；modules.md §12 同步。合入后 main `7bda4b1`，测试 161 个文件 / 2672 passed + 2 skipped 个 | 12 | 界面与诊断开发 | 已合入 | #245 | 7bda4b1 |
 | UI-05d | 模块 12 需求页高风险待办卡片（按本需求单号过滤，红底；放行 / 拒绝，拒绝需填理由，走现有 `high-risk:decide` 的 `detail`）+ 左栏项目「需要你处理」红点（待裁决高风险 / 上报）；顶部高风险横条保留兜底；`path-redaction-core.ts` 头注释测试文件名（P3）；modules.md §12 同步。合入后 main `b606a09`，测试 165 个文件 / 2713 passed + 2 skipped 个 | 12 | 界面与诊断开发 | 已合入 | #250 | b606a09 |
 | UI-05e | 模块 12 项目页 = 需求列表（按最近活动倒序；进行中 / 需要处理 / 已完成计数可点过滤；空状态引导去主管对话），点需求进 `#requirement=<id>`；左栏项目下列需求，红点从项目行挪到需求行（项目行只在左栏收起或需要处理的事归不到列出的需求时带汇总红点）；需求名 = 第一张单原文第一行脱敏后截 80 字；P3：收起左栏图标红点测试、去掉 `stale_pr` 专用分支；modules.md §12 同步。合入后 main `17e6ccd`，测试 167 个文件 / 2727 passed + 2 skipped 个 | 12 | 界面与诊断开发 | 已合入 | #252 | 17e6ccd |
+| UI-06b | 模块 12 右面板编码池行接新只读 IPC `pool:state`（原样转 9 的 `backpressureState()`，只读固定 ok:false，不改 9 的接口）：「并发 X/Y · 反压 开/关」，X = 全部项目快照 coding 单数（不算 resubmitting），反压跟 paused、开时整行强调色并带原因文字，只降并发不另标，悬停逐条列出原因（固定文案）；随快照刷新、不轮询；modules.md §12 同步。合入后 main `d64dbf2`，测试 175 个文件 / 2806 passed + 2 skipped 个 | 12 | 界面与诊断开发 | 已合入 | #260 | d64dbf2 |
 | UI-05f | 需求页「⋯」菜单（导出这个需求 / 单张单的诊断包，走现有 `exportDiagnostics` scope；在主管对话里追问）；dispatched 卡片「查看需求」跳需求页；需求页「需要你处理」回主管对话并预填草稿（只填不发）；#252 去掉的三条断言（群消息、Flash 调用、agent 图标）挪进需求页测试（api mock）；P3：需求名先脱敏再截 80 字的测试；modules.md §12 同步。合入后 main `77d72ef`，测试 167 个文件 / 2739 passed + 2 skipped 个 | 12 | 界面与诊断开发 | 已合入 | #254 | 77d72ef |
 | UI-05g | 主管对话「已派单」卡片显示需求名（复用 `requirementName`：最早一张单第一行，先脱敏再截 80 字），取不到回退需求号；Ctrl+N 新需求清掉 `#requirement` 路由；P3：「查看需求」选中所属项目、回主管对话（需要你处理 / 追问 / Ctrl+N）光标进输入框的测试；modules.md §12 同步。合入后 main `e00baa6`，测试 167 个文件 / 2746 passed + 2 skipped 个 | 12 | 界面与诊断开发 | 已合入 | #256 | e00baa6 |
 | UI-06a | 模块 12 右面板单列表（`docs/ui-design.md` §8、product-design §4.5/§4.5.1）：PR 列表改为需求单列表（状态图标 + `redactForView` 脱敏标题 + ×重写次数 + 按状态筛选），只列当前项目（主管对话跟随输入框 chip 项目，不回退上次项目）；点单用 `openRequirementOf` 打开所属需求页并选中，窄屏关抽屉，删旧 `#topic` 滚动；行内导出 scope `{kind:"ticket"}`；「动态」状态行改从快照 `tickets` 推导，不读 `prs`、不轮询。合入后 main `f05a5d6`，测试 171 个文件 / 2778 passed + 2 skipped 个 | 12 | 界面与诊断开发 | 已合入 | #258 | f05a5d6 |
@@ -229,7 +230,8 @@ flowchart BT
 | T-151 | 模块 12：历史里的 `split_failed` 按回复的 `in_reply_to` 找对应用户消息补「重试拆单」（项目先回复后用户消息；null / 无字段 / 找不到 / 无项目不显示，不猜）；live 回复统一写 `in_reply_to`；补 #235 两个 P3 测试（先脱敏再截 80 字、20000 上限）；modules.md §12 同步。合入后 main `0d1e097`，测试 154 个文件 / 2637 passed + 2 skipped 个 | 12 | 界面与诊断开发 | 已合入 | #240 | 0d1e097 |
 | T-153 | 桌面端：设置 › 预算 `spendHint` / `spendResubmit` 文案「复投」改为「重写」（§5.6），补 `BUDGET_COPY` 不含「复投」的用例。合入后 main `a6caab4`，测试 155 个文件 / 2638 passed + 2 skipped 个 | 12 | 界面与诊断开发 | 已合入 | #243 | a6caab4 |
 | T-154 | 模块 11 抽出不依赖 node 的纯函数路径脱敏 `redactPathsPure`（`path-redaction-core.ts`），主进程 `redactPaths` 转给它（输出不变），渲染进程 `redactForView` 改用它（保留全角标点截止）；补 T-147 三条已接受限制的注释和测试；modules.md §11 / §12 同步。合入后 main `cf2b1d7`，测试 162 个文件 / 2698 passed + 2 skipped 个 | 11、12 | 界面与诊断开发 | 已合入 | #246 | cf2b1d7 |
-| T-155 | 模块 4：新增只读 `branchStatus(dir, { base_branch?, integration_branch?, timeout_ms? }?) → { current_branch: string \| null, ahead }`（ahead = `rev-list --count main..bakacoding/integration`，分离 HEAD 时 current_branch 为 null），失败抛 `BranchStatusError`（not_git / nested_repo / invalid_branch / no_base / no_integration / timeout / git_failed，消息不带路径和值）；补真实临时仓库用例（均做反向检查）；modules.md §4 同步。给 UI-06c `git:status` 用。合入后 main `436ab8f`，测试 168 个文件 / 2755 passed + 2 skipped 个 | 4 | 基础层开发 | 已合入 | #259 | 436ab8f |
+| T-155 | 模块 4：新增只读 `branchStatus(dir, { base_branch?, integration_branch?, timeout_ms? }?) → { current_branch: string \| null, ahead }`（ahead = `rev-list --count main..bakacoding/integration`，分离 HEAD 时 current_branch 为 null），失败抛 `BranchStatusError`（not_git / nested_repo / invalid_branch / no_base / no_integration / timeout / git_failed，消息不带路径和值）；补真实临时仓库用例（均做反向检查）；modules.md §4 同步。给 UI-06c `git:status` 用。合入后 main `436ab8f`，测试 168 个文件 / 2755 passed + 2 skipped 个 | 4 | 基础层开发 | 已合入 | #259 | `436ab8f` |
+| T-156 | 模块 4：补 T-155 `branchStatus` 的错误路径测试（不改实现）：rev-list 超时报 `timeout`；退出码非 0 / 被信号杀掉 / 输出非数字统一报 `git_failed`，断言 message、cause、自有属性和 JSON 序列化都不带原始 stderr、stdout 和路径；7 个错误码的 message 与固定文案完全相等。均做反向检查。合入后 main `c951631`，测试 172 个文件 / 2787 passed + 2 skipped 个 | 4 | 基础层开发 | 已合入 | #263 | c951631 |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 

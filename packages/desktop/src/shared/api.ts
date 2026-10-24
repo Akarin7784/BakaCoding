@@ -1,6 +1,11 @@
 // 主进程 ↔ preload ↔ 渲染进程的数据契约。只放类型和通道名，不引入 Node 或存储模块，
 // 渲染进程可以安全地 import type。
-import type { HighRiskDecisionErrorCode, SyncState } from "@bakacoding/scheduler";
+import type {
+  BackpressureReason,
+  BackpressureState,
+  HighRiskDecisionErrorCode,
+  SyncState,
+} from "@bakacoding/scheduler";
 import type { HighRiskFile, HighRiskReason } from "@bakacoding/sub-agent";
 import type {
   ChatReply,
@@ -53,6 +58,11 @@ export const IPC_CHANNELS = {
   requirementDetail: "bakacoding:requirement:detail",
   /** invoke：Git 区状态（UI-06c，只读，无参数）：4 的 branchStatus + 6 的 INTEGRATION_BRANCH + 配置 main_merge。 */
   gitStatus: "bakacoding:git:status",
+  /**
+   * invoke：编码池状态（UI-06b，只读）：原样取 9 的 backpressureState()，无参数。
+   * 后端只读 / 未接线固定 ok:false；抛错 ok:false + 固定文案，不带路径。
+   */
+  poolState: "bakacoding:pool:state",
   /** invoke：选目录导入项目，切换后端到该仓库（T-072）。 */
   projectImport: "bakacoding:project:import",
   /** invoke：对上次导入失败（只缺配置）的目录用默认模板补配置，再完成导入；无参数（T-081）。 */
@@ -673,6 +683,8 @@ export interface BakaDesktopApi {
   ): Promise<DesktopRequirementDetailResult>;
   /** 取 Git 区状态（UI-06c，只读）；失败以 ok:false 返回（固定文案），不抛过 IPC。旧 preload 可以没有。 */
   getGitStatus?(): Promise<DesktopGitStatusResult>;
+  /** 取编码池状态（UI-06b，只读）；旧版 preload 可以没有。失败以 ok:false 返回，不抛过 IPC。 */
+  getPoolState?(): Promise<DesktopPoolStateResult>;
   /** 取主管对话历史（UI-04a）；失败以 ok:false 返回，不抛过 IPC。 */
   getSupervisorHistory(query?: DesktopHistoryQuery): Promise<DesktopHistoryResult>;
   /** 选目录导入项目（T-072）。 */
@@ -796,6 +808,8 @@ export type {
   HighRiskReason,
   HighRiskDecisionResult,
   SyncState,
+  BackpressureReason,
+  BackpressureState,
 };
 
 declare global {
@@ -814,3 +828,9 @@ export type DesktopGitStatusResult =
       main_merge: "user" | "supervisor";
     }
   | { ok: false; reason: string };
+/**
+ * `pool:state` 结果（UI-06b）：state 原样是 9 的 `BackpressureState`（不改 9 的接口）。
+ * 后端只读 / 未接线固定 ok:false；抛错 ok:false，reason 为固定文案。
+ */
+export type DesktopPoolStateResult =
+  { ok: true; state: BackpressureState } | { ok: false; reason: string };

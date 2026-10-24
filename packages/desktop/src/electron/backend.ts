@@ -1,4 +1,5 @@
 // T-063：桌面主进程后端——拿写入锁、组装组合根、takeOver；失败则退回只读。
+import { readPoolState } from "./pool-state.js";
 import { readRequirementDetail } from "./requirement-detail.js";
 import { readGitStatus } from "./git-status.js";
 import { randomUUID } from "node:crypto";
@@ -48,6 +49,7 @@ import type {
   DesktopHistoryResult,
   DesktopSplitRequest,
   DesktopSplitResult,
+  DesktopPoolStateResult,
   DesktopRequirementDetailResult,
   DesktopGitStatusResult,
   DesktopDecideHighRiskResult,
@@ -211,6 +213,8 @@ export interface BackendHandle {
   requirementDetail(query: unknown): Promise<DesktopRequirementDetailResult>;
   /** UI-06c：Git 区只读状态；只读固定 ok:false */
   gitStatus(): Promise<DesktopGitStatusResult>;
+  /** 编码池状态（UI-06b，只读）：live 时原样转 9 的 backpressureState()；只读固定 ok:false，抛错固定文案 */
+  poolState(): Promise<DesktopPoolStateResult>;
   /**
    * 测试连接（UI-03b，`provider:test`）：live 时转给组合根同一个网关的 testConnection（1 的语义不变），
    * 只读（没有网关）时回 `unavailable`，不发请求。
@@ -883,6 +887,10 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
           ? { repoRoot, mainMerge, branchStatus: opts.branchStatus ?? branchStatusDefault }
           : undefined,
       );
+    },
+    poolState(): Promise<DesktopPoolStateResult> {
+      const sch = mode === "live" ? app?.scheduler : undefined;
+      return readPoolState(sch ? () => sch.backpressureState() : undefined);
     },
     async supervisorHistory(query: unknown): Promise<DesktopHistoryResult> {
       const sup = app?.supervisor;
