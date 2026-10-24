@@ -2,7 +2,7 @@
 // 不新增事件、不改后端：数据来自现有快照里的 group_message（event 公共字段带 requirement_id / ticket_id）。
 import type { TicketStatus } from "@bakacoding/types";
 import type { ProjectView } from "../mock/types";
-import { ACTIVITY_COPY, GROUP_MESSAGE_KIND_LABEL, TICKET_STATUS_LABEL } from "./copy";
+import { ACTIVITY_COPY, GROUP_MESSAGE_KIND_LABEL } from "./copy";
 
 /** 「在跑」的单：与全局状态点、退出 / 重载的忙判定同一套状态集合（§4.8）。 */
 export const ACTIVE_TICKET_STATUSES: readonly TicketStatus[] = [
@@ -86,14 +86,6 @@ export function filterActivity(items: ActivityItem[], ticket_id: string): Activi
  */
 export function effectiveTicketFilter(filter: string, options: readonly string[]): string {
   return filter === "all" || options.includes(filter) ? filter : "all";
-}
-
-/** 底部状态行：「T-2 重写 · T-3 评审中」或空串（没有在跑的单）。 */
-export function activeTicketLine(project: ProjectView | undefined): string {
-  return (project?.prs ?? [])
-    .filter((p) => ACTIVE_TICKET_STATUSES.includes(p.status))
-    .map((p) => `${p.ticket_id} ${TICKET_STATUS_LABEL[p.status]}`)
-    .join(" · ");
 }
 
 /** 是否贴着列表底部（自动滚到底的判断；抽成纯函数方便单测）。 */

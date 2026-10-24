@@ -135,8 +135,11 @@ export function RequirementPage({
   onExport,
   onAsk,
   exportBusy = false,
+  selectedTicketId = null,
 }: {
   requirementId: string;
+  /** UI-06a：从右面板单列表点进来时选中的单（高亮并滚到可见） */
+  selectedTicketId?: string | null;
   /** 快照里的需求单（页面自己按 requirement_id 过滤） */
   tickets: readonly TicketView[];
   /** 快照 + 增量事件（页面自己按 requirement_id 过滤） */
@@ -192,6 +195,13 @@ export function RequirementPage({
     () => highRiskOfRequirement(requirementId, tickets, highRisk),
     [requirementId, tickets, highRisk],
   );
+  useEffect(() => {
+    if (!selectedTicketId) return;
+    const els = globalThis.document?.querySelectorAll<HTMLElement>("[data-ticket-item]") ?? [];
+    for (const el of els) {
+      if (el.dataset.ticketItem === selectedTicketId) el.scrollIntoView?.({ block: "nearest" });
+    }
+  }, [selectedTicketId, requirementId]);
   const timeline = useMemo(() => buildTimeline(requirementId, events), [requirementId, events]);
   const splitAt = fmtTime(mine.map((t) => t.created_at).sort()[0]);
   const ok = "ok" in detail && detail.ok ? detail.detail : null;
@@ -258,15 +268,25 @@ export function RequirementPage({
             {mine.length === 0 ? (
               <p className="text-sm text-muted-foreground">{C.noTickets}</p>
             ) : (
-              mine.map((t) => (
-                <TicketStepper
-                  key={t.ticket_id}
-                  ticket={{ ...t, title: redactForView(t.title) }}
-                  events={events}
-                  reviewLimit={limit}
-                  {...(onEscalationAction && { onEscalationAction })}
-                />
-              ))
+              mine.map((t) => {
+                const selected = t.ticket_id === selectedTicketId;
+                return (
+                  <div
+                    key={t.ticket_id}
+                    data-ticket-item={t.ticket_id}
+                    data-selected={selected || undefined}
+                    aria-current={selected || undefined}
+                    className={cn("rounded-md", selected && "ring-1 ring-accent")}
+                  >
+                    <TicketStepper
+                      ticket={{ ...t, title: redactForView(t.title) }}
+                      events={events}
+                      reviewLimit={limit}
+                      {...(onEscalationAction && { onEscalationAction })}
+                    />
+                  </div>
+                );
+              })
             )}
           </section>
 

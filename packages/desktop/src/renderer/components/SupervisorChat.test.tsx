@@ -272,6 +272,22 @@ describe("SupervisorChat 输入框项目 chip（UI-04b）", () => {
   const openChip = () => fireEvent.keyDown(screen.getByTestId("composer-chip"), { key: "Enter" });
   const sendBtn = () => screen.getByLabelText("发送") as HTMLButtonElement;
 
+  it("UI-06a：chip 当前项目（含初始值和改选）回调给外层，右面板跟随", async () => {
+    const onChipProjectChange = vi.fn();
+    render(
+      <SupervisorChat
+        store={new ChatStore()}
+        initial={[]}
+        api={{ supervisorChat: vi.fn(ok), listProjects }}
+        onChipProjectChange={onChipProjectChange}
+      />,
+    );
+    expect(onChipProjectChange).toHaveBeenLastCalledWith(undefined);
+    openChip();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "后台" }));
+    expect(onChipProjectChange).toHaveBeenLastCalledWith("p-2");
+  });
+
   it("chip 选中的项目随 chat 传 project_id（列表来自 project:list）", async () => {
     const supervisorChat = vi.fn(ok);
     render(

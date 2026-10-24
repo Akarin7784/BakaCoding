@@ -2,7 +2,6 @@
 // T-127：右面板「动态」的纯函数（§4.5.1）：发送方 / 接收方、按单过滤、底部状态行、贴底判断。
 import { describe, expect, it } from "vitest";
 import {
-  activeTicketLine,
   activityFilterOptions,
   activityItems,
   effectiveTicketFilter,
@@ -66,14 +65,6 @@ describe("实际生效的筛选值（T-127 评审 P2：切项目不留在旧单�
     // 切到另一个项目，旧单号不在新选项里
     expect(effectiveTicketFilter("T-2", ["T-7"])).toBe("all");
     expect(effectiveTicketFilter("T-2", [])).toBe("all");
-  });
-});
-
-describe("底部状态行", () => {
-  it("只列在跑的单（mock 里 T-1 已合入、T-2 重写中）", () => {
-    expect(activeTicketLine(todo)).toBe("T-2 重写");
-    expect(activeTicketLine(undefined)).toBe("");
-    expect(activeTicketLine({ ...todo, prs: [] })).toBe("");
   });
 });
 
