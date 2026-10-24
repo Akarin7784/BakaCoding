@@ -197,16 +197,16 @@ describe("设置 › 预算 本项目已花费", () => {
     st = status(),
   ): BudgetSettingsApi => ({ ...api(st), getLedgerSummary: vi.fn(s) });
 
-  it("按项目显示累计（含复投只在大于 0 时显示）；今天已花费仍来自 budget:status", async () => {
+  it("按项目显示累计（含重写只在大于 0 时显示）；今天已花费仍来自 budget:status", async () => {
     const a = withSummary(async () => summary);
     render(<BudgetSettings api={a} />);
     const one = await screen.findByTestId("project-spend-p-1");
     expect(text(one)).toContain("alpha");
     expect(text(one)).toContain("$12.34");
-    expect(text(one)).toContain("（含复投 $1.5）");
+    expect(text(one)).toContain("（含重写 $1.5）");
     const two = screen.getByTestId("project-spend-p-2");
     expect(text(two)).toContain("$0.7");
-    expect(text(two)).not.toContain("含复投");
+    expect(text(two)).not.toContain("含重写");
     expect(a.getLedgerSummary).toHaveBeenCalledTimes(1);
     // 今天已花费：budget:status 的 2.5，不是台账累计
     const today = screen.getByTestId("budget-today");
