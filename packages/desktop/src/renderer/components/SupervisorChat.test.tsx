@@ -8,6 +8,8 @@ import { SupervisorChat } from "./SupervisorChat";
 
 afterEach(cleanup);
 
+const MID = expect.stringMatching(/^u-/);
+
 const replies: ChatReply[] = [
   { kind: "answer", text: "这是回答" },
   { kind: "ask_project", text: "是哪个项目？" },
@@ -50,7 +52,7 @@ describe("SupervisorChat 接 supervisor:chat（T-071）", () => {
     expect(el.dataset.kind).toBe(reply.kind);
     expect(el.textContent).toContain(LABEL[reply.kind]);
     expect(el.textContent).toContain(reply.text);
-    expect(supervisorChat).toHaveBeenCalledWith({ text: "做个登录页", project_id: "P-1" });
+    expect(supervisorChat).toHaveBeenCalledWith({ text: "做个登录页", project_id: "P-1", message_id: MID });
     if (reply.kind === "dispatched") {
       expect(screen.getByTestId("chat-tickets").textContent).toBe("单号：T-1、T-2");
     }
@@ -79,7 +81,7 @@ describe("SupervisorChat 接 supervisor:chat（T-071）", () => {
     expect((screen.getByLabelText("发送") as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(screen.getByLabelText("发送"));
     expect(supervisorChat).toHaveBeenCalledTimes(2);
-    expect(supervisorChat.mock.calls[1]![0]).toEqual({ text: "第二条" });
+    expect(supervisorChat.mock.calls[1]![0]).toEqual({ text: "第二条", message_id: MID });
   });
 
   it("ok:false：显示原因（role=alert）", async () => {
@@ -131,6 +133,6 @@ describe("SupervisorChat 接 supervisor:chat（T-071）", () => {
     expect((await screen.findByTestId("chat-reply")).dataset.kind).toBe("answer");
     fireEvent.click(screen.getByLabelText("发送"));
     expect(supervisorChat).toHaveBeenCalledTimes(2);
-    expect(supervisorChat.mock.calls[1]).toEqual([{ text: "第二条", project_id: "P-9" }]);
+    expect(supervisorChat.mock.calls[1]).toEqual([{ text: "第二条", project_id: "P-9", message_id: MID }]);
   });
 });
