@@ -1,6 +1,7 @@
 // T-072：只读设置页——当前仓库、环境变量是否已设（只显示名字）、本地 / GitHub 模式。
 // UI-03b：主进程有 secret:* 时密钥那几行换成可保存 / 清除的密钥项，并能打开模型设置向导（测试连接）。
 import { useState } from "react";
+import type { BakaDesktopApi } from "../../shared/api";
 import { ArrowLeft, Wand2 } from "lucide-react";
 import {
   DESKTOP_SECRET_NAMES,
@@ -8,6 +9,7 @@ import {
   type DesktopSettings,
 } from "../../shared/api";
 import { WIZARD_COPY } from "../lib/secretItem";
+import { DiagnosticsPanel } from "./DiagnosticsPanel";
 import { ModelSetupWizard, type WizardApi } from "./ModelSetupWizard";
 import { SecretItem } from "./SecretItem";
 import { Button } from "./ui/button";
@@ -28,6 +30,7 @@ export function SettingsPanel({
   onBack,
   embedded = false,
   api,
+  desktopApi,
 }: {
   settings: DesktopSettings | null;
   error?: string | null;
@@ -36,6 +39,8 @@ export function SettingsPanel({
   embedded?: boolean;
   /** UI-03b：密钥项和测试连接；没有（旧版 preload / 测试）时只读显示 */
   api?: WizardApi;
+  /** T-130：诊断导出面板需要完整 preload API；没有（旧版 preload / 浏览器预览）时整块不显示 */
+  desktopApi?: BakaDesktopApi;
 }) {
   const [wizardOpen, setWizardOpen] = useState(false);
   const editable = !!api?.secretStatus;
@@ -121,6 +126,9 @@ export function SettingsPanel({
             <p className="text-xs text-muted-foreground">
               改环境变量后要完全关掉程序再打开才生效。
             </p>
+            {desktopApi && (
+              <DiagnosticsPanel api={desktopApi} readonly={settings?.mode === "readonly"} />
+            )}
           </>
         )}
       </div>

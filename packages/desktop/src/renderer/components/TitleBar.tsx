@@ -3,6 +3,7 @@
 import { PanelRight } from "lucide-react";
 import type { ReactNode } from "react";
 import { SHORTCUT_LABEL } from "../lib/shortcuts";
+import { ActivityDot } from "./ActivityDot";
 import { RIGHT_PANEL_TOGGLE_ID } from "./RightPanelShell";
 
 export function TitleBar({
@@ -10,12 +11,15 @@ export function TitleBar({
   actions,
   rightPanelOpen,
   onToggleRightPanel,
+  rightPanelDot = false,
   insetRight = 0,
 }: {
   title: ReactNode;
   actions?: ReactNode;
   rightPanelOpen: boolean;
   onToggleRightPanel: () => void;
+  /** 面板关着时动态来了新消息：开关上亮一个小点（§4.5.1，T-127） */
+  rightPanelDot?: boolean;
   insetRight?: number;
 }) {
   const label = rightPanelOpen ? "关闭右面板" : "打开右面板";
@@ -35,9 +39,12 @@ export function TitleBar({
         aria-pressed={rightPanelOpen}
         title={`${label}（${SHORTCUT_LABEL.toggleRightPanel}）`}
         onClick={onToggleRightPanel}
-        className="app-no-drag inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-hover hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none aria-pressed:text-accent"
+        className="app-no-drag relative inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-hover hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none aria-pressed:text-accent"
       >
         <PanelRight size={16} strokeWidth={1.5} aria-hidden />
+        {rightPanelDot && (
+          <ActivityDot testId="right-panel-dot" className="absolute top-1 right-1" />
+        )}
       </button>
     </header>
   );

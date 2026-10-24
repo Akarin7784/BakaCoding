@@ -23,7 +23,7 @@ import {
   type Config,
   type Project,
 } from "@bakacoding/config-budget";
-import { exportPackage } from "@bakacoding/diagnostics";
+import { exportPackage, type ExportScope } from "@bakacoding/diagnostics";
 import { GithubPrProvider } from "@bakacoding/pr";
 import { HighRiskDecisionError } from "@bakacoding/scheduler";
 import {
@@ -38,6 +38,7 @@ import type {
   DesktopRepoSource,
   DesktopChatResult,
   DesktopDecideHighRiskResult,
+  DesktopExportOptions,
   DesktopSyncState,
 } from "../shared/api.js";
 import { DB_PATH_ENV, DEFAULT_DB_RELATIVE, resolveDbPath } from "./config.js";
@@ -165,8 +166,11 @@ export interface BackendHandle {
   chatInFlight(): boolean;
   /** 用本后端的总线调 3 的 importProject（发 project_created）；只读抛错（T-072） */
   importCurrentRepo(): Promise<Project>;
-  /** 用 11 的 exportPackage 导出当前仓库项目最近 24 小时的诊断包，复制到 target（T-072） */
-  exportDiagnostics(target: string, now?: Date): Promise<string>;
+  /**
+   * 用 11 的 exportPackage 导出当前仓库项目的诊断包，复制到 target（T-072）。
+   * T-130：`options.scope` 可带粒度（时间段 / 单张单 / 需求单），省略 = 最近 24 小时。
+   */
+  exportDiagnostics(target: string, options?: DesktopExportOptions, now?: Date): Promise<string>;
   /** 主管 1:1 对话（T-071）：转给 10 的 chat()；只读 / 抛错为 ok:false，reason 已脱敏截断 */
   supervisorChat(message: UserMessage): Promise<DesktopChatResult>;
   /**
@@ -424,7 +428,29 @@ export function sanitizedDepsLogging(
 }
 
 /**
- * 启动后端：写入锁 → openStorage → getConfig → createDefaultDeps → assemble（含 takeOver）。
+ * T-130：界面传的导出粒度 → 11 的 `ExportScope`。省略 = 最近 24 小时（T-072 行为不变）。
+ * 参数合法性在 IPC 层校验；这里只做形状转换，纯函数方便单测。
+ */
+export function exportScope(
+  options: DesktopExportOptions | undefined,
+  now: Date = new Date(),
+): ExportScope {
+  const scope = options?.scope;
+  if (!scope) {
+    return {
+      kind: "time_range",
+      from: new Date(now.getTime() - 24 * 3600_000).toISOString(),
+      to: now.toISOString(),
+    };
+  }
+  if (scope.kind === "ticket") return { kind: "ticket", ticket_id: scope.ticket_id };
+  if (scope.kind === "requirement")
+    return { kind: "requirement", requirement_id: scope.requirement_id };
+  return { kind: "time_range", from: scope.from, to: scope.to };
+}
+
+/**
+ * 启动后端：写入锁 → getConfig → openStorage → createDefaultDeps → assemble（含 takeOver）。
  * 失败（缺密钥、坏配置、锁被占、StorageLeaseError）→ 只读，reason 只含变量名 / 错误名。
  */
 export async function startBackend(opts: BackendOptions = {}): Promise<BackendHandle> {
@@ -539,7 +565,7 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
     try {
       const r = await (opts.checkRepo ?? checkRepoDefault)(repoRoot);
       const git = r.items.find((i) => i.id === "git");
-      const code = git && !git.ok ? (git.code as string | undefined) : undefined;
+      const code = git && !git.ok ? git.code : undefined;
       if (code === "not_git" || code === "nested_repo") return code;
     } catch {
       /* 查不了就不按 git 归类 */
@@ -572,18 +598,21 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
   } else {
     lock = acquired;
     try {
-      storage = open({
-        path: dbPath,
-        ...(opts.nativeBinding !== undefined && { nativeBinding: opts.nativeBinding }),
-        logger: { warn: (m) => logger.warn(m) },
-      });
-
+      // T-128：先读配置再建库——模块 2 的完整提示词 / 输出保留天数取自
+      // config.diagnostics.retention_days；配置缺失 / 坏在建库之前就退只读，不留下半成品库文件。
       if (!existsSync(configPath)) {
         throw new ConfigError([
           `配置文件不存在：请设置 ${CONFIG_ENV} 或提供 <repo>/config/models.json`,
         ]);
       }
       const config = loadConfig(configPath);
+
+      storage = open({
+        path: dbPath,
+        ...(opts.nativeBinding !== undefined && { nativeBinding: opts.nativeBinding }),
+        retention_days: config.diagnostics.retention_days,
+        logger: { warn: (m) => logger.warn(m) },
+      });
 
       depsHandle = await (opts.createDefaultDeps ?? createDefaultDeps)(config, storage, {
         repoRoot,
@@ -720,7 +749,11 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
       if (!live) throw new Error(reason ? `只读模式：${reason}` : "只读模式：后端未接线");
       return doImport(repoRoot, { publish: (e) => live.bus.publish(e) });
     },
-    async exportDiagnostics(target: string, now: Date = new Date()): Promise<string> {
+    async exportDiagnostics(
+      target: string,
+      options?: DesktopExportOptions,
+      now: Date = new Date(),
+    ): Promise<string> {
       if (!storage || !app) {
         throw new Error(reason ? `只读模式：${reason}` : "只读模式：后端未接线");
       }
@@ -729,14 +762,7 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
       const out_dir = await mkdtemp(path.join(tmpdir(), "bakacoding-diag-"));
       try {
         const zip = await exportPackage(
-          {
-            project_id: project.project_id,
-            scope: {
-              kind: "time_range",
-              from: new Date(now.getTime() - 24 * 3600_000).toISOString(),
-              to: now.toISOString(),
-            },
-          },
+          { project_id: project.project_id, scope: exportScope(options, now) },
           { source: storage.diagnosticsSource(), out_dir, now: () => now },
         );
         await copyExclusive(zip, target);

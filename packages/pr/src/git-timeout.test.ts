@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -61,6 +62,94 @@ describe("远程 git 超时与取消（T-110）", () => {
     expect(e).toBe(reason);
     expect(ms).toBeLessThan(5_000);
   });
+});
+
+describe("Windows：超时 / 中止结束整棵进程树（T-123）", () => {
+  const isWin = process.platform === "win32";
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const killTree = (pid: number) => {
+    try {
+      execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
+    } catch {
+      // 已经退出
+    }
+  };
+  const until = async (cond: () => boolean, ms = 5_000) => {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      if (cond()) return true;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return cond();
+  };
+  /**
+   * git 用 sh 别名派生一个 node 孙进程并挂住；孙进程把自己的 Windows PID 写进 grandchild.pid
+   * （sh 的 `$!` 是 MSYS 虚拟 PID，和 Windows 原生 PID 对不上，所以让 node 自己写）。
+   */
+  const spawnTree = async () => {
+    await writeFile(
+      join(root, "tree.sh"),
+      "node -e \"require('node:fs').writeFileSync('grandchild.pid', String(process.pid)); setTimeout(()=>{},300000)\" &\nwait\n",
+    );
+    return join(root, "grandchild.pid");
+  };
+  const pidFileOf = async (node: string) => Number((await readFile(node, "utf8")).trim());
+
+  // 时间余量给足（T-123 评审 P2）：高负载机器上 sh/node 启动可能很慢，别因为等不到 pid 文件假红。
+  it.skipIf(!isWin)(
+    "超时：孙进程也被结束，不在后台残留",
+    async () => {
+      const pidFile = await spawnTree();
+      const settled = git(root, ["-c", "alias.tree=!sh tree.sh", "tree"], {
+        timeoutMs: 12_000,
+      }).catch((e: unknown) => e);
+      let gpid = 0;
+      try {
+        expect(await until(() => existsSync(pidFile), 8_000)).toBe(true);
+        gpid = await pidFileOf(pidFile);
+        expect(gpid).toBeGreaterThan(0);
+        expect(alive(gpid)).toBe(true);
+        const e = await settled;
+        expect(e).toBeInstanceOf(GitTimeoutError);
+        expect(await until(() => !alive(gpid), 8_000)).toBe(true);
+      } finally {
+        if (gpid > 0 && alive(gpid)) killTree(gpid);
+      }
+    },
+    40_000,
+  );
+
+  it.skipIf(!isWin)(
+    "中止：同样结束整棵进程树，原样抛 signal.reason",
+    async () => {
+      const pidFile = await spawnTree();
+      const ctl = new AbortController();
+      const reason = new Error("stop");
+      const settled = git(root, ["-c", "alias.tree=!sh tree.sh", "tree"], {
+        timeoutMs: 0,
+        signal: ctl.signal,
+      }).catch((e: unknown) => e);
+      let gpid = 0;
+      try {
+        expect(await until(() => existsSync(pidFile), 8_000)).toBe(true);
+        gpid = await pidFileOf(pidFile);
+        expect(alive(gpid)).toBe(true);
+        ctl.abort(reason);
+        expect(await settled).toBe(reason);
+        expect(await until(() => !alive(gpid), 8_000)).toBe(true);
+      } finally {
+        if (gpid > 0 && alive(gpid)) killTree(gpid);
+      }
+    },
+    40_000,
+  );
 });
 
 describe("本地 git 超时：行为不变（T-110）", () => {

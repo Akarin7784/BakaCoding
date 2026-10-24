@@ -48,8 +48,7 @@ const NO_COMMITS: DesktopRepoCheck = {
 };
 const NESTED: DesktopRepoCheck = {
   items: [
-    // T-114（#148）合入前 DesktopRepoCheckItem.code 里还没有 nested_repo
-    { id: "git", ok: false, code: "nested_repo" as never, detail: NESTED_REPO_REASON },
+    { id: "git", ok: false, code: "nested_repo", detail: NESTED_REPO_REASON },
     { id: "commit", ok: false, code: "no_commits" },
     { id: "main", ok: false, code: "no_main" },
     { id: "ignored", ok: false, code: "not_ignored" },

@@ -1,10 +1,11 @@
 // T-113：准备页「生成配置」（repo:init-config）。缺的或不合法的 config/models.json、config/pricing.json 用安装包里的
 // 模板（config-templates/models.example.json、pricing.json）生成：models.json 只改 budget.daily_micro_usd（用户必填），
-// 经 3 的 writeConfig 写；pricing.json 原样经 3 的 writePricing（T-114）写，桌面端不自己复制文件。
+// 经 3 的 writeConfig 写；pricing.json 原样经 3 的 writePricing（T-114 #148）写，桌面端不自己复制文件。
 // 不合法的旧文件先备份成 `<名字>.bak-<UTC 时间>` 再覆盖（要用户确认）；生成的文件和备份都写进 .git/info/exclude，
 // 不进首次提交。写完再用 3 的校验复查，不过就撤回。所有失败只回 shared/config-text.ts 的固定文案。
 import { copyFile, lstat, readFile, realpath, rm } from "node:fs/promises";
 import path from "node:path";
+import type { writePricing } from "@bakacoding/config-budget";
 import type {
   ExcludeRule,
   RepoCheck,
@@ -33,26 +34,13 @@ export const EXCLUDE_RULE = {
 /** 每日预算上限（微美元）：100 万美元，防止误填一长串数字 */
 export const MAX_DAILY_MICRO_USD = 1_000_000_000_000;
 
-/** 3 的 writePricing（T-114，PR #148）签名；T-114 合入前由组装处按名字取，取不到就是 undefined */
-export type WritePricingFn = (
-  path: string,
-  pricing: unknown,
-  opts?: WriteConfigOptions,
-) => Promise<WriteConfigResult>;
+/** 3 的 writePricing（T-114，#148）：只写 pricing.json，PricingSchema 校验 + 像密钥的值检查，原子写 */
+export type WritePricingFn = typeof writePricing;
 export type WriteConfigFn = (
   path: string,
   config: unknown,
   opts?: WriteConfigOptions,
 ) => Promise<WriteConfigResult>;
-
-/**
- * 从 3 的模块对象里取 writePricing（T-114 / PR #148 合入前 3 还没有这个导出，取不到就是 undefined，
- * 「生成配置」要写 pricing.json 时回 unavailable）。T-114 合入后改成直接 import。
- */
-export function writePricingFrom(mod: object): WritePricingFn | undefined {
-  const fn = (mod as { writePricing?: unknown }).writePricing;
-  return typeof fn === "function" ? (fn as WritePricingFn) : undefined;
-}
 
 /** 模板目录：打包后是 exe 旁边的 config-templates/（scripts/package-app.mjs），开发时是仓库根的 config/ */
 export function configTemplateDir(packaged: boolean, execPath: string, mainDir: string): string {
@@ -71,7 +59,7 @@ export interface ConfigFixDeps {
   templateDir: string;
   checkRepo(root: string): Promise<RepoCheck>;
   writeConfig: WriteConfigFn;
-  writePricing: WritePricingFn | undefined;
+  writePricing: WritePricingFn;
   ensureExcludeLines(dir: string, lines: readonly ExcludeRule[]): Promise<boolean>;
   inspect?: typeof inspectConfig;
   now?: () => Date;
@@ -170,8 +158,7 @@ export function configFixHandlers(deps: ConfigFixDeps): ConfigFixHandlers {
       return failure("failed");
     }
     const git = check.items.find((i) => i.id === "git");
-    if (!git?.ok)
-      return failure((git?.code as string) === "nested_repo" ? "nested_repo" : "not_git");
+    if (!git?.ok) return failure(git?.code === "nested_repo" ? "nested_repo" : "not_git");
 
     const state = inspect(root, deps.env, deps.argv);
     const targets: Target[] = [];
@@ -184,7 +171,6 @@ export function configFixHandlers(deps: ConfigFixDeps): ConfigFixHandlers {
     if (targets.includes("models") && req.daily === undefined) return failure("invalid_budget");
     const overwrite = targets.filter((t) => state[t] === "invalid");
     if (overwrite.length > 0 && !req.confirm) return failure("confirm_required");
-    if (!deps.writePricing && targets.includes("pricing")) return failure("unavailable");
 
     // 路径：仓库根取真实路径；config/ 和目标文件都不能是符号链接或别的类型
     const realRoot = await realpath(root);
@@ -244,7 +230,7 @@ export function configFixHandlers(deps: ConfigFixDeps): ConfigFixHandlers {
       const r =
         t === "models"
           ? await deps.writeConfig(file(t), models, opts)
-          : await deps.writePricing!(file(t), pricing, opts);
+          : await deps.writePricing(file(t), pricing, opts);
       if (!r.ok) {
         await undo();
         return failure("write_failed", r.errors.slice(0, 20));

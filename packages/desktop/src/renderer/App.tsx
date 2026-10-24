@@ -15,6 +15,7 @@ import { useBackendStatus } from "./data/useBackendStatus";
 import { useQuitting } from "./data/useQuitting";
 import { QuittingBanner } from "./components/QuittingBanner";
 import { ReadonlyBanner } from "./components/ReadonlyBanner";
+import { MissingConfigBanner } from "./components/MissingConfigBanner";
 import { StatusDot } from "./components/StatusDot";
 import { attentionItems, globalLevel, runningCount } from "./lib/globalStatus";
 import { describeSyncState } from "./lib/sync-labels";
@@ -27,6 +28,8 @@ import { SettingsDialog } from "./components/SettingsDialog";
 import { CommandPalette } from "./components/CommandPalette";
 import { TitleBar } from "./components/TitleBar";
 import { RightPanelShell, type RightPanelTab } from "./components/RightPanelShell";
+import { ActivityFeed } from "./components/ActivityFeed";
+import { useActivityDot } from "./data/useActivityDot";
 import { AgentIcon } from "./components/AgentIcon";
 import { Button } from "./components/ui/button";
 import { useLayout } from "./lib/useLayout";
@@ -105,6 +108,9 @@ export function App(props: AppProps) {
       : (lastProjectId ?? projects[0]?.project.payload.project_id);
   const current = projects.find((p) => p.project.payload.project_id === currentId);
   const showProject = selection.kind === "project" && current !== undefined;
+  // T-127：动态标签的小点——面板开着且停在动态标签才算已读（§4.5.1）
+  const viewingActivity = layout.rightPanelOpen && panelTab === "activity";
+  const activityDot = useActivityDot(current, viewingActivity);
 
   // 当前视图相关的高风险单优先；主管页显示全部
   const panelItems =
@@ -260,9 +266,17 @@ export function App(props: AppProps) {
           actions={titleActions}
           rightPanelOpen={layout.rightPanelOpen}
           onToggleRightPanel={layout.toggleRightPanel}
+          rightPanelDot={activityDot && !layout.rightPanelOpen}
           insetRight={panelDocked ? 0 : inset.right}
         />
         {quitting && <QuittingBanner />}
+        {/* T-081：只缺配置时给一行「缺配置」横幅 + 用默认模板创建（§3：页面横幅带操作按钮） */}
+        {actions.canCreateDefaultConfig && (
+          <MissingConfigBanner
+            busy={actions.busy !== null}
+            onCreate={() => void actions.createDefaultConfig()}
+          />
+        )}
         {backendReadonly && backend.status && (
           <ReadonlyBanner
             status={backend.status}
@@ -313,7 +327,7 @@ export function App(props: AppProps) {
           <SupervisorChat
             showHeader={false}
             initial={supervisorMessages}
-            busy={actions.busy}
+            busy={actions.busy === "create-config" ? "import" : actions.busy}
             api={api}
             readonly={backendReadonly}
           />
@@ -326,6 +340,8 @@ export function App(props: AppProps) {
         tab={panelTab}
         onTabChange={setPanelTab}
         insetRight={inset.right}
+        activityDot={activityDot}
+        activity={<ActivityFeed project={current} />}
         overview={
           current ? (
             <RightPanel
@@ -350,6 +366,7 @@ export function App(props: AppProps) {
         settings={actions.settings}
         error={actions.settingsError}
         {...(api?.secretStatus && { api })}
+        {...(api && { desktopApi: api })}
       />
       <CommandPalette
         open={paletteOpen}

@@ -14,10 +14,13 @@ import {
   isHighRiskDiffFile,
   highRiskEvidence,
   HIGH_RISK_FILES_MAX,
+  memoryInterfaceNotes,
   reasonsToFeedback,
+  storageTicketInterfaceNotes,
   type SubAgentConfig,
   type SubAgentDeps,
   type SubAgentTicket,
+  type TicketInterfaceNoteStore,
   type TicketPermissionStore,
   type SubAgent,
   memoryTicketPermissions,
@@ -2129,6 +2132,49 @@ function ifaceEvent(
   };
 }
 
+describe("T-112 同一条 interface_changed 收到两次（9 重启补发 / 清标记失败时可能重复）", () => {
+  // 9 补发时是一条新事件（新 event_id / seq），payload 与上一次相同
+  const again = () => ({ ...ifaceEvent(), event_id: "ev-i-2", seq: 2 });
+
+  it("编码前收到两次：照常编码、评审、交给 9，不报错、不上报；说明最多重复一次", async () => {
+    const t = setup({ runs: [done()], reviews: [PASS()] });
+    t.agent.onInterfaceChanged(ifaceEvent());
+    t.agent.onInterfaceChanged(again());
+    const out = await t.agent.handle(TICKET);
+    expect(out).toMatchObject({ kind: "merge_queued", resubmit_counts: { review: 0 } });
+    expect(t.submit).toHaveBeenCalledTimes(1);
+    expect(t.kinds()).not.toContain("resubmit");
+    expect(t.kinds().some((k) => k.startsWith("escalated"))).toBe(false);
+    const fb = t.runInputs[0]!.feedback!;
+    expect(fb).toMatch(/^接口变更通知/);
+    const n = fb.match(/T-9 的 PR pr-T-9-1/g)!.length;
+    expect(n).toBeGreaterThanOrEqual(1);
+    expect(n).toBeLessThanOrEqual(2);
+  });
+
+  it("评审期间收到两次：只多评审一次（和收到一次一样），不计复投，交给 9 一次", async () => {
+    const t = setup({ runs: [done()], reviews: [PASS(), PASS(), PASS()] });
+    const holder: { a?: SubAgent } = {};
+    const inner = t.deps.review;
+    let n = 0;
+    t.deps.review = vi.fn(async (input: ReviewInput) => {
+      const r = await inner(input);
+      if (++n === 1) {
+        holder.a!.onInterfaceChanged(ifaceEvent());
+        holder.a!.onInterfaceChanged(again());
+      }
+      return r;
+    });
+    holder.a = createSubAgent(t.deps);
+    const out = await holder.a.handle(TICKET);
+    expect(out).toMatchObject({ kind: "merge_queued", resubmit_counts: { review: 0 } });
+    expect(t.reviewInputs).toHaveLength(2);
+    expect(t.reviewInputs[1]!.ctx.is_resubmit).toBe(false);
+    expect(t.kinds()).not.toContain("resubmit");
+    expect(t.submit).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("T-038 interface_changed：说明作为不可信反馈带给下一次 runTicket；在手的单交出前再评审一次", () => {
   it("受影响的单下一次 runTicket 的 feedback 里有说明（合并的那张、不受影响的单没有）；带过一次就清掉", async () => {
     const t = setup({ runs: [done(), done()], reviews: [FAIL(), PASS()] });
@@ -2537,5 +2583,170 @@ describe("T-065 改名看旧路径、依赖文件名不区分大小写（isHighR
     expect(isHighRiskDiffFile(m("docs/Package.json.md"))).toBe(false);
     expect(isHighRiskDiffFile(m("docs/package.json.md"))).toBe(false);
     expect(isDependencyFile("PACKAGE.JSON.BAK")).toBe(false);
+  });
+});
+
+describe("T-133 接口变更说明持久化", () => {
+  it("说明写进注入的 store；进程重启后（新实例、同一个 store）下一次 runTicket 仍能带上，带出去后 store 清空", async () => {
+    const store = memoryInterfaceNotes();
+    const first = setup({ over: { interfaceNotes: store } });
+    first.agent.onInterfaceChanged(ifaceEvent());
+    expect(store.get("T-1")).toHaveLength(1);
+
+    // 「重启」：新的 8 实例、同一个 store；编码池正常返回
+    const restarted = setup({ runs: [done()], reviews: [PASS()], over: { interfaceNotes: store } });
+    expect((await restarted.agent.handle(TICKET)).kind).toBe("merge_queued");
+    expect(restarted.runInputs[0]!.feedback).toContain("T-9 的 PR pr-T-9-1");
+    expect(store.get("T-1")).toEqual([]);
+  });
+
+  it("预算暂停：说明留在 store 和续跑凭据里；重启后照样带到下一次编码，带出去后清空", async () => {
+    const store = memoryInterfaceNotes();
+    const t = setup({
+      runs: [{ status: "budget_exceeded", summary: "", changed_files: [] }],
+      budget: [{ daily_exhausted: true }],
+      over: { interfaceNotes: store },
+    });
+    t.agent.onInterfaceChanged(ifaceEvent());
+    const paused = await t.agent.handle(TICKET);
+    expect(paused.kind).toBe("requeue_budget");
+    expect(store.get("T-1")).toHaveLength(1);
+
+    const restarted = setup({ runs: [done()], reviews: [PASS()], over: { interfaceNotes: store } });
+    await restarted.agent.handle(TICKET);
+    expect(restarted.runInputs[0]!.feedback).toContain("T-9 的 PR");
+    expect(store.get("T-1")).toEqual([]);
+  });
+
+  it("store 抛错只 warn：编码 / 评审照常完成，说明仍在内存里带给编码池；下次事件到达时重试写成功", async () => {
+    const writes: string[][] = [];
+    let fail = true;
+    const store: TicketInterfaceNoteStore = {
+      get: () => [],
+      set: (_id, notes) => {
+        if (fail) {
+          fail = false;
+          throw new Error("db gone");
+        }
+        writes.push([...notes]);
+      },
+    };
+    const warn = vi.fn();
+    const t = setup({
+      runs: [done()],
+      reviews: [PASS()],
+      over: { interfaceNotes: store, logger: { warn } },
+    });
+    expect(() => t.agent.onInterfaceChanged(ifaceEvent())).not.toThrow();
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/写接口变更说明失败.*db gone/));
+    expect((await t.agent.handle(TICKET)).kind).toBe("merge_queued");
+    expect(t.runInputs[0]!.feedback).toContain("T-9 的 PR");
+    // 第二次 onInterfaceChanged 重试写成功（之前 handle 里清空那次也写成功，这里是最后一条非空）
+    t.agent.onInterfaceChanged(ifaceEvent());
+    expect(writes.at(-1)!.length).toBeGreaterThan(0);
+  });
+
+  it("单条说明有体积上限：超长接口列表 / 说明按码点截到 4096，写入 store 的也截了", () => {
+    const store = memoryInterfaceNotes();
+    const t = setup({ over: { interfaceNotes: store } });
+    t.agent.onInterfaceChanged(
+      ifaceEvent({
+        changed_interfaces: Array.from({ length: 200 }, (_, i) => ({
+          file: `src/file-${i}-${"x".repeat(40)}.ts`,
+          symbol: "sym",
+        })),
+        summary: "y".repeat(5000),
+      }),
+    );
+    const [note] = store.get("T-1");
+    expect(note).toBeDefined();
+    expect(Array.from(note!).length).toBeLessThanOrEqual(4096);
+    expect(note!.endsWith("…")).toBe(true);
+  });
+
+  it("评审 P1：编码在途收到的说明不会被本轮清掉（重启后下一轮能带上）；已交付的说明不重复带", async () => {
+    const store = memoryInterfaceNotes();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const inputs: RunTicketInput[] = [];
+    const runTicket = vi.fn(async (input: RunTicketInput) => {
+      inputs.push(structuredClone(input));
+      await gate; // 第一轮编码在途时到达说明 B
+      return done();
+    });
+    const t = setup({ reviews: [PASS()], over: { interfaceNotes: store } });
+    t.deps.coder.runTicket = runTicket;
+    t.agent.onInterfaceChanged(ifaceEvent({ summary: "说明A" }));
+    const handling = t.agent.handle(TICKET);
+    await vi.waitFor(() => expect(runTicket).toHaveBeenCalledTimes(1));
+    t.agent.onInterfaceChanged(ifaceEvent({ summary: "说明B" }));
+    release();
+    expect((await handling).kind).toBe("merge_queued");
+    expect(inputs[0]!.feedback).toContain("说明A");
+
+    // 说明 B 是编码在途才到的、没交付：本轮结束仍在 2 里（说明 A 已交付，不在）
+    const remaining = store.get("T-1");
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]).toContain("说明B");
+
+    // 「重启」：同一 store 的新实例下一轮带上 B，已交付的 A 不重复带
+    const restarted = setup({ runs: [done()], reviews: [PASS()], over: { interfaceNotes: store } });
+    await restarted.agent.handle(TICKET);
+    expect(restarted.runInputs[0]!.feedback).toContain("说明B");
+    expect(restarted.runInputs[0]!.feedback).not.toContain("说明A");
+    expect(store.get("T-1")).toEqual([]);
+  });
+
+  it("评审 P1：store 里重启前还没带的旧说明不被新写入覆盖（新事件只追加）", () => {
+    const store = memoryInterfaceNotes();
+    store.set("T-1", ["旧说明"]); // 模拟上一次进程留下、还没带给编码池的说明
+    const t = setup({ over: { interfaceNotes: store } });
+    t.agent.onInterfaceChanged(ifaceEvent({ summary: "新说明" }));
+    const notes = store.get("T-1");
+    expect(notes).toHaveLength(2);
+    expect(notes[0]).toContain("旧说明");
+    expect(notes[1]).toContain("新说明");
+  });
+
+  it("评审 P2：编码池抛错时说明写回 store，重启后的下一轮仍能带上", async () => {
+    const store = memoryInterfaceNotes();
+    let throwOnce = true;
+    const runTicket = vi.fn(async () => {
+      if (throwOnce) {
+        throwOnce = false;
+        throw new Error("coder 崩了");
+      }
+      return done();
+    });
+    const first = setup({ over: { coder: { runTicket }, interfaceNotes: store } });
+    first.agent.onInterfaceChanged(ifaceEvent());
+    expect((await first.agent.handle(TICKET)).kind).toBe("escalated");
+    expect(store.get("T-1")).toHaveLength(1);
+
+    // 「重启」：同一 store、新实例正常编码
+    const restarted = setup({ runs: [done()], reviews: [PASS()], over: { interfaceNotes: store } });
+    await restarted.agent.handle(TICKET);
+    expect(restarted.runInputs[0]!.feedback).toContain("T-9 的 PR");
+    expect(store.get("T-1")).toEqual([]);
+  });
+
+  it("评审 P2：适配器 set 遇到 setTicketField 返回 false（旧单 fields=null）只 warn 一次；读回历史超长说明会截断", () => {
+    const warn = vi.fn();
+    const adapter = storageTicketInterfaceNotes(
+      { getTicket: () => ({ fields: null }), setTicketField: () => false } as never,
+      { warn },
+    );
+    adapter.set("T-1", ["a"]);
+    adapter.set("T-1", ["b"]);
+    adapter.set("T-2", ["c"]);
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(String(warn.mock.calls[0]![0])).toMatch(/T-1.*没有可写的结构化字段/);
+
+    const long = "x".repeat(5000);
+    const reader = storageTicketInterfaceNotes({
+      getTicket: () => ({ fields: { interface_notes: [long] } }),
+      setTicketField: () => true,
+    } as never);
+    expect(Array.from(reader.get("T-1")[0]!).length).toBe(4096);
   });
 });

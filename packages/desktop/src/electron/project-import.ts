@@ -11,6 +11,8 @@ import {
   IMPORT_REASON_MAX,
   inspectConfig,
   inspectModels,
+  MODELS_FILE,
+  PRICING_FILE,
   resolveConfigPath,
 } from "./config-inspect.js";
 import { sanitizeSyncErrorMessage } from "./sync-state.js";
@@ -61,11 +63,22 @@ export function repoLockedBy(
 export const REPO_LOCKED_REASON =
   "仓库已被启动参数 / 环境变量锁定（--repo、BAKACODING_REPO，或绝对路径的 --db、BAKACODING_DB_PATH），不能在界面里切换项目";
 
-/** notGit（UI-03b）：配置都对、只是还不是 Git 仓库——照样导入，导入后进项目准备页初始化 */
-/** configNeedsPrep（T-113）：本仓库的配置缺了或不合法——照样导入，导入后在准备页「生成配置」 */
+/**
+ * notGit（UI-03b）：不是 Git 仓库——照样导入，导入后进项目准备页初始化。
+ * configNeedsPrep（T-113）：不是 Git 仓库且本仓库的配置缺了或不合法——照样导入，导入后在准备页「生成配置」。
+ * Git 仓库缺配置仍按 T-081 拒绝并给「用默认模板创建」。
+ */
 export type DirCheck =
   | { ok: true; note?: string; notGit?: true; configNeedsPrep?: true }
-  | { ok: false; missing?: string[]; reason?: string };
+  | {
+      ok: false;
+      missing?: string[];
+      reason?: string;
+      /** T-081：--config / BAKACODING_CONFIG 指向的文件不存在（补模板也过不了，不给按钮） */
+      envConfigMissing?: true;
+      /** UI-03b / T-081：不是 Git 仓库（写不了 .git/info/exclude，不给「用默认模板创建」） */
+      notGit?: true;
+    };
 
 /** 用了另外指定的配置时给用户的说明（导入结果 / 提示里都带上） */
 export function envConfigNote(
@@ -93,17 +106,35 @@ export function checkProjectDir(
   // UI-03b：不是 Git 仓库不再拒绝导入（导入后在项目准备页初始化）
   const notGit = !existsSync(path.join(dir, GIT_DIR));
 
+  if (source && !existsSync(models))
+    return {
+      ok: false,
+      envConfigMissing: true,
+      ...(notGit && { notGit: true as const }),
+      reason: clean(`当前使用 ${source} 指定的配置，但文件不存在：${models}`),
+    };
   if (source) {
-    if (!existsSync(models))
-      return {
-        ok: false,
-        reason: clean(`当前使用 ${source} 指定的配置，但文件不存在：${models}`),
-      };
     const m = inspectModels(models, `${source}（${models}）`);
     if (m.state !== "ok") return { ok: false, reason: clean([...m.errors, note].join("\n")) };
   }
   const c = inspectConfig(dir, env, argv);
-  const needsPrep = configFixable(c);
+  if (!notGit) {
+    // T-081：Git 仓库缺配置拒绝导入（界面给「用默认模板创建」），缺的文件合成一句；不合法照旧报错
+    const missing: string[] = [];
+    if (!source && c.models === "missing") missing.push(MODELS_FILE);
+    if (c.pricing === "missing") missing.push(PRICING_FILE);
+    if (missing.length) {
+      const names = [`缺少 ${missing.join("、")}`];
+      if (note) names.push(note);
+      return { ok: false, missing, reason: clean(names.join("；")) };
+    }
+    if (c.errors.length) {
+      const errors = [...c.errors];
+      if (note) errors.push(note);
+      return { ok: false, reason: clean(errors.join("\n")) };
+    }
+  }
+  const needsPrep = notGit && configFixable(c);
   return {
     ok: true,
     ...(note !== undefined && { note: clean(note) }),

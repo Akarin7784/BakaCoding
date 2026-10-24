@@ -799,6 +799,23 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     patchFields(ticket_id, { escalation_handled: h });
   }
 
+  /**
+   * 补做合入后的事用的 SchedulerTicket（T-112）：能读出就带上接口声明和写入范围（算 changed_interfaces、
+   * 受影响单）；结构化字段坏了只带单号和 trace，照样补发。
+   */
+  function followupTicket(row: StoredTicket): SchedulerTicket {
+    const f = decodeFields(row.fields);
+    const trace = traceOf(row);
+    return {
+      ticket_id: row.ticket_id,
+      requirement_id: row.requirement_id,
+      trace_id: trace.trace_id,
+      span_id: trace.span_id ?? newId(),
+      parent_span_id: trace.parent_span_id,
+      ...(f.ok ? { write_scope: f.fields.write_scope, interfaces: f.fields.interfaces } : {}),
+    };
+  }
+
   function traceOf(row: StoredTicket): Trace {
     const f = decodeFields(row.fields);
     return f.ok
@@ -1111,6 +1128,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       escalations: [],
       held: [],
       merged: [],
+      followups: [],
       failed: [],
     };
     const holdOnce = async (row: StoredTicket, blocked_by: string[], text: string) => {
@@ -1281,7 +1299,45 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       );
     }
 
-    // ---- 4. 接回 9：先 adopt 再 enqueue ----
+    // ---- 4. 接回 9：按依赖拓扑交付（父先于子），失败单的下游直接挂起（T-117） ----
+    /**
+     * 交付顺序（T-117）：初始顺序保持「先 adopt 再 enqueue」（T-041a：已在合并队列的单先占锁）；有依赖边时
+     * 父单排到子单前，父单接管失败时子单还没交出去、能直接进 held。成环 / 依赖不在本次接管集合里时不调整
+     * （交给 9 按 waiting 处理）。用稳定拓扑序，没有依赖边时与改动前逐单一致。
+     */
+    const adoptIds = new Set(toAdopt.map((r) => r.ticket_id));
+    const handRows = ((): StoredTicket[] => {
+      const rowsInOrder = [...toAdopt, ...toEnqueue];
+      const byId = new Map(rowsInOrder.map((r) => [r.ticket_id, r]));
+      const visited = new Set<string>();
+      const out: StoredTicket[] = [];
+      const visit = (row: StoredTicket, stack: Set<string>): void => {
+        if (visited.has(row.ticket_id) || stack.has(row.ticket_id)) return;
+        const st = prepared.get(row.ticket_id);
+        if (!st) return;
+        stack.add(row.ticket_id);
+        for (const d of st.depends_on ?? []) {
+          const dep = byId.get(d);
+          if (dep) visit(dep, stack);
+        }
+        stack.delete(row.ticket_id);
+        if (visited.has(row.ticket_id)) return;
+        visited.add(row.ticket_id);
+        out.push(row);
+      };
+      for (const row of rowsInOrder) visit(row, new Set());
+      return out;
+    })();
+
+    /**
+     * T-117：本次接管失败（`failedIds`）/ 因失败挂起的下游（`blockedIds`）。有这种依赖的单不再交给 9
+     * （9 不认识没登记的单，会一直 waiting），直接进 held 并通知一次。
+     */
+    const failedIds = new Set<string>();
+    const blockedIds = new Set<string>();
+    const failedDepOf = (st: SchedulerTicket & { kind?: "dependency" }): string[] =>
+      (st.depends_on ?? []).filter((d) => failedIds.has(d) || blockedIds.has(d));
+
     const hand = async (
       row: StoredTicket,
       fn: (t: SchedulerTicket & { kind?: "dependency" }) => unknown,
@@ -1297,6 +1353,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         done.push(id);
       } catch (err) {
         enqueuedIds.delete(id);
+        failedIds.add(id);
         const error = err instanceof Error ? err.message : String(err);
         logger.warn(`重启接管：单 ${id} ${what} 失败`, err);
         report.failed.push({ ticket_id: id, error: error.slice(0, 500) });
@@ -1304,16 +1361,39 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     };
 
     const adopt = deps.adopt;
-    for (const row of toAdopt) {
-      if (!prepared.has(row.ticket_id) || held.has(row.ticket_id)) continue;
+    for (const row of handRows) {
+      const st = prepared.get(row.ticket_id);
+      if (!st || held.has(row.ticket_id)) continue;
+      const id = row.ticket_id;
+      // T-117：依赖里有本次接管失败 / 因失败挂起的单 → 不交给 9
+      const byFailed = failedDepOf(st);
+      if (byFailed.length > 0) {
+        blockedIds.add(id);
+        held.add(id);
+        await holdOnce(
+          row,
+          byFailed,
+          `单 ${id} 依赖的 ${byFailed.join("、")} 本次重启接管失败（没接回 9），这次也不接回，等它们下次接管成功后再试。`,
+        );
+        continue;
+      }
+      if (!adoptIds.has(id)) {
+        await hand(
+          row,
+          // enqueue 只要 SchedulerTicket 的字段
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars
+          ({ kind: _kind, ...t }) => deps.enqueue(t),
+          report.enqueued,
+          "enqueue",
+        );
+        continue;
+      }
       if (!adopt) {
-        logger.warn(`重启接管：单 ${row.ticket_id} 已在合并队列里，没注入 adopt，本次没有接回`);
-        report.awaiting_adopt.push(row.ticket_id);
+        logger.warn(`重启接管：单 ${id} 已在合并队列里，没注入 adopt，本次没有接回`);
+        report.awaiting_adopt.push(id);
         continue;
       }
       // T-064 B2：adopt 可能返回 "merged"（停机期间用户已在 GitHub 合入）
-      const st = prepared.get(row.ticket_id)!;
-      const id = row.ticket_id;
       enqueuedIds.add(id);
       try {
         const result = await adopt(st);
@@ -1321,20 +1401,33 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         else report.adopted.push(id);
       } catch (err) {
         enqueuedIds.delete(id);
+        failedIds.add(id);
         const error = err instanceof Error ? err.message : String(err);
         logger.warn(`重启接管：单 ${id} adopt 失败`, err);
         report.failed.push({ ticket_id: id, error: error.slice(0, 500) });
       }
     }
-    for (const row of toEnqueue) {
-      await hand(
-        row,
-        // enqueue 只要 SchedulerTicket 的字段
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        ({ kind: _kind, ...t }) => deps.enqueue(t),
-        report.enqueued,
-        "enqueue",
-      );
+
+    // ---- 5. 合入后补做（T-112）：在 adopt / enqueue 之后，9 才算得全受影响的在途单 ----
+    const recover = deps.recoverMergeFollowup;
+    if (recover) {
+      for (const row of rows) {
+        if ((row.status ?? "pending") !== "merged") continue;
+        const mf = readMarkers(row.fields).merge_followup;
+        if (!mf) continue;
+        const id = row.ticket_id;
+        try {
+          const result = await recover(followupTicket(row), {
+            pr_id: mf.pr_id,
+            merge_sha: mf.merge_sha,
+          });
+          report.followups.push({ ticket_id: id, result });
+        } catch (err) {
+          const error = err instanceof Error ? err.message : String(err);
+          logger.warn(`重启接管：单 ${id} 补做合入后的事失败`, err);
+          report.followups.push({ ticket_id: id, result: "failed", error: error.slice(0, 500) });
+        }
+      }
     }
     return report;
   }

@@ -1,6 +1,6 @@
 // T-113：「生成配置」（repo:init-config）——预算必填、模板来源、备份后覆盖（要确认）、exclude、路径校验、
 // 嵌套 / 非仓库 / cwd 拒绝、写失败和复查失败都撤回、错误不带配置值。
-// 3 的 writePricing（T-114，PR #148）还没合入：这里用按它签名和写法（2 空格缩进、末尾换行、只写 pricing.json）写的 fake。
+// 用 3 的真实 writePricing、4 的真实 checkRepo（T-114 #148 的 nested_repo）；只有个别用例注入假的 checkRepo / writePricing。
 import { execFileSync } from "node:child_process";
 import {
   existsSync,
@@ -13,9 +13,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ensureExcludeLines, writeConfig, type RepoCheck } from "@bakacoding/app";
+import { checkRepo, ensureExcludeLines, writeConfig, type RepoCheck } from "@bakacoding/app";
+import { writePricing as writePricing3 } from "@bakacoding/config-budget";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { DesktopConfigFixResult } from "../shared/api.js";
 import { CONFIG_FIX_TEXT, NESTED_REPO_REASON } from "../shared/config-text.js";
@@ -26,9 +27,7 @@ import {
   EXCLUDE_RULE,
   MAX_DAILY_MICRO_USD,
   parseInitConfig,
-  writePricingFrom,
   type ConfigFixDeps,
-  type WritePricingFn,
 } from "./config-fix.js";
 import { needsRepoPrep } from "./backend-switcher.js";
 
@@ -78,18 +77,10 @@ const check = (code?: "not_git" | "nested_repo"): RepoCheck =>
     identity: { name: false, email: false },
   }) as RepoCheck;
 
-/** T-114 writePricing 的 fake：同签名；只写 pricing.json；写传进来的对象，2 空格缩进、末尾换行 */
-const fakeWritePricing: WritePricingFn = async (path, pricing) => {
-  if (basename(path) !== "pricing.json")
-    return { ok: false, errors: ["(file): 只能写 pricing.json"] };
-  mkdirSync(join(path, ".."), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(pricing, null, 2)}\n`);
-  return { ok: true };
-};
-
 function handlers(root: string, over: Partial<ConfigFixDeps> = {}) {
   const reconnect = vi.fn(async () => ({ state: "reloaded" as const }));
-  const writePricing = vi.fn(fakeWritePricing);
+  // 3 的真实 writePricing（T-114 #148），包一层只为断言调用参数
+  const writePricing = vi.fn(writePricing3);
   const h = configFixHandlers({
     repoRoot: () => root,
     repoSource: () => "last_import",
@@ -128,13 +119,6 @@ describe("parseInitConfig / backupName / writePricingFrom / configTemplateDir", 
     const t = new Date("2026-10-18T07:03:00.123Z");
     expect(backupName("models.json", t)).toBe("models.json.bak-20261018T070300Z");
     expect(backupName("models.json", t, 2)).toBe("models.json.bak-20261018T070300Z-2");
-  });
-
-  it("writePricingFrom：3 有 writePricing 就用，没有（T-114 合入前）就是 undefined", () => {
-    const fn = async () => ({ ok: true as const });
-    expect(writePricingFrom({ writePricing: fn })).toBe(fn);
-    expect(writePricingFrom({})).toBeUndefined();
-    expect(writePricingFrom({ writePricing: "x" })).toBeUndefined();
   });
 
   it("模板目录：打包后在 exe 旁边的 config-templates/，开发时是仓库根的 config/", () => {
@@ -196,16 +180,6 @@ describe("repo:init-config：两个都缺（T-113）", () => {
       code: "template_missing",
     });
     expect(existsSync(join(root, "config", "models.json"))).toBe(false);
-  });
-
-  it("3 还没有 writePricing（T-114 合入前）：要写 pricing.json 时 unavailable，什么都不写", async () => {
-    const root = gitRepo();
-    const { h } = handlers(root, { writePricing: undefined });
-    await expect(h.initConfig({ daily_micro_usd: 5 })).resolves.toMatchObject({
-      code: "unavailable",
-      reason: CONFIG_FIX_TEXT.unavailable,
-    });
-    expect(existsSync(join(root, "config"))).toBe(false);
   });
 });
 
@@ -379,5 +353,32 @@ describe("导入后进准备页（T-113）", () => {
     for (const c of ["config_missing", "config_invalid", "nested_repo", "not_git"])
       expect(needsRepoPrep(ro(c))).toBe(true);
     expect(needsRepoPrep(ro("ENOENT"))).toBe(false);
+  });
+});
+
+describe("真实的 4 checkRepo（T-114 nested_repo）", () => {
+  it("在另一个仓库的子目录里：checkRepo 报 nested_repo，生成配置拒绝、不写；仓库根照常生成", async () => {
+    const outer = gitRepo();
+    const inner = join(outer, "sub", "proj");
+    mkdirSync(inner, { recursive: true });
+    const c = await checkRepo(inner);
+    expect(c.items[0]).toMatchObject({ id: "git", ok: false, code: "nested_repo" });
+    const { h } = handlers(inner, { checkRepo: (r) => checkRepo(r) });
+    await expect(h.initConfig({ daily_micro_usd: 5 })).resolves.toEqual({
+      ok: false,
+      code: "nested_repo",
+      reason: NESTED_REPO_REASON,
+    });
+    expect(existsSync(join(inner, "config"))).toBe(false);
+    const { h: h2 } = handlers(outer, { checkRepo: (r) => checkRepo(r) });
+    expect(ok(await h2.initConfig({ daily_micro_usd: 5 })).written).toEqual(["models", "pricing"]);
+  });
+
+  it("真实 writePricing 写出来的 pricing.json 是模板对象，2 空格缩进、末尾换行，3 的 loadPricing 能读", async () => {
+    const root = gitRepo();
+    const { h } = handlers(root);
+    ok(await h.initConfig({ daily_micro_usd: 5 }));
+    const text = readFileSync(join(root, "config", "pricing.json"), "utf8");
+    expect(text).toBe(`${JSON.stringify(JSON.parse(PRICING_TPL), null, 2)}\n`);
   });
 });

@@ -3,8 +3,10 @@ import {
   IPC_CHANNELS,
   type DesktopChatResult,
   type DesktopDecideHighRiskResult,
+  type DesktopExportOptions,
   type DesktopExportResult,
   type DesktopImportResult,
+  type DesktopOpenDataDirResult,
   type DesktopReloadResult,
   type DesktopSettings,
   type DesktopSyncState,
@@ -21,7 +23,14 @@ import {
   sanitizeReloadReason,
   type BackendSwitcher,
 } from "./backend-switcher.js";
-import { checkProjectDir, repoLockedBy, REPO_LOCKED_REASON } from "./project-import.js";
+import {
+  checkProjectDir,
+  IMPORT_REASON_MAX,
+  repoLockedBy,
+  REPO_LOCKED_REASON,
+  type DirCheck,
+} from "./project-import.js";
+import { canCreateDefaultConfig, createDefaultConfigFiles } from "./default-config.js";
 import {
   defaultExportName,
   envPresence,
@@ -263,50 +272,173 @@ export function serveSupervisorChat(
 }
 
 /**
+ * fs / git 报错的 message 里带绝对路径（如 `copyfile 'C:\\…' -> 'C:\\…'`），只把错误码交给界面（T-126，§12 口径）。
+ * 取不到合法错误码时给 `unknown`，不透出原始 message。
+ */
+export function errorCodeOnly(e: unknown): string {
+  const code = (e as NodeJS.ErrnoException | undefined)?.code;
+  return typeof code === "string" && /^[A-Z0-9_]+$/.test(code) ? code : "unknown";
+}
+
+const EXPORT_ID_MAX = 200;
+
+/**
+ * `diagnostics:export` 的可选粒度参数（T-130）：渲染进程可能传任意值，主进程先做类型 / 长度 / ISO 校验，
+ * 不认识就返回 `{ ok: false }`（handler 回固定文案，不抛）。省略参数 = 最近 24 小时（T-072 行为不变）。
+ */
+export function parseExportOptions(
+  arg: unknown,
+): { ok: true; options?: DesktopExportOptions } | { ok: false } {
+  if (arg === undefined || arg === null) return { ok: true };
+  if (typeof arg !== "object") return { ok: false };
+  const scope = (arg as Record<string, unknown>).scope;
+  if (scope === undefined) return { ok: true, options: {} };
+  if (typeof scope !== "object" || scope === null) return { ok: false };
+  const s = scope as Record<string, unknown>;
+  const validId = (v: unknown): v is string =>
+    typeof v === "string" && v.length > 0 && v.length <= EXPORT_ID_MAX;
+  if (s.kind === "ticket") {
+    return validId(s.ticket_id)
+      ? { ok: true, options: { scope: { kind: "ticket", ticket_id: s.ticket_id } } }
+      : { ok: false };
+  }
+  if (s.kind === "requirement") {
+    return validId(s.requirement_id)
+      ? { ok: true, options: { scope: { kind: "requirement", requirement_id: s.requirement_id } } }
+      : { ok: false };
+  }
+  if (s.kind === "time_range") {
+    const validIso = isStrictIsoDateTime;
+    if (!validIso(s.from) || !validIso(s.to)) return { ok: false };
+    if (Date.parse(s.from as string) > Date.parse(s.to as string)) return { ok: false };
+    return {
+      ok: true,
+      options: { scope: { kind: "time_range", from: s.from as string, to: s.to as string } },
+    };
+  }
+  return { ok: false };
+}
+
+/**
  * 导入项目 / 导出诊断包 / 只读设置 IPC（T-072）。对话框、userData 写入由 main 注入；
  * 依赖与辅助函数在 project-settings-ipc.ts。
  */
 export function serveProjectSettings(ipc: IpcMainLike, deps: ProjectSettingsDeps): () => void {
   const now = deps.now ?? (() => new Date());
 
+  /**
+   * T-081：上次导入对话框选中、且「只缺配置文件」的目录。只在主进程里记，
+   * createDefaultConfig 只写这个目录，渲染进程传不进任何路径。
+   */
+  let pendingDir: string | null = null;
+
+  /**
+   * 校验失败的结果；只缺配置时记下目录、带上按钮标记和模板位置提示。
+   * UI-03b 起不是 Git 仓库不再进 `missing`，这里按 `notGit` 单独判：写不了 .git/info/exclude，不给按钮；
+   * `--config` / BAKACODING_CONFIG 指向的文件不存在时补模板也过不了，同样不给。
+   */
+  const failure = (dir: string, check: Extract<DirCheck, { ok: false }>): DesktopImportResult => {
+    const can =
+      canCreateDefaultConfig(check.missing) &&
+      !check.notGit &&
+      !check.envConfigMissing &&
+      !!deps.templateDir;
+    pendingDir = can ? dir : null;
+    const hint = can ? "。模板在安装目录的 config-templates 文件夹，可点「用默认模板创建」" : "";
+    return {
+      ok: false,
+      ...(check.missing && { missing: check.missing }),
+      ...(check.reason !== undefined && { reason: `${check.reason}${hint}` }),
+      ...(can && { canCreateDefaultConfig: true as const }),
+    };
+  };
+
+  /** 校验通过后的切换（导入成功路径；createDefaultConfig 复用，含 UI-03b 的 needsPrep） */
+  const complete = async (dir: string, note?: string): Promise<DesktopImportResult> => {
+    pendingDir = null;
+    const abs = path.resolve(dir);
+    const r = await deps.backend.switchTo(abs);
+    if (!r.ok && "needsPrep" in r) {
+      // UI-03b：没准备好的文件夹也算导入了（记下路径），界面进准备页
+      deps.saveLastRepo(abs);
+      return {
+        ok: false,
+        needsPrep: true,
+        reason: r.reason,
+        ...(note !== undefined && { note }),
+      } satisfies DesktopImportResult;
+    }
+    if (!r.ok) {
+      // 新后端已经在跑、只是 importProject 失败：记下的路径要和实际运行的仓库一致
+      if (r.switched) deps.saveLastRepo(abs);
+      return { ok: false, reason: r.reason };
+    }
+    deps.saveLastRepo(abs);
+    return { ok: true, project: r.project, ...(note !== undefined && { note }) };
+  };
+
   ipc.handle(IPC_CHANNELS.projectImport, async () => {
+    // 每次导入都清掉上次失败记下的目录：取消 / 选了别的文件夹后，不能再对旧目录建配置
+    pendingDir = null;
     if (repoLockedBy(deps.argv, deps.env))
       return { ok: false, reason: REPO_LOCKED_REASON } satisfies DesktopImportResult;
     const dir = await deps.pickDirectory();
     if (!dir) return { ok: false, canceled: true } satisfies DesktopImportResult;
     const check = checkProjectDir(dir, deps.env, deps.argv);
-    if (!check.ok) {
-      return {
-        ok: false,
-        ...(check.missing && { missing: check.missing }),
-        ...(check.reason !== undefined && { reason: check.reason }),
-      } satisfies DesktopImportResult;
-    }
-    const r = await deps.backend.switchTo(path.resolve(dir));
-    if (!r.ok && "needsPrep" in r) {
-      // UI-03b：没准备好的文件夹也算导入了（记下路径），界面进准备页
-      deps.saveLastRepo(path.resolve(dir));
-      return {
-        ok: false,
-        needsPrep: true,
-        reason: r.reason,
-        ...(check.note !== undefined && { note: check.note }),
-      } satisfies DesktopImportResult;
-    }
-    if (!r.ok) {
-      // 新后端已经在跑、只是 importProject 失败：记下的路径要和实际运行的仓库一致
-      if (r.switched) deps.saveLastRepo(path.resolve(dir));
-      return { ok: false, reason: r.reason } satisfies DesktopImportResult;
-    }
-    deps.saveLastRepo(path.resolve(dir));
-    return {
-      ok: true,
-      project: r.project,
-      ...(check.note !== undefined && { note: check.note }),
-    } satisfies DesktopImportResult;
+    if (!check.ok) return failure(dir, check);
+    return complete(dir, check.note);
   });
 
-  ipc.handle(IPC_CHANNELS.diagnosticsExport, async () => {
+  ipc.handle(IPC_CHANNELS.projectCreateDefaultConfig, async () => {
+    if (repoLockedBy(deps.argv, deps.env))
+      return { ok: false, reason: REPO_LOCKED_REASON } satisfies DesktopImportResult;
+    const dir = pendingDir;
+    if (!dir || !deps.templateDir)
+      return {
+        ok: false,
+        reason: "没有待创建配置的项目，请先点「导入项目」选择仓库",
+      } satisfies DesktopImportResult;
+    const clean = (t: string) => sanitizeSyncErrorMessage(t, deps.env, IMPORT_REASON_MAX);
+    let made;
+    try {
+      made = createDefaultConfigFiles(dir, deps.templateDir, deps.argv, deps.env);
+    } catch (e) {
+      // T-126：fs 报错的 message 带绝对路径，只把错误码交给界面（§12 口径）
+      return { ok: false, reason: `创建配置失败（${errorCodeOnly(e)}）` };
+    }
+    if (!made.ok) return { ok: false, reason: clean(made.reason) } satisfies DesktopImportResult;
+    let warn: string | undefined;
+    if (made.created.length && deps.ensureExcludeLines) {
+      try {
+        // T-082 的约定：dir 不是 git 仓库时返回 false、不抛错。两种都只提醒，不挡导入。
+        const ok = await deps.ensureExcludeLines(
+          dir,
+          made.created.map((f) => `/${f}`),
+        );
+        if (!ok) warn = "没能写入 .git/info/exclude（不是 Git 仓库）";
+      } catch (e) {
+        // 写 exclude 失败只提醒，不挡导入；同样只留错误码
+        warn = `没能写入 .git/info/exclude（${errorCodeOnly(e)}）`;
+      }
+    }
+    const check = checkProjectDir(dir, deps.env, deps.argv);
+    if (!check.ok) {
+      const r = failure(dir, check);
+      return warn && !r.ok ? { ...r, reason: `${r.reason ?? ""}；${warn}` } : r;
+    }
+    const notes = [
+      `已用默认模板创建 ${made.created.join("、") || "（无，文件已存在）"}`,
+      ...(check.note ? [check.note] : []),
+      ...(warn ? [warn] : []),
+    ];
+    return complete(dir, notes.join("；"));
+  });
+
+  ipc.handle(IPC_CHANNELS.diagnosticsExport, async (...args: unknown[]) => {
+    const parsed = parseExportOptions(args[1]);
+    if (!parsed.ok) {
+      return { ok: false, reason: "导出参数不合法" } satisfies DesktopExportResult;
+    }
     const st = deps.backend.status();
     if (st.mode === "readonly") {
       // 只读时先拒绝，不弹保存框
@@ -338,7 +470,7 @@ export function serveProjectSettings(ipc: IpcMainLike, deps: ProjectSettingsDeps
     try {
       return {
         ok: true,
-        path: await deps.backend.exportDiagnostics(target, at),
+        path: await deps.backend.exportDiagnostics(target, parsed.options, at),
       } satisfies DesktopExportResult;
     } catch (e) {
       // 前缀「导出失败：」由界面加，这里只给原因
@@ -346,6 +478,21 @@ export function serveProjectSettings(ipc: IpcMainLike, deps: ProjectSettingsDeps
         ok: false,
         reason: sanitizeSyncErrorMessage(errorDetail(e), deps.env, EXPORT_REASON_MAX),
       } satisfies DesktopExportResult;
+    }
+  });
+
+  ipc.handle(IPC_CHANNELS.diagnosticsOpenDataDir, async () => {
+    if (!deps.openDataDir)
+      return {
+        ok: false,
+        reason: "没有连接主进程，不能打开数据目录",
+      } satisfies DesktopOpenDataDirResult;
+    try {
+      await deps.openDataDir();
+      return { ok: true } satisfies DesktopOpenDataDirResult;
+    } catch {
+      // 固定文案：shell.openPath 的失败信息可能带路径，不透出
+      return { ok: false, reason: "打开数据目录失败" } satisfies DesktopOpenDataDirResult;
     }
   });
 
@@ -360,7 +507,9 @@ export function serveProjectSettings(ipc: IpcMainLike, deps: ProjectSettingsDeps
 
   return () => {
     ipc.removeHandler(IPC_CHANNELS.projectImport);
+    ipc.removeHandler(IPC_CHANNELS.projectCreateDefaultConfig);
     ipc.removeHandler(IPC_CHANNELS.diagnosticsExport);
+    ipc.removeHandler(IPC_CHANNELS.diagnosticsOpenDataDir);
     ipc.removeHandler(IPC_CHANNELS.settingsGet);
   };
 }
@@ -443,4 +592,26 @@ export function serveSecretProvider(ipc: IpcMainLike, deps: SecretProviderDeps):
     ipc.removeHandler(IPC_CHANNELS.secretClear);
     ipc.removeHandler(IPC_CHANNELS.providerTest);
   };
+}
+
+/**
+ * 严格 ISO 8601 日期时间（T-137）：必须带时间和时区（Z 或 ±HH:MM），
+ * 日期要真实存在（拒绝 2026-02-30 这种 Date.parse 会顺延的值）。
+ */
+const ISO_DATETIME_RE =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?(Z|[+-](\d{2}):(\d{2}))$/;
+
+export function isStrictIsoDateTime(v: unknown): v is string {
+  if (typeof v !== "string") return false;
+  const m = ISO_DATETIME_RE.exec(v);
+  if (!m) return false;
+  const [, y, mo, d, h, mi, sec, , oh, om] = m;
+  const year = Number(y);
+  const month = Number(mo);
+  const day = Number(d);
+  if (month < 1 || month > 12 || day < 1) return false;
+  if (day > new Date(Date.UTC(year, month, 0)).getUTCDate()) return false;
+  if (Number(h) > 23 || Number(mi) > 59 || Number(sec ?? 0) > 59) return false;
+  if (oh !== undefined && (Number(oh) > 23 || Number(om) > 59)) return false;
+  return !Number.isNaN(Date.parse(v));
 }

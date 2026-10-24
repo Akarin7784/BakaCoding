@@ -2,12 +2,13 @@
 // 窗口宽度 ≥ 1200 时停靠在右侧，< 1200 时改为覆盖式抽屉（点外面或 Esc 关闭）。
 // UI-08：抽屉用 Radix Dialog（role="dialog"、打开时焦点移进来、Tab 不出抽屉、关上后焦点回到标题栏开关），
 // 底下一层淡遮罩（--overlay）。
-// 概览暂时放现有的编码池 / Git / PR 列表（UI-06 重做），动态是空壳（数据源与样式在后续单）。
+// 概览暂时放现有的编码池 / Git / PR 列表（UI-06 重做）；动态标签在 T-127 接活动流。
 import { Activity, X } from "lucide-react";
 import type { ReactNode } from "react";
 import { Dialog as DialogPrimitive } from "radix-ui";
 import { cn } from "../lib/utils";
 import { LAYOUT } from "../lib/layout";
+import { ActivityDot } from "./ActivityDot";
 import { EmptyState } from "./EmptyState";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
 
@@ -18,6 +19,8 @@ export function RightPanelShell({
   drawer,
   onClose,
   overview,
+  activity,
+  activityDot = false,
   tab,
   onTabChange,
   insetRight = 0,
@@ -27,6 +30,10 @@ export function RightPanelShell({
   onClose: () => void;
   /** 概览标签内容；没有项目时为空 */
   overview: ReactNode;
+  /** 动态标签内容（T-127）；没有时给空状态 */
+  activity?: ReactNode;
+  /** 面板没在看动态时来了新消息：标签上亮一个小点（§4.5.1） */
+  activityDot?: boolean;
   tab: RightPanelTab;
   onTabChange: (tab: RightPanelTab) => void;
   insetRight?: number;
@@ -51,7 +58,10 @@ export function RightPanelShell({
         {drawer && <DialogPrimitive.Title className="sr-only">右面板</DialogPrimitive.Title>}
         <TabsList aria-label="右面板标签" className="app-no-drag flex-1">
           <TabsTrigger value="overview">概览</TabsTrigger>
-          <TabsTrigger value="activity">动态</TabsTrigger>
+          <TabsTrigger value="activity">
+            动态
+            {activityDot && <ActivityDot testId="activity-dot" className="ml-1" />}
+          </TabsTrigger>
         </TabsList>
         <button
           type="button"
@@ -66,7 +76,7 @@ export function RightPanelShell({
         {overview ?? <EmptyState title="还没有项目" />}
       </TabsContent>
       <TabsContent value="activity" className="min-h-0 flex-1 overflow-y-auto">
-        <EmptyState icon={Activity} title="还没有动态" />
+        {activity ?? <EmptyState icon={Activity} title="还没有动态" />}
       </TabsContent>
     </Tabs>
   );

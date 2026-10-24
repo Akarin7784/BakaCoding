@@ -31,6 +31,11 @@ export interface StorageOptions {
   path: string;
   /** 完整提示词和输出的保留天数，取配置 `diagnostics.retention_days`，默认 30。 */
   retention_days?: number;
+  /**
+   * 自动清理过期提示词和输出的间隔（毫秒，T-118），默认 24 小时；0 关闭自动清理。
+   * 打开写库后先清一次（补上停机期间过期的数据），之后按这个间隔清。只读打开不清理。
+   */
+  purge_interval_ms?: number;
   /** 落库前的轻脱敏，默认用模块 3 的 `redact(text, "light")`。 */
   redact?: (text: string) => string;
   /** 写入者标识，默认随机 UUID。 */
@@ -302,6 +307,13 @@ export interface Storage {
   saveTicket(ticket: TicketInput): void;
   /** 按单号读一张需求单（T-055），不存在返回 undefined。 */
   getTicket(ticket_id: string): StoredTicket | undefined;
+  /**
+   * T-133：原子地只改需求单 `fields` 里的**一个键**（`value` 为 undefined 时删掉该键），不读改写整行、
+   * 不碰别的键，也不改需求单的其他列。只接受合法标识符键名（`[A-Za-z_][A-Za-z0-9_]*`）。
+   * 单不存在、或 `fields` 为 null / 损坏时返回 false 且不动数据（避免把旧单写成不完整的 fields 被 10 判
+   * fields_invalid）；返回是否更新了记录。
+   */
+  setTicketField(ticket_id: string, key: string, value: JsonValue | undefined): boolean;
   /** 按项目 / 需求 / 状态列出需求单（T-055），按 created_at、ticket_id 升序。 */
   listTickets(filter?: TicketFilter): StoredTicket[];
   savePrRecord(round: PrRoundInput): void;
@@ -404,6 +416,10 @@ function open(options: StorageOptions, ro: boolean): Storage {
   const owner = options.owner ?? randomUUID();
   const ttl = options.lease_ttl_ms ?? 30_000;
   const retentionDays = options.retention_days ?? 30;
+  const purgeInterval = options.purge_interval_ms ?? DAY_MS;
+  if (!Number.isInteger(purgeInterval) || purgeInterval < 0) {
+    throw new RangeError(`purge_interval_ms 必须是非负整数，收到 ${purgeInterval}`);
+  }
   const light = options.redact ?? ((t: string) => redactText(t, "light").text);
   const logger = options.logger ?? { warn: (m: string) => console.warn(m) };
 
@@ -423,10 +439,17 @@ function open(options: StorageOptions, ro: boolean): Storage {
       throw e;
     }
   } else {
-    db.pragma("journal_mode = WAL");
-    db.pragma("synchronous = NORMAL");
-    db.pragma("foreign_keys = ON");
-    migrate(db);
+    try {
+      db.pragma("journal_mode = WAL");
+      db.pragma("synchronous = NORMAL");
+      db.pragma("foreign_keys = ON");
+      migrate(db);
+    } catch (e) {
+      // 迁移失败（如旧库有重复 seq）时也要关掉句柄：否则 Windows 上库文件一直被占用，
+      // 临时目录 / 库文件删不掉（T-129）。原错误照常抛给调用方。
+      db.close();
+      throw e;
+    }
   }
   const toMs = (ts: string, field: string): number => {
     const ms = isoToMs(ts);
@@ -773,6 +796,38 @@ function open(options: StorageOptions, ro: boolean): Storage {
     });
   });
 
+  /**
+   * T-133：只改 `fields` 里的一个键。读-改-写都在同一个 IMMEDIATE 事务里（`write()` 包装），与同一连接上的
+   * 其他写（10 的 patchFields、9 的状态写）串行，不会互相冲掉；也只写 `fields` 一列。
+   * 单不存在 / `fields` 为 null 或损坏时返回 false、不动数据。
+   */
+  const setTicketField = write(
+    "setTicketField",
+    (ticket_id: string, key: string, value: JsonValue | undefined): boolean => {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new TypeError(`fields 的键名不合法：${key}`);
+      const row = db.prepare("SELECT fields FROM tickets WHERE ticket_id = ?").get(ticket_id) as
+        { fields: string | null } | undefined;
+      if (!row) return false;
+      let base: TicketFields;
+      if (row.fields == null) return false;
+      try {
+        const v: unknown = JSON.parse(row.fields);
+        if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+        base = v as TicketFields;
+      } catch {
+        return false;
+      }
+      const next: TicketFields = { ...base };
+      if (value === undefined) delete next[key];
+      else next[key] = value;
+      db.prepare("UPDATE tickets SET fields = ? WHERE ticket_id = ?").run(
+        encodeFields(ticket_id, next),
+        ticket_id,
+      );
+      return true;
+    },
+  );
+
   /** 已经警告过 fields 损坏的单号：同一个连接里同一单号只警告一次（T-057）。 */
   const warnedFields = new Set<string>();
   function warnFieldsOnce(ticket_id: string, message: string): void {
@@ -1030,6 +1085,25 @@ function open(options: StorageOptions, ro: boolean): Storage {
     return { purged_calls: res.changes };
   });
 
+  // ---------- 保留期自动清理（T-118） ----------
+  // 打开写库时先清一次（补上停机期间过期的数据），之后按 purge_interval_ms 定时清；
+  // 失败只记日志、不挡启动，也不影响别的写操作。只读打开不跑。
+  let purgeTimer: ReturnType<typeof setInterval> | undefined;
+  if (!ro && purgeInterval > 0) {
+    const sweep = (): void => {
+      try {
+        purgeExpired();
+      } catch (e) {
+        logger.warn(
+          `[storage] 自动清理过期提示词失败（${e instanceof Error ? e.name : typeof e}）`,
+        );
+      }
+    };
+    sweep();
+    purgeTimer = setInterval(sweep, purgeInterval);
+    purgeTimer.unref();
+  }
+
   // ---------- 台账 ----------
   const ledgerAppend = write("ledger.append", (entry: LedgerEntry) => {
     const e = LedgerEntrySchema.parse(entry);
@@ -1129,6 +1203,7 @@ function open(options: StorageOptions, ro: boolean): Storage {
     saveTicket,
     getTicket,
     listTickets,
+    setTicketField,
     savePrRecord,
     prStore,
     saveMergeResult,
@@ -1199,6 +1274,8 @@ function open(options: StorageOptions, ro: boolean): Storage {
     close() {
       if (closed) return;
       if (timer) clearInterval(timer);
+      if (purgeTimer) clearInterval(purgeTimer);
+      purgeTimer = undefined;
       try {
         if (!ro) db.prepare("DELETE FROM lease WHERE id = 1 AND owner = ?").run(owner);
       } finally {

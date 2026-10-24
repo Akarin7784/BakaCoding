@@ -5,3 +5,8 @@ export const MODULE_NAME = "@bakacoding/sub-agent" as const;
 export * from "./types.js";
 export * from "./sub-agent.js";
 export * from "./permissions.js";
+export {
+  memoryInterfaceNotes,
+  storageTicketInterfaceNotes,
+  type InterfaceNotesStorage,
+} from "./interface-notes.js";

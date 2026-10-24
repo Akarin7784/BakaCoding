@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { initialCommit } from "@bakacoding/app";
+import { initialCommit, RepoFixError } from "@bakacoding/app";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { IPC_CHANNELS, type DesktopRepoFixResult } from "../shared/api.js";
 import { NESTED_REPO_REASON } from "../shared/config-text.js";
@@ -382,6 +382,15 @@ describe("主进程参数校验先于 4（UI-03a）", () => {
 });
 
 describe("失败文案（UI-03a）", () => {
+  it("T-114：nested_repo 原样透出 4 的固定文案，不带路径", () => {
+    expect(repoFixFailure(new RepoFixError("nested_repo"))).toEqual({
+      ok: false,
+      code: "nested_repo",
+      reason:
+        "这个文件夹在另一个 Git 仓库里面。请导入上层仓库的根目录，或把文件夹移到仓库外再初始化",
+    });
+  });
+
   it("非 RepoFixError 一律 git_failed 固定文案，不带原始信息和路径", () => {
     expect(repoFixFailure(new Error("fatal: /home/eva/secret"))).toEqual({
       ok: false,

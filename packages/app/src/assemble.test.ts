@@ -17,6 +17,7 @@ import {
   currentTicketPr,
   judgeHighRiskOnTakeover,
   lastEscalationFrom,
+  storageMergeFollowup,
   storageTicketStatus,
 } from "./assemble.js";
 
@@ -1938,5 +1939,165 @@ describe("T-094：重启补清理已合入单的 worktree / 分支", () => {
     expect(calls).toEqual(["T-A"]);
     // 测试仓库不是 git 仓库，停机前已有一条「读本地分支失败」；停机后的失败不再警告
     expect(warns.filter((w) => w.includes("T-A") || w.includes("T-B"))).toEqual([]);
+  });
+});
+
+describe("T-112 组合根：merge_followup 标记与重启补做", () => {
+  const ifaceFromStore = (s: Storage) =>
+    s.queryEvents().filter((e) => e.type === "interface_changed");
+  const markerOf = (s: Storage, id: string) =>
+    (s.getTicket(id)!.fields as Record<string, unknown>).merge_followup;
+
+  it("storageMergeFollowup：只改 fields.merge_followup、其余字段保留；写状态不冲掉标记；clear 删掉；找不到单只警告", () => {
+    const { storage } = setup();
+    saveTicket(storage, "req-1-1", "merge_queued", fields({ write_scope: ["lib/a/**"] }));
+    const warns: string[] = [];
+    const mf = storageMergeFollowup(
+      storage,
+      (m) => void warns.push(m),
+      () => new Date("2026-10-18T00:00:00Z"),
+    );
+    void mf.mark("req-1-1", { pr_id: "pr-1", merge_sha: MERGE_SHA });
+    expect(markerOf(storage, "req-1-1")).toEqual({
+      at: "2026-10-18T00:00:00.000Z",
+      pr_id: "pr-1",
+      merge_sha: MERGE_SHA,
+    });
+    storageTicketStatus(
+      storage,
+      () => {},
+      async () => {},
+    ).setStatus("req-1-1", "merged");
+    expect(statusOf(storage, "req-1-1")).toBe("merged");
+    expect(markerOf(storage, "req-1-1")).toMatchObject({ pr_id: "pr-1" });
+    void mf.clear("req-1-1");
+    const f = storage.getTicket("req-1-1")!.fields as Record<string, unknown>;
+    expect(f.merge_followup).toBeUndefined();
+    expect(f.write_scope).toEqual(["lib/a/**"]);
+    void mf.mark("nope", { pr_id: "pr-x", merge_sha: MERGE_SHA });
+    expect(warns).toEqual(["写 merge_followup 标记时找不到需求单 nope，跳过"]);
+  });
+
+  it("E2E：合入后取 diff 被 stop 中止 → 库里 merged + 标记；重启 takeOver 补发 interface_changed 一次、清标记；再重启不再发", async () => {
+    const { storage, worktreeRoot } = setup();
+    saveTicket(
+      storage,
+      "req-1-1",
+      "merge_queued",
+      fields({ write_scope: ["lib/a/**"], interfaces: [{ file: "lib/a/x.ts", symbol: "foo" }] }),
+    );
+    const wt = join(worktreeRoot, "req-1-1-r0");
+    mkdirSync(wt, { recursive: true });
+    await storage
+      .prStore<TicketPrRecord>()
+      .put(prRec({ pr_id: "pr-1", ticket_id: "req-1-1", worktree_path: wt }));
+
+    // 第一次运行：takeOver 接回 → 合并成功 → 合入后取 diff 挂到 stop 中止
+    const a = fakePr();
+    const origDiff = a.pr.diff;
+    let diffAfterMerge = 0;
+    a.pr.diff = async (pr_id, opts) => {
+      if (a.calls.merge.length === 0) return origDiff(pr_id, opts);
+      diffAfterMerge++;
+      const signal = opts?.signal;
+      return new Promise((_, reject) => {
+        if (!signal) return reject(new Error("没带 signal"));
+        signal.addEventListener("abort", () => reject(signal.reason));
+      });
+    };
+    const { app } = await start({ storage, worktreeRoot, pr: a.pr });
+    await vi.waitFor(() => expect(diffAfterMerge).toBe(1), { timeout: 5000 });
+    await app.stop();
+    expect(statusOf(storage, "req-1-1")).toBe("merged");
+    expect(markerOf(storage, "req-1-1")).toMatchObject({ pr_id: "pr-1", merge_sha: MERGE_SHA });
+    expect(ifaceFromStore(storage)).toEqual([]);
+
+    // 另一张在途单：写入范围碰到改动文件，补发时应算进受影响单
+    saveTicket(storage, "req-1-2", "pending", fields({ write_scope: ["lib/a/**"] }));
+
+    // 重启：补发一次、清标记
+    const { app: app2 } = await start({ storage, worktreeRoot, pr: fakePr().pr });
+    expect(app2.takeOver.followups).toEqual([{ ticket_id: "req-1-1", result: "emitted" }]);
+    const events = ifaceFromStore(storage);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.payload).toMatchObject({
+      pr_id: "pr-1",
+      base_commit: MERGE_SHA,
+      changed_interfaces: [{ file: "lib/a/x.ts", symbol: "foo" }],
+    });
+    expect((events[0]!.payload as { affected_ticket_ids: string[] }).affected_ticket_ids).toContain(
+      "req-1-2",
+    );
+    expect(markerOf(storage, "req-1-1")).toBeUndefined();
+    await app2.stop();
+
+    // 再重启：不再补发
+    const { app: app3 } = await start({ storage, worktreeRoot, pr: fakePr().pr });
+    expect(app3.takeOver.followups).toEqual([]);
+    expect(ifaceFromStore(storage)).toHaveLength(1);
+  });
+
+  it("E2E：补做时取 diff 失败 → followups failed、标记留着、不发事件；下次启动再补", async () => {
+    const { storage, worktreeRoot } = setup();
+    saveTicket(storage, "req-1-1", "merged", fields({ write_scope: ["lib/a/**"] }));
+    void storageMergeFollowup(storage, () => {}).mark("req-1-1", {
+      pr_id: "pr-1",
+      merge_sha: MERGE_SHA,
+    });
+    const bad = fakePr();
+    bad.pr.diff = async () => {
+      throw new Error("diff 坏了");
+    };
+    const { app } = await start({ storage, worktreeRoot, pr: bad.pr });
+    expect(app.takeOver.followups).toEqual([{ ticket_id: "req-1-1", result: "failed" }]);
+    expect(markerOf(storage, "req-1-1")).toMatchObject({ pr_id: "pr-1" });
+    expect(ifaceFromStore(storage)).toEqual([]);
+    await app.stop();
+    const { app: app2 } = await start({ storage, worktreeRoot, pr: fakePr().pr });
+    expect(app2.takeOver.followups).toEqual([{ ticket_id: "req-1-1", result: "emitted" }]);
+    expect(ifaceFromStore(storage)).toHaveLength(1);
+    expect(markerOf(storage, "req-1-1")).toBeUndefined();
+  });
+});
+
+describe("T-133 接口变更说明持久化（组合根接线）", () => {
+  const iface = (pr: string, summary: string) =>
+    ({
+      type: "interface_changed",
+      seq: 1,
+      event_id: `ev-${pr}`,
+      ts: "2026-10-17T09:00:00Z",
+      trace_id: "tr",
+      span_id: "sp",
+      parent_span_id: null,
+      requirement_id: "req-1",
+      ticket_id: "T-9",
+      payload: {
+        pr_id: pr,
+        base_commit: "f".repeat(40),
+        changed_interfaces: [{ file: "lib/a/x.ts", symbol: "foo" }],
+        summary,
+        affected_ticket_ids: ["T-1"],
+      },
+    }) as never;
+
+  it("8 的说明落进 tickets.fields.interface_notes；重启（新 assemble、同一库）后新实例读到旧说明并叠加", async () => {
+    const { storage, worktreeRoot } = setup();
+    // merged 状态的单 takeOver 不会再派单，测试只关心 8 的持久化读写
+    saveTicket(storage, "T-1", "merged", fields());
+    const a = await start({ storage, worktreeRoot, pr: fakePr().pr });
+    a.app.subAgent.onInterfaceChanged(iface("pr-9-1", "第一次改动"));
+    let notes = storage.getTicket("T-1")!.fields!.interface_notes as string[];
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain("第一次改动");
+    await a.app.stop();
+
+    // 「重启」：同一库重新组装，新实例的适配器能读到库里原有的说明，再叠加新的一条
+    const b = await start({ storage, worktreeRoot, pr: fakePr().pr });
+    b.app.subAgent.onInterfaceChanged(iface("pr-9-2", "第二次改动"));
+    notes = storage.getTicket("T-1")!.fields!.interface_notes as string[];
+    expect(notes).toHaveLength(2);
+    expect(notes[0]).toContain("第一次改动");
+    expect(notes[1]).toContain("第二次改动");
   });
 });

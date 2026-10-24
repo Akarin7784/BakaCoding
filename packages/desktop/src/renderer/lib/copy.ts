@@ -74,3 +74,28 @@ export const QUIT_COPY = {
   title: "正在退出…",
   detail: "正在等后台任务收尾，完成后窗口会自动关闭",
 } as const;
+
+/** 导入缺配置（T-081）：内容区「缺配置」横幅 + 用默认模板创建（§3：页面横幅带操作按钮）。 */
+export const CONFIG_COPY = {
+  bannerLabel: "缺配置",
+  text: "项目缺配置文件，可以用默认模板创建",
+  create: "用默认模板创建",
+} as const;
+
+/**
+ * 右面板「动态」（§4.5.1，T-127）：只显示 Agent 之间互相发的消息。
+ * `group_message` 事件只有 sender，接收方按消息类型推：主管发的派给该单副 Agent，副 Agent 发的都回主管。
+ */
+export const ACTIVITY_COPY = {
+  label: "动态",
+  empty: "还没有动态",
+  noProject: "还没有项目",
+  filterLabel: "按单过滤",
+  filterAll: "全部",
+  backToLatest: "回到最新",
+  idle: "没有在跑的单",
+  expand: "展开",
+  collapse: "收起",
+  supervisor: "主管",
+  subAgent: (ticket_id: string | null) => (ticket_id ? `副 Agent ${ticket_id}` : "副 Agent"),
+} as const;

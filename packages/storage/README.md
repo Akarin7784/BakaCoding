@@ -23,7 +23,7 @@ storage.health(); // { ok, lease_lost, closed, ingest_failures, last_failure? }
 - **事件**：全部进 `events` 表并带 `trace_id` / `span_id` / `parent_span_id`；`call_completed` 另写 `call_log`（提示词和输出只存这里）；`project_created` 建项目和群记录；`group_message` 存群消息并登记需求所属项目；两个积压事件存待办指标。
 - **按项目过滤**：事件公共字段不带 `project_id`，靠需求所属项目（`saveTicket`、`registerRequirement` 会覆盖；群消息只在需求还没登记时登记，不覆盖已有归属）在查询时关联，登记晚于事件也能查到。
 - **时间**：时间列另存一份 UTC 毫秒数（`ts_ms`、`created_at_ms`），时间范围、排序和清理截止点都按毫秒比较，带不带毫秒都不会排错；时间参数不合法报 `RangeError`。`queryEvents` 的 `limit` 必须是正整数。
-- **保留期**：`purgeExpired()` 把超过 `retention_days` 的调用的提示词和输出清掉，只留统计和输出前 200 字的摘要（查出来 `prompt` 为空串、`output` 为摘要）；`markForEvalSet(ticket_id)` 的单永久保留。
+- **保留期**：`purgeExpired()` 把超过 `retention_days` 的调用的提示词和输出清掉，只留统计和输出前 200 字的摘要（查出来 `prompt` 为空串、`output` 为摘要）；`markForEvalSet(ticket_id)` 的单永久保留。打开写库后自动清理（T-118）：先清一次（补上停机期间过期的数据），之后每 `purge_interval_ms`（默认 24 小时）清一次，传 0 关闭自动清理；定时清理失败只经 `logger.warn` 记日志、不挡启动、不影响别的写操作，`close()` 停掉定时器；只读连接不自动清理。`purge_interval_ms` 必须是非负整数，否则报 `RangeError`。
 - **表结构升级**：`src/schema.sql.ts` 按 `PRAGMA user_version` 依次执行，只加不改；v2（T-022）给旧库加毫秒列并回填，加 `events.seq` 唯一索引（旧库若已有重复 seq，升级会失败并停在 v1，不会悄悄丢数据）。
 - **项目列表与轮次评审人（T-010）**：`listProjects()`（写入方和只读连接都有）返回 `{ project_id, created_at }[]`，按创建时间排序。PR 轮次记录可带 `reviewer`（评审组成员 id、`"supervisor"` 或 `null`），结构字段原样往返、不脱敏、不校验成员；旧记录读出 `null`。
 - **按单取轮次（T-011）**：`listPrRounds(ticket_id)`（写入方和只读连接都有）返回该单全部 PR 轮次，按轮次升序，旧记录 `reviewer` 读出 `null`，单不存在返回空数组。

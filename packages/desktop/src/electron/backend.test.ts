@@ -31,6 +31,7 @@ import {
   resolveRepoSource,
   sanitizedDepsLogging,
   startBackend,
+  exportScope,
 } from "./backend.js";
 import {
   CONFIG_INVALID_REASON,
@@ -767,5 +768,102 @@ describe("组合根 logger / onError 的脱敏接线（UI-03a 评审 N1）", () 
       expect(String(c[0])).toContain("<仓库>");
     }
     await be.stop();
+  });
+});
+
+describe("T-128：诊断包保留天数取自配置", () => {
+  it("config.diagnostics.retention_days 传给 openStorage；没配时显式传默认 30", async () => {
+    const { root } = gitRepoWithConfig();
+    const cfgPath = join(root, "config", "models.json");
+    type OpenOptions = Parameters<typeof openStorage>[0];
+    const seen: OpenOptions[] = [];
+    const start = () =>
+      startBackend({
+        argv: [`--repo=${root}`],
+        env: { DEEPSEEK_API_KEY: "sk-t128" },
+        cwd: root,
+        pricingPath,
+        logger: { warn: () => {} },
+        openStorage: (o) => {
+          seen.push(o);
+          return openStorage(o);
+        },
+      });
+
+    // 示例配置没写 diagnostics：走 schema 默认值 30，也显式交给模块 2
+    const b1 = await start();
+    expect(b1.status().mode).toBe("live");
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.retention_days).toBe(30);
+    await b1.stop();
+
+    // 配 7 天：原样传下去
+    const raw = JSON.parse(readFileSync(cfgPath, "utf8")) as Record<string, unknown>;
+    raw["diagnostics"] = { retention_days: 7 };
+    writeFileSync(cfgPath, JSON.stringify(raw));
+    seen.length = 0;
+    const b2 = await start();
+    expect(b2.status().mode).toBe("live");
+    expect(seen[0]!.retention_days).toBe(7);
+    await b2.stop();
+  });
+
+  it("缺配置 / 坏配置：建库之前就退只读（不调用 openStorage、不生成库文件）", async () => {
+    const cases: Array<[string, (cfgPath: string) => void]> = [
+      ["缺配置文件", (p) => rmSync(p)],
+      ["坏 JSON", (p) => writeFileSync(p, "{ not json")],
+    ];
+    for (const [name, mutate] of cases) {
+      const { root, db } = gitRepoWithConfig();
+      mutate(join(root, "config", "models.json"));
+      const opened: Parameters<typeof openStorage>[0][] = [];
+      const backend = await startBackend({
+        argv: [`--repo=${root}`],
+        env: { DEEPSEEK_API_KEY: "sk-t128" },
+        cwd: root,
+        pricingPath,
+        logger: { warn: () => {} },
+        openStorage: (o) => {
+          opened.push(o);
+          return openStorage(o);
+        },
+      });
+      expect(backend.status().mode, name).toBe("readonly");
+      // T-113 起本仓库缺配置 / 配置不合法给准备页固定文案（缺少模型配置 / 模型配置不合法），不再是 ConfigError 原文
+      expect(backend.status().reason, name).toMatch(/模型配置/);
+      expect(opened, name).toHaveLength(0);
+      expect(existsSync(db), name).toBe(false);
+      await backend.stop();
+    }
+  });
+});
+
+describe("T-130：导出粒度 → 11 的 ExportScope", () => {
+  const now = new Date("2026-10-18T12:00:00Z");
+  it("省略粒度 = 最近 24 小时（T-072 行为不变）", () => {
+    const want = {
+      kind: "time_range",
+      from: "2026-10-17T12:00:00.000Z",
+      to: "2026-10-18T12:00:00.000Z",
+    };
+    expect(exportScope(undefined, now)).toEqual(want);
+    expect(exportScope({}, now)).toEqual(want);
+  });
+
+  it("三种粒度原样转换", () => {
+    expect(exportScope({ scope: { kind: "ticket", ticket_id: "T-9" } }, now)).toEqual({
+      kind: "ticket",
+      ticket_id: "T-9",
+    });
+    expect(exportScope({ scope: { kind: "requirement", requirement_id: "R-9" } }, now)).toEqual({
+      kind: "requirement",
+      requirement_id: "R-9",
+    });
+    const scope = {
+      kind: "time_range" as const,
+      from: "2026-10-17T00:00:00.000Z",
+      to: "2026-10-18T00:00:00.000Z",
+    };
+    expect(exportScope({ scope }, now)).toEqual(scope);
   });
 });

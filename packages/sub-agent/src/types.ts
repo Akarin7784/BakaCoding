@@ -72,6 +72,19 @@ export interface TicketStatusStore {
   setStatus(ticket_id: string, status: TicketStatus): MaybePromise<void>;
 }
 
+/**
+ * 本单「还没带给编码池」的接口变更说明的存取（T-133）：生产注入
+ * `storageTicketInterfaceNotes(storage)`，写 2 的需求单记录 `tickets.fields.interface_notes`（只改这一个键）；
+ * 不注入就用进程内存（重启即丢，只适合测试）。**同步接口**（2 的 SQLite 是同步的）；读写抛错由 8 接住、
+ * 只记 `logger.warn`，不影响编码 / 评审。
+ */
+export interface TicketInterfaceNoteStore {
+  /** 读本单待带的说明（顺序从早到晚）；读不到返回空数组 */
+  get(ticket_id: string): readonly string[];
+  /** 写回待带的说明；空数组表示清空 */
+  set(ticket_id: string, notes: readonly string[]): void;
+}
+
 /** PR 轮次记录：写用 2 的 `savePrRecord`，读用于续编轮次号（可选）。 */
 export interface RoundStore {
   save(round: RoundRecord & { ticket_id: string }): MaybePromise<void>;
@@ -183,6 +196,12 @@ export interface SubAgentDeps {
    * 不给就用进程内存（重启即丢，只适合测试）。
    */
   permissions?: TicketPermissionStore;
+  /**
+   * 接口变更说明（T-133）的持久存取：注入 `storageTicketInterfaceNotes(storage)` 后，还没带给编码池的说明
+   * 写进 2 的需求单记录 `tickets.fields.interface_notes`（只改这一个键），进程重启后不丢；不给就用进程内存
+   * （重启即丢，只适合测试）。读写失败只记 warn，不影响编码 / 评审，后续事件到达时会再尝试写。
+   */
+  interfaceNotes?: TicketInterfaceNoteStore;
   /**
    * 越界写申请（T-048 / T-038）：给了就在每次调编码池时带 `scope_requests`（4 的 `ScopeRequestOptions`：本单的
    * requirement_id 与 trace、包装后的 bus 和 timeout_ms），5 原样交给 4 的 `createTools`；不给就不带（越界写直接拒绝）。

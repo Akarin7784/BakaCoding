@@ -5,6 +5,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { BakaDesktopApi } from "../shared/api";
 import { App } from "./App";
 import { SIDEBAR_STORAGE_KEY } from "./lib/layout";
+import { projects as mockProjects } from "./mock/data";
 import type { EscalationView } from "./mock/types";
 
 const escalation: EscalationView = {
@@ -129,13 +130,46 @@ describe("右面板：开关、停靠与抽屉", () => {
     expect(screen.queryByRole("complementary", { name: "右面板" })).toBeNull();
   });
 
-  it("动态标签是空壳（后续接入活动流）", async () => {
+  it("动态标签接活动流：显示 Agent 消息与底部状态行（T-127）", async () => {
     render(<App api={null} />);
     fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
     const tab = screen.getByRole("tab", { name: "动态" });
     fireEvent.mouseDown(tab);
     fireEvent.click(tab);
-    await waitFor(() => expect(screen.getByText("还没有动态")).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId("activity-feed")).toBeTruthy());
+    expect(screen.getAllByTestId("activity-item")).toHaveLength(5);
+    expect(screen.getByTestId("activity-status").textContent).toBe("T-2 重写");
+  });
+
+  it("面板关着时来了新消息：右面板开关亮小点，打开看过动态后熄灭（T-127）", async () => {
+    const base = mockProjects[0]!;
+    const { rerender } = render(<App api={null} />);
+    expect(screen.queryByTestId("right-panel-dot")).toBeNull();
+
+    const last = base.messages.at(-1)!;
+    const withNew = {
+      ...base,
+      messages: [
+        ...base.messages,
+        {
+          ...last,
+          event_id: "evt-t127-new",
+          seq: 999,
+          ts: "2026-10-17T09:30:00Z",
+          payload: { ...last.payload, content: "T-2 复投完成，已提交新 PR。" },
+        },
+      ],
+    };
+    rerender(<App api={null} projects={[withNew, ...mockProjects.slice(1)]} />);
+    await waitFor(() => expect(screen.getByTestId("right-panel-dot")).toBeTruthy());
+
+    // 打开面板但停在概览：动态标签上亮小点
+    fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
+    expect(screen.getByTestId("activity-dot")).toBeTruthy();
+    const tab = screen.getByRole("tab", { name: /动态/ });
+    fireEvent.mouseDown(tab);
+    fireEvent.click(tab);
+    await waitFor(() => expect(screen.queryByTestId("activity-dot")).toBeNull());
   });
 
   it("< 1200 改为覆盖式抽屉：点遮罩或按 Esc 关闭", async () => {

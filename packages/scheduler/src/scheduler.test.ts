@@ -22,6 +22,7 @@ import {
   type DispatchOutcome,
   HighRiskDecisionError,
   type HighRiskHeldInfo,
+  type MergeFollowup,
   isStalePrError,
   type ReReviewRequest,
   type Scheduler,
@@ -32,6 +33,7 @@ import {
   globsOverlap,
   inExclusiveZone,
   isUnsafeScope,
+  LOCK_WAIT_AGING_ROUNDS,
   MAX_BRACE_EXPANSIONS,
   matchesAny,
   sampleOf,
@@ -2070,6 +2072,239 @@ describe("T-048 写入范围 glob：花括号与独占区域", () => {
   });
 });
 
+describe("T-115 写入范围 glob：字符类", () => {
+  it("globToRegExp 支持 [abc] / [a-c] / [!a]（同 minimatch），未闭合或空类按字面量", () => {
+    expect(globToRegExp("src/[ab].ts").test("src/a.ts")).toBe(true);
+    expect(globToRegExp("src/[ab].ts").test("src/b.ts")).toBe(true);
+    expect(globToRegExp("src/[ab].ts").test("src/c.ts")).toBe(false);
+    expect(globToRegExp("src/[a-c].ts").test("src/b.ts")).toBe(true);
+    expect(globToRegExp("src/[a-c].ts").test("src/d.ts")).toBe(false);
+    expect(globToRegExp("src/[!a].ts").test("src/a.ts")).toBe(false);
+    expect(globToRegExp("src/[!a].ts").test("src/b.ts")).toBe(true);
+    expect(globToRegExp("src/[^a].ts").test("src/a.ts")).toBe(false);
+    expect(globToRegExp("src/[]]").test("src/]")).toBe(true);
+    expect(matchesAny("src/a.ts", ["src/[ab].ts"])).toBe(true);
+    expect(matchesAny("src/c.ts", ["src/[ab].ts"])).toBe(false);
+    // 未闭合的 `[`、空类 `[]` 按字面量（同 minimatch）
+    expect(globToRegExp("src/[ab.ts").test("src/a.ts")).toBe(false);
+    expect(globToRegExp("src/[ab.ts").test("src/[ab.ts")).toBe(true);
+    expect(globToRegExp("src/[]").test("src/[]")).toBe(true);
+    // 原有 `*` / `?` / `**` 语义不变
+    expect(globToRegExp("src/*.ts").test("src/a.ts")).toBe(true);
+    expect(globToRegExp("src/*.ts").test("src/a/b.ts")).toBe(false);
+    expect(globToRegExp("**/package.json").test("pkgs/x/package.json")).toBe(true);
+  });
+
+  it("非法字符类（[z-a] 反向区间等）按字面量，四个入口都不抛（评审 P1）", () => {
+    const bad = "src/[z-a].ts";
+    const entries = [
+      () => globToRegExp(bad),
+      () => matchesAny("src/a.ts", [bad]),
+      () => globsOverlap(bad, "src/a.ts"),
+      () => inExclusiveZone(bad, DEFAULT_EXCLUSIVE_ZONES),
+    ];
+    for (const call of entries) expect(call, bad).not.toThrow();
+    expect(globToRegExp(bad).test("src/[z-a].ts")).toBe(true);
+    expect(globToRegExp(bad).test("src/a.ts")).toBe(false);
+    expect(globsOverlap(bad, "src/a.ts")).toBe(false);
+    expect(globsOverlap(bad, bad)).toBe(true);
+    expect(inExclusiveZone(bad, DEFAULT_EXCLUSIVE_ZONES)).toBe(false);
+    // 带反斜杠的错位类同样按字面量、不抛
+    const weird = "src/[a-\\d].ts";
+    for (const call of [
+      () => globToRegExp(weird),
+      () => matchesAny("src/a.ts", [weird]),
+      () => globsOverlap(weird, "src/a.ts"),
+      () => inExclusiveZone(weird, DEFAULT_EXCLUSIVE_ZONES),
+    ])
+      expect(call, weird).not.toThrow();
+    expect(globToRegExp(weird).test("src/[a-\\d].ts")).toBe(true);
+  });
+
+  it("globsOverlap：字符类与能匹配的字面量算重叠，匹配不上的不重叠；两边都带通配照旧保守", () => {
+    const yes: Array<[string, string]> = [
+      ["src/[ab].ts", "src/a.ts"],
+      ["src/[a-c].ts", "src/b.ts"],
+      ["src/[!a].ts", "src/b.ts"],
+      ["packages/[ab]/x.ts", "packages/a/x.ts"],
+      ["src/[ab].ts", "src/*.ts"],
+      ["src/[ab].ts", "src/[bc].ts"],
+    ];
+    const no: Array<[string, string]> = [
+      ["src/[ab].ts", "src/c.ts"],
+      ["src/[!a].ts", "src/a.ts"],
+      ["src/[a-c].ts", "src/d.ts"],
+      ["src/[ab].ts", "lib/a.ts"],
+    ];
+    for (const [a, b] of yes) {
+      expect(globsOverlap(a, b), `${a} vs ${b}`).toBe(true);
+      expect(globsOverlap(b, a), `${b} vs ${a}`).toBe(true);
+    }
+    for (const [a, b] of no) {
+      expect(globsOverlap(a, b), `${a} vs ${b}`).toBe(false);
+      expect(globsOverlap(b, a), `${b} vs ${a}`).toBe(false);
+    }
+  });
+
+  it("代表路径取能匹配的字符；独占区域按字符类算", () => {
+    expect(sampleOf("src/[ab].ts")).toBe("src/a.ts");
+    expect(sampleOf("src/[!a].ts")).toBe("src/b.ts");
+    expect(sampleOf("src/[0-9].ts")).toBe("src/0.ts");
+    expect(samplesOf("{src,lib}/[ab].ts")).toEqual(["src/a.ts", "lib/a.ts"]);
+    expect(sampleOf("src/[ab.ts")).toBe("src/[ab.ts");
+    const Z = DEFAULT_EXCLUSIVE_ZONES;
+    // 字符类能写到独占区域里的具体文件名 / 目录
+    expect(inExclusiveZone("src/[p]ackage.json", Z)).toBe(true);
+    expect(inExclusiveZone("db/[m]igrations/001.sql", Z)).toBe(true);
+    expect(inExclusiveZone("pkg/[t]ypes/a.ts", Z)).toBe(true);
+    // 不该变独占的
+    expect(inExclusiveZone("src/[ab].ts", Z)).toBe(false);
+    expect(inExclusiveZone("src/[ab]/*.ts", Z)).toBe(false);
+  });
+
+  it("D16. 调度：src/[ab].ts 与 src/a.ts 不同时派（字符类能写到同一个文件）", async () => {
+    const h = harness();
+    const d = withHandle(h);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { write_scope: ["src/[ab].ts"] }));
+    await s.enqueue(ticket("T-2", { write_scope: ["src/a.ts"] }));
+    await settle(s);
+    expect(d.handled).toEqual(["T-1"]);
+    d.pending.get("T-1")!.resolve({ kind: "escalated", pr_id: null });
+    await settle(s);
+    expect(d.handled).toEqual(["T-1", "T-2"]);
+  });
+
+  it("D17. 调度：write_scope 含非法字符类 [z-a] 的单照常派出，多轮 dispatch 不重复抛", async () => {
+    const h = harness();
+    const d = withHandle(h);
+    h.daily.exhausted = true; // 先压住自动派单，好拿到 dispatch() 这一轮的返回值
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { write_scope: ["src/[z-a].ts"] }));
+    await settle(s);
+    expect(d.handled).toEqual([]);
+    h.daily.exhausted = false;
+    // dispatchOnce 正常返回该单、不抛
+    expect(await s.dispatch()).toEqual(["T-1"]);
+    expect(h.errors).toEqual([]);
+    // 再 kick 一次：不重复派、单子不卡在 pending、不重复抛
+    expect(await s.dispatch()).toEqual([]);
+    expect(d.handle).toHaveBeenCalledTimes(1);
+    expect(s.snapshot().find((v) => v.ticket_id === "T-1")!.coding).toBe(true);
+    expect(h.errors).toEqual([]);
+    d.pending.get("T-1")!.resolve({ kind: "escalated", pr_id: null });
+    await settle(s);
+    expect(h.errors).toEqual([]);
+  });
+
+  it("D18. 调度：write_scope 含非法字符类 [a-\\d] 的单照常派出，tryLock 不抛", async () => {
+    const h = harness();
+    const d = withHandle(h);
+    h.daily.exhausted = true;
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { write_scope: ["src/[a-\\d].ts"] }));
+    await settle(s);
+    expect(d.handled).toEqual([]);
+    h.daily.exhausted = false;
+    expect(await s.dispatch()).toEqual(["T-1"]);
+    expect(h.errors).toEqual([]);
+    expect(await s.dispatch()).toEqual([]);
+    expect(d.handle).toHaveBeenCalledTimes(1);
+    expect(s.snapshot().find((v) => v.ticket_id === "T-1")!.coding).toBe(true);
+    d.pending.get("T-1")!.resolve({ kind: "escalated", pr_id: null });
+    await settle(s);
+    expect(h.errors).toEqual([]);
+  });
+});
+
+describe("T-116 等锁防饿死", () => {
+  it("没有等锁者时派单顺序、返回值和并发与之前一致", async () => {
+    const h = harness();
+    const d = withHandle(h, { max: 3 });
+    const s = await started(h);
+    for (const id of ["T-1", "T-2", "T-3"])
+      await s.enqueue(ticket(id, { write_scope: [`src/${id}/**`] }));
+    await settle(s);
+    expect(d.handled).toEqual(["T-1", "T-2", "T-3"]);
+    expect(
+      s
+        .snapshot()
+        .filter((v) => v.coding)
+        .map((v) => v.ticket_id),
+    ).toEqual(["T-1", "T-2", "T-3"]);
+    const state = await s.backpressureState();
+    expect(state.paused).toBe(false);
+    expect(state.concurrency).toBe(3);
+    expect(await s.dispatch()).toEqual([]);
+  });
+
+  it("D19. 大范围单等锁到 aging 轮数后，新来的重叠单让路；锁释放后它第一轮拿到锁", async () => {
+    const h = harness();
+    const d = withHandle(h, { max: 2 });
+    const s = await started(h);
+    await s.enqueue(ticket("T-0", { write_scope: ["src/a.ts"] }));
+    await s.enqueue(ticket("T-1", { write_scope: ["src/**"] }));
+    await settle(s);
+    // 用导出的常量表达「等老」阈值，不写死 2
+    for (let i = 0; i < LOCK_WAIT_AGING_ROUNDS; i++) await s.dispatch();
+    expect(d.handled).toEqual(["T-0"]);
+
+    await s.enqueue(ticket("T-2", { write_scope: ["src/b.ts"] }));
+    await settle(s);
+    // 修复前 T-2 会抢到第 2 个槽位、T-1 继续饿着；修复后 T-2 让路
+    expect(d.handled).toEqual(["T-0"]);
+
+    d.pending.get("T-0")!.resolve({ kind: "escalated", pr_id: null });
+    await settle(s);
+    // T-0 释放后 T-1 第一轮拿到锁；T-2 仍被 T-1 的 src/** 挡住
+    expect(d.handled).toEqual(["T-0", "T-1"]);
+
+    d.pending.get("T-1")!.resolve({ kind: "escalated", pr_id: null });
+    await settle(s);
+    expect(d.handled).toEqual(["T-0", "T-1", "T-2"]);
+  });
+
+  it("D20. 不冲突的单不让路：等待者在 src/** 时，新来的 lib/** 照常派出", async () => {
+    const h = harness();
+    const d = withHandle(h, { max: 3 });
+    const s = await started(h);
+    await s.enqueue(ticket("T-0", { write_scope: ["src/a.ts"] }));
+    await s.enqueue(ticket("T-1", { write_scope: ["src/**"] }));
+    await settle(s);
+    for (let i = 0; i < LOCK_WAIT_AGING_ROUNDS; i++) await s.dispatch();
+    expect(d.handled).toEqual(["T-0"]);
+    await s.enqueue(ticket("T-2", { write_scope: ["lib/x.ts"] }));
+    await settle(s);
+    expect(d.handled).toEqual(["T-0", "T-2"]);
+  });
+
+  it("D21. 多个 aged 等待者按入队顺序拿锁；新来的冲突单一直让路到它们跑完", async () => {
+    const h = harness();
+    const d = withHandle(h, { max: 2 });
+    const s = await started(h);
+    await s.enqueue(ticket("T-0", { write_scope: ["src/a.ts"] }));
+    await s.enqueue(ticket("T-1", { write_scope: ["src/**"] }));
+    await s.enqueue(ticket("T-2", { write_scope: ["src/a.ts"] }));
+    await settle(s);
+    for (let i = 0; i < LOCK_WAIT_AGING_ROUNDS; i++) await s.dispatch();
+    expect(d.handled).toEqual(["T-0"]);
+
+    await s.enqueue(ticket("T-3", { write_scope: ["src/b.ts"] }));
+    await settle(s);
+    expect(d.handled).toEqual(["T-0"]);
+
+    d.pending.get("T-0")!.resolve({ kind: "escalated", pr_id: null });
+    await settle(s);
+    // 两个等待者都等老时，入队更早的 T-1 先拿锁（T-2 / T-3 都还被挡住）
+    expect(d.handled).toEqual(["T-0", "T-1"]);
+
+    d.pending.get("T-1")!.resolve({ kind: "escalated", pr_id: null });
+    await settle(s);
+    // T-1 释放后入队更早的 T-2 先拿锁；T-3 与 T-2 不冲突，同一轮一起派出去
+    expect(d.handled).toEqual(["T-0", "T-1", "T-2", "T-3"]);
+  });
+});
+
 describe("#47 安全修复：写入范围里的 .. / . / 绝对路径", () => {
   it("不安全的写入范围与任何范围都算重叠，也算落在独占区域", () => {
     const unsafe = [
@@ -2187,7 +2422,7 @@ describe("T-102b 冲突复投 / 重审的取消信号", () => {
       o?.signal?.addEventListener("abort", () => reject(o.signal!.reason));
     });
 
-  it("C3. 重审收到的就是 9 交给 handle 的那个 signal；stop() 中止它，不上报、不改状态", async () => {
+  it("重审收到的就是 9 交给 handle 的那个 signal；stop() 中止它，不上报、不改状态", async () => {
     const h = harness();
     const d = withHandle(h);
     h.reReview.mockImplementationOnce(untilAborted);
@@ -2220,7 +2455,7 @@ describe("T-102b 冲突复投 / 重审的取消信号", () => {
     expect(h.errors.map((e) => (e as Error).name)).toContain("AbortError");
   });
 
-  it("C4. 冲突复投收到 9 的 signal；stop() 中止它，不上报、不改状态，新 worktree 留给下次启动的 takeOver", async () => {
+  it("冲突复投收到 9 的 signal；stop() 中止它，不上报、不改状态，新 worktree 留给下次启动的 takeOver", async () => {
     const h = harness();
     h.resubmit.mockImplementationOnce(untilAborted);
     const s = await started(h);
@@ -3484,5 +3719,559 @@ describe("T-094：清理的错误回调", () => {
     } finally {
       process.off("unhandledRejection", onUnhandled);
     }
+  });
+});
+
+// ---------------- T-112：9 调 6 的 merge / sync / close / diff 带 stop() 的 signal ----------------
+
+type PrMethod = "merge" | "close" | "sync" | "diff";
+type ScheduledPr = Awaited<ReturnType<SchedulerDeps["createPr"]>>;
+interface PrCall {
+  method: PrMethod;
+  args: unknown[];
+  signal: AbortSignal | undefined;
+}
+/** 各方法 opts 参数的位置：merge(pr_id, target, opts)、close(pr_id, reason, opts)、sync(opts)、diff(pr_id, opts) */
+const OPT_INDEX: Record<PrMethod, number> = { merge: 2, close: 2, sync: 0, diff: 1 };
+
+/**
+ * 把 harness 的 6 包一层：记下每次调用带的 signal；`over[m]` 返回 Promise 时替换该次调用的实现
+ * （返回 undefined 则照常走 harness 的实现）。
+ */
+function signalPr(
+  h: Harness,
+  over: Partial<
+    Record<
+      PrMethod,
+      (signal: AbortSignal | undefined, args: unknown[]) => Promise<unknown> | undefined
+    >
+  > = {},
+): PrCall[] {
+  const calls: PrCall[] = [];
+  const orig = h.deps.createPr;
+  h.deps.createPr = async (a) => {
+    const base = await orig(a);
+    const wrap =
+      (m: PrMethod) =>
+      (...args: unknown[]): Promise<unknown> => {
+        const signal = (args[OPT_INDEX[m]] as { signal?: AbortSignal } | undefined)?.signal;
+        calls.push({ method: m, args, signal });
+        const replaced = over[m]?.(signal, args);
+        if (replaced) return replaced;
+        return (base[m] as (...x: unknown[]) => Promise<unknown>)(...args);
+      };
+    return {
+      merge: wrap("merge"),
+      close: wrap("close"),
+      sync: wrap("sync"),
+      diff: wrap("diff"),
+    } as unknown as ScheduledPr;
+  };
+  return calls;
+}
+
+/**
+ * 模拟 6 收到中止即原样抛 signal.reason（T-102a）。没收到 signal（反向检查时去掉透传）就 50ms 后以别的错误失败，
+ * 让用例尽快变红而不是挂死。
+ */
+function untilAbort(signal: AbortSignal | undefined): Promise<never> {
+  return new Promise<never>((_, reject) => {
+    if (!signal) {
+      setTimeout(() => reject(new Error("6 没收到 signal")), 50);
+      return;
+    }
+    if (signal.aborted) reject(signal.reason);
+    signal.addEventListener("abort", () => reject(signal.reason));
+  });
+}
+
+/** 断言这就是 stop() 用的那个 signal：调用时未中止，stop() 之后中止、reason 是 9 的「调度器已停止」。 */
+async function expectStopSignal(s: Scheduler, signal: AbortSignal | undefined): Promise<void> {
+  expect(signal).toBeInstanceOf(AbortSignal);
+  expect(signal!.aborted).toBe(false);
+  await s.stop();
+  expect(signal!.aborted).toBe(true);
+  expect(signal!.reason).toMatchObject({ name: "AbortError", message: "调度器已停止" });
+}
+
+/** 冲突复投途中预算用完：旧 PR pr-1 / 旧 worktree /wt/T-1-r0 记在 pending_replace，等新 PR 开出再关。 */
+async function budgetPausedResubmit(h: Harness): Promise<Scheduler> {
+  h.resubmit.mockImplementationOnce(async () => ({ requeue_budget: true, resume: { n: 1 } }));
+  const s = await started(h);
+  await s.enqueue(ticket("T-1"));
+  h.merges.set("pr-1", [conflict()]);
+  await s.submit({
+    ticket_id: "T-1",
+    pr_id: "pr-1",
+    worktree_path: "/wt/T-1-r0",
+    base_commit: SHA("a"),
+  });
+  await s.idle();
+  expect(s.status("T-1")).toBe("pending");
+  return s;
+}
+
+describe("T-112 9 调 6 的六处调用都带 stop() 的 signal", () => {
+  it("合并队列的 merge 带 stop 的 signal", async () => {
+    const h = harness();
+    const calls = signalPr(h);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("a") });
+    await s.idle();
+    const merges = calls.filter((c) => c.method === "merge");
+    expect(merges).toHaveLength(1);
+    await expectStopSignal(s, merges[0]!.signal);
+  });
+
+  it("sync 带 stop 的 signal（公开的 sync() 签名不变）", async () => {
+    const h = harness();
+    const calls = signalPr(h);
+    const s = await started(h);
+    await s.sync();
+    const syncs = calls.filter((c) => c.method === "sync");
+    expect(syncs).toHaveLength(1);
+    await expectStopSignal(s, syncs[0]!.signal);
+  });
+
+  it("冲突复投返回新 PR 后关旧 PR 的 close 带 stop 的 signal", async () => {
+    const h = harness();
+    const calls = signalPr(h);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    h.merges.set("pr-1", [conflict()]);
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("a") });
+    await vi.waitFor(() =>
+      expect(calls.some((c) => c.method === "close" && c.args[0] === "pr-1")).toBe(true),
+    );
+    await s.idle();
+    const close = calls.find((c) => c.method === "close" && c.args[0] === "pr-1")!;
+    await expectStopSignal(s, close.signal);
+  });
+
+  it("预算暂停后续跑开出新 PR（submit → supersede）关旧 PR 的 close 带 stop 的 signal", async () => {
+    const h = harness();
+    const calls = signalPr(h);
+    const s = await budgetPausedResubmit(h);
+    expect(calls.some((c) => c.method === "close")).toBe(false);
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-200", worktree_path: "/wt/T-1-r1" });
+    const close = calls.find((c) => c.method === "close" && c.args[0] === "pr-1");
+    expect(close).toBeDefined();
+    await s.idle();
+    await expectStopSignal(s, close!.signal);
+  });
+
+  it("合入后取改动文件的 diff 带 stop 的 signal", async () => {
+    const h = harness();
+    const calls = signalPr(h);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    // 带 base_commit：submit 不取 diff，这里只有合入后的那次
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("a") });
+    await s.idle();
+    expect(s.status("T-1")).toBe("merged");
+    const mergeAt = calls.findIndex((c) => c.method === "merge");
+    const diffs = calls.filter((c, i) => c.method === "diff" && i > mergeAt);
+    expect(diffs).toHaveLength(1);
+    expect(calls.filter((c) => c.method === "diff")).toHaveLength(1);
+    await expectStopSignal(s, diffs[0]!.signal);
+  });
+
+  it("submit 没带 base_commit 时取 base_sha 的 diff 带 stop 的 signal", async () => {
+    const h = harness();
+    const calls = signalPr(h);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1" });
+    // submit 里的那次 diff 在任何 merge 之前
+    expect(calls[0]).toMatchObject({ method: "diff", args: ["pr-1", expect.anything()] });
+    await s.idle();
+    await expectStopSignal(s, calls[0]!.signal);
+  });
+});
+
+describe("T-112 9 调 6 被 stop() 中止：原样抛 signal.reason，不写失败 / 冲突 / 高风险状态，不上报", () => {
+  it("merge 被中止：reason 原样交 onError，仍是 merge_queued，不记 mergeResult、不复投", async () => {
+    const h = harness();
+    const calls = signalPr(h, { merge: (signal) => untilAbort(signal) });
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("a") });
+    await vi.waitFor(() => expect(calls.some((c) => c.method === "merge")).toBe(true));
+    const signal = calls.find((c) => c.method === "merge")!.signal;
+    const before = [...h.statuses];
+    await s.stop();
+    expect(h.errors).toContain(signal!.reason);
+    expect(h.statuses).toEqual(before);
+    expect(s.status("T-1")).toBe("merge_queued");
+    expect(s.mergeResult("pr-1")).toBeUndefined();
+    expect(escalations(h)).toEqual([]);
+    expect(h.resubmit).not.toHaveBeenCalled();
+    expect(s.snapshot()[0]).toMatchObject({ high_risk: false });
+  });
+
+  it("显式 sync 被中止：sync() 原样抛 signal.reason，不改状态、不上报、不记同步失败", async () => {
+    const h = harness();
+    const calls = signalPr(h, { sync: (signal) => untilAbort(signal) });
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { depends_on: ["T-X"] }));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("a") });
+    const before = [...h.statuses];
+    const syncing = s.sync();
+    syncing.catch(() => {});
+    await flush();
+    const signal = calls.find((c) => c.method === "sync")!.signal;
+    await s.stop();
+    await expect(syncing).rejects.toBe(signal!.reason);
+    expect(h.statuses).toEqual(before);
+    expect(s.status("T-1")).toBe("merge_queued");
+    expect(escalations(h)).toEqual([]);
+    expect(s.syncState()).toMatchObject({ last_error: null, consecutive_failures: 0 });
+  });
+
+  it("sync 中途被中止：中止前 6 已处理完的记录照常应用、保持不变，后面的记录不动，再原样抛 signal.reason", async () => {
+    const h = harness();
+    const calls = signalPr(h, {
+      // 6 已把 pr-1 处理成 merged，查 pr-2 时被中止（GitHub 实现此时抛 SyncPartialError，cause 是 signal.reason）
+      sync: (signal) =>
+        untilAbort(signal).catch((reason: unknown) => {
+          throw new SyncPartialError(
+            [{ pr_id: "pr-1", from: "open", to: "merged", merge_sha: SHA("c") }],
+            reason,
+          );
+        }),
+    });
+    const s = await started(h);
+    // 依赖没登记的单：留在合并队列里不合（waiting）
+    await s.enqueue(ticket("T-1", { depends_on: ["T-X"] }));
+    await s.enqueue(ticket("T-2", { depends_on: ["T-X"] }));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("a") });
+    await s.submit({ ticket_id: "T-2", pr_id: "pr-2", worktree_path: "/2", base_commit: SHA("a") });
+    const before = [...h.statuses];
+    const syncing = s.sync();
+    syncing.catch(() => {});
+    await flush();
+    const signal = calls.find((c) => c.method === "sync")!.signal;
+    await s.stop();
+    await expect(syncing).rejects.toBe(signal!.reason);
+    expect(s.status("T-1")).toBe("merged");
+    expect(s.status("T-2")).toBe("merge_queued");
+    expect(h.statuses).toEqual([...before, ["T-1", "merged"]]);
+    expect(escalations(h)).toEqual([]);
+  });
+
+  it("定时 sync 被中止：不计失败次数、不写 last_error，只交 onError", async () => {
+    const h = harness();
+    const jobs: Array<() => void> = [];
+    h.deps.sync_poll_ms = 1000;
+    h.deps.timers = {
+      setTimeout: (fn: () => void) => {
+        jobs.push(fn);
+        return fn;
+      },
+      clearTimeout: (t: unknown) => {
+        const i = jobs.indexOf(t as () => void);
+        if (i >= 0) jobs.splice(i, 1);
+      },
+    };
+    const calls = signalPr(h, { sync: (signal) => untilAbort(signal) });
+    const s = await started(h);
+    s.startSyncLoop();
+    expect(jobs).toHaveLength(1);
+    jobs.shift()!();
+    await flush();
+    const signal = calls.find((c) => c.method === "sync")!.signal;
+    await s.stop();
+    expect(h.errors).toContain(signal!.reason);
+    expect(s.syncState()).toMatchObject({ last_error: null, consecutive_failures: 0 });
+    expect(escalations(h)).toEqual([]);
+  });
+
+  it("冲突复投关旧 PR 被中止：reason 原样交 onError，停在 resubmitting，旧 worktree 不清", async () => {
+    const h = harness();
+    const calls = signalPr(h, { close: (signal) => untilAbort(signal) });
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    h.merges.set("pr-1", [conflict()]);
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("a") });
+    await vi.waitFor(() => expect(calls.some((c) => c.method === "close")).toBe(true));
+    const signal = calls.find((c) => c.method === "close")!.signal;
+    const before = [...h.statuses];
+    expect(before.at(-1)).toEqual(["T-1", "resubmitting"]);
+    await s.stop();
+    expect(h.errors).toContain(signal!.reason);
+    expect(h.statuses).toEqual(before);
+    expect(s.status("T-1")).toBe("resubmitting");
+    expect(escalations(h)).toEqual([]);
+    expect(h.calls.filter((c) => c.startsWith("cleanup:"))).toEqual([]);
+  });
+
+  it("预算续跑后关旧 PR 被中止：reason 原样交 onError，不上报，旧 worktree 不清", async () => {
+    const h = harness();
+    const calls = signalPr(h, { close: (signal) => untilAbort(signal) });
+    const s = await budgetPausedResubmit(h);
+    const submitting = s.submit({ ticket_id: "T-1", pr_id: "pr-200", worktree_path: "/wt/T-1-r1" });
+    await vi.waitFor(() => expect(calls.some((c) => c.method === "close")).toBe(true));
+    const signal = calls.find((c) => c.method === "close")!.signal;
+    const before = [...h.statuses];
+    await s.stop();
+    await submitting;
+    expect(h.errors).toContain(signal!.reason);
+    expect(h.statuses).toEqual(before);
+    expect(escalations(h)).toEqual([]);
+    expect(h.calls.filter((c) => c.startsWith("cleanup:"))).toEqual([]);
+  });
+
+  it("合入后取 diff 被中止：merged 和合并结果保留，不报 merged_but、不发 interface_changed", async () => {
+    const h = harness();
+    const saved: string[] = [];
+    h.deps.saveMergeResult = (t) => void saved.push(t);
+    const calls = signalPr(h, { diff: (signal) => untilAbort(signal) });
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("a") });
+    await vi.waitFor(() => expect(calls.some((c) => c.method === "diff")).toBe(true));
+    const signal = calls.find((c) => c.method === "diff")!.signal;
+    const before = [...h.statuses];
+    expect(before.at(-1)).toEqual(["T-1", "merged"]);
+    await s.stop();
+    expect(h.errors).toContain(signal!.reason);
+    expect(h.statuses).toEqual(before);
+    expect(s.status("T-1")).toBe("merged");
+    expect(saved).toEqual(["T-1"]);
+    expect(escalations(h)).toEqual([]);
+    expect(h.published.filter((e) => e.type === "interface_changed")).toEqual([]);
+  });
+
+  it("submit 取 base_sha 的 diff 被中止：submit 原样抛 signal.reason，不写 merge_queued、不入队", async () => {
+    const h = harness();
+    const calls = signalPr(h, { diff: (signal) => untilAbort(signal) });
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    const before = [...h.statuses];
+    const submitting = s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1" });
+    submitting.catch(() => {});
+    await vi.waitFor(() => expect(calls.some((c) => c.method === "diff")).toBe(true));
+    const signal = calls.find((c) => c.method === "diff")!.signal;
+    await s.stop();
+    await expect(submitting).rejects.toBe(signal!.reason);
+    expect(h.statuses).toEqual(before);
+    expect(s.status("T-1")).toBe("pending");
+    expect(calls.some((c) => c.method === "merge")).toBe(false);
+    expect(escalations(h)).toEqual([]);
+  });
+});
+
+// ---------------- T-112：merge_followup 标记与重启补做 ----------------
+
+/** 模拟 2 的需求单 fields.merge_followup：跨「重启」（多个 harness / 调度器实例）共用。 */
+function followupStore(order?: string[]) {
+  const marks = new Map<string, MergeFollowup>();
+  const state = { failMark: false };
+  return {
+    marks,
+    state,
+    store: {
+      mark: (id: string, info: MergeFollowup) => {
+        if (state.failMark) throw new Error("写标记失败");
+        order?.push(`mark:${id}`);
+        marks.set(id, { ...info });
+      },
+      clear: (id: string) => {
+        order?.push(`clear:${id}`);
+        marks.delete(id);
+      },
+    },
+  };
+}
+
+/** 按顺序记下 mark / clear 和状态写入。 */
+function orderedHarness(order: string[]) {
+  const h = harness();
+  const inner = h.deps.tickets.setStatus;
+  h.deps.tickets = {
+    setStatus: (t, s) => {
+      order.push(`status:${t}:${s}`);
+      return inner(t, s);
+    },
+  };
+  return h;
+}
+
+/** 模拟 10 的 takeOver：对带标记的 merged 单调 recoverMergeFollowup（在 adopt / enqueue 之后）。 */
+async function takeOverFollowups(s: Scheduler, marks: Map<string, MergeFollowup>) {
+  const out: Array<[string, string]> = [];
+  for (const [id, info] of [...marks])
+    out.push([id, await s.recoverMergeFollowup(ticket(id), info)]);
+  return out;
+}
+
+const ifaceEvents = (h: Harness) => h.published.filter((e) => e.type === "interface_changed");
+
+describe("T-112 merge_followup：写入顺序与清除时机", () => {
+  it("合并成功：先写标记再写 merged；发完 interface_changed、排上清理后才清标记", async () => {
+    const order: string[] = [];
+    const h = orderedHarness(order);
+    const f = followupStore(order);
+    h.deps.mergeFollowup = f.store;
+    h.deps.worktrees.cleanupMerged = (id) => {
+      order.push(`cleanupMerged:${id}`);
+      return { errors: [] } as never;
+    };
+    h.deps.bus.publish = ((orig) => (e: Parameters<typeof orig>[0]) => {
+      if (e.type === "interface_changed") order.push(`interface_changed:${e.ticket_id}`);
+      return orig(e);
+    })(h.deps.bus.publish);
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("a") });
+    await s.idle();
+    expect(order.filter((o) => o.includes("T-1") && !/merge_queued|pending/.test(o))).toEqual([
+      "mark:T-1",
+      "status:T-1:merged",
+      "interface_changed:T-1",
+      "cleanupMerged:T-1",
+      "clear:T-1",
+    ]);
+    expect(f.marks.size).toBe(0);
+  });
+
+  it("手动合入（sync 报 merged、merge_sha 合法）同样先写标记再写 merged，发完再清", async () => {
+    const order: string[] = [];
+    const h = orderedHarness(order);
+    const f = followupStore(order);
+    h.deps.mergeFollowup = f.store;
+    const s = await started(h);
+    await s.enqueue(ticket("T-1", { depends_on: ["T-X"] }));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("a") });
+    h.syncChanges.push({ pr_id: "pr-1", from: "open", to: "merged", merge_sha: SHA("c") });
+    await s.sync();
+    const i = order.indexOf("mark:T-1");
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf("status:T-1:merged")).toBeGreaterThan(i);
+    expect(order.at(-1)).toBe("clear:T-1");
+    expect(ifaceEvents(h)).toHaveLength(1);
+  });
+
+  it("写标记失败：不写 merged（库里仍是 merge_queued，重启后靠 T-103 幂等重合），报 merged_but", async () => {
+    const order: string[] = [];
+    const h = orderedHarness(order);
+    const f = followupStore(order);
+    f.state.failMark = true;
+    h.deps.mergeFollowup = f.store;
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("a") });
+    await s.idle();
+    expect(order).not.toContain("status:T-1:merged");
+    expect(h.statuses.at(-1)).toEqual(["T-1", "merge_queued"]);
+    expect(escalations(h).map((e) => e.payload)).toEqual([
+      expect.objectContaining({
+        reason: "merged_but",
+        detail: expect.stringContaining("merge_followup_unsaved: 写标记失败"),
+      }),
+    ]);
+  });
+
+  it("interface_changed 没发出去（进待补发）：标记留着，补发成功才清", async () => {
+    const h = harness();
+    const f = followupStore();
+    h.deps.mergeFollowup = f.store;
+    let fail = true;
+    const orig = h.deps.bus.publish;
+    h.deps.bus.publish = (e) => {
+      if (e.type === "interface_changed" && fail) throw new Error("总线坏了");
+      return orig(e);
+    };
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("a") });
+    await s.idle();
+    expect(s.status("T-1")).toBe("merged");
+    expect(f.marks.has("T-1")).toBe(true);
+    fail = false;
+    await s.sync();
+    expect(ifaceEvents(h)).toHaveLength(1);
+    expect(f.marks.has("T-1")).toBe(false);
+  });
+});
+
+describe("T-112 merge_followup：重启补做", () => {
+  /** 第一次运行：合入后取 diff 被 stop() 中止，留下标记 */
+  async function abortedRun(f: ReturnType<typeof followupStore>) {
+    const h = harness();
+    h.deps.mergeFollowup = f.store;
+    const calls = signalPr(h, { diff: (signal) => untilAbort(signal) });
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await s.submit({ ticket_id: "T-1", pr_id: "pr-1", worktree_path: "/1", base_commit: SHA("a") });
+    await vi.waitFor(() => expect(calls.some((c) => c.method === "diff")).toBe(true));
+    await s.stop();
+    expect(h.statuses.at(-1)).toEqual(["T-1", "merged"]);
+    return h;
+  }
+
+  /** 模拟重启：新的调度器，takeOver 对带标记的单补做 */
+  async function restart(
+    f: ReturnType<typeof followupStore>,
+    over: (h: Harness) => void = () => {},
+  ) {
+    const h = harness();
+    h.deps.mergeFollowup = f.store;
+    h.diffs.set("pr-1", ["src/a.ts"]);
+    over(h);
+    const s = await started(h);
+    // 一张在途单受这次合并影响
+    await s.enqueue(ticket("T-2", { write_scope: ["src/**"], depends_on: ["T-X"] }));
+    const results = await takeOverFollowups(s, f.marks);
+    await s.stop();
+    return { h, results };
+  }
+
+  it("中止后重启：interface_changed 恰好补发一次（base_commit 是合并 sha，受影响单算全），标记清掉", async () => {
+    const f = followupStore();
+    const h1 = await abortedRun(f);
+    expect(ifaceEvents(h1)).toEqual([]);
+    expect(f.marks.get("T-1")).toEqual({ pr_id: "pr-1", merge_sha: SHA("f") });
+    const r = await restart(f);
+    expect(r.results).toEqual([["T-1", "emitted"]]);
+    expect(ifaceEvents(r.h)).toHaveLength(1);
+    expect(ifaceEvents(r.h)[0]!.payload).toMatchObject({
+      pr_id: "pr-1",
+      base_commit: SHA("f"),
+      affected_ticket_ids: ["T-2"],
+    });
+    expect(f.marks.size).toBe(0);
+  });
+
+  it("重启两次：总共只补发一次", async () => {
+    const f = followupStore();
+    const h1 = await abortedRun(f);
+    const r1 = await restart(f);
+    const r2 = await restart(f);
+    expect(r2.results).toEqual([]);
+    expect(ifaceEvents(h1).length + ifaceEvents(r1.h).length + ifaceEvents(r2.h).length).toBe(1);
+  });
+
+  it("补做时取 diff 又失败：不发事件、标记留着；下次启动再补，仍只发一次", async () => {
+    const f = followupStore();
+    await abortedRun(f);
+    const r1 = await restart(f, (h) => h.diffFails.add("pr-1"));
+    expect(r1.results).toEqual([["T-1", "failed"]]);
+    expect(ifaceEvents(r1.h)).toEqual([]);
+    expect(f.marks.has("T-1")).toBe(true);
+    const r2 = await restart(f);
+    expect(r2.results).toEqual([["T-1", "emitted"]]);
+    expect(ifaceEvents(r2.h)).toHaveLength(1);
+    expect(f.marks.size).toBe(0);
+  });
+
+  it("单已在 9 里且不是 merged：拒绝补做", async () => {
+    const h = harness();
+    const s = await started(h);
+    await s.enqueue(ticket("T-1"));
+    await expect(
+      s.recoverMergeFollowup(ticket("T-1"), { pr_id: "pr-1", merge_sha: SHA("f") }),
+    ).rejects.toThrow(/不是 merged/);
   });
 });

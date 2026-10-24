@@ -1,0 +1,3 @@
+# 统一 LF 检出：Windows 上 system gitconfig 的 core.autocrlf=true 会让检出变成 CRLF，
+# 而测试里有大量按 LF 写的期望（git 输出、文件内容断言），会整片误报失败。
+* text=auto eol=lf

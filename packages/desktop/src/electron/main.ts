@@ -2,11 +2,10 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme } from "electron";
-import * as configBudget from "@bakacoding/config-budget";
-import { SECRET_MARKER_FILE } from "@bakacoding/config-budget";
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } from "electron";
+import { SECRET_MARKER_FILE, writePricing } from "@bakacoding/config-budget";
 import { checkRepo, ensureExcludeLines, writeConfig } from "@bakacoding/app";
-import { configFixHandlers, configTemplateDir, writePricingFrom } from "./config-fix.js";
+import { configFixHandlers, configTemplateDir } from "./config-fix.js";
 import { lastRepoForStart, resolveRepoDbPath, startBackend, type RepoSource } from "./backend.js";
 import {
   notifyAppQuitting,
@@ -27,6 +26,7 @@ import { openEventReader, type EventReader } from "./reader.js";
 import { createQuitGuard, createWindowCloseHandler, type QuitGuard } from "./quit-guard.js";
 import { readLastRepo, writeLastRepo } from "./repo-store.js";
 import { readSavedTheme, writeSavedTheme } from "./theme-store.js";
+import { defaultTemplateDir } from "./default-config.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -150,6 +150,19 @@ if (!gotLock) {
       env: process.env,
       downloadsDir: app.getPath("downloads"),
       saveLastRepo: (repo) => writeLastRepo(userData, repo),
+      // T-081：打包版在 exe 同一层 config-templates/；开发时用仓库根 config/（here = packages/desktop/dist-electron）
+      templateDir: defaultTemplateDir(
+        app.isPackaged,
+        process.execPath,
+        path.join(here, "../../.."),
+      ),
+      // T-082 的 ensureExcludeLines（经 @bakacoding/app 再导出）：只给本次新建的配置文件写 .git/info/exclude
+      ensureExcludeLines,
+      // T-130：打开数据目录（userData：状态 / 标记文件所在）；失败抛错，由 IPC 层换成固定文案
+      async openDataDir() {
+        const err = await shell.openPath(userData);
+        if (err) throw new Error("打开数据目录失败");
+      },
       async pickDirectory() {
         const r = win
           ? await dialog.showOpenDialog(win, { properties: ["openDirectory"], title: "导入项目" })
@@ -194,7 +207,7 @@ if (!gotLock) {
         templateDir: configTemplateDir(app.isPackaged, process.execPath, here),
         checkRepo: (root) => checkRepo(root),
         writeConfig,
-        writePricing: writePricingFrom(configBudget),
+        writePricing,
         ensureExcludeLines,
       }),
     });

@@ -63,6 +63,7 @@ type FixCode = DesktopRepoFixFailure["code"];
 type ModuleFixCode = Exclude<FixCode, "cwd_repo">;
 const FIX_CODES: ReadonlySet<string> = new Set<ModuleFixCode>([
   "not_git",
+  "nested_repo",
   "repo_exists",
   "no_commits",
   "has_commits",
@@ -74,15 +75,12 @@ const FIX_CODES: ReadonlySet<string> = new Set<ModuleFixCode>([
   "git_failed",
 ]);
 
-/**
- * 嵌套仓库（T-113）：repo:init 主进程自己先拒绝时回这一句（4 抛 RepoFixError("nested_repo") 的映射由 T-114 #148 的 FIX_CODES 负责）。
- * TODO(T-114 合入后)：`nested_repo` 进了 DesktopRepoFixFailure 的 code，去掉这里的 cast。
- */
-export const NESTED_REPO_FAILURE = {
+/** 嵌套仓库（T-113）：repo:init 主进程先查 checkRepo 就拒绝时回这一句（与 4 的 RepoFixError("nested_repo") 同一固定文案） */
+export const NESTED_REPO_FAILURE: DesktopRepoFixFailure = {
   ok: false,
   code: "nested_repo",
   reason: NESTED_REPO_REASON,
-} as unknown as DesktopRepoFixFailure;
+};
 
 /** 失败一律用 RepoFixError 的固定文案；不是 RepoFixError（或码不认识）的记成 git_failed，不带原始信息。 */
 export function repoFixFailure(e: unknown): DesktopRepoFixFailure {
@@ -229,10 +227,10 @@ export function repoFixHandlers(deps: RepoFixDeps): RepoFixHandlers {
       const identity = parseIdentity(o.identity);
       if (identity === "invalid") return fail("invalid_identity");
       try {
-        // T-113：嵌套仓库主进程先拒绝（不靠 4 的版本；T-114 起 4 自己也会抛 nested_repo）
+        // T-113：嵌套仓库主进程先拒绝（纵深防御；T-114 起 4 的 initRepo 自己也会抛 nested_repo）
         const r = await fns.checkRepo(deps.repoRoot());
         const git = r.items.find((i) => i.id === "git");
-        if (git && !git.ok && (git.code as string) === "nested_repo") return NESTED_REPO_FAILURE;
+        if (git && !git.ok && git.code === "nested_repo") return NESTED_REPO_FAILURE;
         await fns.initRepo(deps.repoRoot(), identity ? { identity } : {});
       } catch (e) {
         return repoFixFailure(e);
