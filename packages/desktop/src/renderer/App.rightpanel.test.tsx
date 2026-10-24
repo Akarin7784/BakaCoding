@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // UI-06a：右面板单列表接到 App：点单打开所属需求页并选中该单（窄屏关抽屉）、
 // 主管对话里跟随输入框 chip 选中的项目（不回退到最后一个项目）。
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { App } from "./App";
 import { LAST_PROJECT_STORAGE_KEY } from "./lib/lastProject";
@@ -84,6 +84,22 @@ describe("右面板点单（UI-06a）", () => {
     fireEvent.click(screen.getByRole("button", { name: /baka-todo/ }));
     fireEvent.click(document.querySelector<HTMLElement>('[data-requirement="req-1"]')!);
     expect(window.location.hash).toBe("#requirement=req-1");
+    expect(document.querySelector("[data-ticket-item][data-selected]")).toBeNull();
+  });
+
+  it("左栏选其他内容会清掉选中单：之后靠路由（如浏览器后退）回到需求页也不高亮", async () => {
+    render(<App api={null} />);
+    fireEvent.click(screen.getByRole("button", { name: /baka-todo/ }));
+    openPanel();
+    clickTicket("T-1");
+    expect(document.querySelector("[data-ticket-item][data-selected]")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /baka-todo/ }));
+    expect(window.location.hash).toBe("");
+    act(() => {
+      window.location.hash = "#requirement=req-1";
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    await waitFor(() => expect(document.querySelector('[data-ticket-item="T-1"]')).toBeTruthy());
     expect(document.querySelector("[data-ticket-item][data-selected]")).toBeNull();
   });
 });
