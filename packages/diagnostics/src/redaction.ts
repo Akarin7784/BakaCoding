@@ -1,4 +1,5 @@
 import { redact } from "@bakacoding/config-budget";
+import { PATH_RULES, redactPaths, type PathRule } from "./path-redaction.js";
 import type { RedactionReport } from "./schema.js";
 
 /**
@@ -8,16 +9,45 @@ import type { RedactionReport } from "./schema.js";
  */
 export const DROPPED_KEYS: ReadonlySet<string> = new Set(["repo_path"]);
 
-/** 用模块 3 的 redact(text, "full") 做完整脱敏，并累计「规则名 → 命中次数」。 */
+/**
+ * 用模块 3 的 redact(text, "full") 做完整脱敏，再做绝对路径 / home 目录脱敏（T-146，path-redaction.ts），
+ * 并累计「规则名 → 命中次数」。所有字符串（值、键名、原始文件内容和 zip 条目名）都经过 text()。
+ */
 export class FullRedactor {
   private readonly counts: Record<string, number> = {};
 
+  /** `paths` 只给测试和反向检查用：注入 home、或只开部分路径规则；`paths: false` 关掉路径脱敏。 */
+  constructor(
+    private readonly paths: { home?: string; rules?: readonly PathRule[] } | false = {},
+  ) {}
+
   text(s: string): string {
-    const { text, report } = redact(s, "full");
+    // `~/…` 要在模块 3 之前整条遮掉：模块 3 的 home_path 只换掉 `~`，会留下后面的整段路径。
+    const pre = this.paths === false ? s : this.paths_(s, ["tilde_path"]);
+    const { text, report } = redact(pre, "full");
+    this.add(report);
+    if (this.paths === false) return text;
+    return this.paths_(
+      text,
+      PATH_RULES.filter((r) => r !== "tilde_path"),
+    );
+  }
+
+  private paths_(s: string, only: readonly PathRule[]): string {
+    if (this.paths === false) return s;
+    const allowed = this.paths.rules ?? PATH_RULES;
+    const p = redactPaths(s, {
+      home: this.paths.home,
+      rules: only.filter((r) => allowed.includes(r)),
+    });
+    this.add(p.report);
+    return p.text;
+  }
+
+  private add(report: Record<string, number | undefined>): void {
     for (const [rule, n] of Object.entries(report)) {
-      this.counts[rule] = (this.counts[rule] ?? 0) + n;
+      this.counts[rule] = (this.counts[rule] ?? 0) + (n ?? 0);
     }
-    return text;
   }
 
   /**
