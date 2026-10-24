@@ -339,7 +339,10 @@ export function App(props: AppProps) {
     : undefined;
 
   return (
-    <div className="flex h-screen min-h-0 bg-background text-foreground">
+    <div
+      data-testid="app-root"
+      className="flex h-screen min-h-0 overflow-hidden bg-background text-foreground"
+    >
       <ConversationList
         projects={projects}
         status={
