@@ -7,6 +7,25 @@ import { cn } from "../lib/utils";
 import { MERGE_COPY, RESUBMIT_COPY } from "../lib/copy";
 import { ticketWarningLabel } from "./Escalations";
 import type { ProjectView } from "../mock/types";
+import { poolRowLabel, type PoolRow } from "../lib/poolState";
+
+/** 编码池行的外部输入（UI-06b）：live 时由 pool:state + 快照算出；没有就回退 view.pool（假数据）。 */
+export type PoolLive = { ok: true; row: PoolRow } | { ok: false; reason: string };
+
+function LivePool({ pool }: { pool: PoolLive }) {
+  if (!pool.ok) return <span className="text-muted-foreground">编码池状态：{pool.reason}</span>;
+  return (
+    <span
+      data-backpressure={pool.row.backpressure ? "on" : "off"}
+      className={cn(
+        "transition-colors duration-300",
+        pool.row.backpressure ? "text-accent" : "text-muted-foreground",
+      )}
+    >
+      {poolRowLabel(pool.row)}
+    </span>
+  );
+}
 
 function Flag({ on, label }: { on: boolean; label: string }) {
   return (
@@ -35,17 +54,22 @@ export function RightPanel({
   view,
   onOpenTopic,
   readonly = false,
+  pool: poolLive,
 }: {
   view: ProjectView;
   onOpenTopic: (requirementId: string) => void;
   /** 后端只读（UI-08）：合入 main、导出禁用并说明 */
   readonly?: boolean;
+  /** UI-06b：真实编码池状态；不给时回退 view.pool */
+  pool?: PoolLive | null;
 }) {
   const { pool, git, prs } = view;
   return (
     <div data-testid="project-overview" className="flex flex-col text-sm">
       <div data-testid="pool-status" className="flex gap-3 px-4 py-2 text-xs">
-        {pool ? (
+        {poolLive ? (
+          <LivePool pool={poolLive} />
+        ) : pool ? (
           <>
             <span>
               并发 {pool.concurrency.active}/{pool.concurrency.limit}

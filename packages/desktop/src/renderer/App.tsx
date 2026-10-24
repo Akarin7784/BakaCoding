@@ -21,6 +21,9 @@ import { REQUIREMENT_MENU_COPY as M, REQUIREMENT_PAGE_COPY } from "./lib/copy";
 import { useDesktopData } from "./data/useDesktopData";
 import { usePendingHighRisk } from "./data/usePendingHighRisk";
 import { useSyncState } from "./data/useSyncState";
+import { usePoolState } from "./data/usePoolState";
+import { poolRowOf } from "./lib/poolState";
+import type { PoolLive } from "./components/RightPanel";
 import { useProjectActions } from "./data/useProjectActions";
 import { useBackendStatus } from "./data/useBackendStatus";
 import { useQuitting } from "./data/useQuitting";
@@ -99,6 +102,17 @@ export function App(props: AppProps) {
   );
   const highRisk = usePendingHighRisk(api, props.pendingHighRisk ?? []);
   const syncState = useSyncState(api, props.syncState ?? null);
+  // UI-06b：编码池状态随快照刷新（live 对象一变就重取），不轮询
+  const poolResult = usePoolState(api, live);
+  const poolLive = useMemo<PoolLive | null>(
+    () =>
+      poolResult === null
+        ? null
+        : poolResult.ok
+          ? { ok: true, row: poolRowOf(poolResult.state, tickets) }
+          : poolResult,
+    [poolResult, tickets],
+  );
   const backend = useBackendStatus(api);
   /** UI-03a：项目准备页（从只读横幅「准备仓库」进来，占内容区；左栏选别的就关掉） */
   const [prepOpen, setPrepOpen] = useState(false);
@@ -466,6 +480,7 @@ export function App(props: AppProps) {
             <RightPanel
               view={current}
               readonly={backendReadonly}
+              pool={poolLive}
               onOpenTopic={(rid) => {
                 select({ kind: "project", projectId: current.project.payload.project_id });
                 if (layout.drawer) layout.setRightPanelOpen(false);
