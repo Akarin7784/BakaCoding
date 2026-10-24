@@ -3,6 +3,16 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import electron from "vite-plugin-electron/simple";
+import { execFileSync } from "node:child_process";
+
+// UI-07a：设置 › 关于显示的 commit；不在 git 仓库里构建就是 null
+function headCommit(): string | null {
+  try {
+    return execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim() || null;
+  } catch {
+    return null;
+  }
+}
 
 export default defineConfig({
   plugins: [
@@ -12,6 +22,7 @@ export default defineConfig({
       main: {
         entry: "src/electron/main.ts",
         vite: {
+          define: { __BAKACODING_COMMIT__: JSON.stringify(headCommit()) },
           build: {
             outDir: "dist-electron",
             // @bakacoding/storage 打包进来；原生模块不打包，运行时从本包 node_modules 加载，.node 用 nativeBinding 指定。

@@ -45,6 +45,8 @@ export const IPC_CHANNELS = {
   diagnosticsOpenDataDir: "bakacoding:diagnostics:open-data-dir",
   /** invoke：只读设置（仓库、环境变量是否已设、本地 / GitHub 模式）（T-072）。 */
   settingsGet: "bakacoding:settings:get",
+  /** invoke：设置 › 关于（UI-07a）：版本号、commit、运行时版本，不带路径；无参数。 */
+  appAbout: "bakacoding:app:about",
   /** invoke：界面主题偏好同步给主进程，设置 nativeTheme.themeSource 和标题栏按钮颜色（UI-02）。 */
   windowTheme: "bakacoding:window:theme",
   /** invoke：同一仓库停掉再起来；有在途单则排队，空闲后自动执行（T-093）。 */
@@ -380,6 +382,16 @@ export interface DesktopSettings {
   mode: "local" | "github" | "readonly";
 }
 
+/**
+ * `app:about` 结果（UI-07a）：只有版本号、commit（7–40 位小写十六进制）和运行时版本，
+ * 主进程按白名单格式过滤，拿不到或格式不对就是 null，绝不带路径。
+ */
+export interface DesktopAbout {
+  version: string | null;
+  commit: string | null;
+  runtime: { electron: string | null; chrome: string | null; node: string | null };
+}
+
 /** preload 通过 contextBridge 暴露在 window.bakacoding 上的 API。 */
 export interface BakaDesktopApi {
   readonly platform: string;
@@ -417,6 +429,8 @@ export interface BakaDesktopApi {
   openDataDir(): Promise<DesktopOpenDataDirResult>;
   /** 只读设置（T-072）。 */
   getSettings(): Promise<DesktopSettings>;
+  /** 设置 › 关于（UI-07a）；旧版 preload / 测试假 API 可以没有。 */
+  getAbout?(): Promise<DesktopAbout>;
   /** 主题偏好同步给主进程（UI-02）；旧版 preload / 测试假 API 可以没有。 */
   setWindowTheme?(source: WindowThemeSource): Promise<DesktopWindowThemeResult>;
   /** 重载后端（T-093）：改配置或密钥后调用；有在途单时排队。 */

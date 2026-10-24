@@ -32,4 +32,9 @@ export interface LedgerStore {
   /** day 为 UTC 日期 YYYY-MM-DD。 */
   totalsByDay(day: string): Promise<LedgerBreakdown>;
   totalsByTicket(ticket_id: string): Promise<LedgerBreakdown>;
+  /**
+   * 项目全部时间的累计花费（T-090）：按 requirements 表的 requirement_id 把台账关联到项目；
+   * 没登记过的需求不计入任何项目；未知项目返回全 0，不抛错。
+   */
+  totalsByProject(project_id: string): Promise<LedgerBreakdown>;
 }

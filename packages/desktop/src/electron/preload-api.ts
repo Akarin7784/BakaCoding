@@ -9,6 +9,7 @@ import {
   type DesktopExportResult,
   type DesktopImportResult,
   type DesktopOpenDataDirResult,
+  type DesktopAbout,
   type DesktopSettings,
   type DesktopHighRiskDecision,
   type DesktopPendingHighRisk,
@@ -103,6 +104,7 @@ export function createDesktopApi(ipc: IpcRendererLike, platform: string): BakaDe
     openDataDir: () =>
       ipc.invoke(IPC_CHANNELS.diagnosticsOpenDataDir) as Promise<DesktopOpenDataDirResult>,
     getSettings: () => ipc.invoke(IPC_CHANNELS.settingsGet) as Promise<DesktopSettings>,
+    getAbout: () => ipc.invoke(IPC_CHANNELS.appAbout) as Promise<DesktopAbout>,
     supervisorChat: (message: UserMessage) =>
       ipc.invoke(IPC_CHANNELS.supervisorChat, message) as Promise<DesktopChatResult>,
     setWindowTheme: (source: WindowThemeSource) =>
