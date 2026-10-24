@@ -2,7 +2,7 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } from "electron";
 import { SECRET_MARKER_FILE } from "@bakacoding/config-budget";
 import { ensureExcludeLines } from "@bakacoding/app";
 import { lastRepoForStart, resolveRepoDbPath, startBackend, type RepoSource } from "./backend.js";
@@ -157,6 +157,11 @@ if (!gotLock) {
       ),
       // T-082 的 ensureExcludeLines（经 @bakacoding/app 再导出）：只给本次新建的配置文件写 .git/info/exclude
       ensureExcludeLines,
+      // T-130：打开数据目录（userData：状态 / 标记文件所在）；失败抛错，由 IPC 层换成固定文案
+      async openDataDir() {
+        const err = await shell.openPath(userData);
+        if (err) throw new Error("打开数据目录失败");
+      },
       async pickDirectory() {
         const r = win
           ? await dialog.showOpenDialog(win, { properties: ["openDirectory"], title: "导入项目" })

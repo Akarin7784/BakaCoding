@@ -472,8 +472,8 @@ export class BackendSwitcher implements BackendHandle {
   supervisorChat(message: Parameters<BackendHandle["supervisorChat"]>[0]) {
     return this.current.supervisorChat(message);
   }
-  exportDiagnostics(target: string, now?: Date) {
-    return this.current.exportDiagnostics(target, now);
+  exportDiagnostics(...args: Parameters<BackendHandle["exportDiagnostics"]>) {
+    return this.current.exportDiagnostics(...args);
   }
   testConnection(target: Parameters<BackendHandle["testConnection"]>[0]) {
     return this.current.testConnection(target);

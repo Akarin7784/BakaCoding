@@ -39,8 +39,10 @@ export const IPC_CHANNELS = {
   projectImport: "bakacoding:project:import",
   /** invoke：对上次导入失败（只缺配置）的目录用默认模板补配置，再完成导入；无参数（T-081）。 */
   projectCreateDefaultConfig: "bakacoding:project:create-default-config",
-  /** invoke：选保存路径，导出最近 24 小时诊断包（T-072）。 */
+  /** invoke：选保存路径，导出诊断包（T-072；T-130 起可带可选粒度参数）。 */
   diagnosticsExport: "bakacoding:diagnostics:export",
+  /** invoke：打开数据目录（userData，状态 / 标记文件所在；T-130，无参数）。 */
+  diagnosticsOpenDataDir: "bakacoding:diagnostics:open-data-dir",
   /** invoke：只读设置（仓库、环境变量是否已设、本地 / GitHub 模式）（T-072）。 */
   settingsGet: "bakacoding:settings:get",
   /** invoke：界面主题偏好同步给主进程，设置 nativeTheme.themeSource 和标题栏按钮颜色（UI-02）。 */
@@ -297,6 +299,22 @@ export type DesktopImportResult =
 export type DesktopExportResult =
   { ok: true; path: string } | { ok: false; canceled?: true; reason: string };
 
+/**
+ * `diagnostics:export` 的可选粒度（T-130，与 11 的 `ExportScope` 同形）。
+ * 省略 = 最近 24 小时（T-072 的一键导出行为逐字不变）。
+ */
+export type DesktopExportScope =
+  | { kind: "time_range"; from: string; to: string }
+  | { kind: "ticket"; ticket_id: string }
+  | { kind: "requirement"; requirement_id: string };
+
+export interface DesktopExportOptions {
+  scope?: DesktopExportScope;
+}
+
+/** `diagnostics:open-data-dir` 结果（T-130）；reason 是固定文案，不带路径。 */
+export type DesktopOpenDataDirResult = { ok: true } | { ok: false; reason: string };
+
 /** `settings:get` 结果（T-072）：环境变量只给名字和是否已设，绝不给值。 */
 export interface DesktopSettings {
   repo: string | null;
@@ -336,8 +354,10 @@ export interface BakaDesktopApi {
   importProject(): Promise<DesktopImportResult>;
   /** 对上次导入时选的目录用默认模板补配置并完成导入（T-081）；目录由主进程记住，不从界面传。 */
   createDefaultConfig(): Promise<DesktopImportResult>;
-  /** 导出诊断包（T-072）。 */
-  exportDiagnostics(): Promise<DesktopExportResult>;
+  /** 导出诊断包（T-072）；T-130 起可带粒度，省略 = 最近 24 小时。 */
+  exportDiagnostics(options?: DesktopExportOptions): Promise<DesktopExportResult>;
+  /** 打开数据目录（userData，状态 / 标记文件所在；T-130）。 */
+  openDataDir(): Promise<DesktopOpenDataDirResult>;
   /** 只读设置（T-072）。 */
   getSettings(): Promise<DesktopSettings>;
   /** 主题偏好同步给主进程（UI-02）；旧版 preload / 测试假 API 可以没有。 */

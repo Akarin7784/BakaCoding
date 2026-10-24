@@ -3,8 +3,10 @@ import {
   IPC_CHANNELS,
   type DesktopChatResult,
   type DesktopDecideHighRiskResult,
+  type DesktopExportOptions,
   type DesktopExportResult,
   type DesktopImportResult,
+  type DesktopOpenDataDirResult,
   type DesktopReloadResult,
   type DesktopSettings,
   type DesktopSyncState,
@@ -278,6 +280,45 @@ export function errorCodeOnly(e: unknown): string {
   return typeof code === "string" && /^[A-Z0-9_]+$/.test(code) ? code : "unknown";
 }
 
+const EXPORT_ID_MAX = 200;
+
+/**
+ * `diagnostics:export` 的可选粒度参数（T-130）：渲染进程可能传任意值，主进程先做类型 / 长度 / ISO 校验，
+ * 不认识就返回 `{ ok: false }`（handler 回固定文案，不抛）。省略参数 = 最近 24 小时（T-072 行为不变）。
+ */
+export function parseExportOptions(
+  arg: unknown,
+): { ok: true; options?: DesktopExportOptions } | { ok: false } {
+  if (arg === undefined || arg === null) return { ok: true };
+  if (typeof arg !== "object") return { ok: false };
+  const scope = (arg as Record<string, unknown>).scope;
+  if (scope === undefined) return { ok: true, options: {} };
+  if (typeof scope !== "object" || scope === null) return { ok: false };
+  const s = scope as Record<string, unknown>;
+  const validId = (v: unknown): v is string =>
+    typeof v === "string" && v.length > 0 && v.length <= EXPORT_ID_MAX;
+  if (s.kind === "ticket") {
+    return validId(s.ticket_id)
+      ? { ok: true, options: { scope: { kind: "ticket", ticket_id: s.ticket_id } } }
+      : { ok: false };
+  }
+  if (s.kind === "requirement") {
+    return validId(s.requirement_id)
+      ? { ok: true, options: { scope: { kind: "requirement", requirement_id: s.requirement_id } } }
+      : { ok: false };
+  }
+  if (s.kind === "time_range") {
+    const validIso = (v: unknown) => typeof v === "string" && !Number.isNaN(Date.parse(v));
+    if (!validIso(s.from) || !validIso(s.to)) return { ok: false };
+    if (Date.parse(s.from as string) > Date.parse(s.to as string)) return { ok: false };
+    return {
+      ok: true,
+      options: { scope: { kind: "time_range", from: s.from as string, to: s.to as string } },
+    };
+  }
+  return { ok: false };
+}
+
 /**
  * 导入项目 / 导出诊断包 / 只读设置 IPC（T-072）。对话框、userData 写入由 main 注入；
  * 依赖与辅助函数在 project-settings-ipc.ts。
@@ -393,7 +434,11 @@ export function serveProjectSettings(ipc: IpcMainLike, deps: ProjectSettingsDeps
     return complete(dir, notes.join("；"));
   });
 
-  ipc.handle(IPC_CHANNELS.diagnosticsExport, async () => {
+  ipc.handle(IPC_CHANNELS.diagnosticsExport, async (...args: unknown[]) => {
+    const parsed = parseExportOptions(args[1]);
+    if (!parsed.ok) {
+      return { ok: false, reason: "导出参数不合法" } satisfies DesktopExportResult;
+    }
     const st = deps.backend.status();
     if (st.mode === "readonly") {
       // 只读时先拒绝，不弹保存框
@@ -425,7 +470,7 @@ export function serveProjectSettings(ipc: IpcMainLike, deps: ProjectSettingsDeps
     try {
       return {
         ok: true,
-        path: await deps.backend.exportDiagnostics(target, at),
+        path: await deps.backend.exportDiagnostics(target, parsed.options, at),
       } satisfies DesktopExportResult;
     } catch (e) {
       // 前缀「导出失败：」由界面加，这里只给原因
@@ -433,6 +478,21 @@ export function serveProjectSettings(ipc: IpcMainLike, deps: ProjectSettingsDeps
         ok: false,
         reason: sanitizeSyncErrorMessage(errorDetail(e), deps.env, EXPORT_REASON_MAX),
       } satisfies DesktopExportResult;
+    }
+  });
+
+  ipc.handle(IPC_CHANNELS.diagnosticsOpenDataDir, async () => {
+    if (!deps.openDataDir)
+      return {
+        ok: false,
+        reason: "没有连接主进程，不能打开数据目录",
+      } satisfies DesktopOpenDataDirResult;
+    try {
+      await deps.openDataDir();
+      return { ok: true } satisfies DesktopOpenDataDirResult;
+    } catch {
+      // 固定文案：shell.openPath 的失败信息可能带路径，不透出
+      return { ok: false, reason: "打开数据目录失败" } satisfies DesktopOpenDataDirResult;
     }
   });
 
@@ -449,6 +509,7 @@ export function serveProjectSettings(ipc: IpcMainLike, deps: ProjectSettingsDeps
     ipc.removeHandler(IPC_CHANNELS.projectImport);
     ipc.removeHandler(IPC_CHANNELS.projectCreateDefaultConfig);
     ipc.removeHandler(IPC_CHANNELS.diagnosticsExport);
+    ipc.removeHandler(IPC_CHANNELS.diagnosticsOpenDataDir);
     ipc.removeHandler(IPC_CHANNELS.settingsGet);
   };
 }

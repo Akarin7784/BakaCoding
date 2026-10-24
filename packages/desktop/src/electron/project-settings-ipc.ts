@@ -32,6 +32,8 @@ export interface ProjectSettingsDeps {
   templateDir?: string;
   /** T-081：追加 .git/info/exclude 行（T-082 的模块 4 实现，main.ts 注入真实函数）。未注入时跳过 */
   ensureExcludeLines?: EnsureExcludeLines;
+  /** T-130：打开数据目录（main 注入 shell.openPath(userData)）；失败抛错，由 handler 换成固定文案 */
+  openDataDir?: () => Promise<void>;
 }
 
 /** 名字 + 已设 / 未设；值绝不出主进程。 */
