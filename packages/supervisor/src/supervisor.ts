@@ -1332,11 +1332,16 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     /**
      * T-117：本次接管失败（`failedIds`）/ 因失败挂起的下游（`blockedIds`）。有这种依赖的单不再交给 9
      * （9 不认识没登记的单，会一直 waiting），直接进 held 并通知一次。
+     * T-141：没注入 `adopt`、只记进 `awaiting_adopt` 的单（`awaitingIds`）同样没交给 9，它的下游也照此挂起；
+     * 再往下的子孙经 `blockedIds` 一路挂起。
      */
     const failedIds = new Set<string>();
     const blockedIds = new Set<string>();
+    const awaitingIds = new Set<string>();
     const failedDepOf = (st: SchedulerTicket & { kind?: "dependency" }): string[] =>
-      (st.depends_on ?? []).filter((d) => failedIds.has(d) || blockedIds.has(d));
+      (st.depends_on ?? []).filter(
+        (d) => failedIds.has(d) || blockedIds.has(d) || awaitingIds.has(d),
+      );
 
     const hand = async (
       row: StoredTicket,
@@ -1365,15 +1370,23 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       const st = prepared.get(row.ticket_id);
       if (!st || held.has(row.ticket_id)) continue;
       const id = row.ticket_id;
-      // T-117：依赖里有本次接管失败 / 因失败挂起的单 → 不交给 9
+      // T-117 / T-141：依赖里有本次接管失败 / 没接回（未注入 adopt）/ 因此挂起的单 → 不交给 9
       const byFailed = failedDepOf(st);
       if (byFailed.length > 0) {
         blockedIds.add(id);
         held.add(id);
+        const awaiting = byFailed.filter((d) => awaitingIds.has(d));
+        const others = byFailed.filter((d) => !awaitingIds.has(d));
+        const parts: string[] = [];
+        if (others.length > 0) parts.push(`${others.join("、")} 本次重启接管失败（没接回 9）`);
+        if (awaiting.length > 0)
+          parts.push(`${awaiting.join("、")} 已在合并队列里，但本次重启没有接回（没注入 adopt）`);
         await holdOnce(
           row,
           byFailed,
-          `单 ${id} 依赖的 ${byFailed.join("、")} 本次重启接管失败（没接回 9），这次也不接回，等它们下次接管成功后再试。`,
+          others.length > 0
+            ? `单 ${id} 依赖的 ${parts.join("；")}，这次也不接回，等它们下次接管成功后再试。`
+            : `单 ${id} 依赖的 ${parts.join("；")}，这次也不接回。`,
         );
         continue;
       }
@@ -1391,6 +1404,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       if (!adopt) {
         logger.warn(`重启接管：单 ${id} 已在合并队列里，没注入 adopt，本次没有接回`);
         report.awaiting_adopt.push(id);
+        awaitingIds.add(id); // T-141：下游不交给 9
         continue;
       }
       // T-064 B2：adopt 可能返回 "merged"（停机期间用户已在 GitHub 合入）
