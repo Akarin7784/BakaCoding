@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`76eb565` · main 上测试：124 个测试文件 / 2303 个测试（Linux 全量；Windows 基线见 `docs/test-baseline.md`） · 更新日期：2026-10-24（UTC+8）
+> 上次更新时 main：`23919d4` · main 上测试：126 个测试文件 / 2339 个测试（Linux 全量；Windows 基线见 `docs/test-baseline.md`） · 更新日期：2026-10-24（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -170,7 +170,7 @@ flowchart BT
 | T-111 | 模块 1：`testConnection` 补测试（T-089 评审跟进）：请求途中取消抛 AbortError、记一条 `ABORTED` 台账并释放预占；401 报错带密钥时台账事件里没有密钥；429 记入全局退避状态；modules.md §1 写明测试连接遇到 429 会触发全局退避。只加测试和文档，不改行为。main `6b11d11`，测试 112 个文件 / 2057 个；跟进 #141（`5906e4c`）：modules.md §1 改为 429 只记入共享退避状态、不阻塞后续请求，补「退避期内再测照常发出」测试，main `5906e4c`，测试 112 个文件 / 2058 个 | 1 | 基础层开发 | 已合入 | #139、#141 | `6b11d11`、`5906e4c` |
 | T-112 | 模块 9：9 调 6 的 `merge` / `sync` / `close` ×2 / `diff` ×2 都带 `stop()` 的 signal（T-102b #136 评审跟进），被中止时原样抛 `signal.reason`，不上报、不改状态；sync 中止前已处理的变化照常应用；T-102b 用例名「C3」「C4」改成描述性名字；modules.md §9「收尾要多久」去掉 150 秒 / 记录数 × 30 秒，复核桌面退出 35 秒不用改；合入后取 diff 被中止时靠 `merge_followup` 标记由 takeOver 补发 `interface_changed`（9 / 10 / 组合根可选接口追加，已批准）。main `918c49d`，测试 116 个文件 / 2179 个 | 9 | 编排层开发 | 已合入 | #144 | `918c49d` |
 | T-109 | 界面：`App.status.test` 重新连接失败用例偶发失败（flaky），定位并修稳（UI-03a #130 评审跟进）。根因：sonner 点 action 默认关掉 toast（200ms 后卸载），「复制详情」把错误 toast 关了，末尾断言能否通过取决于测试是否在 200ms 内跑完；`notifyError` 的复制按钮 `preventDefault`，复制后错误 toast 留着，测试改看 `data-removed` 标记、不靠时间。另补退出组合测试：stop 挂住 + 收尾中点关闭 + 到 `QUIT_STOP_TIMEOUT_MS` 放行窗口、只退出一次（假计时器）。main `aae7037`，测试 115 个文件 / 2127 个 | 12 | 界面与诊断开发 | 已合入 | #147 | `aae7037` |
-| T-113 | 模块 12：准备页「生成配置」：按模板生成 `models.json` / `pricing.json`（pricing 用 3 的 `writePricing`）；预算必填不预填；嵌套仓库界面禁用 + 主进程拒绝；生成文件与 `.bak-*` 备份写进 `.git/info/exclude`；已有配置无效先备份、确认后覆盖；导入放宽只对非 Git 文件夹，Git 仓库缺配置仍走 T-081 | 12 | 界面与诊断开发 | 待评审 #189 | #189 | |
+| T-113 | 模块 12：准备页「生成配置」：按模板生成 `models.json` / `pricing.json`（pricing 用 3 的 `writePricing`）；预算必填不预填；嵌套仓库界面禁用 + 主进程拒绝；生成文件与 `.bak-*` 备份写进 `.git/info/exclude`；已有配置无效先备份、确认后覆盖；导入放宽只对非 Git 文件夹，Git 仓库缺配置仍走 T-081。合入后 main `23919d4`，测试 126 个文件 / 2339 个 | 12 | 界面与诊断开发 | 已合入 | #189 | `23919d4` |
 | T-114 | 模块 3 / 4：配置向导（T-113）的底层支持：3 新增 `writePricing(path, pricing, opts?)` 与 `WRITABLE_PRICING_FILE`（只写 `pricing.json`，`PricingSchema` 校验 + 像密钥的值检查，和 `writeConfig` 共用原子写入）；4 新增 `nested_repo`：`checkRepo` 的 git 项、`initRepo`（不建目录、不 init）和提交类修复都识别「在另一个 Git 仓库里面」，`rev-parse` 失败时逐层 lstat 找 `.git`。main `10d9e00`，测试 116 个文件 / 2149 个 | 3、4 | 基础层开发 | 已合入 | #148 | `10d9e00` |
 | T-122 | 模块 7：`review()` 的 signal 也透传给 6 的 `checks` / `diff`（6 的 T-102a / T-110 起支持请求级超时与取消）；`ReviewPrSource.checks` / `diff` 加可选 `{ signal }`，给了 signal 才传第二参、没给仍只传 `pr_id`；在途中止由 6 抛 `signal.reason`、7 原样抛，6 没理会 signal、取消后才返回时 7 丢弃结果并抛，两种情况都不再读 diff / 不调模型；补 5 条测试；modules.md §7 同步 | 7 | 执行层开发 | 已合入 | #158 | `b620fdc` |
 | T-125 | Windows 测试基线（新增 `docs/test-baseline.md`）：测量时 main `10ac6e3`（118 文件 / 2205 测试）；全量并发跑 163 条失败，串行交叉验证后确定性失败 **55 条 / 21 文件**（其余 108 条为 5s 超时 / EBUSY 负载噪声，不计入）；#170 起按 T-123 实测更新为 **47 条 / 19 文件**（全量 122 文件 / 2268 条 = 2200 过 + 61 失败 + 7 skip）；固化门禁三条（build/typecheck/lint/format:check 全绿、受影响包串行对比、新增失败=0）与平台守卫按模块分摊清单，消除进度在本文件登记 | 全模块 / 测试基线 | 审查官 | 已合入 | #160、#170 | `60b9a66`、`0d132e8` |
