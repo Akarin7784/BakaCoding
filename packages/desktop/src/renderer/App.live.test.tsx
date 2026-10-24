@@ -662,4 +662,21 @@ describe("UI-06c：右面板 Git 区（git:status + 同步状态）", () => {
     fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
     expect((await screen.findByTestId("git-current")).textContent).toContain("分离 HEAD");
   });
+  it("同步出错：左下状态卡待处理列表有固定提示「同步异常，见右面板 Git 区」", async () => {
+    const { api, pushSync } = gitApi();
+    window.bakacoding = api;
+    render(<App />);
+    fireEvent.click(await screen.findByTestId("status-dot"));
+    await screen.findByTestId("status-card");
+    expect(screen.queryByTestId("status-attention")?.textContent ?? "").not.toContain("同步异常");
+    act(() =>
+      pushSync({
+        ...sync,
+        consecutive_failures: 2,
+        last_error: { name: "Error", message: "boom /home/x" },
+      } as typeof sync),
+    );
+    const items = await screen.findByTestId("status-attention");
+    expect(within(items).getByText("同步异常，见右面板 Git 区")).toBeTruthy();
+  });
 });

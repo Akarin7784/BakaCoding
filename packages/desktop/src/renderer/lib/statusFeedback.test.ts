@@ -51,7 +51,7 @@ describe("全局状态点（§4.8）", () => {
     const cases: [Partial<typeof base> | { projects: ProjectView[] }, string][] = [
       [{ readonly: true }, "后端处于只读模式"],
       [{ dbError: true }, "数据库打不开"],
-      [{ syncAlert: true }, "GitHub 同步出了问题"],
+      [{ syncAlert: true }, "同步异常，见右面板 Git 区"],
       [{ pendingHighRisk: 2 }, "2 个高风险 PR 待裁决"],
       [{ unattributed: 3 }, "3 条未归属上报"],
       [{ projects: withStatus("conflict") }, "1 张单需要人工介入"],
