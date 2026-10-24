@@ -129,6 +129,15 @@ export function withGitSignal<T>(
   return signal ? currentSignal.run(signal, fn) : fn();
 }
 
+/**
+ * 在 signal 上下文之外同步调用 fn（T-136，内部用，不从包入口导出）：fn 及其中发起的所有异步续延
+ * （定时器、微任务、没 await 的 promise）都拿不到外层 `withGitSignal` 的 signal。用于发布事件、回调订阅方，
+ * 免得订阅方里没传 signal 的 6 调用沿用发布方的停止 signal。返回值（含 promise）原样返回，异常原样抛出。
+ */
+export function outsideGitSignal<T>(fn: () => T): T {
+  return currentSignal.exit(fn);
+}
+
 function abortError(signal: AbortSignal): unknown {
   if (signal.reason !== undefined) return signal.reason;
   const e = new Error("已取消");

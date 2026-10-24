@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`7f5bee1` · main 上测试：124 个测试文件 / 2293 个测试（Linux 全量；Windows 基线见 `docs/test-baseline.md`） · 更新日期：2026-10-24（UTC+8）
+> 上次更新时 main：`a83f998` · main 上测试：124 个测试文件 / 2298 个测试（Linux 全量；Windows 基线见 `docs/test-baseline.md`） · 更新日期：2026-10-24（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -185,10 +185,11 @@ flowchart BT
 | T-120 | 模块 4：`checkRepo` 识别仓库默认分支，去掉「只支持 main」的 v1 限制（a 单）。识别顺序：`origin/HEAD`（本地有同名分支且有提交）→ 本地 `main` → 当前检出分支（有提交）→ null；`main` 项语义改为「有可用的默认分支」，`no_main` 时 `current` / 分支名截断 / 不含路径 / 只读 / `gitEnv` / 超时都保持；新增 `default_branch` 字段，空仓库、not_git、nested 路径为 null；补 3 条默认分支用例；modules.md §4 同步。遗留（b 单，已报备）：组合根 `create-default-deps` 仍硬编码 `main`、12 层只读横幅 / 准备页文案仍是「main 分支」，按 b1（组合根 + 6 集成分支起点）/ b2（12 层文案）跟随。`packages/workspace` 串行 190 条 = 171 过 + 15 条基线失败 + 4 skip，新增失败 0 | 4 | 基础层开发 | 已合入 | #167 | `ef3f5cf` |
 | T-131 | 模块 6：`diff` 复制块按解引号后的路径匹配（T-121 评审 P2，中文 / 空格 / 引号文件名）。新增 `unquoteGitPath`（`\nnn` 八进制、`\"` / `\\` / `\n` / `\t` 等转义、代理对）与 `blockTargetIs`（普通 / 空格名快速路径 + 解引号路径兼容 `core.quotePath` 两种取值），解不出时仍安全 fallback 整段；同单带上 T-123 两条 P2：`taskkill` 改绝对路径 `%SystemRoot%\System32\taskkill.exe`（拿不到 env 才退回命令名，起不来仍回退 `child.kill()`）、Windows 用例时间余量放宽到 8s / 12s / per-test 40s；补中文文件名复制用例（patch 只留复制块、不含源文件改动），普通 diff 路径不变；modules.md §6 记引号 / 换行文件名的已知局限。`packages/pr` 串行 163 条 = 160 过 + 3 条基线失败，新增失败 0；`git-timeout.test.ts` 22/22 全绿 | 6 | 执行层开发 | 已合入 | #168 | `6629892` |
 | T-135 | 模块 12：修 main `11fb8fe` 上一直红的 T-126 用例（`default-config.test.ts`）：原断言整个 IPC 响应不含临时仓库路径，但 `project.path` 本就是该路径；改为只断言 `r.note` 不带路径。只改测试，产品代码不变；反向检查：把 fs 报错 message 拼进 note，2 条用例变红。合入后 main `9de547e`，测试 122 个文件 / 2270（2268 过 + 2 skip） 个 | 12 | 已合入 | #175 | `9de547e` |
-| T-133 | 模块 2 / 8：接口变更说明持久化。2 新增 `setTicketField`（IMMEDIATE 事务只改 `fields` 一个键，单不存在 / fields 为 null 或损坏返回 false 不动数据）；8 的说明写进 `fields.interface_notes`（`storageTicketInterfaceNotes`），跨重启不丢，单条截到 4096 码点，编码在途到达的说明不被本轮清掉、已交付的不重复带；modules.md §2 / §8 / 组合根同步。合入后 main `bbc9df9`，测试 122 个文件 / 2281（2279 过 + 2 skip） 个 | 2、8 | 编排层开发 | 已合入 | #169 | `bbc9df9` |
-| T-129 | 模块 2：`openStorage` 迁移失败（如旧库重复 seq 升级 v2 中止）时先关数据库句柄再抛原错误，避免 Windows 上库文件被占用、临时目录删不掉；补 2 条用例（释放后能删目录、只读能打开旧库且停在 v1）。注：Linux 上句柄不阻止删文件，反向检查（去掉 `db.close()`）在 Linux 不变红，只在 Windows 有效。合入后 main `f823b8c`，测试 123 个文件 / 2283（2281 过 + 2 skip） 个 | 2 | 基础层开发 | 已合入 | #172 | `f823b8c` |
-| T-130 | 诊断面板：按工单/需求/时间范围导出、打开数据目录。合入后 main `e018573`，测试 124 个文件 / 2293 个 | 12 | 界面与诊断开发 | 已合入 | #173 | `e018573` |
-| T-134 | pr 包测试 Windows 兼容：worktree_path 归一比较、rm 重试、长用例超时 20s。合入后 main `7f5bee1`，测试 124 个文件 / 2293 个 | 6 | 执行层开发 | 已合入 | #174 | `7f5bee1` |
+| T-133 | 模块 2 / 8：接口变更说明持久化。2 新增 `setTicketField`（IMMEDIATE 事务只改 `fields` 一个键，单不存在 / fields 为 null 或损坏返回 false 不动数据）；8 的说明写进 `fields.interface_notes`（`storageTicketInterfaceNotes`），跨重启不丢，单条截到 4096 码点，编码在途到达的说明不被本轮清掉、已交付的不重复带；modules.md §2 / §8 / 组合根同步。合入后 main `bbc9df9`，测试 122 个文件 / 2281（2279 过 + 2 skip） 个 | 2、8 | Akarin | 已合入 | #169 | `bbc9df9` |
+| T-129 | 模块 2：`openStorage` 迁移失败（如旧库重复 seq 升级 v2 中止）时先关数据库句柄再抛原错误，避免 Windows 上库文件被占用、临时目录删不掉；补 2 条用例（释放后能删目录、只读能打开旧库且停在 v1）。注：Linux 上句柄不阻止删文件，反向检查（去掉 `db.close()`）在 Linux 不变红，只在 Windows 有效。合入后 main `f823b8c`，测试 123 个文件 / 2283（2281 过 + 2 skip） 个 | 2 | Akarin | 已合入 | #172 | `f823b8c` |
+| T-130 | 诊断面板：按工单/需求/时间范围导出、打开数据目录。合入后 main `e018573`，测试 124 个文件 / 2293 个 | 12 | Akarin | 已合入 | #173 | `e018573` |
+| T-134 | pr 包测试 Windows 兼容：worktree_path 归一比较、rm 重试、长用例超时 20s。合入后 main `7f5bee1`，测试 124 个文件 / 2293 个 | 6 | Akarin | 已合入 | #174 | `7f5bee1` |
+| T-136 | 模块 6：发布事件前退出 signal 上下文（内部 `outsideGitSignal`，`AsyncLocalStorage.exit`），订阅方里不传 signal 的 6 调用不再沿用发布方的停止 signal；公开接口不变，§6 同步更新。合入后 main `a83f998`，测试 124 个文件 / 2298 个 | 6 | 执行层开发 | 已合入 | #181 | `a83f998` |
 | T-138 | 模块 2：给 T-129（#172）补一条在 Linux 上也能变红的断言：迁移失败时 `db.close` 恰好调用一次、句柄 `open` 为 false。只改测试 | 2 | 基础层开发 | 待评审 #N | #N | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
@@ -273,6 +274,6 @@ flowchart BT
 
 ## 更新规则
 
-- 代码 PR 不需要改本文件（2026-10-18 起）：单号、模块、测试数写在 PR body，避免多张 PR 同时改本文件末尾的行互相冲突。
+- 代码 PR 作者在自己的 PR 里加或改本单的行（写「待评审 #N」），合入后由合并负责人记账。
 - 合并人（蓝色大肥鱼）合入后统一出 bookkeeping PR：补各行「已合入 / PR 编号 / 合入提交」，并更新文件头的 main 哈希、测试数和日期。
 - 没有登记的 PR 不算完成；进度以 PR 与合入提交为准。
