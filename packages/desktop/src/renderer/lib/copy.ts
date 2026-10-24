@@ -46,6 +46,23 @@ export const TICKET_STEP_LABEL: Record<TicketStep, string> = {
   merged: MERGE_COPY.merged,
 };
 
+/**
+ * UI-05b：步骤条（§4.4）。当前所在步取快照 `tickets` 的状态；
+ * 「冲突」「重新评审」小标记只来自 `ticket_status_changed` 事件。
+ */
+export const STEPPER_COPY = {
+  label: (ticket_id: string) => `${ticket_id} 进度`,
+  /** 评审步骤：第 N 轮 / 上限 */
+  reviewRound: (n: number, limit: number) => `第 ${n} 轮 / ${limit}`,
+  conflictMark: "冲突",
+  reReviewMark: "重新评审",
+  /** 标记出现次数（大于 1 时显示） */
+  markCount: (n: number) => `×${n}`,
+  needsYou: "需要你处理",
+  stepDone: "已完成",
+  stepCurrent: "当前",
+} as const;
+
 /** 群消息类型（§4.5.1 类型标签）。 */
 export const GROUP_MESSAGE_KIND_LABEL: Record<GroupMessageKind, string> = {
   dispatch: "派单",
