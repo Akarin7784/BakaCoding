@@ -17,6 +17,27 @@ import {
 } from "../lib/ticketList";
 import type { TicketView } from "../../shared/api";
 import type { ProjectView } from "../mock/types";
+import { poolRowLabel, poolRowTitle, type PoolRow } from "../lib/poolState";
+
+/** 编码池行的外部输入（UI-06b）：live 时由 pool:state + 快照算出；没有就回退 view.pool（假数据）。 */
+export type PoolLive = { ok: true; row: PoolRow } | { ok: false; reason: string };
+
+function LivePool({ pool }: { pool: PoolLive }) {
+  if (!pool.ok) return <span className="text-muted-foreground">{pool.reason}</span>;
+  const title = poolRowTitle(pool.row);
+  return (
+    <span
+      data-backpressure={pool.row.backpressure ? "on" : "off"}
+      title={title || undefined}
+      className={cn(
+        "transition-colors duration-300",
+        pool.row.backpressure ? "text-accent" : "text-muted-foreground",
+      )}
+    >
+      {poolRowLabel(pool.row)}
+    </span>
+  );
+}
 
 function Flag({ on, label }: { on: boolean; label: string }) {
   return (
@@ -51,6 +72,7 @@ export function RightPanel({
   onExportTicket,
   exportBusy = false,
   readonly = false,
+  pool: poolLive,
 }: {
   view: ProjectView;
   /** 快照 tickets（全部项目；这里按当前项目过滤） */
@@ -62,6 +84,8 @@ export function RightPanel({
   exportBusy?: boolean;
   /** 后端只读（UI-08）：合入 main、导出禁用并说明 */
   readonly?: boolean;
+  /** UI-06b：真实编码池状态；不给时回退 view.pool */
+  pool?: PoolLive | null;
 }) {
   const { pool, git } = view;
   const projectId = view.project.payload.project_id;
@@ -74,7 +98,9 @@ export function RightPanel({
   return (
     <div data-testid="project-overview" className="flex flex-col text-sm">
       <div data-testid="pool-status" className="flex gap-3 px-4 py-2 text-xs">
-        {pool ? (
+        {poolLive ? (
+          <LivePool pool={poolLive} />
+        ) : pool ? (
           <>
             <span>
               并发 {pool.concurrency.active}/{pool.concurrency.limit}
