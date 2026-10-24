@@ -474,6 +474,9 @@ export class BackendSwitcher implements BackendHandle {
   supervisorChat(message: Parameters<BackendHandle["supervisorChat"]>[0]) {
     return this.current.supervisorChat(message);
   }
+  supervisorHistory(query: unknown) {
+    return this.current.supervisorHistory(query);
+  }
   listProjects() {
     return this.current.listProjects();
   }
@@ -525,6 +528,7 @@ export function readonlyBackend(
     refreshPendingHighRisk: () => {},
     syncState: () => unavailableSyncState(reason),
     supervisorChat: async () => ({ ok: false, reason: `只读模式：${reason}` }),
+    supervisorHistory: async () => ({ ok: true, messages: [] }),
     repoRoot: () => repo,
     prMode: () => "local",
     busyCount: () => 0,

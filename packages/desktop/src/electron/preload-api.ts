@@ -4,6 +4,8 @@ import {
   type BakaDesktopApi,
   type DesktopBackendStatus,
   type DesktopChatResult,
+  DesktopHistoryQuery,
+  DesktopHistoryResult,
   type DesktopDecideHighRiskResult,
   type DesktopExportOptions,
   type DesktopExportResult,
@@ -134,6 +136,8 @@ export function createDesktopApi(ipc: IpcRendererLike, platform: string): BakaDe
       ipc.invoke(IPC_CHANNELS.settingsSave, input) as Promise<DesktopModelSaveResult>,
     supervisorChat: (message: UserMessage) =>
       ipc.invoke(IPC_CHANNELS.supervisorChat, message) as Promise<DesktopChatResult>,
+    getSupervisorHistory: (query?: DesktopHistoryQuery) =>
+      ipc.invoke(IPC_CHANNELS.supervisorHistory, query ?? {}) as Promise<DesktopHistoryResult>,
     setWindowTheme: (source: WindowThemeSource) =>
       ipc.invoke(IPC_CHANNELS.windowTheme, source) as Promise<DesktopWindowThemeResult>,
     reloadBackend: () => ipc.invoke(IPC_CHANNELS.backendReload) as Promise<DesktopReloadResult>,
