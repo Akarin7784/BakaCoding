@@ -809,11 +809,11 @@ describe("T-128：诊断包保留天数取自配置", () => {
   });
 
   it("缺配置 / 坏配置：建库之前就退只读（不调用 openStorage、不生成库文件）", async () => {
-    const cases: Array<[string, (cfgPath: string) => void]> = [
-      ["缺配置文件", (p) => rmSync(p)],
-      ["坏 JSON", (p) => writeFileSync(p, "{ not json")],
+    const cases: Array<[string, (cfgPath: string) => void, "config_missing" | "config_invalid"]> = [
+      ["缺配置文件", (p) => rmSync(p), "config_missing"],
+      ["坏 JSON", (p) => writeFileSync(p, "{ not json"), "config_invalid"],
     ];
-    for (const [name, mutate] of cases) {
+    for (const [name, mutate, code] of cases) {
       const { root, db } = gitRepoWithConfig();
       mutate(join(root, "config", "models.json"));
       const opened: Parameters<typeof openStorage>[0][] = [];
@@ -830,7 +830,7 @@ describe("T-128：诊断包保留天数取自配置", () => {
       });
       expect(backend.status().mode, name).toBe("readonly");
       // T-113 起本仓库缺配置 / 配置不合法给准备页固定文案（缺少模型配置 / 模型配置不合法），不再是 ConfigError 原文
-      expect(backend.status().reason, name).toMatch(/模型配置/);
+      expect(backend.status().error?.code, name).toBe(code);
       expect(opened, name).toHaveLength(0);
       expect(existsSync(db), name).toBe(false);
       await backend.stop();
