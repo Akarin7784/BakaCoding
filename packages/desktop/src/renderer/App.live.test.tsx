@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { BakaEvent } from "@bakacoding/types";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BakaDesktopApi, DesktopSnapshot, DesktopUpdate, UiEvent } from "../shared/api";
 import { App } from "./App";
 
@@ -314,5 +314,85 @@ describe("渲染进程从 preload API 读真实数据", () => {
     expect(screen.getByRole("alert", { name: "需要人工介入" }).textContent).toContain(
       "需要人工介入 · T-1 · 合并后续步骤失败（代码已进集成分支）：merged_but: save_merge_result 失败",
     );
+  });
+});
+
+describe("UI-05f：需求页（api mock）", () => {
+  afterEach(() => {
+    window.location.hash = "";
+  });
+
+  function reqApi() {
+    const { api } = fakeApi(snapshot);
+    const exportDiagnostics = vi.fn(async () => ({ ok: true as const, path: "/tmp/d.zip" }));
+    const getRequirementDetail = vi.fn(async () => ({
+      ok: true as const,
+      detail: {
+        requirement_id: "R-1",
+        name: "真实单一",
+        requirement_text: "做两张单",
+        decomposition_summary: "拆成两张",
+        tickets: [],
+      },
+    }));
+    return { api: { ...api, exportDiagnostics, getRequirementDetail }, exportDiagnostics };
+  }
+
+  async function openReq(api: BakaDesktopApi) {
+    render(<App api={api} />);
+    fireEvent.click(await screen.findByRole("button", { name: /real-proj/ }));
+    fireEvent.click(openRow("R-1"));
+  }
+
+  // #252 从 App.live.test / App.test 挪来的三条断言：群消息、Flash 调用（默认收起、含输出）、agent 图标
+  it("需求页里有群消息、Flash 调用（默认收起、含输出）和 agent 图标", async () => {
+    await openReq(reqApi().api as unknown as BakaDesktopApi);
+    expect(await screen.findByText("T-1：真实派单")).toBeTruthy();
+    const calls = screen.getAllByTestId("flash-calls");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.textContent).toContain("真实输出");
+    expect((calls[0] as HTMLDetailsElement).open).toBe(false);
+  });
+
+  it("需求页里子 agent 的消息带 agent 图标（假数据 req-1）", async () => {
+    window.location.hash = "#requirement=req-1";
+    render(<App />);
+    expect((await screen.findAllByTestId("icon-agent")).length).toBeGreaterThan(0);
+  });
+
+  it("「⋯」导出这个需求的诊断包：api.exportDiagnostics 收到 requirement scope", async () => {
+    const { api, exportDiagnostics } = reqApi();
+    await openReq(api as unknown as BakaDesktopApi);
+    fireEvent.keyDown(await screen.findByTestId("requirement-menu"), { key: "Enter" });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "导出这个需求的诊断包" }));
+    await waitFor(() =>
+      expect(exportDiagnostics).toHaveBeenCalledWith({
+        scope: { kind: "requirement", requirement_id: "R-1" },
+      }),
+    );
+  });
+
+  it("「⋯」追问：回主管对话，输入框预填需求，不自动发送", async () => {
+    const { api } = reqApi();
+    const supervisorChat = vi.fn();
+    await openReq({ ...api, supervisorChat } as unknown as BakaDesktopApi);
+    fireEvent.keyDown(await screen.findByTestId("requirement-menu"), { key: "Enter" });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "在主管对话里追问" }));
+    await waitFor(() => expect(window.location.hash).toBe(""));
+    const box = document.querySelector<HTMLTextAreaElement>(
+      'textarea[data-composer="supervisor"]',
+    )!;
+    await waitFor(() => expect(box.value).toBe("关于需求「真实单一」（R-1）："));
+    expect(supervisorChat).not.toHaveBeenCalled();
+  });
+
+  it("「需要你处理」：回主管对话，草稿带单号和需求名", async () => {
+    await openReq(reqApi().api as unknown as BakaDesktopApi);
+    fireEvent.click(await screen.findByRole("button", { name: "需要你处理" }));
+    await waitFor(() => expect(window.location.hash).toBe(""));
+    const box = document.querySelector<HTMLTextAreaElement>(
+      'textarea[data-composer="supervisor"]',
+    )!;
+    await waitFor(() => expect(box.value).toBe("T-2（需求「真实单一」）需要我处理："));
   });
 });

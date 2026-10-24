@@ -120,3 +120,17 @@ describe("ProjectPage", () => {
     expect(rowIds()).not.toContain("rx");
   });
 });
+
+describe("UI-05f P3：需求名先脱敏再截 80 字", () => {
+  it("密钥跨过第 80 个字：行里不留密钥前缀（反向：先截再脱敏会漏出 sk-ab）", () => {
+    // 前 75 个字是填充，密钥从第 76 个字开始，跨过 80 字的边界
+    const title = "需".repeat(75) + "sk-abcdefghijklmnopqrstuvwx 之后";
+    page({
+      tickets: [ticketOf({ ticket_id: "T-1", requirement_id: "r1", title, status: "coding" })],
+    });
+    const row = screen.getByTestId("requirement-row");
+    expect(row.textContent).toContain("需".repeat(75));
+    expect(row.textContent).not.toContain("sk-");
+    expect(row.textContent).not.toContain("abcdefgh");
+  });
+});

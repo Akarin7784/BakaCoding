@@ -339,3 +339,65 @@ describe("SupervisorChat 接回复卡片（UI-04c）", () => {
     expect(screen.queryByTestId("chat-empty")).toBeNull();
   });
 });
+
+describe("UI-05f：「查看需求」与草稿预填", () => {
+  const dispatched = (requirement_id?: string) =>
+    ({
+      kind: "dispatched",
+      message_id: "m5",
+      text: "派好了",
+      ...(requirement_id && { requirement_id }),
+      ticket_ids: ["T-1"],
+    }) as ChatReply;
+
+  it("给了 onOpenRequirement 且有需求号：卡片上有「查看需求」，点了带需求号回调", () => {
+    const onOpen = vi.fn();
+    render(<MessageItem reply={dispatched("req-9")} onOpenRequirement={onOpen} />);
+    fireEvent.click(screen.getByTestId("chat-view-requirement"));
+    expect(onOpen).toHaveBeenCalledWith("req-9");
+    expect(screen.getByTestId("chat-view-requirement").textContent).toBe("查看需求");
+  });
+
+  it("没有需求号就不给「查看需求」（即使给了回调）", () => {
+    render(<MessageItem reply={dispatched()} onOpenRequirement={vi.fn()} />);
+    expect(screen.queryByTestId("chat-view-requirement")).toBeNull();
+  });
+
+  it("SupervisorChat 把 onOpenRequirement 传到 dispatched 卡片", async () => {
+    const supervisorChat = vi.fn(async (): Promise<DesktopChatResult> => ({
+      ok: true,
+      reply: dispatched("req-7"),
+    }));
+    const onOpen = vi.fn();
+    render(
+      <SupervisorChat
+        store={new ChatStore()}
+        initial={[]}
+        api={{ supervisorChat, listProjects }}
+        onOpenRequirement={onOpen}
+      />,
+    );
+    type("加个登录页");
+    fireEvent.click(await screen.findByTestId("chat-view-requirement"));
+    expect(onOpen).toHaveBeenCalledWith("req-7");
+  });
+
+  it("prefill：写进输入框但不发送，用完回调 onPrefillUsed", async () => {
+    const supervisorChat = vi.fn();
+    const used = vi.fn();
+    render(
+      <SupervisorChat
+        store={new ChatStore()}
+        initial={[]}
+        api={{ supervisorChat, listProjects }}
+        prefill="关于需求「登录」（r1）："
+        onPrefillUsed={used}
+      />,
+    );
+    await waitFor(() => expect(used).toHaveBeenCalled());
+    expect((screen.getByLabelText("发给主管") as HTMLTextAreaElement).value).toBe(
+      "关于需求「登录」（r1）：",
+    );
+    expect(supervisorChat).not.toHaveBeenCalled();
+  });
+});

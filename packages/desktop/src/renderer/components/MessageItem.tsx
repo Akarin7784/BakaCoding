@@ -1,9 +1,9 @@
 // UI-04c：主管回复按 ChatReply.kind 呈现（docs/ui-design.md §4.2）。实时回复和历史记录走同一个组件。
 // answer 普通文本；ask_project 下方一排项目按钮；decision_saved「已记下」小标签；
-// dispatched「已派单」卡片（需求、拆出 N 张单；「查看需求」等 UI-05 需求页有了再加）；split_failed「重试拆单」。
+// dispatched「已派单」卡片（需求、拆出 N 张单、「查看需求」跳到需求页（UI-05f））；split_failed「重试拆单」。
 import { Check, ClipboardList, FolderGit2, RotateCcw } from "lucide-react";
 import type { ChatReply, DesktopProjectRow } from "../../shared/api";
-import { CHAT_COPY } from "../lib/copy";
+import { CHAT_COPY, REQUIREMENT_MENU_COPY } from "../lib/copy";
 import { cn } from "../lib/utils";
 import { AgentIcon } from "./AgentIcon";
 import { Button } from "./ui/button";
@@ -22,6 +22,8 @@ export interface MessageItemProps {
   onPickProject?: (project: Pick<DesktopProjectRow, "project_id" | "name">) => void;
   /** split_failed：重试拆单；不给（找不到原需求 / 没有项目）就不显示按钮 */
   onRetrySplit?: () => void;
+  /** UI-05f：dispatched「查看需求」；不给或没有需求号就不显示按钮 */
+  onOpenRequirement?: (requirement_id: string) => void;
 }
 
 export function MessageItem({
@@ -30,6 +32,7 @@ export function MessageItem({
   disabled = false,
   onPickProject,
   onRetrySplit,
+  onOpenRequirement,
 }: MessageItemProps) {
   return (
     <div data-testid="chat-reply" data-kind={reply.kind} className="flex gap-2 text-sm">
@@ -42,6 +45,7 @@ export function MessageItem({
           disabled={disabled}
           onPickProject={onPickProject}
           onRetrySplit={onRetrySplit}
+          onOpenRequirement={onOpenRequirement}
         />
       </div>
     </div>
@@ -54,8 +58,9 @@ function KindExtra({
   disabled,
   onPickProject,
   onRetrySplit,
+  onOpenRequirement,
 }: Required<Pick<MessageItemProps, "reply" | "projects" | "disabled">> &
-  Pick<MessageItemProps, "onPickProject" | "onRetrySplit">) {
+  Pick<MessageItemProps, "onPickProject" | "onRetrySplit" | "onOpenRequirement">) {
   switch (reply.kind) {
     case "answer":
       return null;
@@ -115,6 +120,16 @@ function KindExtra({
               {CHAT_COPY.ticketList}
               {ids.join("、")}
             </p>
+          )}
+          {reply.requirement_id && onOpenRequirement && (
+            <Button
+              variant="secondary"
+              size="sm"
+              data-testid="chat-view-requirement"
+              onClick={() => onOpenRequirement(reply.requirement_id!)}
+            >
+              {REQUIREMENT_MENU_COPY.viewRequirement}
+            </Button>
           )}
         </div>
       );

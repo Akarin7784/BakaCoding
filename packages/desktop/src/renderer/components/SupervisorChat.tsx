@@ -52,6 +52,11 @@ export interface SupervisorChatProps {
   busy?: "import" | "export" | null;
   /** 后端只读（UI-08，§4.7）：输入框和发送禁用 */
   readonly?: boolean;
+  /** UI-05f：「已派单」卡片「查看需求」 */
+  onOpenRequirement?: (requirement_id: string) => void;
+  /** UI-05f：从需求页追问 / 需要你处理带回的草稿（只填输入框，不发送）；用过后回调 onPrefillUsed */
+  prefill?: string | null;
+  onPrefillUsed?: () => void;
 }
 
 /** 主管 1:1：唯一可输入的地方。一次只发一条（chat 有状态），等上一条回来才能再发。 */
@@ -67,6 +72,9 @@ export function SupervisorChat({
   onExport,
   busy = null,
   readonly = false,
+  onOpenRequirement,
+  prefill = null,
+  onPrefillUsed,
 }: SupervisorChatProps) {
   const getHistory = api?.getSupervisorHistory;
   useEffect(() => {
@@ -88,6 +96,11 @@ export function SupervisorChat({
   }, [store, initial, getHistory]);
   const { items: messages, pending } = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const [draft, setDraft] = useState("");
+  useEffect(() => {
+    if (prefill === null) return;
+    setDraft(prefill);
+    onPrefillUsed?.();
+  }, [prefill, onPrefillUsed]);
   // UI-04b：项目 chip。默认 = 外层选中的项目 → 上次用的项目 → 不指定
   const [chipProject, setChipProject] = useState<string | undefined>(
     () => projectId ?? readLastProject(),
@@ -311,6 +324,7 @@ export function SupervisorChat({
                   reply={reply}
                   projects={projectRows}
                   disabled={pending || readonly}
+                  {...(onOpenRequirement && { onOpenRequirement })}
                   onPickProject={(p) => {
                     if (readonly || store.getSnapshot().pending) return;
                     void deliver(p.name, store.newMessageId(), p.project_id);
