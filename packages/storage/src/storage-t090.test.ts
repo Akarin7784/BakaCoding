@@ -130,12 +130,12 @@ describe("T-090 totalsByProject", () => {
     s.close();
     opened.pop();
     const check = new Database(path, { readonly: true });
-    expect(check.pragma("user_version", { simple: true })).toBe(5);
+    expect(check.pragma("user_version", { simple: true })).toBe(MIGRATIONS.length);
     const idx = check
       .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'ledger'")
       .all() as { name: string }[];
     check.close();
     expect(idx.map((r) => r.name)).toContain("ledger_requirement");
-    expect(MIGRATIONS.length).toBe(5);
+    expect(MIGRATIONS.length).toBeGreaterThanOrEqual(5);
   });
 });

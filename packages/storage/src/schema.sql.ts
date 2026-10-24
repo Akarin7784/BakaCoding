@@ -225,4 +225,6 @@ export const MIGRATIONS: Migration[] = [
   `,
   /* v5（T-090）：按项目汇总台账要按 requirement_id 关联 requirements，只加索引，不改表 */
   `CREATE INDEX ledger_requirement ON ledger(requirement_id);`,
+  /* v6（T-142）：项目记录加可空的仓库路径；老记录为 null，不从旧事件回填 */
+  `ALTER TABLE projects ADD COLUMN repo_path TEXT;`,
 ];

@@ -31,9 +31,12 @@ function openTmp(): Storage {
 
 const answer = (reply: string) => JSON.stringify({ intent: "answer", reply, decision: null });
 
-function setup(opts: { chatLog?: boolean; now?: () => number } = {}) {
+function setup(
+  opts: { chatLog?: boolean; chatLogImpl?: SupervisorDeps["chatLog"]; now?: () => number } = {},
+) {
   const storage = openTmp();
   const outputs: (string | Error)[] = [];
+  const warns: string[] = [];
   let id = 0;
   const now = opts.now ?? (() => 1_760_000_000_000);
   const deps: SupervisorDeps = {
@@ -56,7 +59,7 @@ function setup(opts: { chatLog?: boolean; now?: () => number } = {}) {
     }),
     promptTemplate: async () => "桩模板",
     storage,
-    ...(opts.chatLog === false ? {} : { chatLog: storage }),
+    ...(opts.chatLog === false ? {} : { chatLog: opts.chatLogImpl ?? storage }),
     enqueue: () => {},
     publish: () => {},
     subscribe: () => () => {},
@@ -64,9 +67,9 @@ function setup(opts: { chatLog?: boolean; now?: () => number } = {}) {
     notifyUser: () => {},
     newId: () => `id${++id}`,
     clock: () => new Date(now()),
-    logger: { warn: () => {} },
+    logger: { warn: (m: string) => void warns.push(m) },
   };
-  return { storage, outputs, sup: createSupervisor(deps) };
+  return { storage, outputs, warns, sup: createSupervisor(deps) };
 }
 
 describe("T-092 主管对话落库", () => {
@@ -153,5 +156,45 @@ describe("T-092 主管对话落库", () => {
     expect(await t.sup.chat({ text: "嗯" })).toEqual({ kind: "answer", text: "好" });
     expect(t.sup.history()).toEqual([]);
     expect(t.storage.listSupervisorMessages()).toEqual([]);
+  });
+});
+
+describe("T-144 主管对话落库跟进", () => {
+  it("chatLog.append 抛错：chat 照常返回，并记 warn", async () => {
+    const t = setup({
+      chatLogImpl: {
+        appendSupervisorMessage: () => {
+          throw new Error("磁盘满了");
+        },
+        listSupervisorMessages: () => [],
+      },
+    });
+    t.outputs.push(answer("照常回复"));
+    const r = await t.sup.chat({ text: "你好" });
+    expect(r).toEqual({ kind: "answer", text: "照常回复" });
+    expect(t.warns.filter((m) => m.includes("主管对话落库失败"))).toHaveLength(2);
+  });
+
+  it("上次回复已存、调用方带同一 message_id 重试：历史里只有一条用户消息和一条回复", async () => {
+    const t = setup();
+    t.outputs.push(answer("第一次"), answer("第二次"));
+    await t.sup.chat({ text: "你好", message_id: "u-1" });
+    await t.sup.chat({ text: "你好", message_id: "u-1" });
+    const h = t.sup.history();
+    expect(h.map((m) => [m.message_id, m.role, m.content])).toEqual([
+      ["u-1", "user", "你好"],
+      ["u-1-r", "supervisor", "第一次"],
+    ]);
+  });
+
+  it("10 生成用户 id 时回复 id 为 <用户 id>-r，同毫秒也排在用户消息之后", async () => {
+    const t = setup();
+    t.outputs.push(answer("好"));
+    await t.sup.chat({ text: "嗨" });
+    const h = t.sup.history();
+    expect(h).toHaveLength(2);
+    expect(h[1]!.message_id).toBe(`${h[0]!.message_id}-r`);
+    expect(h[0]!.created_at).toBe(h[1]!.created_at);
+    expect(h.map((m) => m.role)).toEqual(["user", "supervisor"]);
   });
 });

@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`bd9d5da` · main 上测试：135 个测试文件 / 2417 passed + 2 skipped 个测试（Linux 全量；Windows 基线见 `docs/test-baseline.md`） · 更新日期：2026-10-24（UTC+8）
+> 上次更新时 main：`67b1f60` · main 上测试：137 个测试文件 / 2436 passed + 2 skipped 个测试（Linux 全量；Windows 基线见 `docs/test-baseline.md`） · 更新日期：2026-10-24（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -202,7 +202,10 @@ flowchart BT
 | UI-07c | 模块 12 设置 › 预算标签可编辑（`docs/ui-design.md` §4.6）：每日预算（必填、不给默认值）、每单上限比例 (0,1]、闲时优先，显示今天已花费；新 IPC `budget:status`（今天已花费原样取 3 的 `budgetState()`，报错不带路径），保存复用 `settings:save`（校验 → 只写 config/models.json 的 budget 段 → 07b 的重载规则；--config / BAKACODING_CONFIG 只读）；低于今天已花费只警告不拦；附带模块 11 键名脱敏测试；modules.md §12 同步 | 12 | 界面与诊断开发 | 待评审 | #N | — |
 | T-090 | 模块 2 + 3：账本汇总。`LedgerStore.totalsByProject(project_id)`（按 `requirements` 关联项目、全部时间累计、四个角色都列，未登记需求不计入任何项目，未知项目全 0，写入方和只读连接都有）；库升级到 v5，只加 `ledger(requirement_id)` 索引；模块 3 新增 `ledgerSummary(ledger, { project_id }) → { project }`（不带当日花费，当日只看 `budget:status`）；`project_id` 不合法报 `invalid_project_id`；modules.md §2、§3 同步。合入后 main `d76072f`，测试 131 个文件 / 2380 个 | 2、3 | 基础层开发 | 已合入 | #200 | `d76072f` |
 | T-092 | 模块 10：主管 1:1 历史。可选 `SupervisorDeps.chatLog`（2 的 append / list，组合根注入 storage）；`chat` 先存用户消息再存回复，模型失败只留用户消息，重试沿用调用方 `message_id` 幂等；新增 `history({ before?, limit? })` 升序；10 生成单调 message_id（时钟回拨不倒退）；`ChatReply.kind` 与 `ChatReplyKind` 编译期互相可赋值断言；补 takeOver 失败 + awaiting_adopt 合并文案用例；modules.md §10 同步。全仓 128 文件 / 2366 通过、2 跳过。合入后 main `721a16c`，测试 132 个文件 / 2387 个 | 10 | 编排层开发 | 已合入 | #199 | `721a16c` |
+| T-142 | 模块 2 + types：项目记录删除与 `repo_path`。新增项目级事件 `project_removed { project_id }` 和写入方专用 `removeProject(project_id) → { removed }`（只删记录，不动仓库，不删历史事件；未知项目 `{ removed: false }`；删后新的 `project_created` 可重新登记）；`listProjects` 不返回已删除项目并带 `repo_path`；`repo_path` 不进事件，由写入方专用 `setProjectRepoPath(project_id, path。合入后 main `4155018`，测试 136 个文件 / 2432 passed + 2 skipped 个 | null) → { updated }` 写入（未知或已删项目 `{ updated: false }`，`path` 不合法报 `invalid_repo_path`）；库升级到 v6（`projects.repo_path` 可空）；`project_id` 不合法报 `invalid_project_id`；modules.md §2 与事件清单同步。须在 T-143 之后合入 | 2、types | 已合入 | #204 | `4155018` |
 | T-143 | 模块 11：诊断包导出时按字段名整段去掉 `repo_path`（事件、单子记录、费用、manifest 任意嵌套深度，不看事件类型，null 也去；新导出 `DROPPED_KEYS`）；项目记录（2 的 `projects` 表）v1 不导出，用例锁住；用例覆盖 POSIX / Windows / UNC / `~` / 带空格路径，整个 zip 搜不到原路径；modules.md §11 同步。须先于 T-142 合入。合入后 main `9fbface`，测试 133 个文件 / 2392 passed + 2 skipped 个 | 11 | 已合入 | #202 | `9fbface` |
+| T-144 | 模块 10：T-092 跟进。主管回复 id 改为 `<用户 message_id>-r`，重试时上次已存的回复靠存储幂等去重，历史不再出现两条回复；补用例：chatLog.append 抛错时 chat 照常返回并记 warn、同 id 重试只留一条用户消息和一条回复、生成 id 时回复排在用户消息之后（三条均做反向检查）；modules.md §10 同步。合入后 main `c7e927f`，测试 135 个文件 / 2420 passed + 2 skipped 个 | 10 | 编排层开发 | 已合入 | #205 | `c7e927f` |
+| T-145 | 模块 12（方案 B，不改 §3 接口）：`importCurrentRepo()` 在 3 的 `importProject` 成功、`project_created` 已落库后调 2 的 `setProjectRepoPath(project_id, repoRoot)` 写入用户选的仓库路径；路径不进事件；返回 `updated:false` 或抛错只记一条不带路径的 warn，导入照样成功；移除后再导入会重新写入；modules.md §12 同步。合入后 main `67b1f60`，测试 137 个文件 / 2436 passed + 2 skipped 个 | 12 | 已合入 | #211 | `67b1f60` |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
