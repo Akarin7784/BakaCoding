@@ -222,6 +222,7 @@ flowchart BT
 | T-150 | 模块 10：主管回复落库时带 `in_reply_to` = 对应用户消息 id（用户消息为 null），`history()` 原样返回；补用例：回复指向用户消息、同 id 幂等重试后回复仍指向原用户消息（反向检查：回复写 null 两条变红）；modules.md §10 同步 | 10。合入后 main `0405e63`，测试 154 个文件 / 2629 passed + 2 skipped 个 | 编排层开发 | 已合入 #237 | `0405e63` | — |
 | T-151 | 模块 12：历史里的 `split_failed` 按回复的 `in_reply_to` 找对应用户消息补「重试拆单」（项目先回复后用户消息；null / 无字段 / 找不到 / 无项目不显示，不猜）；live 回复统一写 `in_reply_to`；补 #235 两个 P3 测试（先脱敏再截 80 字、20000 上限）；modules.md §12 同步。合入后 main `0d1e097`，测试 154 个文件 / 2637 passed + 2 skipped 个 | 12 | 界面与诊断开发 | 已合入 | #240 | 0d1e097 |
 | T-153 | 桌面端：设置 › 预算 `spendHint` / `spendResubmit` 文案「复投」改为「重写」（§5.6），补 `BUDGET_COPY` 不含「复投」的用例。合入后 main `a6caab4`，测试 155 个文件 / 2638 passed + 2 skipped 个 | 12 | 界面与诊断开发 | 已合入 | #243 | a6caab4 |
+| T-154 | 模块 11 抽出不依赖 node 的纯函数路径脱敏 `redactPathsPure`（`path-redaction-core.ts`），主进程 `redactPaths` 转给它（输出不变），渲染进程 `redactForView` 改用它（保留全角标点截止）；补 T-147 三条已接受限制的注释和测试；modules.md §11 / §12 同步 | 11、12 | 界面与诊断开发 | 待评审 | #246 | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 

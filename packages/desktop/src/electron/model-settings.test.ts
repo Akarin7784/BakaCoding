@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeConfig } from "@bakacoding/app";
-import { writePricing } from "@bakacoding/config-budget";
+import { ConfigSchema, writePricing } from "@bakacoding/config-budget";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DesktopModelSaveInput, DesktopReloadResult } from "../shared/api.js";
 import { MODEL_SETTINGS_TEXT } from "../shared/config-text.js";
@@ -131,6 +131,45 @@ describe("settings:config-get", () => {
   it("带上在途数", async () => {
     const r = await modelSettingsHandlers(deps({ running: () => 3 })).configGet();
     expect(r).toMatchObject({ ok: true, running: 3 });
+  });
+});
+
+// UI-05c P3：config-get 的可选字段 pipeline.resubmit_limits.review（评审上限来源）。
+describe("settings:config-get 的 pipeline（UI-05c）", () => {
+  afterEach(() => vi.restoreAllMocks());
+  const setModels = (f: (m: { pipeline: { resubmit_limits: { review?: number } } }) => void) => {
+    const m = readModels();
+    f(m);
+    writeFileSync(join(root, "config/models.json"), JSON.stringify(m, null, 2));
+  };
+
+  it("解析成功：取配置里的值", async () => {
+    setModels((m) => (m.pipeline.resubmit_limits.review = 5));
+    const r = await modelSettingsHandlers(deps()).configGet();
+    if (!r.ok) throw new Error("应成功");
+    expect(r.pipeline).toEqual({ resubmit_limits: { review: 5 } });
+  });
+
+  it("解析成功：配置里没写 review 时是 schema 默认值 3", async () => {
+    setModels((m) => delete m.pipeline.resubmit_limits.review);
+    const r = await modelSettingsHandlers(deps()).configGet();
+    if (!r.ok) throw new Error("应成功");
+    expect(r.pipeline).toEqual({ resubmit_limits: { review: 3 } });
+  });
+
+  it("解析失败：不带 pipeline，其余照常返回", async () => {
+    // validate 内部也调 ConfigSchema.safeParse（第一次，放行）；configGet 自己那次（之后）让它失败。
+    const orig = ConfigSchema.safeParse.bind(ConfigSchema);
+    let n = 0;
+    const spy = vi
+      .spyOn(ConfigSchema, "safeParse")
+      .mockImplementation(((v: unknown) =>
+        n++ === 0 ? orig(v) : { success: false }) as typeof ConfigSchema.safeParse);
+    const r = await modelSettingsHandlers(deps()).configGet();
+    if (!r.ok) throw new Error("应成功");
+    expect(r).not.toHaveProperty("pipeline");
+    expect(r.form.supervisor.provider).toBe("deepseek");
+    expect(spy).toHaveBeenCalledTimes(2);
   });
 });
 
