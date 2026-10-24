@@ -134,3 +134,43 @@ describe("RequirementPage", () => {
     expect(screen.getByRole("group", { name: STEPPER_COPY.label("T-1") })).toBeTruthy();
   });
 });
+
+describe("UI-05f：需求页「⋯」菜单", () => {
+  const openMenu = () =>
+    fireEvent.keyDown(screen.getByTestId("requirement-menu"), { key: "Enter" });
+
+  it("导出这个需求 / 单张单的诊断包走 onExport(scope)，追问走 onAsk", async () => {
+    const onExport = vi.fn();
+    const onAsk = vi.fn();
+    render(
+      <RequirementPage
+        requirementId="r1"
+        tickets={tickets}
+        events={[]}
+        api={apiOf()}
+        onExport={onExport}
+        onAsk={onAsk}
+      />,
+    );
+    await screen.findByTestId("requirement-original");
+    openMenu();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "导出这个需求的诊断包" }));
+    expect(onExport).toHaveBeenLastCalledWith({ kind: "requirement", requirement_id: "r1" });
+
+    openMenu();
+    // 只列本需求的单（T-9 属于 r2）
+    expect(screen.queryByRole("menuitem", { name: "导出 T-9 的诊断包" })).toBeNull();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "导出 T-2 的诊断包" }));
+    expect(onExport).toHaveBeenLastCalledWith({ kind: "ticket", ticket_id: "T-2" });
+
+    openMenu();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "在主管对话里追问" }));
+    expect(onAsk).toHaveBeenCalledTimes(1);
+  });
+
+  it("没给回调就没有「⋯」", async () => {
+    render(<RequirementPage requirementId="r1" tickets={tickets} events={[]} api={apiOf()} />);
+    await screen.findByTestId("requirement-original");
+    expect(screen.queryByTestId("requirement-menu")).toBeNull();
+  });
+});
