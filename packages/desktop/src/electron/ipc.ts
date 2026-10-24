@@ -8,6 +8,7 @@ import {
   type DesktopChatResult,
   type DesktopHistoryResult,
   type DesktopSplitResult,
+  type DesktopPoolStateResult,
   type DesktopRequirementDetailResult,
   type DesktopDecideHighRiskResult,
   type DesktopExportOptions,
@@ -715,5 +716,19 @@ export function serveSupervisorSplit(
   });
   return () => {
     ipc.removeHandler(IPC_CHANNELS.supervisorSplit);
+  };
+}
+
+/** 编码池状态 IPC（UI-06b，只读）：invoke `pool:state`（无参数）→ backend.poolState()。 */
+export function servePoolState(
+  ipc: IpcMainLike,
+  backend: Pick<BackendHandle, "poolState">,
+): () => void {
+  ipc.handle(IPC_CHANNELS.poolState, async () => {
+    const result: DesktopPoolStateResult = await backend.poolState();
+    return result;
+  });
+  return () => {
+    ipc.removeHandler(IPC_CHANNELS.poolState);
   };
 }

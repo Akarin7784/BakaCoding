@@ -22,6 +22,7 @@ import {
   serveSupervisorHistory,
   serveSupervisorSplit,
   serveRequirementDetail,
+  servePoolState,
   serveSyncState,
   serveAbout,
   serveModelSettings,
@@ -87,6 +88,7 @@ function fakeBackend(over: Partial<BackendHandle> = {}): BackendHandle {
     })),
     supervisorHistory: vi.fn(async () => ({ ok: true as const, messages: [] })),
     requirementDetail: vi.fn(async () => ({ ok: false as const, reason: "找不到这个需求" })),
+    poolState: vi.fn(async () => ({ ok: false as const, reason: "编码池状态暂不可用" })),
     supervisorSplit: vi.fn(async () => ({
       ok: true as const,
       requirement_id: "req-1",
@@ -160,6 +162,8 @@ const SERVE: Record<string, (ipc: IpcMainLike, backend: BackendHandle) => () => 
   // UI-04c：重试拆单
   serveSupervisorSplit: (ipc, backend) => serveSupervisorSplit(ipc, backend),
   serveRequirementDetail: (ipc, backend) => serveRequirementDetail(ipc, backend),
+  // UI-06b：编码池状态
+  servePoolState: (ipc, backend) => servePoolState(ipc, backend),
   // UI-07a：设置 › 关于
   serveAbout: (ipc) => serveAbout(ipc, () => ({ version: "1.0.0", commit: "cbd3b41" })),
   // UI-07b：设置 › 模型；仓库不存在，读 / 写都在形状检查后失败，链路测试只看往返
@@ -371,6 +375,12 @@ describe("handler 参数：第一个是 event，渲染进程参数从第二个�
       reason: "找不到这个需求",
     });
     expect(backend.requirementDetail).toHaveBeenCalledWith({ requirement_id: "R-1" });
+    // UI-06b：编码池状态（无参数）
+    await expect(api.getPoolState!()).resolves.toEqual({
+      ok: false,
+      reason: "编码池状态暂不可用",
+    });
+    expect(backend.poolState).toHaveBeenCalledWith();
     // T-072：三个无参数通道（主进程自己弹对话框；这里对话框取消）
     await expect(api.importProject()).resolves.toEqual({ ok: false, canceled: true });
     // T-081：没有待创建配置的目录时拒绝
@@ -596,6 +606,7 @@ describe("preload 暴露的只读 API", () => {
       "getLedgerSummary",
       "getModelConfig",
       "getPendingHighRisk",
+      "getPoolState",
       "getRequirementDetail",
       "getSettings",
       "getSnapshot",
