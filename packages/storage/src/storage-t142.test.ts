@@ -234,10 +234,10 @@ describe("T-142 repo_path", () => {
     s.close();
     opened.pop();
     const check = new Database(path, { readonly: true });
-    expect(check.pragma("user_version", { simple: true })).toBe(6);
+    expect(check.pragma("user_version", { simple: true })).toBe(MIGRATIONS.length);
     const cols = check.prepare("PRAGMA table_info(projects)").all() as { name: string }[];
     check.close();
     expect(cols.map((c) => c.name)).toContain("repo_path");
-    expect(MIGRATIONS.length).toBe(6);
+    expect(MIGRATIONS.length).toBeGreaterThanOrEqual(6);
   });
 });

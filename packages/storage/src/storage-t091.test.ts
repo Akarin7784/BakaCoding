@@ -43,6 +43,7 @@ function msg(id: string, at: number, extra: Partial<SupervisorMessage> = {}): Su
     requirement_id: null,
     ticket_ids: [],
     created_at: at,
+    in_reply_to: null,
     ...extra,
   };
 }
