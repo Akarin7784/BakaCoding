@@ -426,3 +426,47 @@ describe("T-159：诊断包不含对话和提示词原文", () => {
     expect(back.tickets[0]!.ticket_text).toBe("旧包里的需求原文");
   });
 });
+
+describe("T-159：不摘要、原样保留的字段仍走完整脱敏（端到端）", () => {
+  it("端到端：密钥和 C:\\Users\\<名> 路径放进不摘要的字段（run_command、diff、上下文片段），导出的 zip 里搜不到，且有脱敏占位符", async () => {
+    const sk = `sk-${"FAKEe2e159key00".repeat(2)}`;
+    const winUser = "evaFakeUser159";
+    const winPath = `C:\\Users\\${winUser}\\proj\\src\\login.ts`;
+    const t = tickets()[0]!;
+    t.rounds[0]!.diff.files[0]!.patch = `@@ -1 +1 @@\n+const client = load("${sk}"); // ${winPath}`;
+    t.context_snippets = [
+      { path: "src/login.ts", content: `// 见 ${winPath}\nconst k = load("${sk}");\n` },
+    ];
+    const src: DiagnosticsSource = { queryEvents: () => makeEvents(), queryTickets: () => [t] };
+    const zip_path = await exportPackage(
+      { project_id: PROJECT, scope: { kind: "requirement", requirement_id: "R-1" } },
+      {
+        source: src,
+        out_dir: join(dir, "e2e"),
+        eval_tasks: {
+          "T-1": {
+            test_names: ["login.test"],
+            run_command: `pnpm --dir ${winPath} test -- --key ${sk}`,
+          },
+        },
+        now: () => new Date("2026-10-24T11:00:00Z"),
+      },
+    );
+    const all = await allText(zip_path);
+    for (const needle of [sk, winUser, `C:\\Users\\${winUser}`, "C:\\\\Users\\\\" + winUser]) {
+      for (const s of all) expect(s.includes(needle), `${needle} 进了包`).toBe(false);
+    }
+    // 这些字段确实导出了、且不是摘要（不是靠没导出来"通过"）
+    const pkg = await readPackage(zip_path);
+    const diff = pkg.raw_files.find((f) => f.path === "raw/T-1/r1.diff")!.content;
+    const ctx = pkg.raw_files.find((f) => f.path.includes("/context/"))!.content;
+    const run = pkg.tickets[0]!.eval_task!.run_command;
+    for (const s of [diff, ctx, run]) {
+      expect(typeof s).toBe("string");
+      expect(s).toContain("[REDACTED:api_key]");
+      expect(s).toMatch(/\[REDACTED:home_[a-z]+\]/);
+    }
+    expect(diff).toContain("const client = load(");
+    expect(run).toContain("pnpm --dir");
+  });
+});
