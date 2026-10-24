@@ -329,8 +329,8 @@ describe("UI-05f：需求页（api mock）", () => {
     window.location.hash = "";
   });
 
-  function reqApi() {
-    const { api } = fakeApi(snapshot);
+  function reqApi(snap: DesktopSnapshot = snapshot) {
+    const { api } = fakeApi(snap);
     const exportDiagnostics = vi.fn(async () => ({ ok: true as const, path: "/tmp/d.zip" }));
     const getRequirementDetail = vi.fn(async () => ({
       ok: true as const,
@@ -414,6 +414,51 @@ describe("UI-05f：需求页（api mock）", () => {
       'textarea[data-composer="supervisor"]',
     )!;
     await waitFor(() => expect(box.value).toBe("T-2（需求「真实单一」）需要我处理："));
+  });
+});
+
+describe("UI-06a P3：取不到需求名时草稿退回需求号", () => {
+  afterEach(() => {
+    window.location.hash = "";
+  });
+  // 单子标题全空白 → requirementName 为空 → requirementNameOf 退回需求号
+  const nameless: DesktopSnapshot = {
+    ...snapshot,
+    tickets: snapshot.tickets.map((t) => ({ ...t, title: "   " })),
+  };
+  const api = () => {
+    const { api } = fakeApi(nameless);
+    const getRequirementDetail = vi.fn(async () => ({
+      ok: true as const,
+      detail: {
+        requirement_id: "R-1",
+        name: "",
+        requirement_text: "做两张单",
+        decomposition_summary: "拆成两张",
+        tickets: [],
+      },
+    }));
+    return { ...api, getRequirementDetail } as unknown as BakaDesktopApi;
+  };
+  const composer = () =>
+    document.querySelector<HTMLTextAreaElement>('textarea[data-composer="supervisor"]')!;
+  const open = async () => {
+    render(<App api={api()} />);
+    fireEvent.click(await screen.findByRole("button", { name: /real-proj/ }));
+    fireEvent.click(openRow("R-1"));
+  };
+
+  it("「追问」草稿写需求号", async () => {
+    await open();
+    fireEvent.keyDown(await screen.findByTestId("requirement-menu"), { key: "Enter" });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "在主管对话里追问" }));
+    await waitFor(() => expect(composer().value).toBe("关于需求「R-1」（R-1）："));
+  });
+
+  it("「需要你处理」草稿写需求号", async () => {
+    await open();
+    fireEvent.click(await screen.findByRole("button", { name: "需要你处理" }));
+    await waitFor(() => expect(composer().value).toBe("T-2（需求「R-1」）需要我处理："));
   });
 });
 
