@@ -83,6 +83,19 @@ describe("runMainMerge", () => {
     expect(JSON.stringify(r)).not.toContain("secret-user");
   });
 
+  it("每个码的固定文案逐字锁定", () => {
+    expect(MAIN_MERGE_CODE_TEXT).toEqual({
+      unavailable: "合入 main 暂不可用（没有接 PR 能力）",
+      not_reviewed: "集成分支还没有通过审查，不能合入",
+      stale_head: "集成分支在审查后有新提交，请重新审查",
+      conflict: "合入 main 有冲突，请手动处理",
+      merge_blocked: "合入被仓库规则拦下，请到仓库查看",
+      rate_limit: "触发限流，稍后再试",
+      target_dirty: "main 工作区有未提交的改动，请先处理",
+      error: MAIN_MERGE_FAILED,
+    });
+  });
+
   it("文案穷举 MainMergeErrorCode，各不相同且不含路径", () => {
     expect(Object.keys(MAIN_MERGE_CODE_TEXT).sort()).toEqual([...CODES].sort());
     const texts = CODES.filter((c) => c !== "error").map((c) => MAIN_MERGE_CODE_TEXT[c]);
