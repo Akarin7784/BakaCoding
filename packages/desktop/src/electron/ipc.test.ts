@@ -332,6 +332,13 @@ describe("handler 参数：第一个是 event，渲染进程参数从第二个�
       code: "invalid_input",
       written: [],
     });
+    // UI-07c：设置 › 预算（状态无参数；保存走同一个 settings:save）
+    await expect(api.getBudgetStatus!()).resolves.toMatchObject({ ok: false, code: "read_failed" });
+    await expect(api.saveBudget!({ budget: {} as never })).resolves.toMatchObject({
+      ok: false,
+      code: "invalid_input",
+      written: [],
+    });
     // UI-02：主题同步
     await expect(api.setWindowTheme!("dark")).resolves.toEqual({ ok: true, dark: true });
     // T-093：重载 / 重新连接（无参数）
@@ -504,6 +511,7 @@ describe("preload 暴露的只读 API", () => {
       "exportDiagnostics",
       "getAbout",
       "getBackendStatus",
+      "getBudgetStatus",
       "getModelConfig",
       "getPendingHighRisk",
       "getSettings",
@@ -524,6 +532,7 @@ describe("preload 暴露的只读 API", () => {
       "platform",
       "reconnectBackend",
       "reloadBackend",
+      "saveBudget",
       "saveModelConfig",
       "secretStatus",
       "setSecret",

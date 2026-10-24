@@ -517,16 +517,20 @@ export function serveProjectSettings(ipc: IpcMainLike, deps: ProjectSettingsDeps
 }
 
 /**
- * 设置 › 模型（UI-07b）：`settings:config-get`（无参数）和 `settings:save`（一个参数）。
+ * 设置 › 模型（UI-07b）：`settings:config-get`（无参数）和 `settings:save`（一个参数）；
+ * 设置 › 预算（UI-07c）：`budget:status`（无参数），保存也走 `settings:save`（参数是 `{ budget }`）。
  * 逻辑在 model-settings.ts：密钥只回是否已设，外部配置只读，保存按 校验 → 写 config → 写 pricing → 重载。
  */
 export function serveModelSettings(ipc: IpcMainLike, deps: ModelSettingsDeps): () => void {
   const h = modelSettingsHandlers(deps);
   ipc.handle(IPC_CHANNELS.settingsConfigGet, () => h.configGet());
   ipc.handle(IPC_CHANNELS.settingsSave, (...args: unknown[]) => h.save(args[1]));
+  // UI-07c：设置 › 预算的状态（无参数）；保存仍走上面的 settings:save
+  ipc.handle(IPC_CHANNELS.budgetStatus, () => h.budgetStatus());
   return () => {
     ipc.removeHandler(IPC_CHANNELS.settingsConfigGet);
     ipc.removeHandler(IPC_CHANNELS.settingsSave);
+    ipc.removeHandler(IPC_CHANNELS.budgetStatus);
   };
 }
 

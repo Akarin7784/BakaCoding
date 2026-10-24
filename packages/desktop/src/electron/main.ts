@@ -222,7 +222,7 @@ if (!gotLock) {
         ensureExcludeLines,
       }),
     });
-    // UI-07b：设置 › 模型；保存后走 backend.reload()（有在途单时排队）
+    // UI-07b / UI-07c：设置 › 模型和预算；保存后走 backend.reload()（有在途单时排队）
     const stopModelSettings = serveModelSettings(ipcMain, {
       repoRoot: () => backend.repoRoot(),
       repoSource: () => backend.status().repoSource,
@@ -232,6 +232,8 @@ if (!gotLock) {
       reload: () => backend.reload(),
       writeConfig,
       writePricing,
+      // UI-07c：今天已花费原样取 3 的 budgetState()（只读后端回 null）
+      budgetState: () => backend.budgetState(),
     });
     // UI-03b：密钥项与测试连接；标记文件放 userData（不在仓库里），值只交给 3
     const stopSecretProvider = serveSecretProvider(ipcMain, {

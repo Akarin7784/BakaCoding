@@ -40,3 +40,11 @@ export const MODEL_SETTINGS_TEXT = {
     "已写入 config/models.json，但写入 config/pricing.json 失败（单价没改）；后端没有重载，请修好后再保存一次",
   failed: "保存失败，请重试",
 } as const;
+
+/** 设置 › 预算（UI-07c）`budget:status` 的固定文案：不带路径、不带原始报错 */
+export const BUDGET_STATUS_TEXT = {
+  cwd_repo: "还没选项目文件夹：请先导入项目，再改预算",
+  read_failed: "读不到 config/models.json，请先在项目准备页生成配置",
+  invalid_config: "当前配置不合法，请先在项目准备页修好再来这里改预算",
+  failed: "读取预算失败，请重试",
+} as const;
