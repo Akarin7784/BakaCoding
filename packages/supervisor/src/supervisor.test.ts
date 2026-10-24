@@ -737,6 +737,55 @@ describe("start", () => {
 describe("chat", () => {
   const req = JSON.stringify({ intent: "requirement", reply: "好的" });
 
+  describe("T-157：调过模型的回复都带本轮 requirement_id（界面按它对上用量）", () => {
+    const projects = [
+      { project_id: "app-1", name: "应用" },
+      { project_id: "web-2", name: "官网" },
+    ];
+
+    it("一般问答（含 decision 为空的兜底问答）", async () => {
+      for (const out of [
+        JSON.stringify({ intent: "answer", reply: "你好", decision: null }),
+        JSON.stringify({ intent: "decision", reply: "好", decision: "  " }),
+      ]) {
+        const t = setup({ outputs: [out] });
+        const r = await t.sup.chat({ text: "你好" });
+        expect(r.kind, out).toBe("answer");
+        expect(r.requirement_id, out).toMatch(/^req-/);
+        expect(r.requirement_id, out).toBe(t.ctxs[0]!.requirement_id);
+      }
+    });
+
+    it("模型输出不合格式的兜底回复", async () => {
+      const t = setup({ outputs: ["随便说说"] });
+      const r = await t.sup.chat({ text: "加个登录页" });
+      expect(r.kind).toBe("answer");
+      expect(r.requirement_id).toMatch(/^req-/);
+      expect(r.requirement_id).toBe(t.ctxs[0]!.requirement_id);
+    });
+
+    it("追问项目（askProject）", async () => {
+      const t = setup({ projects, outputs: [req] });
+      const r = await t.sup.chat({ text: "加个登录页" });
+      expect(r.kind).toBe("ask_project");
+      expect(r.requirement_id).toMatch(/^req-/);
+      expect(r.requirement_id).toBe(t.ctxs[0]!.requirement_id);
+    });
+
+    it("合并的两段回复：第二段沿用第一段的 id，两段的调用都归到这个 id", async () => {
+      const answer = JSON.stringify({ intent: "answer", reply: "收到", decision: null });
+      const t = setup({ projects, outputs: [req, splitOut([ticketJson()]), answer] });
+      await t.sup.chat({ text: "加个登录页" });
+      const r = await t.sup.chat({ text: "应用，不是官网", project_id: "app-1" });
+      expect(r.kind).toBe("dispatched");
+      expect(t.ctxs).toHaveLength(3);
+      // 第二次（拆单）和第三次（第二段的意图判断）都在合并回复的 id 下
+      expect(r.requirement_id).toMatch(/^req-/);
+      expect(t.ctxs[1]!.requirement_id).toBe(r.requirement_id);
+      expect(t.ctxs[2]!.requirement_id).toBe(r.requirement_id);
+    });
+  });
+
   it("一般问答直接回复，不拆单", async () => {
     const t = setup({
       outputs: [JSON.stringify({ intent: "answer", reply: "你好", decision: null })],
@@ -745,6 +794,7 @@ describe("chat", () => {
       message_id: expect.any(String),
       kind: "answer",
       text: "你好",
+      requirement_id: t.ctxs[0]!.requirement_id,
     });
     expect(t.prompts[0]!.startsWith(TEMPLATE)).toBe(true);
     expect(t.prompts[0]).toContain("## 输出格式（对话）");

@@ -1713,9 +1713,11 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       );
       const rest = stripProject(msg.text, named);
       if (!meaningful(rest)) return first;
+      // T-157：第二段沿用第一段的 requirement_id，界面按它统计用量时两段的调用都算进来
       const second = await handle(
         { ...msg, text: rest, ...(explicit ? { project_id: explicit.project_id } : {}) },
         list,
+        first.requirement_id,
       );
       return mergeReplies(first, second);
     }
@@ -1723,10 +1725,14 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     return handle(msg, list);
   }
 
-  async function handle(msg: UserMessage, list: ProjectInfo[]): Promise<ReplyBody> {
+  async function handle(
+    msg: UserMessage,
+    list: ProjectInfo[],
+    reuseRequirementId?: string,
+  ): Promise<ReplyBody> {
     const explicit = msg.project_id ? list.find((p) => p.project_id === msg.project_id) : undefined;
     const named = explicit ?? mentioned(msg.text, list);
-    const requirement_id = `req-${shortId()}`;
+    const requirement_id = reuseRequirementId ?? `req-${shortId()}`;
     const n = nonce();
     const template = await deps.promptTemplate("supervisor");
     const prompt = [
@@ -1745,12 +1751,17 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     const parsed = parseOutput(ChatOutputSchema, output);
     if (!parsed.ok) {
       logger.warn("主管对话输出不合格式", parsed.message);
-      return { kind: "answer", text: "抱歉，我这次没有理解清楚，请换个说法再说一次。" };
+      return {
+        kind: "answer",
+        text: "抱歉，我这次没有理解清楚，请换个说法再说一次。",
+        requirement_id,
+      };
     }
     const out = parsed.value;
-    if (out.intent === "answer") return { kind: "answer", text: out.reply };
+    // T-157：本轮调过模型的回复都带上 requirement_id，界面才能按它对上这次调用的用量
+    if (out.intent === "answer") return { kind: "answer", text: out.reply, requirement_id };
     if (out.intent === "decision" && !out.decision?.trim())
-      return { kind: "answer", text: out.reply };
+      return { kind: "answer", text: out.reply, requirement_id };
 
     let project = named;
     let note = "";
@@ -1765,7 +1776,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         kind: out.intent,
         text: out.intent === "decision" ? out.decision!.trim() : msg.text,
       };
-      return askProject(list);
+      return { ...askProject(list), requirement_id };
     }
     return act(out.intent, msg.text, out.decision, project, note, requirement_id);
   }
