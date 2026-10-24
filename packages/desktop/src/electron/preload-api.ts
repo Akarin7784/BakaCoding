@@ -143,10 +143,7 @@ export function createDesktopApi(ipc: IpcRendererLike, platform: string): BakaDe
     supervisorSplit: (request: DesktopSplitRequest) =>
       ipc.invoke(IPC_CHANNELS.supervisorSplit, request) as Promise<DesktopSplitResult>,
     getRequirementDetail: (query: DesktopRequirementDetailQuery) =>
-      ipc.invoke(
-        IPC_CHANNELS.requirementDetail,
-        query,
-      ) as Promise<DesktopRequirementDetailResult>,
+      ipc.invoke(IPC_CHANNELS.requirementDetail, query) as Promise<DesktopRequirementDetailResult>,
     getSupervisorHistory: (query?: DesktopHistoryQuery) =>
       ipc.invoke(IPC_CHANNELS.supervisorHistory, query ?? {}) as Promise<DesktopHistoryResult>,
     setWindowTheme: (source: WindowThemeSource) =>

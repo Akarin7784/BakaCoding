@@ -47,15 +47,13 @@ export function readRequirementDetail(
     const tickets: DesktopRequirementTicket[] = rows.map((t) => ({
       ticket_id: t.ticket_id,
       status: t.status ?? "pending",
-      rounds: storage.listPrRounds(t.ticket_id).map(
-        (r): DesktopRequirementRound => ({
-          round: r.round,
-          verdict: r.verdict,
-          fail_reasons: r.fail_reasons.map(clean),
-          review_comments: typeof r.review_comments === "string" ? clean(r.review_comments) : null,
-          reviewer: typeof r.reviewer === "string" ? clean(r.reviewer) : null,
-        }),
-      ),
+      rounds: storage.listPrRounds(t.ticket_id).map((r): DesktopRequirementRound => ({
+        round: r.round,
+        verdict: r.verdict,
+        fail_reasons: r.fail_reasons.map(clean),
+        review_comments: typeof r.review_comments === "string" ? clean(r.review_comments) : null,
+        reviewer: typeof r.reviewer === "string" ? clean(r.reviewer) : null,
+      })),
     }));
     return {
       ok: true,

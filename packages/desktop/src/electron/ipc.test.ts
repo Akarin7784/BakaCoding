@@ -21,6 +21,7 @@ import {
   serveSupervisorChat,
   serveSupervisorHistory,
   serveSupervisorSplit,
+  serveRequirementDetail,
   serveSyncState,
   serveAbout,
   serveModelSettings,
@@ -85,6 +86,7 @@ function fakeBackend(over: Partial<BackendHandle> = {}): BackendHandle {
       reply: { text: "好的", kind: "answer" as const },
     })),
     supervisorHistory: vi.fn(async () => ({ ok: true as const, messages: [] })),
+    requirementDetail: vi.fn(async () => ({ ok: false as const, reason: "找不到这个需求" })),
     supervisorSplit: vi.fn(async () => ({
       ok: true as const,
       requirement_id: "req-1",
@@ -157,6 +159,7 @@ const SERVE: Record<string, (ipc: IpcMainLike, backend: BackendHandle) => () => 
   serveSupervisorHistory: (ipc, backend) => serveSupervisorHistory(ipc, backend),
   // UI-04c：重试拆单
   serveSupervisorSplit: (ipc, backend) => serveSupervisorSplit(ipc, backend),
+  serveRequirementDetail: (ipc, backend) => serveRequirementDetail(ipc, backend),
   // UI-07a：设置 › 关于
   serveAbout: (ipc) => serveAbout(ipc, () => ({ version: "1.0.0", commit: "cbd3b41" })),
   // UI-07b：设置 › 模型；仓库不存在，读 / 写都在形状检查后失败，链路测试只看往返
@@ -362,6 +365,12 @@ describe("handler 参数：第一个是 event，渲染进程参数从第二个�
       text: "做个登录页",
       requirement_id: "req-1",
     });
+    // UI-05a：需求详情参数原样到后端
+    await expect(api.getRequirementDetail({ requirement_id: "R-1" })).resolves.toEqual({
+      ok: false,
+      reason: "找不到这个需求",
+    });
+    expect(backend.requirementDetail).toHaveBeenCalledWith({ requirement_id: "R-1" });
     // T-072：三个无参数通道（主进程自己弹对话框；这里对话框取消）
     await expect(api.importProject()).resolves.toEqual({ ok: false, canceled: true });
     // T-081：没有待创建配置的目录时拒绝
@@ -587,6 +596,7 @@ describe("preload 暴露的只读 API", () => {
       "getLedgerSummary",
       "getModelConfig",
       "getPendingHighRisk",
+      "getRequirementDetail",
       "getSettings",
       "getSnapshot",
       "getSupervisorHistory",

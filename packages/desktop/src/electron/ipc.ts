@@ -690,7 +690,7 @@ export function isStrictIsoDateTime(v: unknown): v is string {
   return !Number.isNaN(Date.parse(v));
 }
 
-/** 需求详情 IPC（UI-05a，只读）：invoke `requirement:detail` → backend.requirementDetail；args[0] 是 event。 */
+/** 需求详情 IPC（UI-05a，只读）：invoke `requirement:detail` → backend.requirementDetail（参数从第二个起）。 */
 export function serveRequirementDetail(
   ipc: IpcMainLike,
   backend: Pick<BackendHandle, "requirementDetail">,

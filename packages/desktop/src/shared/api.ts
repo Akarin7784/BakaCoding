@@ -661,7 +661,9 @@ export interface BakaDesktopApi {
   /** 重试拆单（UI-04c）：走 supervisor:split → 10 的 split()，不经 chat；失败以 ok:false 返回。 */
   supervisorSplit(request: DesktopSplitRequest): Promise<DesktopSplitResult>;
   /** 取需求详情（UI-05a，只读）；失败以 ok:false 返回（固定文案），不抛过 IPC。 */
-  getRequirementDetail(query: DesktopRequirementDetailQuery): Promise<DesktopRequirementDetailResult>;
+  getRequirementDetail(
+    query: DesktopRequirementDetailQuery,
+  ): Promise<DesktopRequirementDetailResult>;
   /** 取主管对话历史（UI-04a）；失败以 ok:false 返回，不抛过 IPC。 */
   getSupervisorHistory(query?: DesktopHistoryQuery): Promise<DesktopHistoryResult>;
   /** 选目录导入项目（T-072）。 */
