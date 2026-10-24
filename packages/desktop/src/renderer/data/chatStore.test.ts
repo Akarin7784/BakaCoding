@@ -46,7 +46,7 @@ describe("ChatStore.loadOlder（UI-04a）", () => {
     const s = new ChatStore();
     s.hydrate(page(100, CHAT_HISTORY_PAGE));
     expect(s.getSnapshot().hasOlder).toBe(true);
-    const fetch = vi.fn(async (_before: string): Promise<DesktopHistoryResult> => ({
+    const fetch = vi.fn<(before: string) => Promise<DesktopHistoryResult>>(async () => ({
       ok: true,
       messages: [...page(50, CHAT_HISTORY_PAGE), msg("m0100")],
     }));
