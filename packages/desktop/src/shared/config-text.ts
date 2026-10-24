@@ -24,3 +24,19 @@ export const CONFIG_FIX_TEXT: Record<DesktopConfigFixFailure["code"], string> = 
 /** 启动只读原因（T-113）：缺配置 / 配置不合法，准备页「生成配置」能修 */
 export const CONFIG_MISSING_REASON = "缺少模型配置（config/models.json 或 config/pricing.json）";
 export const CONFIG_INVALID_REASON = "模型配置不合法（config/models.json 或 config/pricing.json）";
+
+/** 设置 › 模型（UI-07b）的固定文案：主进程按码回这些，界面原样显示；不拼路径和配置值 */
+export const MODEL_SETTINGS_TEXT = {
+  external_config:
+    "模型配置由启动参数指定（--config / BAKACODING_CONFIG），这里只读；请直接改那个文件后重启",
+  cwd_repo: "还没选项目文件夹：请先导入项目，再改模型设置",
+  read_failed: "读不到 config/models.json 或 config/pricing.json，请先在项目准备页生成配置",
+  invalid_config: "当前模型配置不合法，请先在项目准备页修好再来这里改",
+  invalid_input: "提交的设置格式不对，请刷新后重试",
+  invalid: "有字段没通过校验，没有写入任何文件",
+  unsafe_path: "config 文件夹或配置文件是符号链接或不是普通文件，没有写入",
+  write_failed: "写入 config/models.json 失败，两个文件都没有改动",
+  partial_write:
+    "已写入 config/models.json，但写入 config/pricing.json 失败（单价没改）；后端没有重载，请修好后再保存一次",
+  failed: "保存失败，请重试",
+} as const;

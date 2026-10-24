@@ -1,5 +1,6 @@
 // 把只读数据与后端状态通过 IPC 推给渲染进程。
 import { aboutInfo, type RawAbout } from "./about.js";
+import { modelSettingsHandlers, type ModelSettingsDeps } from "./model-settings.js";
 import {
   IPC_CHANNELS,
   type DesktopChatResult,
@@ -512,6 +513,20 @@ export function serveProjectSettings(ipc: IpcMainLike, deps: ProjectSettingsDeps
     ipc.removeHandler(IPC_CHANNELS.diagnosticsExport);
     ipc.removeHandler(IPC_CHANNELS.diagnosticsOpenDataDir);
     ipc.removeHandler(IPC_CHANNELS.settingsGet);
+  };
+}
+
+/**
+ * 设置 › 模型（UI-07b）：`settings:config-get`（无参数）和 `settings:save`（一个参数）。
+ * 逻辑在 model-settings.ts：密钥只回是否已设，外部配置只读，保存按 校验 → 写 config → 写 pricing → 重载。
+ */
+export function serveModelSettings(ipc: IpcMainLike, deps: ModelSettingsDeps): () => void {
+  const h = modelSettingsHandlers(deps);
+  ipc.handle(IPC_CHANNELS.settingsConfigGet, () => h.configGet());
+  ipc.handle(IPC_CHANNELS.settingsSave, (...args: unknown[]) => h.save(args[1]));
+  return () => {
+    ipc.removeHandler(IPC_CHANNELS.settingsConfigGet);
+    ipc.removeHandler(IPC_CHANNELS.settingsSave);
   };
 }
 
