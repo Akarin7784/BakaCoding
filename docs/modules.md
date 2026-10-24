@@ -350,6 +350,7 @@ graph BT
   - `.env` 类文件（任何一段路径是 `.env`、`.env.*`、`.envrc` 或 `.envrc.*`，大小写不敏感）默认不进包，完整仓库和上下文片段都适用；manifest 只记个数（`excluded_env_files`、`excluded_context_env_files`），不记路径。
   - `scope` 是按 `kind` 区分的联合类型：`ticket` / `requirement` / `time_range`；`time_range` 两端都包含，用 ISO 8601 UTC 时间。
   - 数据源通过 `deps` 注入：接口 `DiagnosticsSource` 定义在 `@bakacoding/types`（与 `LedgerStore` 放在一起），模块 2 写适配器实现，不为诊断单独加查询接口。
+  - 按字段名去掉的键（T-143）：结构化内容（事件、单子记录、费用、manifest）里任意嵌套深度的 `repo_path` 键连同值整段去掉（值为 null 也去），不看事件类型；它是仓库在本机的路径（2 的 `projects` 表和「项目已创建」事件数据，T-142），只给桌面端主进程用。v1 诊断包不导出 2 的项目记录（`DiagnosticsSource` 没有取项目的方法），以后要导出也须走同一条去键规则。
   - 人工补填的 `eval_task` 由 `deps.eval_tasks` 传入，它是外部读入的数据，不算导出选项。
   - v1 按项目过滤由数据源负责：事件公共字段不加 `project_id`（`project_created`、`group_message` 的 `payload` 本来就带）；2 落库时记下需求所属项目，按项目过滤在存储层完成。多项目共用一个库时再单独提。
 - **依赖**：2、3（可与编排层并行开发）。
