@@ -74,9 +74,10 @@ describe("branchStatus（T-155）", () => {
     git("branch", "-m", "main", "trunk");
     git("checkout", "-q", "-b", "integ");
     commit("i1");
-    expect(await branchStatus(dir, { base_branch: "trunk", integration_branch: "integ" })).toEqual(
-      { current_branch: "integ", ahead: 1 },
-    );
+    expect(await branchStatus(dir, { base_branch: "trunk", integration_branch: "integ" })).toEqual({
+      current_branch: "integ",
+      ahead: 1,
+    });
   });
 
   it("分离 HEAD：current_branch 为 null", async () => {
