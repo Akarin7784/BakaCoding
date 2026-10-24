@@ -416,3 +416,103 @@ describe("UI-05f：需求页（api mock）", () => {
     await waitFor(() => expect(box.value).toBe("T-2（需求「真实单一」）需要我处理："));
   });
 });
+
+describe("UI-05g：派单卡片需求名、Ctrl+N、查看需求选中项目、回主管对话聚焦", () => {
+  afterEach(() => {
+    window.location.hash = "";
+  });
+
+  const noDetail = async () => ({ ok: false as const, reason: "x" });
+  const composer = () =>
+    document.querySelector<HTMLTextAreaElement>('textarea[data-composer="supervisor"]')!;
+
+  async function dispatchTo(requirement_id: string) {
+    const { api } = fakeApi(snapshot);
+    const supervisorChat = vi.fn(async () => ({
+      ok: true as const,
+      reply: {
+        kind: "dispatched" as const,
+        message_id: `m-${requirement_id}`,
+        text: "派好了",
+        requirement_id,
+        ticket_ids: ["T-1"],
+      },
+    }));
+    render(
+      <App
+        api={
+          { ...api, supervisorChat, getRequirementDetail: noDetail } as unknown as BakaDesktopApi
+        }
+      />,
+    );
+    await screen.findByRole("button", { name: /real-proj/ });
+    fireEvent.change(screen.getByLabelText("发给主管"), { target: { value: "做" } });
+    fireEvent.click(screen.getByLabelText("发送"));
+    await waitFor(() => expect(supervisorChat).toHaveBeenCalled());
+    // 主管对话的 store 是全局的，前面用例的卡片还在：按需求号挑出这次的卡片
+    const id = requirement_id === "R-1" ? "真实单一" : requirement_id;
+    await waitFor(() =>
+      expect(
+        screen.getAllByTestId("chat-dispatched").some((c) => c.textContent?.includes(id)),
+      ).toBe(true),
+    );
+    return screen.getAllByTestId("chat-dispatched").find((c) => c.textContent?.includes(id))!;
+  }
+
+  it("dispatched 卡片显示需求名（最早一张单第一行），不显示需求号", async () => {
+    const card = await dispatchTo("R-1");
+    const req = card.querySelector('[data-testid="chat-requirement"]')!;
+    expect(req.textContent).toContain("真实单一");
+    expect(req.textContent).not.toContain("R-1");
+  });
+
+  it("快照里没有这个需求的单：回退显示需求号", async () => {
+    const card = await dispatchTo("R-404");
+    expect(card.querySelector('[data-testid="chat-requirement"]')!.textContent).toContain("R-404");
+  });
+
+  it("「查看需求」打开需求页并选中所属项目", async () => {
+    const card = await dispatchTo("R-1");
+    fireEvent.click(card.querySelector<HTMLElement>('[data-testid="chat-view-requirement"]')!);
+    expect(window.location.hash).toBe("#requirement=R-1");
+    // 左栏里 R-1 行是当前项；关掉需求路由后停在所属项目的项目页（而不是主管对话）
+    await waitFor(() =>
+      expect(
+        document.querySelector('nav [aria-current="page"]')?.textContent?.includes("真实单一"),
+      ).toBe(true),
+    );
+    act(() => {
+      window.location.hash = "";
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    expect(await screen.findByRole("region", { name: "项目页" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /real-proj/ }).getAttribute("aria-current")).toBe(
+      "page",
+    );
+  });
+
+  it("Ctrl+N 清掉 #requirement 路由，回主管对话", async () => {
+    window.location.hash = "#requirement=R-1";
+    render(
+      <App
+        api={
+          { ...fakeApi(snapshot).api, getRequirementDetail: noDetail } as unknown as BakaDesktopApi
+        }
+      />,
+    );
+    await screen.findByRole("button", { name: /real-proj/ });
+    fireEvent.keyDown(window, { key: "n", ctrlKey: true });
+    await waitFor(() => expect(window.location.hash).toBe(""));
+    await waitFor(() => expect(document.activeElement).toBe(composer()));
+  });
+
+  it("「需要你处理」回主管对话后光标在输入框里", async () => {
+    const { api } = fakeApi(snapshot);
+    render(<App api={{ ...api, getRequirementDetail: noDetail } as unknown as BakaDesktopApi} />);
+    fireEvent.click(await screen.findByRole("button", { name: /real-proj/ }));
+    fireEvent.click(openRow("R-1"));
+    fireEvent.click(await screen.findByRole("button", { name: "需要你处理" }));
+    await waitFor(() => expect(composer()).toBeTruthy());
+    await waitFor(() => expect(document.activeElement).toBe(composer()));
+  });
+});

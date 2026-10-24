@@ -401,3 +401,25 @@ describe("UI-05f：「查看需求」与草稿预填", () => {
     expect(supervisorChat).not.toHaveBeenCalled();
   });
 });
+
+describe("UI-05g：dispatched 卡片需求名", () => {
+  const reply = {
+    kind: "dispatched",
+    message_id: "m6",
+    text: "派好了",
+    requirement_id: "req-9",
+    ticket_ids: ["T-1"],
+  } as ChatReply;
+
+  it("给了 requirementNameOf：显示名字", () => {
+    render(<MessageItem reply={reply} requirementNameOf={() => "加登录页"} />);
+    const t = screen.getByTestId("chat-requirement").textContent!;
+    expect(t).toContain("加登录页");
+    expect(t).not.toContain("req-9");
+  });
+
+  it("名字取不到（空串）：回退需求号", () => {
+    render(<MessageItem reply={reply} requirementNameOf={() => ""} />);
+    expect(screen.getByTestId("chat-requirement").textContent).toContain("req-9");
+  });
+});
