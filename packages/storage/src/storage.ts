@@ -202,7 +202,7 @@ export interface ProjectRow {
   /** 项目名（「项目已创建」事件里的 name，T-055 起返回） */
   name: string;
   created_at: string;
-  /** 仓库路径（T-142，「项目已创建」事件里的可选 repo_path），老记录为 null；只给桌面端主进程用 */
+  /** 仓库路径（T-142，由 setProjectRepoPath 写入，不进事件），老记录和新登记的项目为 null；只给桌面端主进程用 */
   repo_path: string | null;
 }
 
@@ -387,6 +387,12 @@ export interface Storage {
    * `project_id` 为空或不是字符串抛 `TypeError`（`code: "invalid_project_id"`，消息不带值）。
    */
   removeProject(project_id: string): { removed: boolean };
+  /**
+   * 设置项目的仓库路径（T-142，只有写入方）。路径只存在 projects 表，不进事件。
+   * 项目不存在或已删除返回 `{ updated: false }`，不抛错；`project_id` 不合法抛 `TypeError`（`invalid_project_id`），
+   * `path` 不是非空字符串也不是 null 抛 `TypeError`（`code: "invalid_repo_path"`）；消息只有错误码，不带值。
+   */
+  setProjectRepoPath(project_id: string, path: string | null): { updated: boolean };
   groupMessages(project_id: string, requirement_id?: string): GroupMessageRow[];
   /**
    * 追加一条主管对话消息（T-091，只有写入方）。message_id 已存在时忽略、返回 inserted:false，先写的为准；
@@ -620,8 +626,9 @@ function open(options: StorageOptions, ro: boolean): Storage {
         @prompt_chars, @output_chars, @summary, @input_tokens, @output_tokens, @cache_hit_input_tokens, @cache_hit, @latency_ms, @cost, @is_resubmit, @rate_limited_retry)`,
     ),
     insertProject: db.prepare(
-      "INSERT OR IGNORE INTO projects (project_id, name, language, has_github_remote, created_at, repo_path) VALUES (?, ?, ?, ?, ?, ?)",
+      "INSERT OR IGNORE INTO projects (project_id, name, language, has_github_remote, created_at) VALUES (?, ?, ?, ?, ?)",
     ),
+    setRepoPath: db.prepare("UPDATE projects SET repo_path = ? WHERE project_id = ?"),
     deleteProject: db.prepare("DELETE FROM projects WHERE project_id = ?"),
     eventExists: db.prepare("SELECT 1 FROM events WHERE event_id = ?"),
     insertGroup: db.prepare(
@@ -675,7 +682,6 @@ function open(options: StorageOptions, ro: boolean): Storage {
             p.language,
             p.has_github_remote ? 1 : 0,
             e.ts,
-            p.repo_path ?? null,
           );
         }
         // 收到「项目已创建」后建群记录
@@ -847,6 +853,19 @@ function open(options: StorageOptions, ro: boolean): Storage {
     if (typeof project_id !== "string" || project_id.length === 0) throw invalidProjectId();
     return { removed: st.deleteProject.run(project_id).changes > 0 };
   });
+
+  const setProjectRepoPath = write(
+    "setProjectRepoPath",
+    (project_id: string, path: string | null) => {
+      if (typeof project_id !== "string" || project_id.length === 0) throw invalidProjectId();
+      if (path !== null && (typeof path !== "string" || path.length === 0)) {
+        throw Object.assign(new TypeError("invalid_repo_path"), {
+          code: "invalid_repo_path" as const,
+        });
+      }
+      return { updated: st.setRepoPath.run(path, project_id).changes > 0 };
+    },
+  );
 
   const saveTicket = write("saveTicket", (t: TicketInput) => {
     st.upsertRequirement.run(t.requirement_id, t.project_id);
@@ -1384,6 +1403,7 @@ function open(options: StorageOptions, ro: boolean): Storage {
         .all() as ProjectRow[];
     },
     removeProject,
+    setProjectRepoPath,
     listDecisions(project_id) {
       return db
         .prepare(

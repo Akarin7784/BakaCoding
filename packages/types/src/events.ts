@@ -58,8 +58,6 @@ export const ProjectCreatedSchema = projectEv("project_created", {
   name: z.string().min(1),
   language: z.string().min(1),
   has_github_remote: z.boolean(),
-  /** T-142：仓库所在路径，可选；只给桌面端主进程用，诊断包导出时必须去掉（T-143） */
-  repo_path: z.string().min(1).optional(),
 });
 /** T-142：项目记录已删除。只删记录，不动仓库，不删历史事件；之后再发 project_created 可重新登记。 */
 export const ProjectRemovedSchema = projectEv("project_removed", {

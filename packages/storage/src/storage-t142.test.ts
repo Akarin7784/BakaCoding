@@ -6,7 +6,7 @@ import Database from "better-sqlite3";
 import { EventSchema, type BakaEvent } from "@bakacoding/types";
 import { afterEach, describe, expect, it } from "vitest";
 import { MIGRATIONS } from "./schema.sql.js";
-import { openStorage, openStorageReadonly, type Storage } from "./index.js";
+import { openStorage, openStorageReadonly, StorageReadonlyError, type Storage } from "./index.js";
 
 let dirs: string[] = [];
 let opened: { close(): void }[] = [];
@@ -123,44 +123,93 @@ describe("T-142 removeProject", () => {
 });
 
 describe("T-142 repo_path", () => {
-  it("事件带 repo_path 时 listProjects 返回它，没带为 null", () => {
-    const s = openW();
-    s.ingest(created("P-1", { repo_path: SECRET_PATH }));
+  it("setProjectRepoPath 写入后 listProjects 返回它，没写为 null；可清回 null；只读连接也能读到", () => {
+    const path = tmpDb();
+    const s = openW(path);
+    s.ingest(created("P-1"));
     s.ingest(created("P-2"));
-    const rows = s.listProjects();
+    expect(s.setProjectRepoPath("P-1", SECRET_PATH)).toEqual({ updated: true });
+    let rows = s.listProjects();
     expect(rows.find((r) => r.project_id === "P-1")?.repo_path).toBe(SECRET_PATH);
     expect(rows.find((r) => r.project_id === "P-2")?.repo_path).toBeNull();
+    const ro = openStorageReadonly({ path });
+    opened.push(ro);
+    expect(ro.listProjects().find((r) => r.project_id === "P-1")?.repo_path).toBe(SECRET_PATH);
+    // @ts-expect-error ReadonlyStorage 类型上没有 setProjectRepoPath
+    expect(() => ro.setProjectRepoPath("P-1", null)).toThrow(StorageReadonlyError);
+    expect(s.setProjectRepoPath("P-1", null)).toEqual({ updated: true });
+    rows = s.listProjects();
+    expect(rows.find((r) => r.project_id === "P-1")?.repo_path).toBeNull();
   });
 
-  it("报错信息不带路径值或其他传入值", () => {
+  it("未知项目和已删除项目返回 updated:false，不抛错", () => {
     const s = openW();
-    s.ingest(created("P-1", { repo_path: SECRET_PATH }));
-    const msgs: string[] = [];
-    for (const bad of [{ path: SECRET_PATH }, [SECRET_PATH], 7]) {
+    expect(s.setProjectRepoPath("nope", SECRET_PATH)).toEqual({ updated: false });
+    s.ingest(created("P-1"));
+    s.removeProject("P-1");
+    expect(s.setProjectRepoPath("P-1", SECRET_PATH)).toEqual({ updated: false });
+    expect(s.listProjects()).toEqual([]);
+  });
+
+  it("删除后重新登记的项目 repo_path 从 null 开始", () => {
+    const s = openW();
+    s.ingest(created("P-1"));
+    s.setProjectRepoPath("P-1", SECRET_PATH);
+    s.removeProject("P-1");
+    s.ingest(created("P-1"));
+    expect(s.listProjects()).toEqual([
+      expect.objectContaining({ project_id: "P-1", repo_path: null }),
+    ]);
+  });
+
+  it("事件查询结果里永远没有 repo_path，setProjectRepoPath 之后也没有", () => {
+    const s = openW();
+    s.ingest(created("P-1"));
+    s.setProjectRepoPath("P-1", SECRET_PATH);
+    s.ingest(created("P-2", { repo_path: SECRET_PATH } as object));
+    const evs = [...s.queryEvents({ project_id: "P-1" }), ...s.queryEvents({ project_id: "P-2" })];
+    expect(evs).toHaveLength(2);
+    const text = JSON.stringify(evs);
+    expect(text).not.toContain("repo_path");
+    expect(text).not.toContain(SECRET_PATH);
+  });
+
+  it("参数不合法抛 TypeError，消息只有错误码、不带路径或其他值", () => {
+    const s = openW();
+    s.ingest(created("P-1"));
+    const cases: [unknown, unknown, string][] = [
+      ["", SECRET_PATH, "invalid_project_id"],
+      [{ p: SECRET_PATH }, SECRET_PATH, "invalid_project_id"],
+      ["P-1", "", "invalid_repo_path"],
+      ["P-1", 7, "invalid_repo_path"],
+      ["P-1", undefined, "invalid_repo_path"],
+      ["P-1", { p: SECRET_PATH }, "invalid_repo_path"],
+      ["P-1", [SECRET_PATH], "invalid_repo_path"],
+    ];
+    for (const [id, path, code] of cases) {
+      let err: unknown;
       try {
-        s.removeProject(bad as never);
+        s.setProjectRepoPath(id as never, path as never);
       } catch (e) {
-        msgs.push((e as Error).message);
+        err = e;
       }
-    }
-    expect(msgs).toHaveLength(3);
-    for (const m of msgs) {
+      expect(err).toBeInstanceOf(TypeError);
+      expect((err as { code?: string }).code).toBe(code);
+      const m = (err as Error).message;
       expect(m).not.toContain(SECRET_PATH);
       expect(m).not.toContain("secret-repos");
       expect(m).not.toContain("7");
     }
-    // 空 repo_path 被 schema 拒绝，错误里也不带值
-    const r = EventSchema.safeParse({
-      ...created("P-9"),
-      payload: {
-        project_id: "P-9",
-        name: "x",
-        language: "ts",
-        has_github_remote: false,
-        repo_path: 1,
-      },
-    });
-    expect(r.success).toBe(false);
+    expect(s.listProjects()[0]?.repo_path).toBeNull();
+    for (const bad of [{ path: SECRET_PATH }, [SECRET_PATH], 7]) {
+      try {
+        s.removeProject(bad as never);
+        expect.unreachable();
+      } catch (e) {
+        expect((e as Error).message).not.toContain(SECRET_PATH);
+        expect((e as Error).message).not.toContain("7");
+      }
+    }
   });
 
   it("v5 旧库升级到 v6：老项目保留、repo_path 为 null，之后可删", () => {
