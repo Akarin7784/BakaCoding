@@ -691,14 +691,23 @@ describe("UI-06c：右面板 Git 区（git:status + 同步状态）", () => {
       await waitFor(() =>
         expect(within(git).getByTestId("git-current").textContent).toBe("当前 feat/x"),
       );
-      expect(within(git).getByTestId("git-ahead").textContent).toContain("领先 main");
+      // P3（UI-06d）：断言领先数的具体数字（fake 每取一次 ahead 加 1，从 2 起；显示最后一次取到的数）
+      const aheadNow = () => 1 + getGitStatus.mock.calls.length;
+      await waitFor(() =>
+        expect(within(git).getByTestId("git-ahead").textContent).toBe(
+          `集成 bakacoding/integration（领先 main ${aheadNow()}）`,
+        ),
+      );
+      expect(aheadNow()).toBeGreaterThanOrEqual(2);
       expect(within(git).getByTestId("git-last-sync").textContent).toMatch(/^上次同步：2026/);
       // 只显示最后一次成功同步时间：不显示运行中 / 下次尝试
       expect(within(git).queryByTestId("sync-status")).toBeNull();
       expect(git.textContent).not.toContain("下次尝试");
       expect(within(git).queryByTestId("git-sync-error")).toBeNull();
-      // 合入 main 按钮留给 06d
-      expect(within(git).queryByRole("button")).toBeNull();
+      // UI-06d：fake api 没有 mergeMain → 合入按钮禁用
+      expect(
+        (within(git).getByRole("button", { name: /合入 main/ }) as HTMLButtonElement).disabled,
+      ).toBe(true);
       const calls = getGitStatus.mock.calls.length;
       // 不轮询：一分钟没有事件不重取
       await act(async () => {
@@ -708,6 +717,11 @@ describe("UI-06c：右面板 Git 区（git:status + 同步状态）", () => {
       // 快照更新 → 重取
       act(() => push({ db: snapshot.db, events: [], tickets: [...snapshot.tickets], last_seq: 4 }));
       await waitFor(() => expect(getGitStatus.mock.calls.length).toBe(calls + 1));
+      await waitFor(() =>
+        expect(within(git).getByTestId("git-ahead").textContent).toBe(
+          `集成 bakacoding/integration（领先 main ${calls + 2}）`,
+        ),
+      );
       // 新事件 → 重取
       act(() =>
         push({

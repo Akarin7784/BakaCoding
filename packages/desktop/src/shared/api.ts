@@ -10,6 +10,7 @@ import type { HighRiskFile, HighRiskReason } from "@bakacoding/sub-agent";
 import type {
   ChatReply,
   HighRiskDecisionResult,
+  MainMergeErrorCode,
   PendingHighRisk,
   UserMessage,
 } from "@bakacoding/supervisor";
@@ -58,6 +59,11 @@ export const IPC_CHANNELS = {
   requirementDetail: "bakacoding:requirement:detail",
   /** invoke：Git 区状态（UI-06c，只读，无参数）：4 的 branchStatus + 6 的 INTEGRATION_BRANCH + 配置 main_merge。 */
   gitStatus: "bakacoding:git:status",
+  /**
+   * invoke：合入 main（UI-06d，写）：参数 `{head_sha}`，原样透传给 10 的 `mergeMain({by:"user", head_sha})`。
+   * MainMergeError.code 映射成固定文案；只读 / 未接线固定 ok:false；不带路径和原始错误。
+   */
+  mainMerge: "bakacoding:main:merge",
   /**
    * invoke：编码池状态（UI-06b，只读）：原样取 9 的 backpressureState()，无参数。
    * 后端只读 / 未接线固定 ok:false；抛错 ok:false + 固定文案，不带路径。
@@ -683,6 +689,8 @@ export interface BakaDesktopApi {
   ): Promise<DesktopRequirementDetailResult>;
   /** 取 Git 区状态（UI-06c，只读）；失败以 ok:false 返回（固定文案），不抛过 IPC。旧 preload 可以没有。 */
   getGitStatus?(): Promise<DesktopGitStatusResult>;
+  /** 合入 main（UI-06d，写）；失败以 ok:false 返回（固定文案），不抛过 IPC。旧 preload 可以没有。 */
+  mergeMain?(request: DesktopMainMergeRequest): Promise<DesktopMainMergeResult>;
   /** 取编码池状态（UI-06b，只读）；旧版 preload 可以没有。失败以 ok:false 返回，不抛过 IPC。 */
   getPoolState?(): Promise<DesktopPoolStateResult>;
   /** 取主管对话历史（UI-04a）；失败以 ok:false 返回，不抛过 IPC。 */
@@ -828,6 +836,18 @@ export type DesktopGitStatusResult =
       main_merge: "user" | "supervisor";
     }
   | { ok: false; reason: string };
+/** `main:merge` 参数（UI-06d）：审查通过的集成分支 head（40 位 sha）。 */
+export interface DesktopMainMergeRequest {
+  head_sha: string;
+}
+/**
+ * `main:merge` 结果（UI-06d）。`code` 是 10 的 MainMergeErrorCode，另加 `invalid`（参数不对）；
+ * reason 是固定文案。`notified` = 没合，只通知了。
+ */
+export type DesktopMainMergeResult =
+  | { ok: true; result: "merged"; sha: string }
+  | { ok: true; result: "notified" }
+  | { ok: false; code: MainMergeErrorCode | "invalid"; reason: string };
 /**
  * `pool:state` 结果（UI-06b）：state 原样是 9 的 `BackpressureState`（不改 9 的接口）。
  * 后端只读 / 未接线固定 ok:false；抛错 ok:false，reason 为固定文案。

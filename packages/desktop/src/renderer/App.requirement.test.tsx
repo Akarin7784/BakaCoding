@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// UI-05c：需求页从路由 #requirement=<id> 打开；顶部高风险横条照旧；左栏选别的就离开需求页。
+// UI-05c：需求页从路由 #requirement=<id> 打开；顶部高风险横条已删（UI-06d）；左栏选别的就离开需求页。
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { App } from "./App";
@@ -53,11 +53,11 @@ describe("UI-05d 需求页高风险 + 左栏红点", () => {
     },
   ];
 
-  it("需求页里有本需求的高风险卡片，顶部横条照旧在", () => {
+  it("需求页里有本需求的高风险卡片，顶部横条已删（UI-06d）", () => {
     window.location.hash = requirementHash("req-2");
     render(<App api={null} pendingHighRisk={pending} />);
     expect(screen.getByRole("region", { name: HIGH_RISK_CARD_COPY.label })).toBeTruthy();
-    expect(screen.getByTestId("high-risk-panel")).toBeTruthy();
+    expect(screen.queryByTestId("high-risk-panel")).toBeNull();
   });
 
   it("别的需求页没有这张卡片", () => {

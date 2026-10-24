@@ -23,6 +23,7 @@ import {
   serveSupervisorSplit,
   serveRequirementDetail,
   serveGitStatus,
+  serveMainMerge,
   servePoolState,
   serveSyncState,
   serveAbout,
@@ -90,6 +91,7 @@ function fakeBackend(over: Partial<BackendHandle> = {}): BackendHandle {
     supervisorHistory: vi.fn(async () => ({ ok: true as const, messages: [] })),
     requirementDetail: vi.fn(async () => ({ ok: false as const, reason: "找不到这个需求" })),
     gitStatus: vi.fn(async () => ({ ok: false as const, reason: "Git 状态暂不可用" })),
+    mainMerge: vi.fn(async () => ({ ok: true as const, result: "notified" as const })),
     poolState: vi.fn(async () => ({ ok: false as const, reason: "编码池状态暂不可用" })),
     supervisorSplit: vi.fn(async () => ({
       ok: true as const,
@@ -165,6 +167,8 @@ const SERVE: Record<string, (ipc: IpcMainLike, backend: BackendHandle) => () => 
   serveSupervisorSplit: (ipc, backend) => serveSupervisorSplit(ipc, backend),
   serveRequirementDetail: (ipc, backend) => serveRequirementDetail(ipc, backend),
   serveGitStatus: (ipc, backend) => serveGitStatus(ipc, backend),
+  // UI-06d：合入 main（写）
+  serveMainMerge: (ipc, backend) => serveMainMerge(ipc, backend),
   // UI-06b：编码池状态
   servePoolState: (ipc, backend) => servePoolState(ipc, backend),
   // UI-07a：设置 › 关于
@@ -381,6 +385,13 @@ describe("handler 参数：第一个是 event，渲染进程参数从第二个�
     // UI-06c：Git 区状态（无参数）
     await expect(api.getGitStatus!()).resolves.toEqual({ ok: false, reason: "Git 状态暂不可用" });
     expect(backend.gitStatus).toHaveBeenCalledWith();
+    // UI-06d：合入 main 参数原样到后端
+    const sha = "a".repeat(40);
+    await expect(api.mergeMain!({ head_sha: sha })).resolves.toEqual({
+      ok: true,
+      result: "notified",
+    });
+    expect(backend.mainMerge).toHaveBeenCalledWith({ head_sha: sha });
     // UI-06b：编码池状态（无参数）
     await expect(api.getPoolState!()).resolves.toEqual({
       ok: false,
@@ -626,6 +637,7 @@ describe("preload 暴露的只读 API", () => {
       "listInitialFiles",
       "listProjects",
       "markSupervisorReady",
+      "mergeMain",
       "onPendingHighRisk",
       "onQuitting",
       "onSupervisorNotify",

@@ -2,6 +2,7 @@
 import { readPoolState } from "./pool-state.js";
 import { readRequirementDetail } from "./requirement-detail.js";
 import { readGitStatus } from "./git-status.js";
+import { runMainMerge } from "./main-merge.js";
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { copyFile, lstat, mkdtemp, rm, unlink } from "node:fs/promises";
@@ -52,6 +53,7 @@ import type {
   DesktopPoolStateResult,
   DesktopRequirementDetailResult,
   DesktopGitStatusResult,
+  DesktopMainMergeResult,
   DesktopDecideHighRiskResult,
   DesktopExportOptions,
   DesktopSyncState,
@@ -213,6 +215,8 @@ export interface BackendHandle {
   requirementDetail(query: unknown): Promise<DesktopRequirementDetailResult>;
   /** UI-06c：Git 区只读状态；只读固定 ok:false */
   gitStatus(): Promise<DesktopGitStatusResult>;
+  /** UI-06d：合入 main（写）：live 时把 head_sha 透传给 10 的 mergeMain({by:"user"})；只读固定 ok:false */
+  mainMerge(input: unknown): Promise<DesktopMainMergeResult>;
   /** 编码池状态（UI-06b，只读）：live 时原样转 9 的 backpressureState()；只读固定 ok:false，抛错固定文案 */
   poolState(): Promise<DesktopPoolStateResult>;
   /**
@@ -887,6 +891,10 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
           ? { repoRoot, mainMerge, branchStatus: opts.branchStatus ?? branchStatusDefault }
           : undefined,
       );
+    },
+    mainMerge(input: unknown): Promise<DesktopMainMergeResult> {
+      const sup = mode === "live" ? app?.supervisor : undefined;
+      return runMainMerge(sup ? (o) => sup.mergeMain(o) : undefined, input);
     },
     poolState(): Promise<DesktopPoolStateResult> {
       const sch = mode === "live" ? app?.scheduler : undefined;

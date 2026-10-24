@@ -192,9 +192,8 @@ describe("只读时禁用并说明（§4.7）", () => {
     const exp = screen.getByRole("button", { name: "导出诊断包" }) as HTMLButtonElement;
     expect(exp.disabled).toBe(true);
     expect(exp.title).toBe("只读模式下不能导出");
-    expect((screen.getByTestId("high-risk-release") as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByTestId("high-risk-reject") as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByTestId("high-risk-actions").title).toBe("只读模式下不能裁决");
+    // UI-06d：顶部高风险横条已删；需求页卡片的只读禁用见 RequirementHighRisk.test
+    expect(screen.queryByTestId("high-risk-release")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: /baka-todo/ }));
     expect(
@@ -217,8 +216,8 @@ describe("只读时禁用并说明（§4.7）", () => {
     expect(
       (screen.getByRole("textbox", { name: "发给主管" }) as HTMLTextAreaElement).disabled,
     ).toBe(false);
-    expect((screen.getByTestId("high-risk-release") as HTMLButtonElement).disabled).toBe(false);
-    expect(screen.getByTestId("high-risk-actions").title).toBe("");
+    // UI-06d：顶部高风险横条已删，主界面顶部不再出现裁决按钮
+    expect(screen.queryByTestId("high-risk-release")).toBeNull();
   });
 });
 

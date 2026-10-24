@@ -15,8 +15,20 @@ import {
   statusFilterOptions,
   type TicketStatusFilter,
 } from "../lib/ticketList";
-import type { DesktopGitStatusResult, DesktopSyncState, TicketView } from "../../shared/api";
-import { GIT_COPY, gitAheadLabel, gitCurrentLabel, gitSyncView } from "../lib/gitStatus";
+import type {
+  DesktopGitStatusResult,
+  DesktopMainMergeResult,
+  DesktopSyncState,
+  TicketView,
+} from "../../shared/api";
+import {
+  GIT_COPY,
+  MAIN_MERGE_COPY,
+  gitAheadLabel,
+  gitCurrentLabel,
+  gitSyncView,
+  mainMergeBlocker,
+} from "../lib/gitStatus";
 import type { ProjectView } from "../mock/types";
 import { poolRowLabel, poolRowTitle, type PoolRow } from "../lib/poolState";
 
@@ -64,14 +76,100 @@ function TicketWarning({ codes }: { codes: string[] }) {
 
 /**
  * UI-06c：真实 Git 区——git:status（当前分支、集成领先 main）+ 最后一次成功同步时间 + 同步出错时的固定提示。
- * 「合入 main」按钮留给 06d。
+ * UI-06d：按 main_merge 显示合入入口——user 时「合入 main」按钮（走 main:merge，透传审查过的 head_sha），
+ * supervisor 时一句固定说明；合入中 / 结果 / 错误（主进程给的固定文案）显示在按钮下面。
  */
+export type MainMergeUi =
+  { kind: "idle" } | { kind: "merging" } | { kind: "done"; result: DesktopMainMergeResult };
+
+function MainMergeEntry({
+  status,
+  readonly,
+  reviewedHead,
+  onMergeMain,
+  initial,
+}: {
+  status: Extract<DesktopGitStatusResult, { ok: true }>;
+  readonly: boolean;
+  reviewedHead: string | null | undefined;
+  onMergeMain?: (head_sha: string) => Promise<DesktopMainMergeResult>;
+  initial?: MainMergeUi;
+}) {
+  const [ui, setUi] = useState<MainMergeUi>(initial ?? { kind: "idle" });
+  if (status.main_merge === "supervisor")
+    return (
+      <p data-testid="main-merge-auto" className="text-xs text-muted-foreground">
+        {MAIN_MERGE_COPY.supervisorMode}
+      </p>
+    );
+  const blocker = readonly
+    ? READONLY_COPY.mergeMainDisabled
+    : mainMergeBlocker(status, reviewedHead);
+  const merging = ui.kind === "merging";
+  const run = async () => {
+    if (!onMergeMain || !reviewedHead) return;
+    setUi({ kind: "merging" });
+    try {
+      setUi({ kind: "done", result: await onMergeMain(reviewedHead) });
+    } catch {
+      setUi({ kind: "done", result: { ok: false, code: "error", reason: MAIN_MERGE_COPY.failed } });
+    }
+  };
+  const r = ui.kind === "done" ? ui.result : null;
+  return (
+    <div data-testid="main-merge" className="space-y-1">
+      <Button
+        variant="secondary"
+        size="sm"
+        disabled={blocker !== null || merging || !onMergeMain}
+        aria-busy={merging || undefined}
+        title={blocker ?? undefined}
+        onClick={() => void run()}
+      >
+        {merging ? (
+          <RefreshCw strokeWidth={1.5} className="animate-spin" />
+        ) : (
+          <GitMerge strokeWidth={1.5} />
+        )}
+        {merging ? MAIN_MERGE_COPY.merging : MERGE_COPY.mergeMainAction}
+      </Button>
+      {blocker && !merging && (
+        <p data-testid="main-merge-hint" className="text-xs text-muted-foreground">
+          {blocker}
+        </p>
+      )}
+      {r &&
+        (r.ok ? (
+          <p
+            data-testid="main-merge-result"
+            role="status"
+            className="text-xs text-muted-foreground"
+          >
+            {r.result === "merged" ? MAIN_MERGE_COPY.merged(r.sha) : MAIN_MERGE_COPY.notified}
+          </p>
+        ) : (
+          <p data-testid="main-merge-error" role="alert" className="text-xs text-danger">
+            {r.reason}
+          </p>
+        ))}
+    </div>
+  );
+}
+
 function LiveGit({
   status,
   sync,
+  readonly = false,
+  reviewedHead,
+  onMergeMain,
+  mergeInitial,
 }: {
   status: DesktopGitStatusResult | "loading";
   sync: DesktopSyncState | null;
+  readonly?: boolean;
+  reviewedHead?: string | null;
+  onMergeMain?: (head_sha: string) => Promise<DesktopMainMergeResult>;
+  mergeInitial?: MainMergeUi;
 }) {
   const syncView = gitSyncView(sync);
   return (
@@ -88,6 +186,13 @@ function LiveGit({
             <GitBranch size={14} strokeWidth={1.5} aria-hidden />
             {gitAheadLabel(status)}
           </div>
+          <MainMergeEntry
+            status={status}
+            readonly={readonly}
+            reviewedHead={reviewedHead}
+            {...(onMergeMain && { onMergeMain })}
+            {...(mergeInitial && { initial: mergeInitial })}
+          />
         </>
       ) : (
         <p data-testid="git-unavailable" className="text-xs text-muted-foreground">
@@ -126,6 +231,9 @@ export function RightPanel({
   gitStatus,
   sync = null,
   pool: poolLive,
+  mainMergeHead,
+  onMergeMain,
+  mainMergeInitial,
 }: {
   view: ProjectView;
   /** 快照 tickets（全部项目；这里按当前项目过滤） */
@@ -143,6 +251,12 @@ export function RightPanel({
   sync?: DesktopSyncState | null;
   /** UI-06b：真实编码池状态；不给时回退 view.pool */
   pool?: PoolLive | null;
+  /** UI-06d：审查通过的集成分支 head（40 位 sha）；没有 = 按钮禁用并提示先审查 */
+  mainMergeHead?: string | null;
+  /** UI-06d：点「合入 main」→ main:merge；不给 = 按钮禁用 */
+  onMergeMain?: (head_sha: string) => Promise<DesktopMainMergeResult>;
+  /** 仅测试 / 截图用：合入区初始状态 */
+  mainMergeInitial?: MainMergeUi;
 }) {
   const { pool, git } = view;
   const projectId = view.project.payload.project_id;
@@ -173,7 +287,14 @@ export function RightPanel({
       <div className="space-y-2 px-4 py-3">
         <div className="text-xs text-muted-foreground">Git · {view.project.payload.name}</div>
         {gitStatus !== undefined ? (
-          <LiveGit status={gitStatus ?? "loading"} sync={sync} />
+          <LiveGit
+            status={gitStatus ?? "loading"}
+            sync={sync}
+            readonly={readonly}
+            reviewedHead={mainMergeHead}
+            {...(onMergeMain && { onMergeMain })}
+            {...(mainMergeInitial && { mergeInitial: mainMergeInitial })}
+          />
         ) : git ? (
           <>
             <div className="flex items-center gap-2">
