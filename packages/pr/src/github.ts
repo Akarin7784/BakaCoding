@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { EscalatedSchema, type Diff, type EventOf, type PrStatus } from "@bakacoding/types";
-import { git, GitError, withGitSignal } from "./git.js";
+import { git, GitError, outsideGitSignal, withGitSignal } from "./git.js";
 import {
   LocalPrProvider,
   mergeCommitContaining,
@@ -1037,7 +1037,8 @@ export class GithubPrProvider implements PrProvider {
       type: "escalated",
       payload: { reason: "github_manual", detail: this.scrub(detail) },
     }) as EscalatedInput;
-    await this.publish(event);
+    // 在 signal 上下文之外发布（T-136）：订阅方里没传 signal 的 6 调用不沿用本次调用的 signal
+    await outsideGitSignal(() => this.publish(event));
   }
 
   private scrub(s: string): string {
