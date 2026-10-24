@@ -265,9 +265,12 @@ export function SettingsPanel({
   }
 
   return (
-    <section aria-label="设置" className="flex min-w-0 flex-1 flex-col">
+    <section aria-label="设置" className="flex min-h-0 min-w-0 flex-1 flex-col">
       {header}
-      <div className="space-y-5 overflow-y-auto px-4 py-4 text-sm">
+      <div
+        data-testid="settings-scroll"
+        className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-4 text-sm"
+      >
         {errorAlert}
         {theme}
         {loading}

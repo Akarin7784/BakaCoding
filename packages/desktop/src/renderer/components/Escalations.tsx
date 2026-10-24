@@ -113,7 +113,7 @@ export function UnattributedPanel({
   readonly?: boolean;
 }) {
   return (
-    <section aria-label="未归属" className="flex min-w-0 flex-1 flex-col">
+    <section aria-label="未归属" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       {showHeader && (
         <header className="flex items-center gap-2 border-b border-border px-4 py-2">
           <span className="flex-1 text-sm font-medium">未归属</span>
@@ -136,7 +136,8 @@ export function UnattributedPanel({
         <ul
           role="alert"
           aria-label="需要人工介入"
-          className="space-y-1 overflow-y-auto px-4 py-2 text-sm"
+          data-testid="unattributed-scroll"
+          className="min-h-0 flex-1 space-y-1 overflow-y-auto px-4 py-2 text-sm"
         >
           {escalations.map((e) => (
             <EscalationItem key={e.event_id} e={e} />
