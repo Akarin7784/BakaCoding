@@ -2,7 +2,11 @@
 // UI-07c：设置 › 预算。必填不给默认值、比例 (0,1]、低于今天已花费只警告不拦、只读、今天花费只取 budget:status。
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { DesktopBudgetStatusResult, DesktopModelSaveResult } from "../../shared/api";
+import type {
+  DesktopBudgetStatusResult,
+  DesktopLedgerSummaryResult,
+  DesktopModelSaveResult,
+} from "../../shared/api";
 import { belowToday, microToUsd, parseRatio } from "../lib/budgetSettings";
 import { BudgetSettings, type BudgetSettingsApi } from "./BudgetSettings";
 
@@ -161,5 +165,89 @@ describe("预算纯逻辑", () => {
     expect(belowToday(2, 2)).toBe(false);
     expect(belowToday(null, 2)).toBe(false);
     expect(belowToday(1, null)).toBe(false);
+  });
+});
+
+// UI-07e：§4.6「本项目已花费（来自台账）」——各项目累计只取 ledger:summary，今天已花费仍只取 budget:status。
+describe("设置 › 预算 本项目已花费", () => {
+  const role = { supervisor: 0, reviewer: 0, sub_agent: 0, coder: 0 };
+  const summary: DesktopLedgerSummaryResult = {
+    ok: true,
+    projects: [
+      {
+        project_id: "p-1",
+        name: "alpha",
+        total_micro_usd: 12_340_000,
+        resubmit_micro_usd: 1_500_000,
+        entries: 9,
+        by_role: role,
+      },
+      {
+        project_id: "p-2",
+        name: "beta",
+        total_micro_usd: 700_000,
+        resubmit_micro_usd: 0,
+        entries: 1,
+        by_role: role,
+      },
+    ],
+  };
+  const withSummary = (
+    s: () => Promise<DesktopLedgerSummaryResult>,
+    st = status(),
+  ): BudgetSettingsApi => ({ ...api(st), getLedgerSummary: vi.fn(s) });
+
+  it("按项目显示累计（含复投只在大于 0 时显示）；今天已花费仍来自 budget:status", async () => {
+    const a = withSummary(async () => summary);
+    render(<BudgetSettings api={a} />);
+    const one = await screen.findByTestId("project-spend-p-1");
+    expect(text(one)).toContain("alpha");
+    expect(text(one)).toContain("$12.34");
+    expect(text(one)).toContain("（含复投 $1.5）");
+    const two = screen.getByTestId("project-spend-p-2");
+    expect(text(two)).toContain("$0.7");
+    expect(text(two)).not.toContain("含复投");
+    expect(a.getLedgerSummary).toHaveBeenCalledTimes(1);
+    // 今天已花费：budget:status 的 2.5，不是台账累计
+    const today = screen.getByTestId("budget-today");
+    expect(text(today)).toContain("$2.5");
+    expect(text(today)).not.toContain("12.34");
+    expect(text(screen.getByTestId("project-spend"))).not.toContain("$2.5");
+  });
+
+  it("今天已花费跟着 budget:status 变，与台账无关", async () => {
+    const st = status();
+    const a = withSummary(async () => summary, {
+      ...st,
+      ...(st.ok && st.today && { today: { ...st.today, spent_micro_usd: 3_210_000 } }),
+    } as DesktopBudgetStatusResult);
+    render(<BudgetSettings api={a} />);
+    await screen.findByTestId("project-spend-list");
+    expect(text(screen.getByTestId("budget-today"))).toContain("$3.21");
+  });
+
+  it("读取中显示加载；没有项目显示空状态", async () => {
+    let done: (r: DesktopLedgerSummaryResult) => void = () => {};
+    const a = withSummary(() => new Promise((r) => (done = r)));
+    render(<BudgetSettings api={a} />);
+    expect(await screen.findByTestId("project-spend-loading")).toBeTruthy();
+    done({ ok: true, projects: [] });
+    expect(text(await screen.findByTestId("project-spend-empty"))).toContain("还没有已导入的项目");
+    expect(screen.queryByTestId("project-spend-list")).toBeNull();
+  });
+
+  it("出错：ok:false 显示原因；调用抛错显示固定文案；预算表单照常可用", async () => {
+    render(
+      <BudgetSettings
+        api={withSummary(async () => ({ ok: false, reason: "后端只读，读不到台账" }))}
+      />,
+    );
+    expect(text(await screen.findByTestId("project-spend-error"))).toBe("后端只读，读不到台账");
+    expect(screen.getByTestId("budget-save")).toBeTruthy();
+    cleanup();
+    render(<BudgetSettings api={withSummary(async () => Promise.reject(new Error("x")))} />);
+    expect(text(await screen.findByTestId("project-spend-error"))).toBe(
+      "读取项目花费失败，请重试。",
+    );
   });
 });
