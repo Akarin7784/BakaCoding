@@ -484,9 +484,13 @@ export function App(props: AppProps) {
               tickets={tickets}
               {...(api?.getGitStatus ? { gitStatus, sync: syncState } : {})}
               {...(api?.mergeMain && {
-                // UI-06d：审查通过的 head 目前没有来源（10 不对外暴露），先传 null，按钮禁用并提示先审查
+                // UI-06d2：head 来自「审查集成分支」（integration:review ok 的 head_sha），初始为空
                 mainMergeHead: null,
                 onMergeMain: (head_sha: string) => api.mergeMain!({ head_sha }),
+              })}
+              {...(api?.reviewIntegration && {
+                onReviewIntegration: () =>
+                  api.reviewIntegration!({ project_id: current.project.payload.project_id }),
               })}
               exportBusy={actions.busy === "export"}
               onOpenTicket={(rid, tid) => {
