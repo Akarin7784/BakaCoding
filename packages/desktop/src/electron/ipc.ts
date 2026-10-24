@@ -8,6 +8,7 @@ import {
   type DesktopChatResult,
   type DesktopHistoryResult,
   type DesktopSplitResult,
+  type DesktopRequirementDetailResult,
   type DesktopDecideHighRiskResult,
   type DesktopExportOptions,
   type DesktopExportResult,
@@ -687,6 +688,20 @@ export function isStrictIsoDateTime(v: unknown): v is string {
   if (Number(h) > 23 || Number(mi) > 59 || Number(sec ?? 0) > 59) return false;
   if (oh !== undefined && (Number(oh) > 23 || Number(om) > 59)) return false;
   return !Number.isNaN(Date.parse(v));
+}
+
+/** 需求详情 IPC（UI-05a，只读）：invoke `requirement:detail` → backend.requirementDetail（参数从第二个起）。 */
+export function serveRequirementDetail(
+  ipc: IpcMainLike,
+  backend: Pick<BackendHandle, "requirementDetail">,
+): () => void {
+  ipc.handle(IPC_CHANNELS.requirementDetail, async (...args: unknown[]) => {
+    const result: DesktopRequirementDetailResult = await backend.requirementDetail(args[1]);
+    return result;
+  });
+  return () => {
+    ipc.removeHandler(IPC_CHANNELS.requirementDetail);
+  };
 }
 
 /** 重试拆单 IPC（UI-04c）：invoke `supervisor:split` → backend.supervisorSplit → 10 的 split()，不经 chat。 */

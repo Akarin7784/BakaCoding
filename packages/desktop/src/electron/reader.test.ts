@@ -413,3 +413,33 @@ describe("项目列表与标题（T-033）", () => {
     expect(ticketTitle(long)).toBe(`${"长".repeat(79)}…`);
   });
 });
+
+describe("UI-05a：ticket_status_changed 进白名单", () => {
+  const statusChanged = (from: "coding" | null, to: "in_review"): BakaEvent =>
+    ({
+      ...common("R-1", "T-1"),
+      type: "ticket_status_changed",
+      payload: { project_id: "P-1", from, to },
+    }) as BakaEvent;
+
+  it("快照和增量都按白名单读出 ticket_status_changed，from 可为 null", () => {
+    const s = writer();
+    s.ingest(projectCreated());
+    s.ingest(statusChanged(null, "in_review"));
+    reader = openEventReader({ path: path.join(dir, "store.db") });
+    const snap = reader.snapshot();
+    const ev = snap.events.find((e) => e.type === "ticket_status_changed");
+    // ticket_id / requirement_id 在公共信封上
+    expect([ev?.ticket_id, ev?.requirement_id]).toEqual(["T-1", "R-1"]);
+    expect(ev?.type === "ticket_status_changed" && ev.payload).toEqual({
+      project_id: "P-1",
+      from: null,
+      to: "in_review",
+    });
+    s.ingest(statusChanged("coding", "in_review"));
+    const u = reader.poll();
+    expect(u?.events.map((e) => e.type)).toEqual(["ticket_status_changed"]);
+    const e2 = u?.events[0];
+    expect(e2?.type === "ticket_status_changed" && e2.payload.from).toBe("coding");
+  });
+});

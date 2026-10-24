@@ -49,6 +49,8 @@ export const IPC_CHANNELS = {
    * 不经 chat；只读后端回固定失败；失败原因已脱敏，结果只有需求 id 和单号，不带路径。
    */
   supervisorSplit: "bakacoding:supervisor:split",
+  /** invoke：需求详情（UI-05a，只读）：模块 2 的 listTickets({requirement_id}) + listPrRounds，字段按白名单挑、文本已脱敏。 */
+  requirementDetail: "bakacoding:requirement:detail",
   /** invoke：选目录导入项目，切换后端到该仓库（T-072）。 */
   projectImport: "bakacoding:project:import",
   /** invoke：对上次导入失败（只缺配置）的目录用默认模板补配置，再完成导入；无参数（T-081）。 */
@@ -156,6 +158,8 @@ export const UI_EVENT_TYPES = [
   "call_completed",
   "escalated",
   "ticket_warning",
+  // UI-05a：步骤条小标记 / 时间线用（modules.md 事件表 `ticket_status_changed`，T-085）
+  "ticket_status_changed",
 ] as const satisfies readonly BakaEvent["type"][];
 export type UiEventType = (typeof UI_EVENT_TYPES)[number];
 export type UiEvent = Extract<BakaEvent, { type: UiEventType }>;
@@ -413,6 +417,40 @@ export interface DesktopSplitRequest {
 /** `supervisor:split` 的结果（UI-04c）：只带需求 id 和单号（不带推理摘要，避免路径）；reason 已脱敏。 */
 export type DesktopSplitResult =
   { ok: true; requirement_id: string; ticket_ids: string[] } | { ok: false; reason: string };
+/** `requirement:detail` 的参数（UI-05a）。 */
+export interface DesktopRequirementDetailQuery {
+  requirement_id: string;
+}
+/** 需求详情里的一轮评审（UI-05a）：只挑 round / verdict / fail_reasons / review_comments / reviewer，文本已脱敏。 */
+export interface DesktopRequirementRound {
+  round: number;
+  verdict: "pass" | "fail";
+  fail_reasons: string[];
+  review_comments: string | null;
+  reviewer: string | null;
+}
+/** 需求详情里的一张单（UI-05a）：只有 id、状态和各轮评审。 */
+export interface DesktopRequirementTicket {
+  ticket_id: string;
+  status: TicketStatus;
+  rounds: DesktopRequirementRound[];
+}
+/**
+ * `requirement:detail` 的结果（UI-05a）：只含需求本身的数据，不下发整个 fields，不含评审上限（走 settings:config-get）。
+ * name 取第一张单原文首行、截到 80 字；所有文本过 sanitizeChatReason；reason 是固定文案。
+ */
+export type DesktopRequirementDetailResult =
+  | {
+      ok: true;
+      detail: {
+        requirement_id: string;
+        name: string;
+        requirement_text: string | null;
+        decomposition_summary: string | null;
+        tickets: DesktopRequirementTicket[];
+      };
+    }
+  | { ok: false; reason: string };
 /** `supervisor:history` 的参数（UI-04a）：before 为 message_id 游标，limit 默认 50。 */
 export interface DesktopHistoryQuery {
   before?: string;
@@ -622,6 +660,10 @@ export interface BakaDesktopApi {
   supervisorChat(message: UserMessage): Promise<DesktopChatResult>;
   /** 重试拆单（UI-04c）：走 supervisor:split → 10 的 split()，不经 chat；失败以 ok:false 返回。 */
   supervisorSplit(request: DesktopSplitRequest): Promise<DesktopSplitResult>;
+  /** 取需求详情（UI-05a，只读）；失败以 ok:false 返回（固定文案），不抛过 IPC。 */
+  getRequirementDetail(
+    query: DesktopRequirementDetailQuery,
+  ): Promise<DesktopRequirementDetailResult>;
   /** 取主管对话历史（UI-04a）；失败以 ok:false 返回，不抛过 IPC。 */
   getSupervisorHistory(query?: DesktopHistoryQuery): Promise<DesktopHistoryResult>;
   /** 选目录导入项目（T-072）。 */
