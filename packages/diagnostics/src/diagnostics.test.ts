@@ -329,6 +329,13 @@ describe("完整脱敏", () => {
       "ipv4",
       "ipv6",
       "hostname",
+      // T-146 路径规则
+      "home_dir",
+      "file_url",
+      "unc_path",
+      "windows_path",
+      "tilde_path",
+      "abs_path",
     ];
     for (const [k, v] of Object.entries(rep)) {
       expect(known).toContain(k);

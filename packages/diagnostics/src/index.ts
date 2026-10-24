@@ -7,6 +7,7 @@ export { buildPackage, diffToUnified, isEnvFile, PACKAGE_FILES } from "./build.j
 export { exportPackage, packageToZip, readPackage, zipToPackage } from "./pack.js";
 export { toSweBenchJsonl, type SweBenchInstance } from "./swebench.js";
 export { DROPPED_KEYS, FullRedactor, safeZipPath } from "./redaction.js";
+export { PATH_RULES, redactPaths, type PathRule, type PathRedactResult } from "./path-redaction.js";
 export { readZip, writeZip, type ZipEntry } from "./zip.js";
 
 // modules.md 写的名字是 export；它是保留字，只能以导出别名提供：import { export as exportDiag }。
