@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`6d5c01e` · main 上测试：124 个测试文件 / 2301 个测试（Linux 全量；Windows 基线见 `docs/test-baseline.md`） · 更新日期：2026-10-24（UTC+8）
+> 上次更新时 main：`76eb565` · main 上测试：124 个测试文件 / 2303 个测试（Linux 全量；Windows 基线见 `docs/test-baseline.md`） · 更新日期：2026-10-24（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -154,7 +154,7 @@ flowchart BT
 | UI-02 | 模块 12 新布局骨架（`docs/ui-design.md` §2）：左栏 260 / 收起 56（偏好持久化，< 1024 自动收起）、内容区正文最大宽 760、右面板 360 默认关（「概览」暂放原右侧边栏内容，「动态」空壳；< 1200 改覆盖式抽屉）；无边框窗口（Windows / Linux `titleBarOverlay` 保留系统窗口按钮，自绘拖拽区），最小 960×640；新增 IPC `window:theme` 把主题偏好同步到 `nativeTheme.themeSource`、刷新标题栏按钮颜色；全局快捷键 Ctrl+N / K / , / B / .；设置改为弹窗，Command 面板壳子；现有主管对话、项目群、未归属、设置都挂进新骨架，骨架不新增主按钮。main `0728d2f`，测试 92 个文件 / 1806 个 | 12 | 界面与诊断开发 | 已合入 | #103 | `0728d2f` |
 | T-104 | 模块 3：`importProject` 对根目录 `stat` / `readdir` 出错也包成 `ProjectImportError`，只报错误码（「项目路径无法访问（EACCES）」「读不到项目目录（EACCES）」），不带路径和原 message（T-099 后续）；modules.md §3 同步。main `2903399`，测试 93 个文件 / 1809 个 | 3 | 基础层开发 | 已合入 | #116 | `2903399` |
 | T-101 | 模块 9 / 组合根：`listFiles`、`userMainWorktreeFor` 的 git 调用统一走 repoGit + `gitEnv()` + 超时（T-096 评审跟进）；`repoGit` 挪到内部文件 `repo-git.ts`，加可选 `maxBuffer`，`listFiles` 用 16 MiB。main `5b1ff25`，测试 110 个文件 / 2010 个 | 9 | 编排层开发 | 已合入 | #134 | `5b1ff25` |
-| T-102 | 模块 8 + 6：`resubmitConflict` / `reReview` 接收 stop 的 signal；模块 6 GitHub 请求加请求级超时（T-096 已知缺口）；preview.1 之后 | 8 / 6 | 编排层开发、执行层开发 | 待开发 | — | — |
+| T-102 | 模块 8 + 6：`resubmitConflict` / `reReview` 接收 stop 的 signal；模块 6 GitHub 请求加请求级超时（T-096 已知缺口）；preview.1 之后。已拆为 T-102a（#135）与 T-102b（#136），两张都已合入 | 8 / 6 | 编排层开发、执行层开发 | 已合入 | #135、#136 | `574ec8a`、`e151225` |
 | T-102a | 模块 6：GitHub REST 请求级超时（`GITHUB_REQUEST_TIMEOUT_MS` 30s）+ 各方法 `opts.signal`；finishMerged 缺 `merge_commit_sha` 时沿第一父链找合并提交。main `574ec8a`，测试 110 个文件 / 2019 个 | 6 | 执行层开发 | 已合入 | #135 | `574ec8a` |
 | T-102b | 模块 8 / 9：`resubmitConflict` / `reReview` 收可选 `options.signal`，8 原样交给 5、7，中止后抛 `signal.reason`（`reReview` 不再写死 `signal: undefined`）；9 在 `stop()` 时用同一个 signal 中止，被中止的调用不上报、不改状态，留给 takeOver；组合根透传；8 调 6 的 `open` / `commitWorktree` / `diff` 也带 signal（接 T-102a），交出前被中止不写 `merge_queued`、不 submit；modules.md §8、§9 同步，§9 写定收尾时间（带 / 不带 signal 两种情况，复核桌面退出上限 35 秒）。main `e151225`，测试 112 个文件 / 2054 个 | 8 / 9 | 编排层开发 | 已合入 | #136 | `e151225` |
 | T-103 | 模块 6：合并重试幂等。本地 `merge` 在锁内读到 target 后先查 head 是否已被 target 包含，是则直接记 merged（`merge_sha` 取把 head 带进 target 的那个提交：快进为 head，非快进为当时的合并提交），不再 commit-tree、不动 target；GitHub `merge` 推分支前先查远程 PR，已合入则不推不 PUT，fetch、快进本地 target 后记 merged（`merge_sha` 用 `merge_commit_sha`），PUT 回 405 / 409 时也回查；接口不变，modules.md §6 同步。来源：编排层分析 2026-10-18，preview.1 之前。main `436fbdf`，测试 96 个文件 / 1831 个 | 6 | 执行层开发 | 已合入 | #117 | `436fbdf` |
@@ -192,6 +192,7 @@ flowchart BT
 | T-136 | 模块 6：发布事件前退出 signal 上下文（内部 `outsideGitSignal`，`AsyncLocalStorage.exit`），订阅方里不传 signal 的 6 调用不再沿用发布方的停止 signal；公开接口不变，§6 同步更新。合入后 main `a83f998`，测试 124 个文件 / 2298 个 | 6 | 执行层开发 | 已合入 | #181 | `a83f998` |
 | T-137 | 模块 12：#173（T-130）评审跟进：`diagnostics:export` 的 time_range 日期校验从 `Date.parse` 收紧为严格 ISO 8601（`isStrictIsoDateTime`：必须带时间和时区 Z/±HH:MM，日期须真实存在），拒绝 `2026-10-18`、`10/18/2026`、`2026-10-18 08:00`、无时区、`2026-02-30` 等；补用例，反向检查改回 `Date.parse` 后变红。合入后 main `6d5c01e`，测试 124 个文件 / 2301 个 | 12 | 已合入 | #182 | `6d5c01e` |
 | T-138 | 模块 2：给 T-129（#172）补一条在 Linux 上也能变红的断言：迁移失败时 `db.close` 恰好调用一次、句柄 `open` 为 false。只改测试。合入后 main `9e4cbf0`，测试 124 个文件 / 2299 个 | 2 | 基础层开发 | 已合入 | #184 | `9e4cbf0` |
+| T-139 | 模块 9：#144（T-112）评审跟进：带 `merge_followup` 标记的单结构化字段读不出来时（10 只给单号 + trace），`recoverMergeFollowup` 照样补发一次 `interface_changed`，受影响单按 6 的 diff 文件算全、标记清掉；9 层 1 条 + 组合根 E2E 1 条。只改测试；反向检查：字段读不出就不发、受影响单只按本单声明范围算，各红 2 条。合入后 main `76eb565`，测试 124 个文件 / 2303 个 | 9 | 编排层开发 | 已合入 | #187 | `76eb565` |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
@@ -258,7 +259,7 @@ flowchart BT
 - 模块 12（T-073）：桌面端暂用 Electron 43.8.0（better-sqlite3 尚无 Electron 44/ABI 149 预编译），上游出了再升。
 - 模块 12（T-073）：开发用 better-sqlite3 12.11.1，打包用 12.12.0 electron-v148 预编译（lib/ 逐字节相同，仅 SQLite 版本不同）。
 - 已解决（T-127）：右面板「动态」标签已接 `group_message`（按单过滤、滚动、折叠、未读小点、状态行）；T-085 `ticket_status_changed` 仍未进桌面端 `UI_EVENT_TYPES` 白名单，状态行暂用快照 `prs`，等 UI-05 步骤条统一接。
-- 模块 11 / 12（UI-09）：诊断导出只有「最近 24 小时」一键入口；按单张单 / 需求 / 时间段选择、`eval_task` 人工补填、SWE-bench JSONL 导出都还没接（11 的接口已支持，T-126 登记）。
+- 模块 11 / 12（UI-09）：诊断面板已能按单张单 / 需求 / 时间段导出并打开数据目录（T-130 #173，时间段严格 ISO 校验 T-137 #182）；`eval_task` 人工补填、SWE-bench JSONL 导出仍未接（11 的接口已支持，T-126 登记）。
 - 模块 12（UI-07）：设置弹层目前只有只读设置 + 密钥 + 模型向导；设计稿 7 个标签里的通用 / 项目 / 模型 / 预算 / 诊断 / 关于和可编辑写回（`writeConfig` / `writePricing` + reload 排队）未做（T-126 登记）。
 
 - 模块 10（T-117 后）：未注入 `adopt` 的 `awaiting_adopt` 场景，失败单的下游仍会交 9 卡 `waiting`（同类缺口的未覆盖分支）；成环时可能子先父、环内失败的下游已先交付，交 9 处理。

@@ -2058,6 +2058,34 @@ describe("T-112 组合根：merge_followup 标记与重启补做", () => {
     expect(ifaceFromStore(storage)).toHaveLength(1);
     expect(markerOf(storage, "req-1-1")).toBeUndefined();
   });
+  it("E2E（T-139）：带标记的 merged 单结构化字段读不出来 → takeOver 仍补发一次，受影响单按 diff 文件算全，清标记", async () => {
+    const { storage, worktreeRoot } = setup();
+    // write_scope 不是数组：decodeFields 读不出来，10 只给 9 单号 + trace
+    saveTicket(storage, "req-1-1", "merged", fields({ write_scope: "lib/a/**" }));
+    void storageMergeFollowup(storage, () => {}).mark("req-1-1", {
+      pr_id: "pr-1",
+      merge_sha: MERGE_SHA,
+    });
+    // 在途单：写入范围碰到 diff 文件 lib/a/x.ts 的两张受影响，另一张不受影响
+    saveTicket(storage, "req-1-2", "pending", fields({ write_scope: ["lib/a/**"] }));
+    saveTicket(storage, "req-1-3", "pending", fields({ write_scope: ["lib/a/x.ts"] }));
+    saveTicket(storage, "req-1-4", "pending", fields({ write_scope: ["lib/z/**"] }));
+    const { app } = await start({ storage, worktreeRoot, pr: fakePr().pr });
+    expect(app.takeOver.followups).toEqual([{ ticket_id: "req-1-1", result: "emitted" }]);
+    const events = ifaceFromStore(storage);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ ticket_id: "req-1-1", trace_id: "req-1" });
+    expect(events[0]!.payload).toMatchObject({
+      pr_id: "pr-1",
+      base_commit: MERGE_SHA,
+      changed_interfaces: [],
+    });
+    expect(
+      [...(events[0]!.payload as { affected_ticket_ids: string[] }).affected_ticket_ids].sort(),
+    ).toEqual(["req-1-2", "req-1-3"]);
+    expect(markerOf(storage, "req-1-1")).toBeUndefined();
+    await app.stop();
+  });
 });
 
 describe("T-133 接口变更说明持久化（组合根接线）", () => {
