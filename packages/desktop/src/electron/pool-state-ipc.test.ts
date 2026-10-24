@@ -82,6 +82,31 @@ describe("pool:state IPC", () => {
     expect(poolState).toHaveBeenCalledTimes(1);
   });
 
+  it("P3：主管积压与当日预算耗尽经 readPoolState → BackendSwitcher → IPC 原样透传", async () => {
+    const src: BackpressureState = {
+      ...STATE,
+      reasons: ["supervisor_backlog", "daily_budget"],
+      supervisor_backlog: { pending: 7, capacity: 3 },
+      daily_budget_exhausted: true,
+    };
+    const current = {
+      onNotify: () => () => {},
+      onPendingHighRisk: () => () => {},
+      poolState: () => readPoolState(async () => src),
+    } as unknown as BackendHandle;
+    const sw = new BackendSwitcher(current, async () => current);
+    const { ipc, handlers } = fakeIpc();
+    servePoolState(ipc, sw);
+    const r = (await handlers.get(IPC_CHANNELS.poolState)!({
+      sender: {},
+    })) as DesktopPoolStateResult;
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.state.supervisor_backlog).toEqual({ pending: 7, capacity: 3 });
+    expect(r.state.daily_budget_exhausted).toBe(true);
+    expect(r.state.reasons).toEqual(["supervisor_backlog", "daily_budget"]);
+  });
+
   it("只读后端：固定 ok:false，不带路径", async () => {
     const b = readonlyBackend("/repo/secret-path", "缺少环境变量 DEEPSEEK_API_KEY");
     const r = await b.poolState();
