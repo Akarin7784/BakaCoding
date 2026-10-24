@@ -11,6 +11,8 @@ import type {
   TicketStatus,
 } from "@bakacoding/types";
 
+import type { TextDigest } from "./digest.js";
+
 // 数据源相关类型已挪进 @bakacoding/types（T-005），这里转出，保持原有导入路径可用。
 export {
   OUTCOME_LABELS,
@@ -27,12 +29,18 @@ export {
 /**
  * 诊断包 schema 版本。以后只加字段，不破坏旧包（PD §18）。
  * v1.1（T-021）：新增 manifest.excluded_context_env_files；.env 排除规则扩到大小写不敏感和 .envrc。
+ * v1.2（T-159）：诊断包不含对话和提示词原文。对话 / 提示词 / 模型输出 / 评审文本等字段从字符串换成
+ * TextDigest `{len, hmac}`（见 digest.ts），新增 manifest.text_digest 说明；旧包这些字段仍是字符串。
  */
-export const DIAG_SCHEMA = "bakacoding-diag/v1.1" as const;
+export const DIAG_SCHEMA = "bakacoding-diag/v1.2" as const;
 export type DiagSchema = typeof DIAG_SCHEMA;
 
-/** readPackage 能读的版本：v1.1 只加字段，v1 旧包照常读，缺的字段保持缺省。 */
-export const READABLE_DIAG_SCHEMAS = ["bakacoding-diag/v1", DIAG_SCHEMA] as const;
+/** readPackage 能读的版本：v1 / v1.1 旧包照常读，缺的字段保持缺省，文本字段仍是字符串。 */
+export const READABLE_DIAG_SCHEMAS = [
+  "bakacoding-diag/v1",
+  "bakacoding-diag/v1.1",
+  DIAG_SCHEMA,
+] as const;
 export type ReadableDiagSchema = (typeof READABLE_DIAG_SCHEMAS)[number];
 
 /** 导出范围：单张需求单、一个需求（含拆出的所有单）、某个时间段（PD §18、modules.md 11）。 */
@@ -82,17 +90,36 @@ export interface CostSummary extends LedgerTotals {
   ticket_id: string | null;
 }
 
+/** 包内文本字段：v1.2 新包是摘要，v1 / v1.1 旧包是（已脱敏的）字符串。 */
+export type DiagText = string | TextDigest;
+
+/** 包内的一轮评审：fail_reasons 每条、review_comments 在 v1.2 是摘要。 */
+export type DiagRound = Omit<RoundRecord, "fail_reasons" | "review_comments"> & {
+  fail_reasons: DiagText[];
+  review_comments?: DiagText;
+  diff_file: string;
+};
+
+/**
+ * 包内事件：v1.2 里 EVENT_TEXT_FIELDS 列出的 payload 字段是摘要，其余同 BakaEvent。
+ * 摘要后不再满足 BakaEvent 的 payload 类型，所以 payload 放宽。
+ */
+export type DiagEvent = Omit<BakaEvent, "payload"> & {
+  type: BakaEvent["type"];
+  payload: Record<string, unknown>;
+};
+
 export interface DiagTicket {
   ticket_id: string;
   requirement_id: string;
   created_at: string;
-  ticket_text: string;
-  decomposition_summary?: string;
+  ticket_text: DiagText;
+  decomposition_summary?: DiagText;
   status?: TicketStatus;
   outcome?: OutcomeLabel;
   base_commit: string;
   permission_list: PermissionList;
-  rounds: (RoundRecord & { diff_file: string })[];
+  rounds: DiagRound[];
   resubmit_count: number;
   merge?: DiagMergeResult;
   ci_checks?: CiCheck[];
@@ -125,15 +152,17 @@ export interface DiagManifest {
   excluded_env_files: number;
   /** v1.1 新增：上下文片段里按同一规则排除的 .env 类文件个数（只记个数，不记路径）；v1 旧包没有此字段。 */
   excluded_context_env_files?: number;
+  /** v1.2 新增：文本摘要方式说明（每包随机 salt 的 HMAC-SHA256，不含 salt 值）；旧包没有。 */
+  text_digest?: string;
   /** zip 内全部条目名，与实际条目逐字一致。 */
   files: string[];
   stats: DiagStats;
 }
 
-/** 内存中的诊断包（已完整脱敏）。toSweBenchJsonl 的输入。 */
+/** 内存中的诊断包（已完整脱敏，v1.2 起不含对话和提示词原文）。toSweBenchJsonl 的输入。 */
 export interface DiagPackage {
   manifest: DiagManifest;
-  events: BakaEvent[];
+  events: DiagEvent[];
   tickets: DiagTicket[];
   costs: CostSummary[];
   redaction_report: RedactionReport;

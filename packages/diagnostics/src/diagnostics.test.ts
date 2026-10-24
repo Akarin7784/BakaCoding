@@ -383,7 +383,7 @@ describe("导出范围与内容", () => {
     expect(zip_path).toMatch(/bakacoding-diag-proj-1-ticket-T-1-20261017T060000000Z\.zip$/);
     const pkg = await readPackage(zip_path);
     expect(pkg.manifest.schema).toBe(DIAG_SCHEMA);
-    expect(pkg.manifest.schema).toBe("bakacoding-diag/v1.1");
+    expect(pkg.manifest.schema).toBe("bakacoding-diag/v1.2");
     expect(pkg.manifest.redaction).toBe("full");
     const names = readZip(await readFile(zip_path))
       .map((e) => e.name)
@@ -769,24 +769,24 @@ describe("T-021：.env 排除规则", () => {
   });
 });
 
-describe("T-021：schema bakacoding-diag/v1.1", () => {
-  it("新导出的包是 v1.1", async () => {
+describe("T-021 / T-159：schema 版本", () => {
+  it("新导出的包是 v1.2（T-159）", async () => {
     const pkg = await buildPackage(
       { project_id: PROJECT, scope: { kind: "ticket", ticket_id: "T-2" } },
       deps,
     );
-    expect(DIAG_SCHEMA).toBe("bakacoding-diag/v1.1");
-    expect(pkg.manifest.schema).toBe("bakacoding-diag/v1.1");
+    expect(DIAG_SCHEMA).toBe("bakacoding-diag/v1.2");
+    expect(pkg.manifest.schema).toBe("bakacoding-diag/v1.2");
   });
 
-  it("readPackage 读 v1.1，也仍能读 v1 旧包；未知 schema 报错", async () => {
+  it("readPackage 读当前版本，也仍能读 v1 旧包；未知 schema 报错", async () => {
     const pkg = await buildPackage(
       { project_id: PROJECT, scope: { kind: "ticket", ticket_id: "T-2" } },
       deps,
     );
     const p11 = join(dir, "v11.zip");
     await writeFile(p11, packageToZip(pkg));
-    expect((await readPackage(p11)).manifest.schema).toBe("bakacoding-diag/v1.1");
+    expect((await readPackage(p11)).manifest.schema).toBe("bakacoding-diag/v1.2");
     // 模拟 v1 旧包：schema 为 v1，没有 v1.1 新增的 excluded_context_env_files。
     const { excluded_context_env_files: _drop, ...v1manifest } =
       pkg.manifest as typeof pkg.manifest & {
@@ -801,7 +801,7 @@ describe("T-021：schema bakacoding-diag/v1.1", () => {
     expect(back.manifest.excluded_context_env_files).toBeUndefined();
     expect(back.tickets.map((t) => t.ticket_id)).toEqual(["T-2"]);
 
-    for (const bad of ["bakacoding-diag/v2", "bakacoding-diag/v1.2", "other/v9"]) {
+    for (const bad of ["bakacoding-diag/v2", "bakacoding-diag/v1.3", "other/v9"]) {
       const z = packageToZip({ ...pkg, manifest: { ...pkg.manifest, schema: bad as never } });
       const pb = join(dir, "bad.zip");
       await writeFile(pb, z);

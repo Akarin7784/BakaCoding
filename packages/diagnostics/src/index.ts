@@ -14,6 +14,13 @@ export {
   MAX_GAP_WORDS,
   type PurePathRedactOptions,
 } from "./path-redaction-core.js";
+export {
+  Digester,
+  EVENT_TEXT_FIELDS,
+  TEXT_DIGEST_NOTE,
+  isIssuedDigest,
+  type TextDigest,
+} from "./digest.js";
 export { readZip, writeZip, type ZipEntry } from "./zip.js";
 
 // modules.md 写的名字是 export；它是保留字，只能以导出别名提供：import { export as exportDiag }。

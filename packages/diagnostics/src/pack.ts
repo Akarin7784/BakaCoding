@@ -32,7 +32,7 @@ export function packageToZip(pkg: DiagPackage): Buffer {
   return writeZip(entries, new Date(pkg.manifest.created_at));
 }
 
-/** 从 zip 字节读回诊断包；接受 bakacoding-diag/v1 和 v1.1，其他 schema 报错。 */
+/** 从 zip 字节读回诊断包；接受 bakacoding-diag/v1、v1.1 和 v1.2，其他 schema 报错。 */
 export function zipToPackage(buf: Buffer): DiagPackage {
   const entries = new Map(readZip(buf).map((e) => [e.name, e.data.toString("utf8")]));
   const get = (name: string): string => {
