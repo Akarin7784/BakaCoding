@@ -69,6 +69,47 @@ export class StorageReadonlyError extends Error {
   }
 }
 
+/** 存储层的参数错误（T-091 起），`code` 为小写下划线错误码，消息里不带路径和值。 */
+export class StorageError extends Error {
+  constructor(readonly code: string) {
+    super(`存储参数错误（${code}）`);
+    this.name = "StorageError";
+  }
+}
+
+/**
+ * 主管回复的五种类型（T-091）。与模块 10 `ChatReply["kind"]` 相同；
+ * 存储在底层，不能反向依赖模块 10，所以在这里单独写一份字面量联合。
+ */
+export type ChatReplyKind =
+  "answer" | "ask_project" | "decision_saved" | "dispatched" | "split_failed";
+export const CHAT_REPLY_KINDS: readonly ChatReplyKind[] = [
+  "answer",
+  "ask_project",
+  "decision_saved",
+  "dispatched",
+  "split_failed",
+];
+
+/** 主管 1:1 对话的一条消息（T-091）。role 为 user 时 kind 必须为 null。created_at 为毫秒时间戳。 */
+export interface SupervisorMessage {
+  message_id: string;
+  project_id: string | null;
+  role: "user" | "supervisor";
+  kind: ChatReplyKind | null;
+  content: string;
+  requirement_id: string | null;
+  ticket_ids: string[];
+  created_at: number;
+}
+
+/** listSupervisorMessages 的参数：project_id 只作可选过滤；before 是 message_id 游标；limit 默认 50、最大 200。 */
+export interface SupervisorMessageFilter {
+  project_id?: string;
+  before?: string;
+  limit?: number;
+}
+
 /** 只读打开时库的版本和当前代码不一致。 */
 export class StorageVersionError extends Error {
   constructor(message: string) {
@@ -332,6 +373,16 @@ export interface Storage {
   /** 所有已创建的项目（T-010），按创建时间先后排序（同一时刻按 project_id）。 */
   listProjects(): ProjectRow[];
   groupMessages(project_id: string, requirement_id?: string): GroupMessageRow[];
+  /**
+   * 追加一条主管对话消息（T-091，只有写入方）。message_id 已存在时忽略、返回 inserted:false，先写的为准；
+   * role / kind 不匹配报 `StorageError("invalid_message")`；content 落库前过轻脱敏。
+   */
+  appendSupervisorMessage(msg: SupervisorMessage): { inserted: boolean };
+  /**
+   * 读主管对话（T-091），按 created_at、message_id 升序。给 before 时取它之前最近的 limit 条，仍升序返回；
+   * before 找不到报 `StorageError("invalid_cursor")`；limit 默认 50、最大 200，≤0 报 RangeError。
+   */
+  listSupervisorMessages(filter?: SupervisorMessageFilter): SupervisorMessage[];
   backlogMetrics(
     kind: "review_backlog" | "supervisor_backlog",
     from?: string,
@@ -371,6 +422,7 @@ export type ReadonlyStorage = Pick<
   | "listDecisions"
   | "listProjects"
   | "groupMessages"
+  | "listSupervisorMessages"
   | "backlogMetrics"
   | "diagnosticsSource"
   | "close"
@@ -1048,6 +1100,79 @@ function open(options: StorageOptions, ro: boolean): Storage {
   }
 
   // ---------- 决策记忆 / 群消息 / 待办指标 ----------
+  // ---------- 主管对话（T-091） ----------
+  const appendSupervisorMessage = write(
+    "appendSupervisorMessage",
+    (msg: SupervisorMessage): { inserted: boolean } => {
+      const okRole =
+        (msg.role === "user" && msg.kind === null) ||
+        (msg.role === "supervisor" && (CHAT_REPLY_KINDS as readonly unknown[]).includes(msg.kind));
+      if (
+        !okRole ||
+        typeof msg.message_id !== "string" ||
+        msg.message_id === "" ||
+        typeof msg.content !== "string" ||
+        !Array.isArray(msg.ticket_ids) ||
+        !msg.ticket_ids.every((t) => typeof t === "string") ||
+        !Number.isFinite(msg.created_at)
+      ) {
+        throw new StorageError("invalid_message");
+      }
+      const res = db
+        .prepare(
+          `INSERT OR IGNORE INTO supervisor_messages
+           (message_id, project_id, role, kind, content, requirement_id, ticket_ids, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          msg.message_id,
+          msg.project_id,
+          msg.role,
+          msg.kind,
+          r(msg.content),
+          msg.requirement_id,
+          JSON.stringify(msg.ticket_ids),
+          msg.created_at,
+        );
+      return { inserted: res.changes > 0 };
+    },
+  );
+  function listSupervisorMessages(f: SupervisorMessageFilter = {}): SupervisorMessage[] {
+    const limit = f.limit ?? 50;
+    if (!Number.isInteger(limit) || limit <= 0) throw new RangeError("limit 须为正整数");
+    const n = Math.min(limit, 200);
+    const where: string[] = [];
+    const args: unknown[] = [];
+    if (f.project_id !== undefined) {
+      where.push("project_id = ?");
+      args.push(f.project_id);
+    }
+    if (f.before !== undefined) {
+      const cur = db
+        .prepare("SELECT created_at FROM supervisor_messages WHERE message_id = ?")
+        .get(f.before) as { created_at: number } | undefined;
+      if (!cur) throw new StorageError("invalid_cursor");
+      where.push("(created_at < ? OR (created_at = ? AND message_id < ?))");
+      args.push(cur.created_at, cur.created_at, f.before);
+    }
+    const rows = db
+      .prepare(
+        `SELECT * FROM supervisor_messages ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+         ORDER BY created_at DESC, message_id DESC LIMIT ?`,
+      )
+      .all(...args, n) as Row[];
+    return rows.reverse().map((x) => ({
+      message_id: x.message_id as string,
+      project_id: (x.project_id as string | null) ?? null,
+      role: x.role as SupervisorMessage["role"],
+      kind: (x.kind as ChatReplyKind | null) ?? null,
+      content: x.content as string,
+      requirement_id: (x.requirement_id as string | null) ?? null,
+      ticket_ids: JSON.parse(x.ticket_ids as string) as string[],
+      created_at: x.created_at as number,
+    }));
+  }
+
   const saveDecision = write(
     "saveDecision",
     (d: { project_id: string; content: string; decision_id?: string; ts?: string }): Decision => {
@@ -1252,6 +1377,8 @@ function open(options: StorageOptions, ro: boolean): Storage {
         )
         .all(kind, fromMs, fromMs, toMsV, toMsV) as BacklogMetric[];
     },
+    appendSupervisorMessage,
+    listSupervisorMessages,
     markForEvalSet,
     purgeExpired,
     ledger,

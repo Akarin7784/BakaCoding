@@ -209,4 +209,18 @@ export const MIGRATIONS: Migration[] = [
   },
   /* v3（T-055）：需求单的结构化字段（write_scope、interfaces、depends_on 等），JSON，可为空 */
   `ALTER TABLE tickets ADD COLUMN fields TEXT;`,
+  /* v4（T-091）：主管 1:1 对话记录；message_id 由模块 10 生成，重复写入按幂等忽略 */
+  `
+  CREATE TABLE supervisor_messages (
+    message_id TEXT PRIMARY KEY,
+    project_id TEXT,
+    role TEXT NOT NULL,
+    kind TEXT,
+    content TEXT NOT NULL,
+    requirement_id TEXT,
+    ticket_ids TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX supervisor_messages_order ON supervisor_messages(created_at, message_id);
+  `,
 ];
