@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`0f69b2a` · main 上测试：126 个测试文件 / 2345 个测试（Linux 全量；Windows 基线见 `docs/test-baseline.md`） · 更新日期：2026-10-24（UTC+8）
+> 上次更新时 main：`83d3ec9` · main 上测试：126 个测试文件 / 2348 个测试（Linux 全量；Windows 基线见 `docs/test-baseline.md`） · 更新日期：2026-10-24（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -46,8 +46,8 @@ flowchart BT
 
 - 0 事件总线：T-003 已合入。总线的 `initialSeq` 和订阅队列上限随 T-005（模块 2）在 #19 合入，记在 T-005 名下。
 - 共享类型包不算 13 个功能模块之一，单列出来。
-- 5、6、7（执行层）：T-034 / T-043 已合入，T-047 待评审，后续还有 T-044、T-045，算进行中。
-- 8、9、10（编排层）的第二批需求单已拆（T-035～T-042）：8、9 有单在开发，算进行中；10 的单还没开工，算未开始。
+- 5、6、7（执行层）：T-034（#36）、T-043（#35）、T-044（#43）、T-045（#46）、T-047（#42）均已合入，算已完成。
+- 8、9、10（编排层）的第二批需求单（T-035～T-042）均已合入，10 的 T-040（#56）、T-042（#72）也已合入，三个模块算已完成；之后的跟进单见下表。
 
 ## 需求单
 
@@ -195,6 +195,7 @@ flowchart BT
 | T-138 | 模块 2：给 T-129（#172）补一条在 Linux 上也能变红的断言：迁移失败时 `db.close` 恰好调用一次、句柄 `open` 为 false。只改测试。合入后 main `9e4cbf0`，测试 124 个文件 / 2299 个 | 2 | 基础层开发 | 已合入 | #184 | `9e4cbf0` |
 | T-139 | 模块 9：#144（T-112）评审跟进：带 `merge_followup` 标记的单结构化字段读不出来时（10 只给单号 + trace），`recoverMergeFollowup` 照样补发一次 `interface_changed`，受影响单按 6 的 diff 文件算全、标记清掉；9 层 1 条 + 组合根 E2E 1 条。只改测试；反向检查：字段读不出就不发、受影响单只按本单声明范围算，各红 2 条。合入后 main `76eb565`，测试 124 个文件 / 2303 个 | 9 | 编排层开发 | 已合入 | #187 | `76eb565` |
 | T-140 | 模块 12：#189（T-113）跟进：`write_failed` 的报错经 `cleanWriteError` 清理（项目路径换相对写法 + `sanitizeSyncErrorMessage` + 余下绝对路径含 Windows 路径换成 `(path)`）；T-128 两个用例各自断言 `config_missing` / `config_invalid`；`checkProjectDir` 另外指定的 models 不合法时不再提前返回，连同 pricing 的问题一起报（Git 仓库先给 T-081 缺文件结果）。合入后 main `0f69b2a`，测试 126 个文件 / 2345 个 | 12 | 界面与诊断开发 | 已合入 | #191 | `0f69b2a` |
+| T-141 | 模块 10：T-117 跟进，没注入 `adopt` 时 `awaiting_adopt` 单的下游不再交 9 卡 `waiting`。新增内部 `awaitingIds`，`failedDepOf` 一并检查；下游进 `held`（`blocked_by` 直接依赖）并 `holdOnce` 通知一次，孙单经 `blockedIds` 挂起；接口不变，modules.md §10 补一句；补 3 条用例（子单挂起、三层链、注入 adopt 行为不变），反向检查去掉 `awaitingIds` 判断 → 前两条变红。全仓 126 文件 / 2348 通过、2 跳过。合入后 main `83d3ec9`，测试 126 个文件 / 2348 个 | 10 | 编排层开发 | 已合入 | #193 | `83d3ec9` |
 | T-091 | 模块 2：主管 1:1 对话存储（新表 `supervisor_messages`，库升级到 v4）：`appendSupervisorMessage(msg) → { inserted }`（只有写入方，`message_id` 幂等、先写为准，role / kind 不符报 `invalid_message`，content 轻脱敏）、`listSupervisorMessages({ project_id?, before?, limit? })`（写入方和只读连接都有，按 `created_at`、`message_id` 升序，`before` 游标不存在报 `invalid_cursor`，limit 默认 50 / 最大 200）；新增 `StorageError { code }`；modules.md §2 同步 | 2 | 基础层开发 | 待评审 #N | #N | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
