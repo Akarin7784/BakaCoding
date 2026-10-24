@@ -3,12 +3,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { MIGRATIONS } from "./schema.sql.js";
 import { openStorage } from "./index.js";
 
 let dirs: string[] = [];
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
   dirs = [];
 });
@@ -56,5 +57,21 @@ describe("T-129 迁移失败释放数据库句柄", () => {
     } finally {
       raw.close();
     }
+  });
+
+  it("T-138：迁移失败时调用了 db.close，句柄已关闭（Linux 上也能拦住回退）", () => {
+    const path = tmpDb();
+    legacyDbWithDuplicateSeq(path);
+    const closed: Database.Database[] = [];
+    const orig = Database.prototype.close;
+    vi.spyOn(Database.prototype, "close").mockImplementation(function (this: Database.Database) {
+      closed.push(this);
+      return orig.call(this);
+    });
+
+    expect(() => openStorage({ path })).toThrow(/升级到 v2 已中止/);
+
+    expect(closed).toHaveLength(1);
+    expect(closed[0]!.open).toBe(false);
   });
 });
