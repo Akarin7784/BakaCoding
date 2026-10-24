@@ -24,6 +24,7 @@ import { CONFIG_FIX_TEXT, NESTED_REPO_REASON } from "../shared/config-text.js";
 import {
   backupName,
   configFixHandlers,
+  cleanWriteError,
   configTemplateDir,
   EXCLUDE_RULE,
   MAX_DAILY_MICRO_USD,
@@ -443,6 +444,27 @@ describe("GIT_* 环境变量（T-113）", () => {
         if (before[k] === undefined) delete process.env[k];
         else process.env[k] = before[k];
       }
+    }
+  });
+});
+
+describe("cleanWriteError（T-140）：Windows 路径", () => {
+  it("盘符 + 反斜杠：项目内的换成相对写法，其余换成 (path)", () => {
+    const roots = ["C:\\Users\\x\\proj\\config", "C:\\Users\\x\\proj"];
+    expect(
+      cleanWriteError("写入 C:\\Users\\x\\proj\\config\\models.json 失败（EPERM）", roots),
+    ).toBe("写入 config\\models.json 失败（EPERM）");
+    expect(cleanWriteError("C:\\Users\\x\\proj\\config\\pricing.json：EACCES", [])).toBe(
+      "(path)：EACCES",
+    );
+    const out = [
+      cleanWriteError("open 'D:\\work\\a b\\x.json' 失败", []),
+      cleanWriteError("rename c:\\Users\\x\\proj\\t.tmp -> C:\\Users\\x\\other\\y", roots),
+      cleanWriteError("E:\\models.json", []),
+    ];
+    for (const m of out) {
+      expect(m).not.toMatch(/[A-Za-z]:\\/);
+      expect(m).not.toContain("Users");
     }
   });
 });

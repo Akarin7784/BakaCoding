@@ -92,7 +92,8 @@ export function cleanWriteError(
   let out = message;
   for (const r of [...new Set(roots)].sort((a, b) => b.length - a.length)) {
     if (!r) continue;
-    const rel = path.basename(r) === "config" ? "config" : ".";
+    // 按 / 和 \ 都切（Windows 路径在别的平台上 path.basename 认不出）
+    const rel = r.split(/[\\/]/).filter(Boolean).pop() === "config" ? "config" : ".";
     out = out.split(r).join(rel);
   }
   out = sanitizeSyncErrorMessage(out, env, IMPORT_REASON_MAX);
