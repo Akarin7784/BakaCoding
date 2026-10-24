@@ -20,14 +20,16 @@ export const CHAT_TEXT_MAX = 20000;
  * T-149：先用模块 11 的路径脱敏（与 FullRedactor 同一套规则：home_dir / file_url / unc_path /
  * windows_path / tilde_path / abs_path），再走同步错误那套（密钥值 → light → 截断）。
  * 路径放在 light 之前，`~/…` 才会整条遮掉。`paths.home` 只给测试注入。
+ * UI-05a：`max` 默认 CHAT_REASON_MAX；需求原文这类长文本可传 CHAT_TEXT_MAX，脱敏规则不变。
  */
 export function sanitizeChatReason(
   message: string,
   env: Readonly<Record<string, string | undefined>> = {},
   paths: { home?: string } = {},
+  max: number = CHAT_REASON_MAX,
 ): string {
   const { text } = redactPaths(message, { home: paths.home });
-  return sanitizeSyncErrorMessage(text, env, CHAT_REASON_MAX);
+  return sanitizeSyncErrorMessage(text, env, max);
 }
 
 /**

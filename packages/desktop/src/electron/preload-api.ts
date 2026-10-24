@@ -8,6 +8,8 @@ import {
   DesktopHistoryResult,
   type DesktopSplitRequest,
   type DesktopSplitResult,
+  type DesktopRequirementDetailQuery,
+  type DesktopRequirementDetailResult,
   type DesktopDecideHighRiskResult,
   type DesktopExportOptions,
   type DesktopExportResult,
@@ -140,6 +142,11 @@ export function createDesktopApi(ipc: IpcRendererLike, platform: string): BakaDe
       ipc.invoke(IPC_CHANNELS.supervisorChat, message) as Promise<DesktopChatResult>,
     supervisorSplit: (request: DesktopSplitRequest) =>
       ipc.invoke(IPC_CHANNELS.supervisorSplit, request) as Promise<DesktopSplitResult>,
+    getRequirementDetail: (query: DesktopRequirementDetailQuery) =>
+      ipc.invoke(
+        IPC_CHANNELS.requirementDetail,
+        query,
+      ) as Promise<DesktopRequirementDetailResult>,
     getSupervisorHistory: (query?: DesktopHistoryQuery) =>
       ipc.invoke(IPC_CHANNELS.supervisorHistory, query ?? {}) as Promise<DesktopHistoryResult>,
     setWindowTheme: (source: WindowThemeSource) =>

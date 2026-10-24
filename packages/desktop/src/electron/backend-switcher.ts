@@ -1,4 +1,5 @@
 // T-072：一次组装只对应一个仓库。导入项目时拆掉旧后端、在新仓库上重新组装，桌面侧订阅转到新后端。
+import { REQUIREMENT_DETAIL_UNAVAILABLE } from "./requirement-detail.js";
 import type { Project } from "@bakacoding/config-budget";
 import type { PendingHighRisk } from "@bakacoding/supervisor";
 import type { BackendHandle, BackendStatus, NotifyMessage, RepoSource } from "./backend.js";
@@ -481,6 +482,9 @@ export class BackendSwitcher implements BackendHandle {
   supervisorSplit(request: Parameters<BackendHandle["supervisorSplit"]>[0]) {
     return this.current.supervisorSplit(request);
   }
+  requirementDetail(query: unknown) {
+    return this.current.requirementDetail(query);
+  }
   listProjects() {
     return this.current.listProjects();
   }
@@ -534,6 +538,7 @@ export function readonlyBackend(
     supervisorChat: async () => ({ ok: false, reason: `只读模式：${reason}` }),
     supervisorHistory: async () => ({ ok: true, messages: [] }),
     supervisorSplit: async () => ({ ok: false, reason: SPLIT_READONLY_REASON }),
+    requirementDetail: async () => ({ ok: false, reason: REQUIREMENT_DETAIL_UNAVAILABLE }),
     repoRoot: () => repo,
     prMode: () => "local",
     busyCount: () => 0,

@@ -1,4 +1,5 @@
 // T-063：桌面主进程后端——拿写入锁、组装组合根、takeOver；失败则退回只读。
+import { readRequirementDetail } from "./requirement-detail.js";
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { copyFile, lstat, mkdtemp, rm, unlink } from "node:fs/promises";
@@ -44,6 +45,7 @@ import type {
   DesktopHistoryResult,
   DesktopSplitRequest,
   DesktopSplitResult,
+  DesktopRequirementDetailResult,
   DesktopDecideHighRiskResult,
   DesktopExportOptions,
   DesktopSyncState,
@@ -199,6 +201,8 @@ export interface BackendHandle {
   supervisorHistory(query: unknown): Promise<DesktopHistoryResult>;
   /** 重试拆单（UI-04c）：转给 10 的 split()，与 chat 同一条串行队列；只读回固定失败，抛错为 ok:false（已脱敏） */
   supervisorSplit(request: DesktopSplitRequest): Promise<DesktopSplitResult>;
+  /** 需求详情（UI-05a，只读）：2 的 listTickets({requirement_id}) + listPrRounds，白名单 + 脱敏；没有存储为固定失败 */
+  requirementDetail(query: unknown): Promise<DesktopRequirementDetailResult>;
   /**
    * 测试连接（UI-03b，`provider:test`）：live 时转给组合根同一个网关的 testConnection（1 的语义不变），
    * 只读（没有网关）时回 `unavailable`，不发请求。
@@ -859,6 +863,9 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
         const sup = app?.supervisor;
         return runSupervisorSplit(sup ? (r) => sup.split(r) : undefined, request, env);
       });
+    },
+    async requirementDetail(query: unknown): Promise<DesktopRequirementDetailResult> {
+      return readRequirementDetail(storage, query, env);
     },
     async supervisorHistory(query: unknown): Promise<DesktopHistoryResult> {
       const sup = app?.supervisor;
