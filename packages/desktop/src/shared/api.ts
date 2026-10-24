@@ -57,6 +57,11 @@ export const IPC_CHANNELS = {
    * 有在途单时文件照写、重载排队。部分失败回 written 说明写了哪个文件；报错已脱敏、不带绝对路径。
    */
   settingsSave: "bakacoding:settings:save",
+  /**
+   * invoke：设置 › 预算（UI-07c）：每日预算设置（读 config/models.json）和今天已花费
+   * （原样取自 3 的 budgetState()，不另算；只读后端时为 null）；无参数。报错已脱敏、不带路径。
+   */
+  budgetStatus: "bakacoding:budget:status",
   /** invoke：界面主题偏好同步给主进程，设置 nativeTheme.themeSource 和标题栏按钮颜色（UI-02）。 */
   windowTheme: "bakacoding:window:theme",
   /** invoke：同一仓库停掉再起来；有在途单则排队，空闲后自动执行（T-093）。 */
@@ -455,6 +460,45 @@ export interface DesktopModelSaveInput {
   form: DesktopModelForm;
   pricing: DesktopModelPricing;
 }
+/** 设置 › 预算可改的字段（UI-07c），和 config 的 budget 段同名同单位 */
+export interface DesktopBudgetForm {
+  /** 每日预算，整数微美元（1 美元 = 1_000_000），必填、> 0 */
+  daily_micro_usd: number;
+  /** 每单上限占每日预算的比例，(0, 1] */
+  per_ticket_ratio: number;
+  /** 闲时优先 */
+  offpeak_preference: boolean;
+}
+/** `settings:save` 的预算参数（UI-07c）：只改 config/models.json 的 budget 段，然后照 07b 重载 */
+export interface DesktopBudgetSaveInput {
+  budget: DesktopBudgetForm;
+}
+/** `budget:status` 结果（UI-07c）。today 原样来自 3 的 budgetState()；只读后端时为 null */
+export type DesktopBudgetStatusResult =
+  | {
+      ok: true;
+      source: DesktopConfigSource;
+      /** source 不是 repo 时为 true：整页只读 */
+      readonly: boolean;
+      /** 配置文件里当前的 budget 段 */
+      budget: DesktopBudgetForm;
+      today: {
+        /** UTC 日期 YYYY-MM-DD */
+        day: string;
+        spent_micro_usd: number;
+        reserved_micro_usd: number;
+        /** 后端当前生效的每日预算和每单上限（保存后要等重载才变） */
+        daily_limit_micro_usd: number;
+        per_ticket_limit_micro_usd: number;
+      } | null;
+      /** 在途单数（含主管对话）：>0 时保存后重载会排队 */
+      running: number;
+    }
+  | {
+      ok: false;
+      code: "cwd_repo" | "read_failed" | "invalid_config" | "failed";
+      reason: string;
+    };
 /** 字段错误：field 是表单路径（supervisor.model / reviewers.0.effort / pricing.<模型名> / config） */
 export interface DesktopFieldError {
   field: string;
@@ -523,6 +567,10 @@ export interface BakaDesktopApi {
   getModelConfig?(): Promise<DesktopModelConfigResult>;
   /** 设置 › 模型（UI-07b）：校验 → 写 config → 写 pricing → 重载；旧版 preload / 测试假 API 可以没有。 */
   saveModelConfig?(input: DesktopModelSaveInput): Promise<DesktopModelSaveResult>;
+  /** 设置 › 预算（UI-07c）：每日预算设置和今天已花费；旧版 preload / 测试假 API 可以没有。 */
+  getBudgetStatus?(): Promise<DesktopBudgetStatusResult>;
+  /** 设置 › 预算（UI-07c）：同 settings:save，只写 config/models.json 的 budget 段再重载。 */
+  saveBudget?(input: DesktopBudgetSaveInput): Promise<DesktopModelSaveResult>;
   /** 主题偏好同步给主进程（UI-02）；旧版 preload / 测试假 API 可以没有。 */
   setWindowTheme?(source: WindowThemeSource): Promise<DesktopWindowThemeResult>;
   /** 重载后端（T-093）：改配置或密钥后调用；有在途单时排队。 */

@@ -480,6 +480,9 @@ export class BackendSwitcher implements BackendHandle {
   testConnection(target: Parameters<BackendHandle["testConnection"]>[0]) {
     return this.current.testConnection(target);
   }
+  budgetState() {
+    return this.current.budgetState();
+  }
   /** 退出：先清排队，再等进行中的重载 / 切换结束（它们见 stopped 不装新后端），最后拆当前后端 */
   async stop() {
     this.stopped = true;
@@ -522,6 +525,7 @@ export function readonlyBackend(
     importCurrentRepo: unavailable,
     exportDiagnostics: unavailable,
     testConnection: async () => ({ ok: false, reason: "unavailable" }),
+    budgetState: async () => null,
     stop: async () => {},
   };
 }

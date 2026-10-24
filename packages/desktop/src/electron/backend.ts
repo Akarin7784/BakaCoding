@@ -20,6 +20,7 @@ import {
   ConfigError,
   getConfig,
   importProject as importProjectDefault,
+  type BudgetState,
   type Config,
   type Project,
 } from "@bakacoding/config-budget";
@@ -178,6 +179,11 @@ export interface BackendHandle {
    * 只读（没有网关）时回 `unavailable`，不发请求。
    */
   testConnection(target: { provider: string; model?: string }): Promise<BackendTestResult>;
+  /**
+   * 今天的预算状态（UI-07c，`budget:status`）：live 时原样转给组合根同一个 3 的 budgetState()，
+   * 不自己算；只读（没有组合根）时回 null。
+   */
+  budgetState(): Promise<BudgetState | null>;
   stop(): Promise<void>;
 }
 
@@ -795,6 +801,11 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
       const h = depsHandle;
       if (mode !== "live" || !h) return { ok: false, reason: "unavailable" };
       return h.testConnection(target);
+    },
+    async budgetState(): Promise<BudgetState | null> {
+      const h = depsHandle;
+      if (mode !== "live" || !h) return null;
+      return h.deps.budget.budgetState();
     },
     stop(): Promise<void> {
       // T-105：等 app.stop() 收尾后再关库；重复调用返回同一个 Promise

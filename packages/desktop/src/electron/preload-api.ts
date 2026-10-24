@@ -10,6 +10,8 @@ import {
   type DesktopImportResult,
   type DesktopOpenDataDirResult,
   type DesktopAbout,
+  type DesktopBudgetSaveInput,
+  type DesktopBudgetStatusResult,
   type DesktopModelConfigResult,
   type DesktopModelSaveInput,
   type DesktopModelSaveResult,
@@ -111,6 +113,10 @@ export function createDesktopApi(ipc: IpcRendererLike, platform: string): BakaDe
     getModelConfig: () =>
       ipc.invoke(IPC_CHANNELS.settingsConfigGet) as Promise<DesktopModelConfigResult>,
     saveModelConfig: (input: DesktopModelSaveInput) =>
+      ipc.invoke(IPC_CHANNELS.settingsSave, input) as Promise<DesktopModelSaveResult>,
+    getBudgetStatus: () =>
+      ipc.invoke(IPC_CHANNELS.budgetStatus) as Promise<DesktopBudgetStatusResult>,
+    saveBudget: (input: DesktopBudgetSaveInput) =>
       ipc.invoke(IPC_CHANNELS.settingsSave, input) as Promise<DesktopModelSaveResult>,
     supervisorChat: (message: UserMessage) =>
       ipc.invoke(IPC_CHANNELS.supervisorChat, message) as Promise<DesktopChatResult>,
