@@ -1,6 +1,13 @@
 import { redact } from "@bakacoding/config-budget";
 import type { RedactionReport } from "./schema.js";
 
+/**
+ * 导出时按字段名整段去掉的键（T-143）：任意嵌套深度，不看事件类型、不看值。
+ * `repo_path` 是仓库在本机的绝对路径（模块 2 的 projects 表和「项目已创建」事件数据，T-142），
+ * 只给桌面端主进程用，不进诊断包。
+ */
+export const DROPPED_KEYS: ReadonlySet<string> = new Set(["repo_path"]);
+
 /** 用模块 3 的 redact(text, "full") 做完整脱敏，并累计「规则名 → 命中次数」。 */
 export class FullRedactor {
   private readonly counts: Record<string, number> = {};
@@ -13,7 +20,10 @@ export class FullRedactor {
     return text;
   }
 
-  /** 递归脱敏：所有字符串值和对象键都过一遍；数字、布尔、null 原样保留。 */
+  /**
+   * 递归脱敏：所有字符串值和对象键都过一遍；数字、布尔、null 原样保留。
+   * DROPPED_KEYS 里的键（如 `repo_path`）连同值整段去掉，值是 null 也一样。
+   */
   deep<T>(value: T): T {
     return this.walk(value) as T;
   }
@@ -24,7 +34,7 @@ export class FullRedactor {
     if (v !== null && typeof v === "object") {
       const out: Record<string, unknown> = {};
       for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
-        if (x === undefined) continue;
+        if (x === undefined || DROPPED_KEYS.has(k)) continue;
         out[this.text(k)] = this.walk(x);
       }
       return out;
