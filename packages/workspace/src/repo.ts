@@ -497,3 +497,91 @@ async function createMainBranchLocked(root: string, o: GitOpts): Promise<{ from:
   await gitOk(root, "update-ref", ["update-ref", `refs/heads/${MAIN_BRANCH}`, head, ""], o);
   return { from };
 }
+
+/** 集成分支默认名（T-155）：与模块 6 的 `INTEGRATION_BRANCH` 同值，模块 4 不依赖 6，这里单独定义。 */
+export const DEFAULT_INTEGRATION_BRANCH = "bakacoding/integration";
+
+export type BranchStatusCode =
+  | "not_git"
+  | "nested_repo"
+  | "invalid_branch"
+  | "no_base"
+  | "no_integration"
+  | "timeout"
+  | "git_failed";
+
+const BRANCH_STATUS_MESSAGES: Record<BranchStatusCode, string> = {
+  not_git: "这个文件夹还不是 Git 仓库",
+  nested_repo: "这个文件夹在另一个 Git 仓库里面",
+  invalid_branch: "分支名不合法",
+  no_base: "找不到基线分支",
+  no_integration: "找不到集成分支",
+  timeout: "Git 命令超时",
+  git_failed: "Git 命令执行失败",
+};
+
+/** branchStatus 失败（T-155）。message 是固定中文文案，不含路径、分支名和 git 原始输出。 */
+export class BranchStatusError extends Error {
+  override readonly name = "BranchStatusError";
+  constructor(readonly code: BranchStatusCode) {
+    super(BRANCH_STATUS_MESSAGES[code]);
+  }
+}
+
+export interface BranchStatusOptions extends RepoOptions {
+  /** 基线分支，默认 `main`。 */
+  base_branch?: string;
+  /** 集成分支，默认 `bakacoding/integration`。 */
+  integration_branch?: string;
+}
+
+export interface BranchStatus {
+  /** 当前检出分支名；分离 HEAD 时为 null。 */
+  current_branch: string | null;
+  /** 集成分支领先基线分支的提交数（`rev-list --count <base>..<integration>`）。 */
+  ahead: number;
+}
+
+const validBranch = (b: unknown): b is string =>
+  typeof b === "string" && b !== "" && !b.startsWith("-") && !/[\0\r\n\s]/.test(b);
+
+/**
+ * 只读查询 dir 仓库的当前分支与集成分支领先数（T-155，给界面 Git 区用）。不改仓库、不拿写锁。
+ * dir 必须是仓库根（同 checkRepo）。失败抛 BranchStatusError，只带固定码。
+ */
+export async function branchStatus(
+  dir: string,
+  options?: BranchStatusOptions,
+): Promise<BranchStatus> {
+  const base = options?.base_branch ?? MAIN_BRANCH;
+  const integ = options?.integration_branch ?? DEFAULT_INTEGRATION_BRANCH;
+  if (!validBranch(base) || !validBranch(integ)) throw new BranchStatusError("invalid_branch");
+  const o = opts(options);
+  try {
+    const status = await repoStatus(resolve(dir), o);
+    if (status.kind === "nested") throw new BranchStatusError("nested_repo");
+    if (status.kind === "none") throw new BranchStatusError("not_git");
+    const root = status.root;
+    const [branch, hasBase, hasInteg] = await Promise.all([
+      currentBranch(root, o),
+      hasBranchCommit(root, base, o),
+      hasBranchCommit(root, integ, o),
+    ]);
+    if (!hasBase) throw new BranchStatusError("no_base");
+    if (!hasInteg) throw new BranchStatusError("no_integration");
+    const out = await runGit(
+      root,
+      "rev-list",
+      ["rev-list", "--count", `refs/heads/${base}..refs/heads/${integ}`, "--"],
+      o,
+    );
+    const ahead = Number(out.stdout.trim());
+    if (out.code !== 0 || !Number.isInteger(ahead) || ahead < 0)
+      throw new BranchStatusError("git_failed");
+    return { current_branch: branch, ahead };
+  } catch (e) {
+    if (e instanceof BranchStatusError) throw e;
+    if (e instanceof RepoFixError && e.code === "timeout") throw new BranchStatusError("timeout");
+    throw new BranchStatusError("git_failed");
+  }
+}
