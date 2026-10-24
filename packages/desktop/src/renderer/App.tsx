@@ -22,6 +22,7 @@ import { EmptyState } from "./components/EmptyState";
 import { useDesktopData } from "./data/useDesktopData";
 import { usePendingHighRisk } from "./data/usePendingHighRisk";
 import { useSyncState } from "./data/useSyncState";
+import { useGitStatus } from "./data/useGitStatus";
 import { usePoolState } from "./data/usePoolState";
 import { poolRowOf } from "./lib/poolState";
 import type { PoolLive } from "./components/RightPanel";
@@ -103,6 +104,8 @@ export function App(props: AppProps) {
   );
   const highRisk = usePendingHighRisk(api, props.pendingHighRisk ?? []);
   const syncState = useSyncState(api, props.syncState ?? null);
+  // UI-06c：Git 区随快照（tickets 引用变）和同步状态更新重新取，不轮询
+  const gitStatus = useGitStatus(api, live?.events, live?.tickets, syncState);
   // UI-06b：编码池状态随快照刷新（live 对象一变就重取），不轮询
   const poolResult = usePoolState(api, live);
   const poolLive = useMemo<PoolLive | null>(
@@ -350,7 +353,6 @@ export function App(props: AppProps) {
           <StatusDot
             level={level}
             backend={backend.status}
-            sync={syncState}
             db={live?.db}
             attention={attentionItems(statusInput)}
             running={runningCount(projects)}
@@ -490,6 +492,7 @@ export function App(props: AppProps) {
               readonly={backendReadonly}
               pool={poolLive}
               tickets={tickets}
+              {...(api?.getGitStatus ? { gitStatus, sync: syncState } : {})}
               exportBusy={actions.busy === "export"}
               onOpenTicket={(rid, tid) => {
                 openRequirementOf(current.project.payload.project_id, rid, tid);

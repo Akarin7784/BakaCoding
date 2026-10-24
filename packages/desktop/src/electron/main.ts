@@ -21,6 +21,7 @@ import {
   serveSupervisorHistory,
   serveSupervisorSplit,
   serveRequirementDetail,
+  serveGitStatus,
   servePoolState,
   serveSyncState,
   serveAbout,
@@ -191,6 +192,7 @@ if (!gotLock) {
     const stopSupervisorHistory = serveSupervisorHistory(ipcMain, backend);
     const stopSupervisorSplit = serveSupervisorSplit(ipcMain, backend);
     const stopRequirementDetail = serveRequirementDetail(ipcMain, backend);
+    const stopGitStatus = serveGitStatus(ipcMain, backend);
     const stopPoolState = servePoolState(ipcMain, backend);
     // UI-07a：设置 › 关于
     const stopAbout = serveAbout(ipcMain, () => ({
@@ -273,6 +275,7 @@ if (!gotLock) {
         stopSupervisorHistory();
         stopSupervisorSplit();
         stopRequirementDetail();
+        stopGitStatus();
         stopPoolState();
         stopAbout();
         stopWindowTheme();

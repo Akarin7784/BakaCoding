@@ -1,6 +1,7 @@
 // T-072：一次组装只对应一个仓库。导入项目时拆掉旧后端、在新仓库上重新组装，桌面侧订阅转到新后端。
 import { POOL_STATE_UNAVAILABLE } from "./pool-state.js";
 import { REQUIREMENT_DETAIL_UNAVAILABLE } from "./requirement-detail.js";
+import { GIT_STATUS_UNAVAILABLE } from "./git-status.js";
 import type { Project } from "@bakacoding/config-budget";
 import type { PendingHighRisk } from "@bakacoding/supervisor";
 import type { BackendHandle, BackendStatus, NotifyMessage, RepoSource } from "./backend.js";
@@ -486,6 +487,9 @@ export class BackendSwitcher implements BackendHandle {
   requirementDetail(query: unknown) {
     return this.current.requirementDetail(query);
   }
+  gitStatus() {
+    return this.current.gitStatus();
+  }
   poolState() {
     return this.current.poolState();
   }
@@ -543,6 +547,7 @@ export function readonlyBackend(
     supervisorHistory: async () => ({ ok: true, messages: [] }),
     supervisorSplit: async () => ({ ok: false, reason: SPLIT_READONLY_REASON }),
     requirementDetail: async () => ({ ok: false, reason: REQUIREMENT_DETAIL_UNAVAILABLE }),
+    gitStatus: async () => ({ ok: false, reason: GIT_STATUS_UNAVAILABLE }),
     poolState: async () => ({ ok: false, reason: POOL_STATE_UNAVAILABLE }),
     repoRoot: () => repo,
     prMode: () => "local",

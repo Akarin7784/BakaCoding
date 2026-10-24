@@ -1,6 +1,7 @@
 // T-063：桌面主进程后端——拿写入锁、组装组合根、takeOver；失败则退回只读。
 import { readPoolState } from "./pool-state.js";
 import { readRequirementDetail } from "./requirement-detail.js";
+import { readGitStatus } from "./git-status.js";
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { copyFile, lstat, mkdtemp, rm, unlink } from "node:fs/promises";
@@ -11,6 +12,8 @@ import {
   acquireWriterLock,
   assemble,
   checkRepo as checkRepoDefault,
+  branchStatus as branchStatusDefault,
+  type BranchStatus,
   isTicketActive,
   createDefaultDeps,
   ensureBakacodingIgnored,
@@ -48,6 +51,7 @@ import type {
   DesktopSplitResult,
   DesktopPoolStateResult,
   DesktopRequirementDetailResult,
+  DesktopGitStatusResult,
   DesktopDecideHighRiskResult,
   DesktopExportOptions,
   DesktopSyncState,
@@ -137,6 +141,8 @@ export interface BackendOptions {
   importProject?: typeof importProjectDefault;
   /** 测试注入：模块 4 的 ensureBakacodingIgnored（T-078） */
   ensureIgnored?: (dir: string) => Promise<boolean>;
+  /** 测试注入：模块 4 的 branchStatus（UI-06c） */
+  branchStatus?: (dir: string, options: { integration_branch: string }) => Promise<BranchStatus>;
   /** 测试注入：模块 4 的 checkRepo（UI-03：启动失败时判断是不是「不是 Git 仓库」） */
   checkRepo?: (
     dir: string,
@@ -205,6 +211,8 @@ export interface BackendHandle {
   supervisorSplit(request: DesktopSplitRequest): Promise<DesktopSplitResult>;
   /** 需求详情（UI-05a，只读）：2 的 listTickets({requirement_id}) + listPrRounds，白名单 + 脱敏；没有存储为固定失败 */
   requirementDetail(query: unknown): Promise<DesktopRequirementDetailResult>;
+  /** UI-06c：Git 区只读状态；只读固定 ok:false */
+  gitStatus(): Promise<DesktopGitStatusResult>;
   /** 编码池状态（UI-06b，只读）：live 时原样转 9 的 backpressureState()；只读固定 ok:false，抛错固定文案 */
   poolState(): Promise<DesktopPoolStateResult>;
   /**
@@ -547,6 +555,7 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
   let depsHandle: DefaultDepsHandle | undefined;
   let app: App | undefined;
   let takeOver: BackendStatus["takeOver"];
+  let mainMerge: "user" | "supervisor" = "user";
   const busUnsubs: Array<() => void> = [];
   const chatQueue = createSerialQueue();
 
@@ -650,6 +659,7 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
         ]);
       }
       const config = loadConfig(configPath);
+      mainMerge = config.pipeline.main_merge ?? "user";
 
       storage = open({
         path: dbPath,
@@ -870,6 +880,13 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
     },
     async requirementDetail(query: unknown): Promise<DesktopRequirementDetailResult> {
       return readRequirementDetail(storage, query, env);
+    },
+    gitStatus(): Promise<DesktopGitStatusResult> {
+      return readGitStatus(
+        mode === "live" && app
+          ? { repoRoot, mainMerge, branchStatus: opts.branchStatus ?? branchStatusDefault }
+          : undefined,
+      );
     },
     poolState(): Promise<DesktopPoolStateResult> {
       const sch = mode === "live" ? app?.scheduler : undefined;

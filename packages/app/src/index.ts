@@ -42,6 +42,13 @@ export {
   type GitIdentity,
   type InitialCommitFiles,
   type ExcludedReason,
+  // UI-06c：右面板 Git 区只读查询（T-155）
+  branchStatus,
+  BranchStatusError,
+  DEFAULT_INTEGRATION_BRANCH,
+  type BranchStatus,
+  type BranchStatusCode,
+  type BranchStatusOptions,
 } from "@bakacoding/workspace";
 // T-087：设置页保存模型配置（desktop 不直接依赖 3）
 export {

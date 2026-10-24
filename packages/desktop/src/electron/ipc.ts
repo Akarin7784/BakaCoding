@@ -10,6 +10,7 @@ import {
   type DesktopSplitResult,
   type DesktopPoolStateResult,
   type DesktopRequirementDetailResult,
+  type DesktopGitStatusResult,
   type DesktopDecideHighRiskResult,
   type DesktopExportOptions,
   type DesktopExportResult,
@@ -702,6 +703,20 @@ export function serveRequirementDetail(
   });
   return () => {
     ipc.removeHandler(IPC_CHANNELS.requirementDetail);
+  };
+}
+
+/** Git 区状态 IPC（UI-06c，只读，无参数）：invoke `git:status` → backend.gitStatus()。 */
+export function serveGitStatus(
+  ipc: IpcMainLike,
+  backend: Pick<BackendHandle, "gitStatus">,
+): () => void {
+  ipc.handle(IPC_CHANNELS.gitStatus, async () => {
+    const result: DesktopGitStatusResult = await backend.gitStatus();
+    return result;
+  });
+  return () => {
+    ipc.removeHandler(IPC_CHANNELS.gitStatus);
   };
 }
 

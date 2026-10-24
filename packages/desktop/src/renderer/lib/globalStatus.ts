@@ -32,12 +32,15 @@ export interface GlobalStatusInput {
   unattributed: number;
 }
 
+/** UI-06c：同步状态挪到右面板 Git 区后，状态卡里的固定指引。 */
+export const SYNC_ALERT_ATTENTION = "同步异常，见右面板 Git 区";
+
 /** 需要你处理的事，一条一句，状态卡里列出来。 */
 export function attentionItems(i: GlobalStatusInput): string[] {
   const out: string[] = [];
   if (i.readonly) out.push("后端处于只读模式");
   if (i.dbError) out.push("数据库打不开");
-  if (i.syncAlert) out.push("GitHub 同步出了问题");
+  if (i.syncAlert) out.push(SYNC_ALERT_ATTENTION);
   if (i.pendingHighRisk > 0) out.push(`${i.pendingHighRisk} 个高风险 PR 待裁决`);
   const stuck = i.projects.flatMap((p) =>
     p.prs.filter((pr) => ATTENTION_STATUSES.includes(pr.status)),

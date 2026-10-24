@@ -11,6 +11,7 @@ import {
   type DesktopRequirementDetailQuery,
   type DesktopPoolStateResult,
   type DesktopRequirementDetailResult,
+  type DesktopGitStatusResult,
   type DesktopDecideHighRiskResult,
   type DesktopExportOptions,
   type DesktopExportResult,
@@ -145,6 +146,7 @@ export function createDesktopApi(ipc: IpcRendererLike, platform: string): BakaDe
       ipc.invoke(IPC_CHANNELS.supervisorSplit, request) as Promise<DesktopSplitResult>,
     getRequirementDetail: (query: DesktopRequirementDetailQuery) =>
       ipc.invoke(IPC_CHANNELS.requirementDetail, query) as Promise<DesktopRequirementDetailResult>,
+    getGitStatus: () => ipc.invoke(IPC_CHANNELS.gitStatus) as Promise<DesktopGitStatusResult>,
     getPoolState: () => ipc.invoke(IPC_CHANNELS.poolState) as Promise<DesktopPoolStateResult>,
     getSupervisorHistory: (query?: DesktopHistoryQuery) =>
       ipc.invoke(IPC_CHANNELS.supervisorHistory, query ?? {}) as Promise<DesktopHistoryResult>,

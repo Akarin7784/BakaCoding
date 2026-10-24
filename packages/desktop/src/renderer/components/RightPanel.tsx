@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Download, GitBranch, GitMerge, TriangleAlert } from "lucide-react";
+import { Download, GitBranch, GitMerge, RefreshCw, TriangleAlert } from "lucide-react";
 import { Button } from "./ui/button";
 import { READONLY_COPY } from "../lib/readonly";
 import { Separator } from "./ui/separator";
@@ -15,7 +15,8 @@ import {
   statusFilterOptions,
   type TicketStatusFilter,
 } from "../lib/ticketList";
-import type { TicketView } from "../../shared/api";
+import type { DesktopGitStatusResult, DesktopSyncState, TicketView } from "../../shared/api";
+import { GIT_COPY, gitAheadLabel, gitCurrentLabel, gitSyncView } from "../lib/gitStatus";
 import type { ProjectView } from "../mock/types";
 import { poolRowLabel, poolRowTitle, type PoolRow } from "../lib/poolState";
 
@@ -62,6 +63,56 @@ function TicketWarning({ codes }: { codes: string[] }) {
 }
 
 /**
+ * UI-06c：真实 Git 区——git:status（当前分支、集成领先 main）+ 最后一次成功同步时间 + 同步出错时的固定提示。
+ * 「合入 main」按钮留给 06d。
+ */
+function LiveGit({
+  status,
+  sync,
+}: {
+  status: DesktopGitStatusResult | "loading";
+  sync: DesktopSyncState | null;
+}) {
+  const syncView = gitSyncView(sync);
+  return (
+    <div data-testid="git-live" className="space-y-2">
+      {status === "loading" ? (
+        <p className="text-xs text-muted-foreground">{GIT_COPY.loading}</p>
+      ) : status.ok ? (
+        <>
+          <div data-testid="git-current" className="flex items-center gap-2">
+            <GitBranch size={14} strokeWidth={1.5} aria-hidden />
+            {gitCurrentLabel(status)}
+          </div>
+          <div data-testid="git-ahead" className="flex items-center gap-2">
+            <GitBranch size={14} strokeWidth={1.5} aria-hidden />
+            {gitAheadLabel(status)}
+          </div>
+        </>
+      ) : (
+        <p data-testid="git-unavailable" className="text-xs text-muted-foreground">
+          {status.reason}
+        </p>
+      )}
+      {syncView.lastSync && (
+        <div
+          data-testid="git-last-sync"
+          className="flex items-center gap-2 text-xs text-muted-foreground"
+        >
+          <RefreshCw size={12} strokeWidth={1.5} aria-hidden />
+          {syncView.lastSync}
+        </div>
+      )}
+      {syncView.error && (
+        <p data-testid="git-sync-error" role="alert" className="text-xs text-danger">
+          {syncView.error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
  * 右面板「概览」标签的内容（§4.5）：跟随当前项目；主管对话里跟随输入框选中的项目。外壳见 RightPanelShell（UI-02）。
  * UI-06a：需求单列表只看快照 tickets（状态图标 + 脱敏标题 + ×重写次数，可按状态筛选）。
  */
@@ -72,6 +123,8 @@ export function RightPanel({
   onExportTicket,
   exportBusy = false,
   readonly = false,
+  gitStatus,
+  sync = null,
   pool: poolLive,
 }: {
   view: ProjectView;
@@ -84,6 +137,10 @@ export function RightPanel({
   exportBusy?: boolean;
   /** 后端只读（UI-08）：合入 main、导出禁用并说明 */
   readonly?: boolean;
+  /** UI-06c：接了 git:status 时传（null = 读取中）；不传（undefined）= 示例数据 */
+  gitStatus?: DesktopGitStatusResult | null;
+  /** UI-06c：同步状态（从左下状态卡挪到 Git 区） */
+  sync?: DesktopSyncState | null;
   /** UI-06b：真实编码池状态；不给时回退 view.pool */
   pool?: PoolLive | null;
 }) {
@@ -115,7 +172,9 @@ export function RightPanel({
       <Separator />
       <div className="space-y-2 px-4 py-3">
         <div className="text-xs text-muted-foreground">Git · {view.project.payload.name}</div>
-        {git ? (
+        {gitStatus !== undefined ? (
+          <LiveGit status={gitStatus ?? "loading"} sync={sync} />
+        ) : git ? (
           <>
             <div className="flex items-center gap-2">
               <GitBranch size={14} strokeWidth={1.5} aria-hidden />

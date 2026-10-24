@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import type { BakaDesktopApi, DesktopSnapshot, DesktopSyncState } from "../../shared/api.js";
 import { App } from "../App";
@@ -109,29 +109,25 @@ describe("App 接 syncState（T-067）", () => {
     last_seq: -1,
   };
 
-  it("从 api 取同步状态，收到 sync:state-update 即时更新", async () => {
+  it("UI-06c：左下状态卡不再显示同步状态", async () => {
     const listeners = new Set<(s: DesktopSyncState) => void>();
     const api = {
       platform: "linux",
       getSnapshot: async () => snap,
       onUpdate: () => () => {},
       getSyncState: async () => live,
+      getGitStatus: async () => ({ ok: false, reason: "Git 状态暂不可用" }),
       onSyncState: (l: (s: DesktopSyncState) => void) => {
         listeners.add(l);
         return () => listeners.delete(l);
       },
     } as unknown as BakaDesktopApi;
     render(<App api={api} />);
-    // UI-08：同步状态在左栏底部的状态卡里
+    // UI-06c：同步状态挪到右面板 Git 区（App.live.test 覆盖）；左下状态卡里不再有
     fireEvent.click(await screen.findByTestId("status-dot"));
-    expect((await screen.findByTestId("sync-status-label")).textContent).toBe("同步运行中");
-    act(() =>
-      listeners.forEach((l) =>
-        l({ ...live, enabled: false, disabled_reason: "auth", next_at: null }),
-      ),
-    );
-    expect(screen.getByTestId("sync-status-label").textContent).toBe("同步已停止");
-    expect(screen.getByTestId("sync-hint").textContent).toContain("GITHUB_TOKEN");
+    await screen.findByTestId("status-card");
+    act(() => listeners.forEach((l) => l({ ...live, enabled: false })));
+    expect(within(screen.getByTestId("status-card")).queryByTestId("sync-status")).toBeNull();
   });
 
   it("没有 api 也没注入时不显示同步行", () => {

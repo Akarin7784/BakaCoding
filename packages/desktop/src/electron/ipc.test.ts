@@ -22,6 +22,7 @@ import {
   serveSupervisorHistory,
   serveSupervisorSplit,
   serveRequirementDetail,
+  serveGitStatus,
   servePoolState,
   serveSyncState,
   serveAbout,
@@ -88,6 +89,7 @@ function fakeBackend(over: Partial<BackendHandle> = {}): BackendHandle {
     })),
     supervisorHistory: vi.fn(async () => ({ ok: true as const, messages: [] })),
     requirementDetail: vi.fn(async () => ({ ok: false as const, reason: "找不到这个需求" })),
+    gitStatus: vi.fn(async () => ({ ok: false as const, reason: "Git 状态暂不可用" })),
     poolState: vi.fn(async () => ({ ok: false as const, reason: "编码池状态暂不可用" })),
     supervisorSplit: vi.fn(async () => ({
       ok: true as const,
@@ -162,6 +164,7 @@ const SERVE: Record<string, (ipc: IpcMainLike, backend: BackendHandle) => () => 
   // UI-04c：重试拆单
   serveSupervisorSplit: (ipc, backend) => serveSupervisorSplit(ipc, backend),
   serveRequirementDetail: (ipc, backend) => serveRequirementDetail(ipc, backend),
+  serveGitStatus: (ipc, backend) => serveGitStatus(ipc, backend),
   // UI-06b：编码池状态
   servePoolState: (ipc, backend) => servePoolState(ipc, backend),
   // UI-07a：设置 › 关于
@@ -375,6 +378,9 @@ describe("handler 参数：第一个是 event，渲染进程参数从第二个�
       reason: "找不到这个需求",
     });
     expect(backend.requirementDetail).toHaveBeenCalledWith({ requirement_id: "R-1" });
+    // UI-06c：Git 区状态（无参数）
+    await expect(api.getGitStatus!()).resolves.toEqual({ ok: false, reason: "Git 状态暂不可用" });
+    expect(backend.gitStatus).toHaveBeenCalledWith();
     // UI-06b：编码池状态（无参数）
     await expect(api.getPoolState!()).resolves.toEqual({
       ok: false,
@@ -603,6 +609,7 @@ describe("preload 暴露的只读 API", () => {
       "getAbout",
       "getBackendStatus",
       "getBudgetStatus",
+      "getGitStatus",
       "getLedgerSummary",
       "getModelConfig",
       "getPendingHighRisk",
