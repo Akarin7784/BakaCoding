@@ -212,6 +212,7 @@ flowchart BT
 | T-145 | 模块 12（方案 B，不改 §3 接口）：`importCurrentRepo()` 在 3 的 `importProject` 成功、`project_created` 已落库后调 2 的 `setProjectRepoPath(project_id, repoRoot)` 写入用户选的仓库路径；路径不进事件；返回 `updated:false` 或抛错只记一条不带路径的 warn，导入照样成功；移除后再导入会重新写入；modules.md §12 同步。合入后 main `67b1f60`，测试 137 个文件 / 2436 passed + 2 skipped 个 | 12 | 已合入 | #211 | `67b1f60` |
 | T-146 | 模块 11：诊断包路径脱敏补缺。所有字符串（值、键名、`trace_id` 等 id 字段、原始文件和 zip 条目名）在 3 的 full 脱敏后再遮绝对路径和 home 目录：`os.homedir()`、`file:` URL、UNC、`C:\` / `C:/`、`~/`、POSIX `/…`；不误伤相对片段、日期、分数、`https://` URL 和 `/dev/null`；`DROPPED_KEYS` 和密钥脱敏不变；端到端用例（多余路径字段 + 路径写进 `trace_id`，解压后整包搜不到路径和 home）；modules.md §11 同步。合入后 main `cadc225`，测试 145 个文件 / 2520 passed + 2 skipped 个 | 11 | 界面与诊断开发 | 已合入 | #217 | `cadc225` |
 | T-147 | 模块 11：诊断包带空格路径脱敏收紧。空格后 3 个词内出现含 `/` `\` 的词就并入路径遮掉，带引号的路径整段遮；POSIX、Windows（`\` 和 `/`）、UNC、引号用例和「路径后跟普通句子」不误伤用例；e2e 加带空格路径，整包搜不到 `Data Disk` 等片段；modules.md §11 同步。合入后 main `4a2562c`，测试 145 个文件 / 2541 passed + 2 skipped 个 | 11 | 界面与诊断开发 | 已合入 | #219 | `4a2562c` |
+| T-149 | 模块 12：`sanitizeChatReason` 先过模块 11 的 `redactPaths`（与 FullRedactor 同一套规则），再走密钥值 / light / 截断；补 POSIX、Windows、UNC、home、`~` 路径用例。渲染端实时回复改按 `reply.message_id`（T-148）和历史去重，删掉 `replyMessageId` 及 `<id>-r` 假定；补「回复 id 与用户 id 无关仍去重」用例（均做反向检查） | 12 | 界面与诊断开发 | 待评审 | #229 | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
