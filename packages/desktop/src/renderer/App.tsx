@@ -449,6 +449,7 @@ export function App(props: AppProps) {
               readonly={backendReadonly}
               onOpenRequirement={viewRequirement}
               requirementNameOf={requirementNameOf}
+              events={events}
             />
           </>
         ) : (
@@ -463,6 +464,7 @@ export function App(props: AppProps) {
             prefill={chatPrefill}
             onPrefillUsed={clearPrefill}
             onChipProjectChange={setChatProjectId}
+            events={events}
           />
         )}
       </main>

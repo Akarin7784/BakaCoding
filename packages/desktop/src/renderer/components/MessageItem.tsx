@@ -1,8 +1,10 @@
 // UI-04c：主管回复按 ChatReply.kind 呈现（docs/ui-design.md §4.2）。实时回复和历史记录走同一个组件。
 // answer 普通文本；ask_project 下方一排项目按钮；decision_saved「已记下」小标签；
 // dispatched「已派单」卡片（需求、拆出 N 张单、「查看需求」跳到需求页（UI-05f））；split_failed「重试拆单」。
+import { useEffect, useState } from "react";
 import { Check, ClipboardList, FolderGit2, RotateCcw } from "lucide-react";
 import type { ChatReply, DesktopProjectRow } from "../../shared/api";
+import { CALL_USAGE_COPY } from "../lib/callUsage";
 import { CHAT_COPY, REQUIREMENT_MENU_COPY } from "../lib/copy";
 import { cn } from "../lib/utils";
 import { AgentIcon } from "./AgentIcon";
@@ -162,8 +164,19 @@ function KindExtra({
   }
 }
 
-/** 等待回复：三个点淡入淡出（减少动态效果时由全局规则停住）。 */
-export function WaitingDots() {
+/** 等待回复：三个点淡入淡出（减少动态效果时由全局规则停住）。UI-06e：给 startedAt 时旁边显示已用秒数，每秒刷新。 */
+export function WaitingDots({
+  startedAt,
+  now = Date.now,
+}: { startedAt?: number | undefined; now?: () => number } = {}) {
+  const [t, setT] = useState(() => now());
+  useEffect(() => {
+    if (startedAt === undefined) return;
+    setT(now());
+    const id = setInterval(() => setT(now()), 1000);
+    return () => clearInterval(id);
+  }, [startedAt, now]);
+  const secs = startedAt === undefined ? null : Math.max(0, Math.floor((t - startedAt) / 1000));
   return (
     <div
       role="status"
@@ -181,6 +194,11 @@ export function WaitingDots() {
           />
         ))}
       </span>
+      {secs !== null && (
+        <span data-testid="chat-elapsed" className="text-xs tabular-nums text-muted-foreground">
+          {CALL_USAGE_COPY.elapsed(secs)}
+        </span>
+      )}
     </div>
   );
 }
