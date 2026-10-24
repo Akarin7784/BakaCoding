@@ -112,7 +112,7 @@ function stripProject(text: string, project: { project_id: string; name: string 
 }
 
 /** 认领暂存需求 + 处理同一条消息里的新内容：文字拼接，单号合并；新内容还要追问项目时以追问为准。 */
-function mergeReplies(first: ChatReply, second: ChatReply): ChatReply {
+function mergeReplies(first: ReplyBody, second: ReplyBody): ReplyBody {
   const ticket_ids = [...(first.ticket_ids ?? []), ...(second.ticket_ids ?? [])];
   return {
     ...first,
@@ -146,6 +146,9 @@ type EscalationReason = EventOf<"escalated">["payload"]["reason"];
  * 任一边单独增删 kind，这里 typecheck 就报错。不导出。
  */
 type MutuallyAssignable<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+/** T-148：chat 内部各分支产出的回复，`message_id` 由 chat() 统一补上。 */
+type ReplyBody = Omit<ChatReply, "message_id">;
+
 const CHAT_REPLY_KIND_IN_SYNC: MutuallyAssignable<ChatReply["kind"], StorageChatReplyKind> = true;
 void CHAT_REPLY_KIND_IN_SYNC;
 
@@ -1535,7 +1538,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     project: ProjectInfo,
     note: string,
     requirement_id: string,
-  ): Promise<ChatReply> {
+  ): Promise<ReplyBody> {
     try {
       const r = await split({ project_id: project.project_id, text, requirement_id });
       return {
@@ -1563,7 +1566,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     project: ProjectInfo,
     note: string,
     requirement_id: string,
-  ): Promise<ChatReply> {
+  ): Promise<ReplyBody> {
     if (kind === "decision") {
       const content = (decision ?? text).trim();
       deps.storage.saveDecision({ project_id: project.project_id, content });
@@ -1576,7 +1579,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     return splitForChat(text, project, note, requirement_id);
   }
 
-  function askProject(list: ProjectInfo[]): ChatReply {
+  function askProject(list: ProjectInfo[]): ReplyBody {
     if (list.length === 0)
       return { kind: "ask_project", text: "还没有导入任何项目，请先在界面上导入项目。" };
     return {
@@ -1650,8 +1653,9 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       // created_at 仍取 10 的单调时间，调用方自带 id 时推后 1 毫秒，保证回复排在用户消息之后
       const at = clock().getTime();
       const r = nextMessage(msg.message_id ? Math.max(at, u.created_at + 1) : at);
+      const replyId = `${userId}-r`;
       logChat({
-        message_id: `${userId}-r`,
+        message_id: replyId,
         project_id: reply.project_id ?? msg.project_id ?? null,
         role: "supervisor",
         kind: reply.kind,
@@ -1660,14 +1664,14 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         ticket_ids: reply.ticket_ids ?? [],
         created_at: r.created_at,
       });
-      return reply;
+      return { message_id: replyId, ...reply };
     } finally {
       chatSplitInflight = Math.max(0, chatSplitInflight - 1);
       void emitSupervisorBacklog();
     }
   }
 
-  async function chatBody(msg: UserMessage): Promise<ChatReply> {
+  async function chatBody(msg: UserMessage): Promise<ReplyBody> {
     const list = projects();
     const explicit = msg.project_id ? list.find((p) => p.project_id === msg.project_id) : undefined;
     // 有暂存需求时：界面传的 project_id 优先；否则原文里恰好提到一个项目才认领，
@@ -1716,7 +1720,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     return handle(msg, list);
   }
 
-  async function handle(msg: UserMessage, list: ProjectInfo[]): Promise<ChatReply> {
+  async function handle(msg: UserMessage, list: ProjectInfo[]): Promise<ReplyBody> {
     const explicit = msg.project_id ? list.find((p) => p.project_id === msg.project_id) : undefined;
     const named = explicit ?? mentioned(msg.text, list);
     const requirement_id = `req-${shortId()}`;
