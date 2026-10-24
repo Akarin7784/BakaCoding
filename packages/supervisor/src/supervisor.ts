@@ -1646,11 +1646,12 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         created_at: u.created_at,
       });
       const reply = await chatBody(msg);
-      // 调用方自带的 message_id 不一定按字典序排在 10 生成的 id 前面：同毫秒时把回复推后 1 毫秒
+      // 回复 id 由用户消息 id 推出（`<id>-r`）：重试时与上次已存的回复同 id，靠存储幂等去重；
+      // created_at 仍取 10 的单调时间，调用方自带 id 时推后 1 毫秒，保证回复排在用户消息之后
       const at = clock().getTime();
       const r = nextMessage(msg.message_id ? Math.max(at, u.created_at + 1) : at);
       logChat({
-        message_id: r.message_id,
+        message_id: `${userId}-r`,
         project_id: reply.project_id ?? msg.project_id ?? null,
         role: "supervisor",
         kind: reply.kind,
