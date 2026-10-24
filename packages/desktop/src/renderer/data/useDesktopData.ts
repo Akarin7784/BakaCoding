@@ -4,6 +4,9 @@ import { applyUpdate, buildViews, fromSnapshot, type LiveState, type LiveViews }
 
 export interface DesktopData extends LiveViews {
   db: LiveState["db"] | null;
+  /** UI-05c 需求页：快照单子（当前状态只看它）和事件（只给标记 / 时间线） */
+  tickets: LiveState["tickets"];
+  events: LiveState["events"];
   loading: boolean;
 }
 
@@ -44,7 +47,9 @@ export function useDesktopData(api: BakaDesktopApi | undefined): DesktopData | n
       unattributed: [],
       unattributedWarnings: [],
       db: null,
+      tickets: [],
+      events: [],
       loading: true,
     };
-  return { ...views, db: state.db, loading: false };
+  return { ...views, db: state.db, tickets: state.tickets, events: state.events, loading: false };
 }
