@@ -554,6 +554,11 @@ export type DesktopModelConfigResult =
       pricing: DesktopModelPricing;
       /** 在途单数（含主管对话）：>0 时保存后重载会排队 */
       running: number;
+      /**
+       * UI-05c：需求页「第 N 轮 / 上限」用的复投上限，取 3 的 ConfigSchema 解析后的值（含默认值 3）。
+       * 可选：旧主进程 / 测试桩没有这个字段时界面按默认值处理。
+       */
+      pipeline?: { resubmit_limits: { review: number } };
     }
   | {
       ok: false;
