@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Download, GitBranch, GitMerge, TriangleAlert } from "lucide-react";
+import { Download, GitBranch, GitMerge, RefreshCw, TriangleAlert } from "lucide-react";
 import { Button } from "./ui/button";
 import { READONLY_COPY } from "../lib/readonly";
 import { Separator } from "./ui/separator";
@@ -16,8 +16,7 @@ import {
   type TicketStatusFilter,
 } from "../lib/ticketList";
 import type { DesktopGitStatusResult, DesktopSyncState, TicketView } from "../../shared/api";
-import { GIT_COPY, gitAheadLabel, gitCurrentLabel } from "../lib/gitStatus";
-import { SyncStatus } from "./SyncStatus";
+import { GIT_COPY, gitAheadLabel, gitCurrentLabel, gitSyncView } from "../lib/gitStatus";
 import type { ProjectView } from "../mock/types";
 
 function Flag({ on, label }: { on: boolean; label: string }) {
@@ -43,7 +42,7 @@ function TicketWarning({ codes }: { codes: string[] }) {
 }
 
 /**
- * UI-06c：真实 Git 区——git:status（当前分支、集成领先 main）+ 同步状态（从左下状态卡挪来，含上次成功同步时间）。
+ * UI-06c：真实 Git 区——git:status（当前分支、集成领先 main）+ 最后一次成功同步时间 + 同步出错时的固定提示。
  * 「合入 main」按钮留给 06d。
  */
 function LiveGit({
@@ -53,6 +52,7 @@ function LiveGit({
   status: DesktopGitStatusResult | "loading";
   sync: DesktopSyncState | null;
 }) {
+  const syncView = gitSyncView(sync);
   return (
     <div data-testid="git-live" className="space-y-2">
       {status === "loading" ? (
@@ -73,10 +73,19 @@ function LiveGit({
           {status.reason}
         </p>
       )}
-      {sync && (
-        <div className="-mx-4 [&_section]:border-b-0">
-          <SyncStatus state={sync} />
+      {syncView.lastSync && (
+        <div
+          data-testid="git-last-sync"
+          className="flex items-center gap-2 text-xs text-muted-foreground"
+        >
+          <RefreshCw size={12} strokeWidth={1.5} aria-hidden />
+          {syncView.lastSync}
         </div>
+      )}
+      {syncView.error && (
+        <p data-testid="git-sync-error" role="alert" className="text-xs text-danger">
+          {syncView.error}
+        </p>
       )}
     </div>
   );

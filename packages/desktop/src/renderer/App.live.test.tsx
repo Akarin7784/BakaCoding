@@ -612,7 +612,11 @@ describe("UI-06c：右面板 Git 区（git:status + 同步状态）", () => {
         expect(within(git).getByTestId("git-current").textContent).toBe("当前 feat/x"),
       );
       expect(within(git).getByTestId("git-ahead").textContent).toContain("领先 main");
-      expect(within(git).getByTestId("sync-last-ok").textContent).toContain("上次成功");
+      expect(within(git).getByTestId("git-last-sync").textContent).toMatch(/^上次同步：2026/);
+      // 只显示最后一次成功同步时间：不显示运行中 / 下次尝试
+      expect(within(git).queryByTestId("sync-status")).toBeNull();
+      expect(git.textContent).not.toContain("下次尝试");
+      expect(within(git).queryByTestId("git-sync-error")).toBeNull();
       // 合入 main 按钮留给 06d
       expect(within(git).queryByRole("button")).toBeNull();
       const calls = getGitStatus.mock.calls.length;
@@ -678,5 +682,11 @@ describe("UI-06c：右面板 Git 区（git:status + 同步状态）", () => {
     );
     const items = await screen.findByTestId("status-attention");
     expect(within(items).getByText("同步异常，见右面板 Git 区")).toBeTruthy();
+    // (a) Git 区显示固定文案错误提示，不透出原始错误
+    fireEvent.click(screen.getByRole("button", { name: /real-proj/ }));
+    fireEvent.click(screen.getByRole("button", { name: "打开右面板" }));
+    const err = await screen.findByTestId("git-sync-error");
+    expect(err.textContent).toBe("同步失败，稍后自动重试");
+    expect(screen.getByTestId("git-live").textContent).not.toContain("boom");
   });
 });
