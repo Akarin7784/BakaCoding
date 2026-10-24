@@ -9,7 +9,8 @@ import {
   runSupervisorHistory,
   toHistoryQuery,
 } from "./supervisor-chat.js";
-import { readonlyBackend } from "./backend-switcher.js";
+import { BackendSwitcher, readonlyBackend } from "./backend-switcher.js";
+import type { BackendHandle } from "./backend.js";
 
 const msg = (id: string, role: "user" | "supervisor" = "user"): SupervisorMessage => ({
   message_id: id,
@@ -101,5 +102,24 @@ describe("serveSupervisorHistory（UI-04a）", () => {
     const r = await b.supervisorHistory({ before: "m-1" });
     expect(r).toEqual({ ok: true, messages: [] });
     expect(JSON.stringify(r)).not.toContain("/repo");
+  });
+
+  it("BackendSwitcher.supervisorHistory 把请求原样转给当前后端，结果原样返回（UI-04b 补测）", async () => {
+    const supervisorHistory = vi.fn(async (): Promise<DesktopHistoryResult> => ({
+      ok: true,
+      messages: [msg("m-9")],
+    }));
+    const current = {
+      onNotify: () => () => {},
+      onPendingHighRisk: () => () => {},
+      supervisorHistory,
+    } as unknown as BackendHandle;
+    const sw = new BackendSwitcher(current, async () => current);
+    const query = { before: "m-10", limit: 50 };
+    await expect(sw.supervisorHistory(query)).resolves.toEqual({
+      ok: true,
+      messages: [msg("m-9")],
+    });
+    expect(supervisorHistory).toHaveBeenCalledWith(query);
   });
 });
