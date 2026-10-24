@@ -15,7 +15,7 @@ export const CONFIG_FIX_TEXT: Record<DesktopConfigFixFailure["code"], string> = 
   confirm_required: "有不合法的配置文件要覆盖：请先确认（会先备份）",
   unsafe_path: "config 文件夹或配置文件是符号链接或不是普通文件，没有写入",
   template_missing: "找不到安装包里的配置模板，请重新下载安装包",
-  unavailable: "这个版本还不能生成价格表，请更新到新版本",
+  unavailable: "这个版本还不能生成配置，请更新到新版本",
   write_failed: "写入配置失败，原来的文件没有改动",
   verify_failed: "生成的配置没通过校验，已经撤回",
   failed: "生成配置失败，请重试",

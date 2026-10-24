@@ -105,7 +105,7 @@ const ok = (r: DesktopConfigFixResult) => {
   return r;
 };
 
-describe("parseInitConfig / backupName / writePricingFrom / configTemplateDir", () => {
+describe("parseInitConfig / backupName / configTemplateDir", () => {
   it("预算必须是 1..MAX 的整数；confirm_overwrite 只认布尔；参数不是对象就拒绝", () => {
     expect(parseInitConfig({ daily_micro_usd: 1 })).toEqual({ daily: 1, confirm: false });
     expect(parseInitConfig({ confirm_overwrite: true })).toEqual({ confirm: true });
@@ -380,5 +380,39 @@ describe("真实的 4 checkRepo（T-114 nested_repo）", () => {
     ok(await h.initConfig({ daily_micro_usd: 5 }));
     const text = readFileSync(join(root, "config", "pricing.json"), "utf8");
     expect(text).toBe(`${JSON.stringify(JSON.parse(PRICING_TPL), null, 2)}\n`);
+  });
+});
+
+describe("GIT_* 环境变量（T-113）", () => {
+  it("进程里设了 GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE / GIT_CEILING_DIRECTORIES 时，生成结果和不设时一样", async () => {
+    // 两个仓库都在设环境变量之前建好（git init 本身会受 GIT_DIR 影响）
+    const roots = [gitRepo(), gitRepo()];
+    const run = async () => {
+      const root = roots.shift()!;
+      const { h } = handlers(root, { checkRepo: (r) => checkRepo(r) });
+      const r = await h.initConfig({ daily_micro_usd: 1_000_000 });
+      return {
+        r,
+        models: readJson(join(root, "config", "models.json")),
+        pricing: readJson(join(root, "config", "pricing.json")),
+        exclude: exclude(root),
+      };
+    };
+    const base = await run();
+    const other = gitRepo();
+    const keys = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CEILING_DIRECTORIES"] as const;
+    const before = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+    process.env.GIT_DIR = join(other, ".git");
+    process.env.GIT_WORK_TREE = other;
+    process.env.GIT_INDEX_FILE = join(other, ".git", "index");
+    process.env.GIT_CEILING_DIRECTORIES = tmpdir();
+    try {
+      expect(await run()).toEqual(base);
+    } finally {
+      for (const k of keys) {
+        if (before[k] === undefined) delete process.env[k];
+        else process.env[k] = before[k];
+      }
+    }
   });
 });
