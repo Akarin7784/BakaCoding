@@ -2,7 +2,7 @@ import type { Config } from "@bakacoding/config-budget";
 import type { PrProvider } from "@bakacoding/pr";
 import type { ModelGateway } from "@bakacoding/model-gateway";
 import type { SchedulerTicket } from "@bakacoding/scheduler";
-import type { Storage } from "@bakacoding/storage";
+import type { Storage, SupervisorMessage } from "@bakacoding/storage";
 import type { HighRiskFile, HighRiskReason, SubAgentTicket } from "@bakacoding/sub-agent";
 import type { DiffFile, ESCALATION_REASONS, EventOf } from "@bakacoding/types";
 
@@ -152,6 +152,11 @@ export interface SupervisorDeps {
     | "getTicket"
     | "listTickets"
   >;
+  /**
+   * 可选（T-092）：主管 1:1 对话落库，组合根直接传 2 的写入方。`chat()` 先存用户消息、再存主管回复；
+   * 不注入时对话不落库，`history()` 返回空数组。
+   */
+  chatLog?: Pick<Storage, "appendSupervisorMessage" | "listSupervisorMessages">;
   /** 9 的 enqueue */
   enqueue: (ticket: SchedulerTicket) => unknown;
   /**
@@ -348,6 +353,12 @@ export interface BackpressurePausedInput {
 
 export interface Supervisor {
   chat(message: UserMessage): Promise<ChatReply>;
+  /**
+   * 主管 1:1 对话历史（T-092）：按时间正序（`created_at`、`message_id` 升序）返回整条对话。
+   * `before` 为 `message_id` 游标，取它之前最近的 `limit` 条（默认 50、最大 200，同 2）；游标不存在时抛 2 的
+   * `StorageError("invalid_cursor")`。没注入 `chatLog` 时返回空数组。
+   */
+  history(opts?: { before?: string; limit?: number }): SupervisorMessage[];
   split(request: SplitRequest): Promise<SplitResult>;
   /** 订阅 project_created，返回退订函数 */
   start(): () => void;
