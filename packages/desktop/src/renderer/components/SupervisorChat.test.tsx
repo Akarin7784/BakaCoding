@@ -6,7 +6,10 @@ import { chatReplyView } from "../lib/chat-labels";
 import { ChatStore } from "../data/chatStore";
 import { SupervisorChat } from "./SupervisorChat";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  localStorage.clear();
+});
 
 const MID = expect.stringMatching(/^u-/);
 
@@ -110,6 +113,9 @@ describe("SupervisorChat 接 supervisor:chat（T-071）", () => {
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toBe("发送失败：和主进程通信失败，请重试");
     expect(document.body.textContent).not.toContain(secret);
+    // UI-04b：输入框已清空，发送按钮置灰；重新输入后可以再发
+    expect((screen.getByLabelText("发送") as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("发给主管"), { target: { value: "再来" } });
     expect((screen.getByLabelText("发送") as HTMLButtonElement).disabled).toBe(false);
   });
 

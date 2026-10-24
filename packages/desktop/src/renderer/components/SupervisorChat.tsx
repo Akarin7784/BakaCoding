@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { AlertCircle, Download, FolderOpen, Loader2, Send, Settings } from "lucide-react";
-import type { BakaDesktopApi, DesktopSupervisorMessage } from "../../shared/api";
+import { AlertCircle, Download, FolderOpen, Loader2, Settings } from "lucide-react";
+import type { BakaDesktopApi, DesktopProjectRow, DesktopSupervisorMessage } from "../../shared/api";
 import {
   CHAT_HISTORY_PAGE,
   replyMessageId,
@@ -14,8 +14,9 @@ import { cn } from "../lib/utils";
 import { CONTENT_COLUMN } from "../lib/layout";
 import { AgentIcon } from "./AgentIcon";
 import { Button } from "./ui/button";
-import { Textarea } from "./ui/textarea";
 import { READONLY_COPY } from "../lib/readonly";
+import { readLastProject, writeLastProject } from "../lib/lastProject";
+import { Composer } from "./Composer";
 
 const TONE_CLASS: Record<ChatTone, string> = {
   normal: "text-muted-foreground",
@@ -33,9 +34,12 @@ export interface SupervisorChatProps {
    */
   api?:
     | (Pick<BakaDesktopApi, "supervisorChat"> &
-        Partial<Pick<BakaDesktopApi, "getSupervisorHistory">>)
+        Partial<Pick<BakaDesktopApi, "getSupervisorHistory" | "listProjects">>)
     | undefined;
-  /** 界面当前选中的项目；有就随消息传给主管 */
+  /**
+   * 界面当前选中的项目：有就作为 chip 的默认值（UI-04b）；没有就用上次用的项目（localStorage）。
+   * 最终随消息传给主管的是 chip 上选中的项目，「不指定」不传。
+   */
   projectId?: string | undefined;
   /** 对话记录（默认整个窗口共用一份，组件卸载不丢）；测试注入新的 */
   store?: ChatStore;
@@ -89,6 +93,32 @@ export function SupervisorChat({
   }, [store, initial, getHistory]);
   const { items: messages, pending } = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const [draft, setDraft] = useState("");
+  // UI-04b：项目 chip。默认 = 外层选中的项目 → 上次用的项目 → 不指定
+  const [chipProject, setChipProject] = useState<string | undefined>(
+    () => projectId ?? readLastProject(),
+  );
+  useEffect(() => {
+    if (projectId !== undefined) setChipProject(projectId);
+  }, [projectId]);
+  const pickProject = (id: string | undefined) => {
+    setChipProject(id);
+    writeLastProject(id);
+  };
+  const listProjects = api?.listProjects;
+  const [projectRows, setProjectRows] = useState<DesktopProjectRow[]>([]);
+  useEffect(() => {
+    if (!listProjects) return;
+    let live = true;
+    listProjects().then(
+      (r) => {
+        if (live && r.ok) setProjectRows(r.projects);
+      },
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [listProjects]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const onScroll = () => {
     const el = scrollRef.current;
@@ -153,7 +183,8 @@ export function SupervisorChat({
     // 等待状态在 store 里：组件卸载重挂也挡得住重复发送（主进程另有串行）
     if (readonly || !text || store.getSnapshot().pending) return;
     setDraft("");
-    await deliver(text, store.newMessageId(), projectId);
+    writeLastProject(chipProject);
+    await deliver(text, store.newMessageId(), chipProject);
   };
 
   return (
@@ -271,34 +302,23 @@ export function SupervisorChat({
           )}
         </div>
       </div>
-      <div className="border-t border-border p-3">
-        <div className={cn(CONTENT_COLUMN, "flex items-end gap-2")}>
-          <Textarea
-            aria-label="发给主管"
-            data-composer={compact ? "compact" : "supervisor"}
-            rows={2}
-            placeholder={
-              readonly ? READONLY_COPY.composerPlaceholder : "提需求或人工介入，说清是哪个项目"
-            }
-            disabled={readonly}
+      <div className="px-4 pb-4 pt-2">
+        <div className={CONTENT_COLUMN}>
+          <Composer
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                e.preventDefault();
-                void send();
-              }
-            }}
+            onChange={setDraft}
+            onSend={() => void send()}
+            projects={projectRows}
+            projectId={chipProject}
+            onProjectChange={pickProject}
+            readonly={readonly}
+            pending={pending}
+            composerId={compact ? "compact" : "supervisor"}
+            {...(readonly && {
+              placeholder: READONLY_COPY.composerPlaceholder,
+              sendTitle: READONLY_COPY.composerPlaceholder,
+            })}
           />
-          <Button
-            size="icon"
-            aria-label="发送"
-            title={readonly ? READONLY_COPY.composerPlaceholder : undefined}
-            disabled={pending || readonly}
-            onClick={() => void send()}
-          >
-            <Send strokeWidth={1.5} />
-          </Button>
         </div>
       </div>
     </section>
