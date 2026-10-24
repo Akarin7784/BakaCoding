@@ -132,6 +132,15 @@ describe("startBackend（T-063）", () => {
     const seq = ro.maxSeq();
     expect(seq === null || typeof seq === "number").toBe(true);
     ro.close();
+    // UI-06c：live 时 git:status 走真实 branchStatus；结果要么 ok，要么固定文案（不含仓库路径）
+    const gs = await backend.gitStatus();
+    if (gs.ok) {
+      expect(gs.integration_branch).toBe("bakacoding/integration");
+      expect(gs.main_merge).toBe("user");
+      expect(typeof gs.ahead).toBe("number");
+    } else {
+      expect(gs.reason).not.toContain(root);
+    }
     await backend.stop();
   });
 

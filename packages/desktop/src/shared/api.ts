@@ -51,6 +51,8 @@ export const IPC_CHANNELS = {
   supervisorSplit: "bakacoding:supervisor:split",
   /** invoke：需求详情（UI-05a，只读）：模块 2 的 listTickets({requirement_id}) + listPrRounds，字段按白名单挑、文本已脱敏。 */
   requirementDetail: "bakacoding:requirement:detail",
+  /** invoke：Git 区状态（UI-06c，只读，无参数）：4 的 branchStatus + 6 的 INTEGRATION_BRANCH + 配置 main_merge。 */
+  gitStatus: "bakacoding:git:status",
   /** invoke：选目录导入项目，切换后端到该仓库（T-072）。 */
   projectImport: "bakacoding:project:import",
   /** invoke：对上次导入失败（只缺配置）的目录用默认模板补配置，再完成导入；无参数（T-081）。 */
@@ -669,6 +671,8 @@ export interface BakaDesktopApi {
   getRequirementDetail(
     query: DesktopRequirementDetailQuery,
   ): Promise<DesktopRequirementDetailResult>;
+  /** 取 Git 区状态（UI-06c，只读）；失败以 ok:false 返回（固定文案），不抛过 IPC。旧 preload 可以没有。 */
+  getGitStatus?(): Promise<DesktopGitStatusResult>;
   /** 取主管对话历史（UI-04a）；失败以 ok:false 返回，不抛过 IPC。 */
   getSupervisorHistory(query?: DesktopHistoryQuery): Promise<DesktopHistoryResult>;
   /** 选目录导入项目（T-072）。 */
@@ -799,3 +803,14 @@ declare global {
     bakacoding?: BakaDesktopApi;
   }
 }
+
+/** Git 区状态（UI-06c）：`git:status` 的结果。`current_branch` 分离 HEAD 时为 null；`ahead` = 集成分支领先 main 的提交数。 */
+export type DesktopGitStatusResult =
+  | {
+      ok: true;
+      current_branch: string | null;
+      integration_branch: string;
+      ahead: number;
+      main_merge: "user" | "supervisor";
+    }
+  | { ok: false; reason: string };
