@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`318d42c` · main 上测试：156 个测试文件 / 2653 passed + 2 skipped 个测试（Linux 全量；Windows 基线见 `docs/test-baseline.md`） · 更新日期：2026-10-24（UTC+8）
+> 上次更新时 main：`7bda4b1` · main 上测试：161 个测试文件 / 2672 passed + 2 skipped 个测试（Linux 全量；Windows 基线见 `docs/test-baseline.md`） · 更新日期：2026-10-24（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
