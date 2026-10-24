@@ -205,3 +205,112 @@ describe("SupervisorChat 历史与重试（UI-04a）", () => {
     expect(screen.queryByTestId("chat-error")).toBeNull();
   });
 });
+
+describe("SupervisorChat 输入框项目 chip（UI-04b）", () => {
+  const listProjects = vi.fn(async () => ({
+    ok: true as const,
+    projects: [
+      { project_id: "p-1", name: "商城", repo_path: "/x/a" },
+      { project_id: "p-2", name: "后台", repo_path: "/x/b" },
+    ],
+  }));
+  const ok = vi.fn(async (): Promise<DesktopChatResult> => ({ ok: true, reply: replies[0]! }));
+  const openChip = () => fireEvent.keyDown(screen.getByTestId("composer-chip"), { key: "Enter" });
+  const sendBtn = () => screen.getByLabelText("发送") as HTMLButtonElement;
+
+  it("chip 选中的项目随 chat 传 project_id（列表来自 project:list）", async () => {
+    const supervisorChat = vi.fn(ok);
+    render(
+      <SupervisorChat
+        store={new ChatStore()}
+        initial={[]}
+        api={{ supervisorChat, listProjects }}
+      />,
+    );
+    openChip();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "后台" }));
+    type("加个导出");
+    await screen.findByTestId("chat-reply");
+    expect(supervisorChat).toHaveBeenCalledWith({
+      text: "加个导出",
+      project_id: "p-2",
+      message_id: MID,
+    });
+  });
+
+  it("选「不指定」：chat 不带 project_id", async () => {
+    const supervisorChat = vi.fn(ok);
+    render(
+      <SupervisorChat
+        store={new ChatStore()}
+        initial={[]}
+        api={{ supervisorChat, listProjects }}
+        projectId="p-1"
+      />,
+    );
+    openChip();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "不指定" }));
+    type("随便问问");
+    await screen.findByTestId("chat-reply");
+    expect(supervisorChat.mock.calls[0]![0]).toEqual({ text: "随便问问", message_id: MID });
+  });
+
+  it("空内容时发送置灰，有内容才可点", () => {
+    render(<SupervisorChat store={new ChatStore()} initial={[]} api={{ supervisorChat: ok }} />);
+    expect(sendBtn().disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("发给主管"), { target: { value: "x" } });
+    expect(sendBtn().disabled).toBe(false);
+  });
+
+  it("只读：有内容也置灰，Enter 不发", () => {
+    const supervisorChat = vi.fn(ok);
+    render(
+      <SupervisorChat store={new ChatStore()} initial={[]} api={{ supervisorChat }} readonly />,
+    );
+    fireEvent.change(screen.getByLabelText("发给主管"), { target: { value: "x" } });
+    expect(sendBtn().disabled).toBe(true);
+    fireEvent.keyDown(screen.getByLabelText("发给主管"), { key: "Enter" });
+    expect(supervisorChat).not.toHaveBeenCalled();
+  });
+
+  it("Enter 发送，Shift+Enter 不发送", async () => {
+    const supervisorChat = vi.fn(ok);
+    render(<SupervisorChat store={new ChatStore()} initial={[]} api={{ supervisorChat }} />);
+    const box = screen.getByLabelText("发给主管");
+    fireEvent.change(box, { target: { value: "两行" } });
+    fireEvent.keyDown(box, { key: "Enter", shiftKey: true });
+    expect(supervisorChat).not.toHaveBeenCalled();
+    fireEvent.keyDown(box, { key: "Enter" });
+    await screen.findByTestId("chat-reply");
+    expect(supervisorChat).toHaveBeenCalledTimes(1);
+  });
+
+  it("记住上次用的项目：重挂后 chip 默认就是它，发消息带上它", async () => {
+    const supervisorChat = vi.fn(ok);
+    const first = render(
+      <SupervisorChat
+        store={new ChatStore()}
+        initial={[]}
+        api={{ supervisorChat, listProjects }}
+      />,
+    );
+    openChip();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "商城" }));
+    first.unmount();
+    render(
+      <SupervisorChat
+        store={new ChatStore()}
+        initial={[]}
+        api={{ supervisorChat, listProjects }}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId("composer-chip").textContent).toContain("商城"));
+    type("继续");
+    await screen.findByTestId("chat-reply");
+    expect(supervisorChat).toHaveBeenCalledWith({
+      text: "继续",
+      project_id: "p-1",
+      message_id: MID,
+    });
+  });
+});
