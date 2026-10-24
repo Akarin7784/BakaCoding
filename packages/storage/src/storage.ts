@@ -108,6 +108,11 @@ export interface SupervisorMessage {
   requirement_id: string | null;
   ticket_ids: string[];
   created_at: number;
+  /**
+   * 回复对应的用户消息 message_id（T-152）。写入时可不传，按 null 存；
+   * `listSupervisorMessages` 读出时总带这个字段，旧记录为 null。只存取、不校验指向。
+   */
+  in_reply_to?: string | null;
 }
 
 /** listSupervisorMessages 的参数：project_id 只作可选过滤；before 是 message_id 游标；limit 默认 50、最大 200。 */
@@ -1154,6 +1159,7 @@ function open(options: StorageOptions, ro: boolean): Storage {
   const appendSupervisorMessage = write(
     "appendSupervisorMessage",
     (msg: SupervisorMessage): { inserted: boolean } => {
+      const inReplyTo = msg.in_reply_to ?? null;
       const okRole =
         (msg.role === "user" && msg.kind === null) ||
         (msg.role === "supervisor" && (CHAT_REPLY_KINDS as readonly unknown[]).includes(msg.kind));
@@ -1164,15 +1170,16 @@ function open(options: StorageOptions, ro: boolean): Storage {
         typeof msg.content !== "string" ||
         !Array.isArray(msg.ticket_ids) ||
         !msg.ticket_ids.every((t) => typeof t === "string") ||
-        !Number.isFinite(msg.created_at)
+        !Number.isFinite(msg.created_at) ||
+        (inReplyTo !== null && (typeof inReplyTo !== "string" || inReplyTo === ""))
       ) {
         throw new StorageError("invalid_message");
       }
       const res = db
         .prepare(
           `INSERT OR IGNORE INTO supervisor_messages
-           (message_id, project_id, role, kind, content, requirement_id, ticket_ids, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+           (message_id, project_id, role, kind, content, requirement_id, ticket_ids, created_at, in_reply_to)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           msg.message_id,
@@ -1183,6 +1190,7 @@ function open(options: StorageOptions, ro: boolean): Storage {
           msg.requirement_id,
           JSON.stringify(msg.ticket_ids),
           msg.created_at,
+          inReplyTo,
         );
       return { inserted: res.changes > 0 };
     },
@@ -1220,6 +1228,7 @@ function open(options: StorageOptions, ro: boolean): Storage {
       requirement_id: (x.requirement_id as string | null) ?? null,
       ticket_ids: JSON.parse(x.ticket_ids as string) as string[],
       created_at: x.created_at as number,
+      in_reply_to: (x.in_reply_to as string | null) ?? null,
     }));
   }
 

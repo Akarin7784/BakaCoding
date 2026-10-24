@@ -227,4 +227,6 @@ export const MIGRATIONS: Migration[] = [
   `CREATE INDEX ledger_requirement ON ledger(requirement_id);`,
   /* v6（T-142）：项目记录加可空的仓库路径；老记录为 null，不从旧事件回填 */
   `ALTER TABLE projects ADD COLUMN repo_path TEXT;`,
+  /* v7（T-152）：主管回复记下对应用户消息的 message_id；老记录为 null，不加索引和外键 */
+  `ALTER TABLE supervisor_messages ADD COLUMN in_reply_to TEXT;`,
 ];
