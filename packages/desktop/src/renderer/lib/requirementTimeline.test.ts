@@ -5,7 +5,11 @@ import { call, changed, msg } from "./testEvents";
 
 describe("buildTimeline", () => {
   it("只取本需求的事件（按 requirement_id 过滤）", () => {
-    const items = buildTimeline("r1", [msg("r1", "本需求"), msg("r2", "别的需求"), msg(null, "无归属")]);
+    const items = buildTimeline("r1", [
+      msg("r1", "本需求"),
+      msg("r2", "别的需求"),
+      msg(null, "无归属"),
+    ]);
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({ kind: "message", text: "本需求" });
   });
@@ -15,7 +19,9 @@ describe("buildTimeline", () => {
     expect(items.map((i) => i.kind)).toEqual(["calls", "message", "calls"]);
     const first = items[0];
     expect(first?.kind === "calls" && first.calls).toHaveLength(2);
-    expect(first?.kind === "calls" && first.summary).toBe("Flash 调用 ×2 · low · 2.3k tokens · 4.0s");
+    expect(first?.kind === "calls" && first.summary).toBe(
+      "Flash 调用 ×2 · low · 2.3k tokens · 4.0s",
+    );
   });
 
   it("合并只显示「已合入」，不带 sha", () => {
@@ -26,7 +32,10 @@ describe("buildTimeline", () => {
   });
 
   it("消息和调用输出都过脱敏", () => {
-    const items = buildTimeline("r1", [msg("r1", "看 /home/eva/secret.txt"), call("r1", "Bearer abcdefghijklmnop1234")]);
+    const items = buildTimeline("r1", [
+      msg("r1", "看 /home/eva/secret.txt"),
+      call("r1", "Bearer abcdefghijklmnop1234"),
+    ]);
     const s = JSON.stringify(items);
     expect(s).not.toContain("/home/eva");
     expect(s).not.toContain("abcdefghijklmnop1234");
