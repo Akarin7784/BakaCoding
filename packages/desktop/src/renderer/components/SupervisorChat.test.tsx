@@ -60,8 +60,16 @@ describe("SupervisorChat 接 supervisor:chat（T-071）", () => {
     type("做个登录页");
     const el = await screen.findByTestId("chat-reply");
     expect(el.dataset.kind).toBe(reply.kind);
-    expect(el.textContent).toContain(LABEL[reply.kind]);
     expect(el.textContent).toContain(reply.text);
+    // UI-04c：每种 kind 有自己的呈现
+    const extra = {
+      answer: null,
+      ask_project: null, // 无项目列表时不出按钮（有项目的情况见 MessageItem.test）
+      decision_saved: "chat-decision-tag",
+      dispatched: "chat-dispatched",
+      split_failed: null, // 没给 supervisorSplit 时不出按钮（见 MessageItem.test）
+    }[reply.kind];
+    if (extra) expect(screen.getByTestId(extra)).toBeTruthy();
     expect(supervisorChat).toHaveBeenCalledWith({
       text: "做个登录页",
       project_id: "P-1",
@@ -255,7 +263,12 @@ describe("SupervisorChat 输入框项目 chip（UI-04b）", () => {
       { project_id: "p-2", name: "后台", repo_path: "/x/b" },
     ],
   }));
-  const ok = vi.fn(async (): Promise<DesktopChatResult> => ({ ok: true, reply: replies[0]! }));
+  // 每次回复用不同的 message_id（store 按 message_id 去重，同一个 id 第二条会被吞掉）
+  let seq = 0;
+  const ok = vi.fn(async (): Promise<DesktopChatResult> => ({
+    ok: true,
+    reply: { ...replies[0]!, message_id: `ui-chip-r${++seq}` },
+  }));
   const openChip = () => fireEvent.keyDown(screen.getByTestId("composer-chip"), { key: "Enter" });
   const sendBtn = () => screen.getByLabelText("发送") as HTMLButtonElement;
 

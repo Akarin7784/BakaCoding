@@ -43,3 +43,10 @@ export function chatFailureText(reason: string): string {
     reason.length > CHAT_REASON_PREVIEW ? `${reason.slice(0, CHAT_REASON_PREVIEW)}…` : reason;
   return failureText("发送失败", r);
 }
+
+/** UI-04c：重试拆单失败的文案（reason 主进程已走 sanitizeChatReason，这里再按预览截断）。 */
+export function splitFailureText(reason: string): string {
+  const r =
+    reason.length > CHAT_REASON_PREVIEW ? `${reason.slice(0, CHAT_REASON_PREVIEW)}…` : reason;
+  return failureText("重试拆单失败", r);
+}
