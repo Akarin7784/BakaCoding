@@ -741,7 +741,11 @@ describe("chat", () => {
     const t = setup({
       outputs: [JSON.stringify({ intent: "answer", reply: "你好", decision: null })],
     });
-    expect(await t.sup.chat({ text: "你好" })).toEqual({ kind: "answer", text: "你好" });
+    expect(await t.sup.chat({ text: "你好" })).toEqual({
+      message_id: expect.any(String),
+      kind: "answer",
+      text: "你好",
+    });
     expect(t.prompts[0]!.startsWith(TEMPLATE)).toBe(true);
     expect(t.prompts[0]).toContain("## 输出格式（对话）");
     expect(t.ctxs[0]).toMatchObject({ role: "supervisor", ticket_id: null });

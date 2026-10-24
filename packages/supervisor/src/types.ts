@@ -29,6 +29,11 @@ export interface UserMessage {
 
 /** chat 的回复：由调用方（12）展示在 1:1 里；chat 不再另调 notifyUser。 */
 export interface ChatReply {
+  /**
+   * T-148：这条回复自己的 id，与 `history()` 里这条回复的 `message_id` 相同；
+   * 幂等重试（同一个用户 `message_id`）时返回同一个 id。格式不对外承诺，调用方只按值比对。
+   */
+  message_id: string;
   text: string;
   kind: "answer" | "ask_project" | "decision_saved" | "dispatched" | "split_failed";
   project_id?: string;
