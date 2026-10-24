@@ -20,7 +20,8 @@ import type {
   DesktopRepoSource,
 } from "../shared/api.js";
 import { CONFIG_FIX_TEXT } from "../shared/config-text.js";
-import { inspectConfig, MODELS_FILE, PRICING_FILE } from "./config-inspect.js";
+import { IMPORT_REASON_MAX, inspectConfig, MODELS_FILE, PRICING_FILE } from "./config-inspect.js";
+import { sanitizeSyncErrorMessage } from "./sync-state.js";
 
 /** 安装包里的模板文件名（scripts/package-app.mjs 的 extraFiles，开发时是仓库根的 config/） */
 export const MODELS_TEMPLATE = "models.example.json";
@@ -77,6 +78,30 @@ const failure = (
   reason: CONFIG_FIX_TEXT[code],
   ...(errors && errors.length > 0 && { errors }),
 });
+
+/**
+ * T-140：3 的 writeConfig / writePricing 报错原样进界面前先清理：项目内绝对路径换成相对写法（config/…），
+ * 再走与导入 / inspectConfig 相同的 sanitizeSyncErrorMessage（换密钥值、redact light、截断），
+ * 最后剩下的绝对路径一律换成 (path)。
+ */
+export function cleanWriteError(
+  message: string,
+  roots: readonly string[],
+  env: Readonly<Record<string, string | undefined>> = {},
+): string {
+  let out = message;
+  for (const r of [...new Set(roots)].sort((a, b) => b.length - a.length)) {
+    if (!r) continue;
+    // 按 / 和 \ 都切（Windows 路径在别的平台上 path.basename 认不出）
+    const rel = r.split(/[\\/]/).filter(Boolean).pop() === "config" ? "config" : ".";
+    out = out.split(r).join(rel);
+  }
+  out = sanitizeSyncErrorMessage(out, env, IMPORT_REASON_MAX);
+  return out.replace(
+    /(?<![\w.~-])(?:[A-Za-z]:\\|\/)[^\s"'`，。；：（）()]*[^\s"'`，。；：（）().]/g,
+    "(path)",
+  );
+}
 
 export interface ParsedInitConfig {
   daily?: number;
@@ -233,7 +258,12 @@ export function configFixHandlers(deps: ConfigFixDeps): ConfigFixHandlers {
           : await deps.writePricing(file(t), pricing, opts);
       if (!r.ok) {
         await undo();
-        return failure("write_failed", r.errors.slice(0, 20));
+        return failure(
+          "write_failed",
+          r.errors
+            .slice(0, 20)
+            .map((m) => cleanWriteError(m, [configDir, realRoot, root], deps.env)),
+        );
       }
       written.push(t);
     }

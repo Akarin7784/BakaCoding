@@ -194,6 +194,7 @@ flowchart BT
 | T-137 | 模块 12：#173（T-130）评审跟进：`diagnostics:export` 的 time_range 日期校验从 `Date.parse` 收紧为严格 ISO 8601（`isStrictIsoDateTime`：必须带时间和时区 Z/±HH:MM，日期须真实存在），拒绝 `2026-10-18`、`10/18/2026`、`2026-10-18 08:00`、无时区、`2026-02-30` 等；补用例，反向检查改回 `Date.parse` 后变红。合入后 main `6d5c01e`，测试 124 个文件 / 2301 个 | 12 | 已合入 | #182 | `6d5c01e` |
 | T-138 | 模块 2：给 T-129（#172）补一条在 Linux 上也能变红的断言：迁移失败时 `db.close` 恰好调用一次、句柄 `open` 为 false。只改测试。合入后 main `9e4cbf0`，测试 124 个文件 / 2299 个 | 2 | 基础层开发 | 已合入 | #184 | `9e4cbf0` |
 | T-139 | 模块 9：#144（T-112）评审跟进：带 `merge_followup` 标记的单结构化字段读不出来时（10 只给单号 + trace），`recoverMergeFollowup` 照样补发一次 `interface_changed`，受影响单按 6 的 diff 文件算全、标记清掉；9 层 1 条 + 组合根 E2E 1 条。只改测试；反向检查：字段读不出就不发、受影响单只按本单声明范围算，各红 2 条。合入后 main `76eb565`，测试 124 个文件 / 2303 个 | 9 | 编排层开发 | 已合入 | #187 | `76eb565` |
+| T-140 | 模块 12：#189（T-113）跟进：`write_failed` 的报错经 `cleanWriteError` 清理（项目路径换相对写法 + `sanitizeSyncErrorMessage` + 余下绝对路径含 Windows 路径换成 `(path)`）；T-128 两个用例各自断言 `config_missing` / `config_invalid`；`checkProjectDir` 另外指定的 models 不合法时不再提前返回，连同 pricing 的问题一起报（Git 仓库先给 T-081 缺文件结果） | 12 | 界面与诊断开发 | 待评审 #191 | #191 | |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 

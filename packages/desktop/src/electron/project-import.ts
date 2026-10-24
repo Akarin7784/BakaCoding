@@ -10,7 +10,6 @@ import {
   configSource,
   IMPORT_REASON_MAX,
   inspectConfig,
-  inspectModels,
   MODELS_FILE,
   PRICING_FILE,
   resolveConfigPath,
@@ -113,11 +112,9 @@ export function checkProjectDir(
       ...(notGit && { notGit: true as const }),
       reason: clean(`当前使用 ${source} 指定的配置，但文件不存在：${models}`),
     };
-  if (source) {
-    const m = inspectModels(models, `${source}（${models}）`);
-    if (m.state !== "ok") return { ok: false, reason: clean([...m.errors, note].join("\n")) };
-  }
   const c = inspectConfig(dir, env, argv);
+  // T-140：另外指定的 models 不合法也要把 pricing 的问题一起报（不再提前返回）；Git 仓库先给 T-081 的缺文件结果
+  const externalBad = !!source && c.models !== "ok";
   if (!notGit) {
     // T-081：Git 仓库缺配置拒绝导入（界面给「用默认模板创建」），缺的文件合成一句；不合法照旧报错
     const missing: string[] = [];
@@ -128,6 +125,15 @@ export function checkProjectDir(
       if (note) names.push(note);
       return { ok: false, missing, reason: clean(names.join("；")) };
     }
+  }
+  if (externalBad) {
+    // 缺文件在 inspectConfig 里没有错误条目（不是 Git 仓库才会走到这里时 pricing 可能还缺）
+    const errors = [...c.errors];
+    if (c.pricing === "missing") errors.push(`缺少 ${PRICING_FILE}`);
+    if (note) errors.push(note);
+    return { ok: false, reason: clean(errors.join("\n")) };
+  }
+  if (!notGit) {
     if (c.errors.length) {
       const errors = [...c.errors];
       if (note) errors.push(note);
