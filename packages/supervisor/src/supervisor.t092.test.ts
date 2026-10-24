@@ -226,3 +226,25 @@ describe("T-148 ChatReply 带回复自己的 message_id", () => {
     ]);
   });
 });
+
+describe("T-150 主管回复带 in_reply_to", () => {
+  it("回复的 in_reply_to 指向对应的用户消息，用户消息为 null", async () => {
+    const t = setup();
+    t.outputs.push(answer("好"));
+    const r = await t.sup.chat({ text: "嗨" });
+    const h = t.sup.history();
+    expect(h.map((m) => m.role)).toEqual(["user", "supervisor"]);
+    expect(h[0]!.in_reply_to).toBeNull();
+    expect(h[1]!.message_id).toBe(r.message_id);
+    expect(h[1]!.in_reply_to).toBe(h[0]!.message_id);
+  });
+
+  it("同 id 幂等重试后，历史里的回复仍指向原来那条用户消息", async () => {
+    const t = setup();
+    t.outputs.push(answer("第一次"), answer("第二次"));
+    await t.sup.chat({ text: "你好", message_id: "u-1" });
+    await t.sup.chat({ text: "你好", message_id: "u-1" });
+    const replies = t.sup.history().filter((m) => m.role === "supervisor");
+    expect(replies.map((m) => [m.content, m.in_reply_to])).toEqual([["第一次", "u-1"]]);
+  });
+});
