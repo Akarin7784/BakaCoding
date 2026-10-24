@@ -80,10 +80,13 @@ export const INTEGRATION_BLOCK_TEXT: Record<IntegrationBlockCode, string> = {
   review_failed: "审查没能完成，请稍后重试",
 };
 
-/** blocked 的展示：每个原因一条固定文案，去重；没有原因时给通用一句。 */
+/** UI-06e：blocked 但一个原因码都没有（或都不认识）时的固定文案。 */
+export const INTEGRATION_BLOCKED_FALLBACK = "集成分支暂不可合入";
+
+/** blocked 的展示：每个原因一条固定文案，去重；没有原因时给固定一句（UI-06e）。 */
 export function integrationBlockedLines(codes: readonly IntegrationBlockCode[]): string[] {
   const lines = [...new Set(codes.map((c) => INTEGRATION_BLOCK_TEXT[c]).filter(Boolean))];
-  return lines.length ? lines : [INTEGRATION_BLOCK_TEXT.review_failed];
+  return lines.length ? lines : [INTEGRATION_BLOCKED_FALLBACK];
 }
 
 /** main:merge 返回这些码时，已保存的审查 sha 作废（head 变了 / 10 认为没审过）。 */

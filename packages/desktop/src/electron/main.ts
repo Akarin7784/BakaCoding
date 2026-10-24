@@ -8,29 +8,8 @@ import { checkRepo, ensureExcludeLines, writeConfig } from "@bakacoding/app";
 import { buildCommit } from "./about.js";
 import { configFixHandlers, configTemplateDir } from "./config-fix.js";
 import { lastRepoForStart, resolveRepoDbPath, startBackend, type RepoSource } from "./backend.js";
-import {
-  notifyAppQuitting,
-  serveBackend,
-  serveBackendReload,
-  serveHighRisk,
-  serveProjectSettings,
-  serveReader,
-  serveRepoFix,
-  serveSecretProvider,
-  serveSupervisorChat,
-  serveSupervisorHistory,
-  serveSupervisorSplit,
-  serveRequirementDetail,
-  serveGitStatus,
-  serveMainMerge,
-  serveIntegrationReview,
-  servePoolState,
-  serveSyncState,
-  serveAbout,
-  serveModelSettings,
-  serveProjectList,
-  serveWindowTheme,
-} from "./ipc.js";
+import { notifyAppQuitting } from "./ipc.js";
+import { registerMainHandlers } from "./main-handlers.js";
 import { titleBarOverlayFor, usesTitleBarOverlay, windowChromeOptions } from "./window-chrome.js";
 import { BackendSwitcher } from "./backend-switcher.js";
 import { openEventReader, type EventReader } from "./reader.js";
@@ -149,117 +128,111 @@ if (!gotLock) {
       currentReader = openReaderFor(backend.repoRoot());
     });
     const sink = () => win?.webContents ?? null;
-    const stopHighRisk = serveHighRisk(ipcMain, backend, sink);
-    const stopReader = serveReader(ipcMain, reader, sink, undefined, () =>
-      backend.refreshPendingHighRisk(),
-    );
-    const stopBackendIpc = serveBackend(ipcMain, backend, sink);
-    const stopSyncState = serveSyncState(ipcMain, backend, sink);
-    const stopProjectSettings = serveProjectSettings(ipcMain, {
-      backend,
-      argv: process.argv,
-      env: process.env,
-      downloadsDir: app.getPath("downloads"),
-      saveLastRepo: (repo) => writeLastRepo(userData, repo),
-      // T-081：打包版在 exe 同一层 config-templates/；开发时用仓库根 config/（here = packages/desktop/dist-electron）
-      templateDir: defaultTemplateDir(
-        app.isPackaged,
-        process.execPath,
-        path.join(here, "../../.."),
-      ),
-      // T-082 的 ensureExcludeLines（经 @bakacoding/app 再导出）：只给本次新建的配置文件写 .git/info/exclude
-      ensureExcludeLines,
-      // T-130：打开数据目录（userData：状态 / 标记文件所在）；失败抛错，由 IPC 层换成固定文案
-      async openDataDir() {
-        const err = await shell.openPath(userData);
-        if (err) throw new Error("打开数据目录失败");
-      },
-      async pickDirectory() {
-        const r = win
-          ? await dialog.showOpenDialog(win, { properties: ["openDirectory"], title: "导入项目" })
-          : await dialog.showOpenDialog({ properties: ["openDirectory"], title: "导入项目" });
-        return r.canceled ? null : (r.filePaths[0] ?? null);
-      },
-      async pickSavePath(defaultPath) {
-        const opts = {
-          title: "导出诊断包",
-          defaultPath,
-          filters: [{ name: "zip", extensions: ["zip"] }],
-        };
-        const r = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts);
-        return r.canceled || !r.filePath ? null : r.filePath;
-      },
-    });
-    const stopSupervisorChat = serveSupervisorChat(ipcMain, backend);
-    const stopSupervisorHistory = serveSupervisorHistory(ipcMain, backend);
-    const stopSupervisorSplit = serveSupervisorSplit(ipcMain, backend);
-    const stopRequirementDetail = serveRequirementDetail(ipcMain, backend);
-    const stopGitStatus = serveGitStatus(ipcMain, backend);
-    const stopMainMerge = serveMainMerge(ipcMain, backend);
-    const stopIntegrationReview = serveIntegrationReview(ipcMain, backend);
-    const stopPoolState = servePoolState(ipcMain, backend);
-    // UI-07a：设置 › 关于
-    const stopAbout = serveAbout(ipcMain, () => ({
-      version: app.getVersion(),
-      commit: buildCommit(),
-      electron: process.versions.electron,
-      chrome: process.versions.chrome,
-      node: process.versions.node,
-    }));
-    const stopWindowTheme = serveWindowTheme(ipcMain, {
-      setThemeSource(source) {
-        nativeTheme.themeSource = source;
-        return nativeTheme.shouldUseDarkColors;
-      },
-      applyTitleBar,
-      saveTheme: (source) => writeSavedTheme(userData, source),
-    });
     // 跟随系统时系统切深浅色，标题栏按钮颜色跟着变
     const onNativeTheme = () => applyTitleBar(nativeTheme.shouldUseDarkColors);
     nativeTheme.on("updated", onNativeTheme);
-    const stopBackendReload = serveBackendReload(ipcMain, backend, process.env);
-    // UI-03a：项目准备页的仓库检查与修复，作用于当前仓库；写操作成功后走 reconnect
-    const stopRepoFix = serveRepoFix(ipcMain, {
-      repoRoot: () => backend.repoRoot(),
-      repoSource: () => backend.status().repoSource,
-      reconnect: () => backend.reconnect(),
-      // T-113：生成配置；模板在 exe 旁边的 config-templates/（开发时用仓库根的 config/）
-      config: configFixHandlers({
+    // UI-06e：全部 IPC handler 的注册 / 停止在 main-handlers.ts（有测试覆盖）
+    const stopHandlers = registerMainHandlers(ipcMain, {
+      backend,
+      reader,
+      sink,
+      env: process.env,
+      projectSettings: {
+        backend,
+        argv: process.argv,
+        env: process.env,
+        downloadsDir: app.getPath("downloads"),
+        saveLastRepo: (repo) => writeLastRepo(userData, repo),
+        // T-081：打包版在 exe 同一层 config-templates/；开发时用仓库根 config/（here = packages/desktop/dist-electron）
+        templateDir: defaultTemplateDir(
+          app.isPackaged,
+          process.execPath,
+          path.join(here, "../../.."),
+        ),
+        // T-082 的 ensureExcludeLines（经 @bakacoding/app 再导出）：只给本次新建的配置文件写 .git/info/exclude
+        ensureExcludeLines,
+        // T-130：打开数据目录（userData：状态 / 标记文件所在）；失败抛错，由 IPC 层换成固定文案
+        async openDataDir() {
+          const err = await shell.openPath(userData);
+          if (err) throw new Error("打开数据目录失败");
+        },
+        async pickDirectory() {
+          const r = win
+            ? await dialog.showOpenDialog(win, { properties: ["openDirectory"], title: "导入项目" })
+            : await dialog.showOpenDialog({ properties: ["openDirectory"], title: "导入项目" });
+          return r.canceled ? null : (r.filePaths[0] ?? null);
+        },
+        async pickSavePath(defaultPath) {
+          const opts = {
+            title: "导出诊断包",
+            defaultPath,
+            filters: [{ name: "zip", extensions: ["zip"] }],
+          };
+          const r = win
+            ? await dialog.showSaveDialog(win, opts)
+            : await dialog.showSaveDialog(opts);
+          return r.canceled || !r.filePath ? null : r.filePath;
+        },
+      },
+      // UI-07a：设置 › 关于
+      about: () => ({
+        version: app.getVersion(),
+        commit: buildCommit(),
+        electron: process.versions.electron,
+        chrome: process.versions.chrome,
+        node: process.versions.node,
+      }),
+      windowTheme: {
+        setThemeSource(source) {
+          nativeTheme.themeSource = source;
+          return nativeTheme.shouldUseDarkColors;
+        },
+        applyTitleBar,
+        saveTheme: (source) => writeSavedTheme(userData, source),
+      },
+      // UI-03a：项目准备页的仓库检查与修复，作用于当前仓库；写操作成功后走 reconnect
+      repoFix: {
         repoRoot: () => backend.repoRoot(),
         repoSource: () => backend.status().repoSource,
         reconnect: () => backend.reconnect(),
+        // T-113：生成配置；模板在 exe 旁边的 config-templates/（开发时用仓库根的 config/）
+        config: configFixHandlers({
+          repoRoot: () => backend.repoRoot(),
+          repoSource: () => backend.status().repoSource,
+          reconnect: () => backend.reconnect(),
+          argv: process.argv,
+          env: process.env,
+          templateDir: configTemplateDir(app.isPackaged, process.execPath, here),
+          checkRepo: (root) => checkRepo(root),
+          writeConfig,
+          writePricing,
+          ensureExcludeLines,
+        }),
+      },
+      // UI-07b / UI-07c：设置 › 模型和预算；保存后走 backend.reload()（有在途单时排队）
+      modelSettings: {
+        repoRoot: () => backend.repoRoot(),
+        repoSource: () => backend.status().repoSource,
         argv: process.argv,
         env: process.env,
-        templateDir: configTemplateDir(app.isPackaged, process.execPath, here),
-        checkRepo: (root) => checkRepo(root),
+        running: () => backend.runningCount() + (backend.chatInFlight() ? 1 : 0),
+        reload: () => backend.reload(),
         writeConfig,
         writePricing,
-        ensureExcludeLines,
-      }),
-    });
-    // UI-07b / UI-07c：设置 › 模型和预算；保存后走 backend.reload()（有在途单时排队）
-    const stopModelSettings = serveModelSettings(ipcMain, {
-      repoRoot: () => backend.repoRoot(),
-      repoSource: () => backend.status().repoSource,
-      argv: process.argv,
-      env: process.env,
-      running: () => backend.runningCount() + (backend.chatInFlight() ? 1 : 0),
-      reload: () => backend.reload(),
-      writeConfig,
-      writePricing,
-      // UI-07c：今天已花费原样取 3 的 budgetState()（只读后端回 null）
-      budgetState: () => backend.budgetState(),
-    });
-    // UI-07d：设置 › 项目（列表 / 移除 / 打开所在文件夹）；路径只在主进程里用，失败一律固定文案
-    const stopProjectList = serveProjectList(ipcMain, {
-      backend,
-      openPath: (p) => shell.openPath(p),
-      warn: (m) => console.warn(m),
-    });
-    // UI-03b：密钥项与测试连接；标记文件放 userData（不在仓库里），值只交给 3
-    const stopSecretProvider = serveSecretProvider(ipcMain, {
-      secretDeps: { markerPath: path.join(userData, SECRET_MARKER_FILE) },
-      backend,
+        // UI-07c：今天已花费原样取 3 的 budgetState()（只读后端回 null）
+        budgetState: () => backend.budgetState(),
+      },
+      // UI-07d：设置 › 项目（列表 / 移除 / 打开所在文件夹）
+      projectList: {
+        backend,
+        openPath: (p) => shell.openPath(p),
+        warn: (m) => console.warn(m),
+      },
+      // UI-03b：密钥项与测试连接；标记文件放 userData（不在仓库里），值只交给 3
+      secretProvider: {
+        secretDeps: { markerPath: path.join(userData, SECRET_MARKER_FILE) },
+        backend,
+      },
     });
 
     // T-105：before-quit 里拦下退出，等 backend.stop()（9 收尾后才关库、放写锁）结束再退；
@@ -270,27 +243,8 @@ if (!gotLock) {
       onStopping: () => void notifyAppQuitting(sink),
       stop: () => backend.stop(),
       afterStop() {
-        stopReader();
-        stopBackendIpc();
-        stopHighRisk();
-        stopSyncState();
-        stopProjectSettings();
-        stopSupervisorChat();
-        stopSupervisorHistory();
-        stopSupervisorSplit();
-        stopRequirementDetail();
-        stopGitStatus();
-        stopMainMerge();
-        stopIntegrationReview();
-        stopPoolState();
-        stopAbout();
-        stopWindowTheme();
+        stopHandlers();
         nativeTheme.off("updated", onNativeTheme);
-        stopBackendReload();
-        stopRepoFix();
-        stopSecretProvider();
-        stopModelSettings();
-        stopProjectList();
         reader.close();
       },
       warn: (m) => console.warn(`[desktop] ${m}`),

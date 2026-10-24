@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { AlertCircle, Download, FolderOpen, Settings } from "lucide-react";
-import type { BakaDesktopApi, DesktopProjectRow, DesktopSupervisorMessage } from "../../shared/api";
+import type {
+  BakaDesktopApi,
+  DesktopProjectRow,
+  DesktopSupervisorMessage,
+  UiEvent,
+} from "../../shared/api";
+import { summarizeCalls, usageLine, type CallScope } from "../lib/callUsage";
 import {
   CHAT_HISTORY_PAGE,
   answeredUserMessage,
@@ -61,6 +67,10 @@ export interface SupervisorChatProps {
   onPrefillUsed?: () => void;
   /** UI-06a：输入框 chip 当前选中的项目（含初始值）变了就回调；右面板在主管对话里跟随它 */
   onChipProjectChange?: (projectId: string | undefined) => void;
+  /** UI-06e：事件流（取 role=supervisor 的 call_completed 算本次 token / 费用）；不给就只显示计时 */
+  events?: readonly UiEvent[] | undefined;
+  /** UI-06e：时钟（测试注入） */
+  now?: () => number;
 }
 
 /** 主管 1:1：唯一可输入的地方。一次只发一条（chat 有状态），等上一条回来才能再发。 */
@@ -81,6 +91,8 @@ export function SupervisorChat({
   prefill = null,
   onPrefillUsed,
   onChipProjectChange,
+  events,
+  now = Date.now,
 }: SupervisorChatProps) {
   const getHistory = api?.getSupervisorHistory;
   useEffect(() => {
@@ -102,6 +114,28 @@ export function SupervisorChat({
   }, [store, initial, getHistory]);
   const { items: messages, pending } = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const [draft, setDraft] = useState("");
+  // UI-06e：本次等待的开始时间（计时用）；回复到达后按回复的 requirement_id 和到达时间算 token / 费用
+  const [startedAt, setStartedAt] = useState<number | undefined>(undefined);
+  const [lastCall, setLastCall] = useState<CallScope | null>(null);
+  const startRef = useRef<number | undefined>(undefined);
+  /** 本次回复的 requirement_id（失败或回复不带时为 null）；回复一到就写入 */
+  const replyReqRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (pending) {
+      const t = now();
+      startRef.current = t;
+      replyReqRef.current = null;
+      setStartedAt(t);
+      setLastCall(null);
+    } else if (startRef.current !== undefined) {
+      const requirement_id = replyReqRef.current;
+      // 回复不带 requirement_id：只显示用时，不显示用量
+      setLastCall(requirement_id ? { requirement_id, until: now() } : null);
+      startRef.current = undefined;
+      setStartedAt(undefined);
+    }
+  }, [pending, now]);
+  const usage = lastCall && events ? summarizeCalls(events, lastCall) : null;
   useEffect(() => {
     if (prefill === null) return;
     setDraft(prefill);
@@ -161,6 +195,7 @@ export function SupervisorChat({
     const retry = { message_id, text, ...(project_id && { project_id }) };
     try {
       const r = await api.supervisorChat({ text, message_id, ...(project_id && { project_id }) });
+      replyReqRef.current = r.ok ? (r.reply.requirement_id ?? null) : null;
       item = r.ok
         ? {
             // T-149：用 10 返回的回复自身 id（T-148）和历史去重，不假定 id 格式
@@ -359,7 +394,12 @@ export function SupervisorChat({
               </div>
             );
           })}
-          {pending && <WaitingDots />}
+          {pending && <WaitingDots startedAt={startedAt} now={now} />}
+          {usage && (
+            <p data-testid="chat-call-usage" className="pl-[26px] text-xs text-muted-foreground">
+              {usageLine(usage)}
+            </p>
+          )}
           {messages.length === 0 && !pending && <ChatEmptyState onPick={setDraft} />}
         </div>
       </div>

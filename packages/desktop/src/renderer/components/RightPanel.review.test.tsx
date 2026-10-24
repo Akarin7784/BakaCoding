@@ -9,7 +9,12 @@ import type {
   DesktopMainMergeResult,
   IntegrationBlockCode,
 } from "../../shared/api";
-import { INTEGRATION_BLOCK_TEXT, INTEGRATION_REVIEW_COPY, MAIN_MERGE_COPY } from "../lib/gitStatus";
+import {
+  INTEGRATION_BLOCK_TEXT,
+  INTEGRATION_BLOCKED_FALLBACK,
+  INTEGRATION_REVIEW_COPY,
+  MAIN_MERGE_COPY,
+} from "../lib/gitStatus";
 import { READONLY_COPY } from "../lib/readonly";
 import { projects } from "../mock/data";
 import { RightPanel } from "./RightPanel";
@@ -90,7 +95,6 @@ describe("审查集成分支（UI-06d2）", () => {
       ],
       ["ci_failed", "model_blocked"],
     ],
-    [[], ["review_failed"]],
   ] as const)("blocked → 固定文案（%#），不保存 sha，合入仍禁用", async (reasons, codes) => {
     panel({
       onReviewIntegration: async () => blocked([...reasons]),
@@ -104,6 +108,35 @@ describe("审查集成分支（UI-06d2）", () => {
     expect(document.body.textContent).not.toMatch(/T-1|\/home\/secret|https:\/\/x|a\.ts/);
     expect(mergeBtn().disabled).toBe(true);
     expect(screen.queryByTestId("integration-review-ok")).toBeNull();
+  });
+
+  it("UI-06e：blocked 且没有任何原因码 → 只显示「集成分支暂不可合入」，合入仍禁用", async () => {
+    panel({
+      onReviewIntegration: async () => blocked([]),
+      onMergeMain: async () => ({ ok: true, result: "notified" }),
+    });
+    await act(async () => fireEvent.click(reviewBtn()));
+    const box = screen.getByTestId("integration-review-blocked");
+    expect([...box.querySelectorAll("p")].map((p) => p.textContent)).toEqual([
+      "集成分支暂不可合入",
+    ]);
+    expect(INTEGRATION_BLOCKED_FALLBACK).toBe("集成分支暂不可合入");
+    expect(mergeBtn().disabled).toBe(true);
+  });
+
+  it("UI-06e：已有审查过的 head 但正在审查中 → 合入按钮禁用；审查不在进行时同一 head 可点", () => {
+    const merge = async () => ({ ok: true, result: "notified" }) as const;
+    const { unmount } = panel({
+      mainMergeHead: SHA,
+      reviewInitial: { kind: "reviewing" },
+      onReviewIntegration: async () => OK,
+      onMergeMain: merge,
+    });
+    expect(reviewBtn().disabled).toBe(true);
+    expect(mergeBtn().disabled).toBe(true);
+    unmount();
+    panel({ mainMergeHead: SHA, onReviewIntegration: async () => OK, onMergeMain: merge });
+    expect(mergeBtn().disabled).toBe(false);
   });
 
   it("blocked 文案逐字锁定", () => {
