@@ -1,11 +1,21 @@
+import { useEffect, useMemo, useState } from "react";
 import { Download, GitBranch, GitMerge, TriangleAlert } from "lucide-react";
 import { Button } from "./ui/button";
 import { READONLY_COPY } from "../lib/readonly";
 import { Separator } from "./ui/separator";
-import { StatusBadge } from "./ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
+import { StatusIcon } from "./StatusIcon";
 import { cn } from "../lib/utils";
-import { MERGE_COPY, RESUBMIT_COPY } from "../lib/copy";
+import { MERGE_COPY, RESUBMIT_COPY, TICKET_LIST_COPY, TICKET_STATUS_LABEL } from "../lib/copy";
 import { ticketWarningLabel } from "./Escalations";
+import {
+  effectiveStatusFilter,
+  filterTicketRows,
+  projectTicketRows,
+  statusFilterOptions,
+  type TicketStatusFilter,
+} from "../lib/ticketList";
+import type { TicketView } from "../../shared/api";
 import type { ProjectView } from "../mock/types";
 
 function Flag({ on, label }: { on: boolean; label: string }) {
@@ -19,8 +29,8 @@ function Flag({ on, label }: { on: boolean; label: string }) {
   );
 }
 
-/** PR 行上的提示图标：这张单有 ticket_warning 时显示，悬停看文案（T-050）。 */
-function PrWarning({ codes }: { codes: string[] }) {
+/** 单行上的提示图标：这张单有 ticket_warning 时显示，悬停看文案（T-050）。 */
+function TicketWarning({ codes }: { codes: string[] }) {
   if (codes.length === 0) return null;
   const text = [...new Set(codes)].map(ticketWarningLabel).join("；");
   return (
@@ -30,18 +40,37 @@ function PrWarning({ codes }: { codes: string[] }) {
   );
 }
 
-/** 右面板「概览」标签的内容：跟随当前项目（1:1 时显示最近操作过的项目）。外壳见 RightPanelShell（UI-02）。 */
+/**
+ * 右面板「概览」标签的内容（§4.5）：跟随当前项目；主管对话里跟随输入框选中的项目。外壳见 RightPanelShell（UI-02）。
+ * UI-06a：需求单列表只看快照 tickets（状态图标 + 脱敏标题 + ×重写次数，可按状态筛选）。
+ */
 export function RightPanel({
   view,
-  onOpenTopic,
+  tickets,
+  onOpenTicket,
+  onExportTicket,
+  exportBusy = false,
   readonly = false,
 }: {
   view: ProjectView;
-  onOpenTopic: (requirementId: string) => void;
+  /** 快照 tickets（全部项目；这里按当前项目过滤） */
+  tickets: readonly TicketView[];
+  /** 点单：打开所属需求页并选中该单 */
+  onOpenTicket: (requirementId: string, ticketId: string) => void;
+  /** 行内导出：diagnostics:export scope {kind:"ticket"} */
+  onExportTicket?: (ticketId: string) => void;
+  exportBusy?: boolean;
   /** 后端只读（UI-08）：合入 main、导出禁用并说明 */
   readonly?: boolean;
 }) {
-  const { pool, git, prs } = view;
+  const { pool, git } = view;
+  const projectId = view.project.payload.project_id;
+  const rows = useMemo(() => projectTicketRows(tickets, projectId), [tickets, projectId]);
+  const options = useMemo(() => statusFilterOptions(rows), [rows]);
+  const [filter, setFilter] = useState<TicketStatusFilter>("all");
+  useEffect(() => setFilter("all"), [projectId]);
+  const active = effectiveStatusFilter(filter, options);
+  const shown = filterTicketRows(rows, active);
   return (
     <div data-testid="project-overview" className="flex flex-col text-sm">
       <div data-testid="pool-status" className="flex gap-3 px-4 py-2 text-xs">
@@ -87,31 +116,61 @@ export function RightPanel({
         )}
       </div>
       <Separator />
-      <div className="flex-1 overflow-y-auto px-4 py-3">
-        <div className="mb-2 text-xs text-muted-foreground">PR 列表</div>
-        {prs.length === 0 && <p className="text-xs text-muted-foreground">暂无 PR</p>}
-        <ul className="space-y-1">
-          {prs.map((pr) => (
-            <li key={pr.pr_id} className="flex items-center gap-2">
-              <button
-                className="min-w-0 flex-1 truncate rounded px-1 py-1 text-left hover:bg-muted"
-                onClick={() => onOpenTopic(pr.requirement_id)}
+      <div data-testid="ticket-list" className="flex-1 overflow-y-auto px-4 py-3">
+        <div className="mb-2 flex items-center gap-2">
+          <span className="flex-1 text-xs text-muted-foreground">{TICKET_LIST_COPY.title}</span>
+          {rows.length > 0 && (
+            <Select value={active} onValueChange={(v) => setFilter(v as TicketStatusFilter)}>
+              <SelectTrigger
+                aria-label={TICKET_LIST_COPY.filterLabel}
+                className="h-7 w-28 text-xs"
+                data-testid="ticket-status-filter"
               >
-                {pr.pr_id} {pr.title}
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">{TICKET_LIST_COPY.filterAll}</SelectItem>
+                {options.map((s) => (
+                  <SelectItem key={s} value={s}>
+                    {TICKET_STATUS_LABEL[s]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+        </div>
+        {rows.length === 0 && (
+          <p className="text-xs text-muted-foreground">{TICKET_LIST_COPY.empty}</p>
+        )}
+        <ul className="space-y-1">
+          {shown.map((t) => (
+            <li
+              key={t.ticket_id}
+              data-testid="ticket-row"
+              data-ticket={t.ticket_id}
+              className="flex items-center gap-2"
+            >
+              <StatusIcon status={t.status} />
+              <button
+                type="button"
+                className="min-w-0 flex-1 truncate rounded px-1 py-1 text-left hover:bg-muted"
+                onClick={() => onOpenTicket(t.requirement_id, t.ticket_id)}
+              >
+                {t.ticket_id} {t.title}
               </button>
-              <PrWarning
-                codes={view.warnings.filter((w) => w.ticket_id === pr.ticket_id).map((w) => w.code)}
+              <TicketWarning
+                codes={view.warnings.filter((w) => w.ticket_id === t.ticket_id).map((w) => w.code)}
               />
-              <StatusBadge status={pr.status} />
               <span className="text-xs text-muted-foreground" title={RESUBMIT_COPY.countTitle}>
-                ×{pr.resubmit_count}
+                ×{t.resubmit_count}
               </span>
               <Button
                 variant="secondary"
                 size="icon-sm"
-                aria-label={`导出 ${pr.ticket_id} 诊断包`}
-                disabled={readonly}
+                aria-label={TICKET_LIST_COPY.exportLabel(t.ticket_id)}
+                disabled={readonly || exportBusy || !onExportTicket}
                 title={readonly ? READONLY_COPY.exportDisabled : undefined}
+                onClick={() => onExportTicket?.(t.ticket_id)}
               >
                 <Download strokeWidth={1.5} />
               </Button>

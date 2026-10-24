@@ -57,6 +57,8 @@ export interface SupervisorChatProps {
   /** UI-05f：从需求页追问 / 需要你处理带回的草稿（只填输入框，不发送）；用过后回调 onPrefillUsed */
   prefill?: string | null;
   onPrefillUsed?: () => void;
+  /** UI-06a：输入框 chip 当前选中的项目（含初始值）变了就回调；右面板在主管对话里跟随它 */
+  onChipProjectChange?: (projectId: string | undefined) => void;
 }
 
 /** 主管 1:1：唯一可输入的地方。一次只发一条（chat 有状态），等上一条回来才能再发。 */
@@ -75,6 +77,7 @@ export function SupervisorChat({
   onOpenRequirement,
   prefill = null,
   onPrefillUsed,
+  onChipProjectChange,
 }: SupervisorChatProps) {
   const getHistory = api?.getSupervisorHistory;
   useEffect(() => {
@@ -108,6 +111,9 @@ export function SupervisorChat({
   useEffect(() => {
     if (projectId !== undefined) setChipProject(projectId);
   }, [projectId]);
+  useEffect(() => {
+    onChipProjectChange?.(chipProject);
+  }, [chipProject, onChipProjectChange]);
   const pickProject = (id: string | undefined) => {
     setChipProject(id);
     writeLastProject(id);

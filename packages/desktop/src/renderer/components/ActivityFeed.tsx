@@ -1,13 +1,15 @@
 // 右面板「动态」标签（§4.5.1，T-127）：只显示 Agent 之间互相发的消息。
 // 数据：现有 group_message 事件（快照里按 seq 升序，不新增后端接口）。
 // 每条：头像、发送方 → 接收方、时间、类型标签、正文（超过 3 行折叠）；
-// 最新在底部自动滚到底，用户上翻后停止自动滚并给「回到最新」；右上角可按单过滤；底部一行当前状态。
+// 最新在底部自动滚到底，用户上翻后停止自动滚并给「回到最新」；右上角可按单过滤；
+// 底部一行当前状态（UI-06a：从快照 tickets 推导）。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, ChevronDown } from "lucide-react";
 import type { ProjectView } from "../mock/types";
 import { ACTIVITY_COPY } from "../lib/copy";
+import type { TicketView } from "../../shared/api";
+import { activeTicketLine } from "../lib/ticketList";
 import {
-  activeTicketLine,
   activityFilterOptions,
   activityItems,
   effectiveTicketFilter,
@@ -22,21 +24,28 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 /** 正文超过这个长度才给「展开 / 收起」（设计写的是 3 行，jsdom 量不到行高，用长度近似）。 */
 export const ACTIVITY_COLLAPSE_CHARS = 120;
 
-export function ActivityFeed({ project }: { project?: ProjectView }) {
+export function ActivityFeed({
+  project,
+  tickets = [],
+}: {
+  project?: ProjectView | undefined;
+  /** UI-06a：快照 tickets（ticket_status_changed 维护），底部状态行只从这里推导，不读 prs、不轮询 */
+  tickets?: readonly TicketView[];
+}) {
   const [ticketFilter, setTicketFilter] = useState("all");
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   const [atBottom, setAtBottom] = useState(true);
   const listRef = useRef<HTMLDivElement | null>(null);
 
   const items = useMemo(() => activityItems(project), [project]);
-  const tickets = useMemo(() => activityFilterOptions(project), [project]);
+  const ticketOptions = useMemo(() => activityFilterOptions(project), [project]);
   // 切项目重置按单筛选（T-127 评审 P2）：旧单号在新项目里可能不存在
   const projectId = project?.project.payload.project_id;
   useEffect(() => setTicketFilter("all"), [projectId]);
   // 防御：选项里确实没有该单号时也按「全部」显示，Select 和列表保持一致
-  const activeFilter = effectiveTicketFilter(ticketFilter, tickets);
+  const activeFilter = effectiveTicketFilter(ticketFilter, ticketOptions);
   const shown = useMemo(() => filterActivity(items, activeFilter), [items, activeFilter]);
-  const statusLine = useMemo(() => activeTicketLine(project), [project]);
+  const statusLine = useMemo(() => activeTicketLine(tickets, projectId), [tickets, projectId]);
 
   const stickToBottom = useCallback(() => {
     const el = listRef.current;
@@ -74,7 +83,7 @@ export function ActivityFeed({ project }: { project?: ProjectView }) {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">{ACTIVITY_COPY.filterAll}</SelectItem>
-            {tickets.map((t) => (
+            {ticketOptions.map((t) => (
               <SelectItem key={t} value={t}>
                 {t}
               </SelectItem>

@@ -35,6 +35,16 @@ export const TICKET_STATUS_LABEL: Record<TicketStatus, string> = {
   escalated: "需要人工介入",
 };
 
+/** 右面板需求单列表（UI-06a，§4.5 第 3 项）。 */
+export const TICKET_LIST_COPY = {
+  title: "需求单",
+  empty: "暂无需求单",
+  filterLabel: "按状态筛选",
+  filterAll: "全部状态",
+  exportLabel: (ticket_id: string) => `导出 ${ticket_id} 诊断包`,
+  noProject: "在输入框里选一个项目，这里显示它的概览",
+} as const;
+
 /** 需求页步骤条的五步（§4.4）。 */
 export const TICKET_STEPS = ["pending", "coding", "in_review", "merge_queued", "merged"] as const;
 export type TicketStep = (typeof TICKET_STEPS)[number];
