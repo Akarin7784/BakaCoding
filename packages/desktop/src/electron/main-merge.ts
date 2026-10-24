@@ -7,7 +7,7 @@ import type { DesktopMainMergeResult } from "../shared/api.js";
 export const MAIN_MERGE_UNAVAILABLE = "合入 main 暂不可用（后端只读或未接线）";
 /** 不是 MainMergeError 的异常。 */
 export const MAIN_MERGE_FAILED = "合入 main 失败";
-/** 参数不对（没有 head_sha 或不是 40 位十六进制）。 */
+/** 参数不对（没有 head_sha 或不是 40 位十六进制；大小写不限）。 */
 export const MAIN_MERGE_INVALID = "合入请求不完整（缺少审查过的集成分支提交）";
 
 /** MainMergeError.code → 界面固定文案（穷举，新增码编译不过；不含路径、sha、原始错误）。 */
@@ -35,8 +35,10 @@ export async function runMainMerge(
   input: unknown,
 ): Promise<DesktopMainMergeResult> {
   if (!fn) return { ok: false, code: "unavailable", reason: MAIN_MERGE_UNAVAILABLE };
-  const head_sha = (input as { head_sha?: unknown } | null)?.head_sha;
-  if (typeof head_sha !== "string" || !SHA_RE.test(head_sha))
+  const raw = (input as { head_sha?: unknown } | null)?.head_sha;
+  // 接受大写：统一转小写再校验，透传小写
+  const head_sha = typeof raw === "string" ? raw.toLowerCase() : null;
+  if (head_sha === null || !SHA_RE.test(head_sha))
     return { ok: false, code: "invalid", reason: MAIN_MERGE_INVALID };
   try {
     const r = await fn({ by: "user", head_sha });

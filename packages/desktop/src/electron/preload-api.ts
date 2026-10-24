@@ -14,6 +14,8 @@ import {
   type DesktopGitStatusResult,
   type DesktopMainMergeRequest,
   type DesktopMainMergeResult,
+  type DesktopIntegrationReviewRequest,
+  type DesktopIntegrationReviewResult,
   type DesktopDecideHighRiskResult,
   type DesktopExportOptions,
   type DesktopExportResult,
@@ -151,6 +153,11 @@ export function createDesktopApi(ipc: IpcRendererLike, platform: string): BakaDe
     getGitStatus: () => ipc.invoke(IPC_CHANNELS.gitStatus) as Promise<DesktopGitStatusResult>,
     mergeMain: (request: DesktopMainMergeRequest) =>
       ipc.invoke(IPC_CHANNELS.mainMerge, request) as Promise<DesktopMainMergeResult>,
+    reviewIntegration: (request: DesktopIntegrationReviewRequest) =>
+      ipc.invoke(
+        IPC_CHANNELS.integrationReview,
+        request,
+      ) as Promise<DesktopIntegrationReviewResult>,
     getPoolState: () => ipc.invoke(IPC_CHANNELS.poolState) as Promise<DesktopPoolStateResult>,
     getSupervisorHistory: (query?: DesktopHistoryQuery) =>
       ipc.invoke(IPC_CHANNELS.supervisorHistory, query ?? {}) as Promise<DesktopHistoryResult>,
