@@ -125,7 +125,7 @@ export const projects: ProjectView[] = [
           project_id: "p-todo",
           sender: "sub_agent",
           kind: "resubmit",
-          content: "评审未过（空值处理），第 1 次复投。",
+          content: "评审未过（空值处理），第 1 次重写。",
           flash_calls: ["call-2"],
         },
       },
