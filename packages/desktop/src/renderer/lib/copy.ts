@@ -213,3 +213,17 @@ export const PROJECT_PAGE_COPY = {
   emptyFiltered: "这一类没有需求",
   sidebarList: (project: string) => `${project} 的需求`,
 } as const;
+
+/** UI-05f：需求页「⋯」菜单、追问 / 需要你处理带回主管对话的草稿、「查看需求」 */
+export const REQUIREMENT_MENU_COPY = {
+  trigger: "更多操作",
+  exportRequirement: "导出这个需求的诊断包",
+  exportTicketGroup: "导出单张单",
+  exportTicket: (id: string) => `导出 ${id} 的诊断包`,
+  ask: "在主管对话里追问",
+  /** 追问：草稿只带需求名和需求号，不自动发送 */
+  askDraft: (name: string, rid: string) => `关于需求「${name}」（${rid}）：`,
+  /** 需要你处理：草稿带单号和需求，不自动发送 */
+  escalationDraft: (ticket: string, name: string) => `${ticket}（需求「${name}」）需要我处理：`,
+  viewRequirement: "查看需求",
+} as const;

@@ -5,7 +5,7 @@
 // - 评审上限：settings:config-get 的 pipeline.resubmit_limits.review + 1（查证见 lib/reviewLimit.ts）。
 // - 时间线：按 requirement_id 聚合，相邻模型调用折叠成一行（lib/requirementTimeline.ts）。
 // - 高风险待办卡片（UI-05d）：本需求的单有待裁决高风险 PR 时，在单子进度上方显示；顶部高风险横条保留兜底。
-// 「查看需求」按钮、「⋯」菜单留给 05f。
+// UI-05f：标题右侧「⋯」菜单（RequirementMenu）：导出需求 / 单张单诊断包、在主管对话里追问；「需要你处理」交给 App。
 import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import type {
@@ -16,6 +16,7 @@ import type {
   UiEvent,
 } from "../../shared/api";
 import { REQUIREMENT_PAGE_COPY as C } from "../lib/copy";
+import { RequirementMenu, type RequirementExportScope } from "./RequirementMenu";
 import { CONTENT_COLUMN } from "../lib/layout";
 import { redactForView } from "../lib/redact";
 import { buildTimeline, type TimelineItem } from "../lib/requirementTimeline";
@@ -131,6 +132,9 @@ export function RequirementPage({
   highRisk = [],
   onDecideHighRisk,
   readonly = false,
+  onExport,
+  onAsk,
+  exportBusy = false,
 }: {
   requirementId: string;
   /** 快照里的需求单（页面自己按 requirement_id 过滤） */
@@ -144,6 +148,11 @@ export function RequirementPage({
   onDecideHighRisk?: HighRiskDecide;
   /** 后端只读时禁用裁决按钮 */
   readonly?: boolean;
+  /** UI-05f：「⋯」菜单导出（diagnostics:export 的 scope） */
+  onExport?: (scope: RequirementExportScope) => void;
+  /** UI-05f：「⋯」菜单「在主管对话里追问」 */
+  onAsk?: () => void;
+  exportBusy?: boolean;
 }) {
   const [detail, setDetail] = useState<DetailState>({ state: "loading" });
   const [resubmitLimit, setResubmitLimit] = useState(() => reviewResubmitLimitOf(null));
@@ -194,9 +203,18 @@ export function RequirementPage({
       <div className="flex-1 overflow-y-auto px-4 py-3">
         <div className={cn(CONTENT_COLUMN, "space-y-4")}>
           <header className="space-y-2">
-            <h2 className="text-base font-medium" data-testid="requirement-title">
-              {title}
-            </h2>
+            <div className="flex items-start gap-2">
+              <h2 className="min-w-0 flex-1 text-base font-medium" data-testid="requirement-title">
+                {title}
+              </h2>
+              <RequirementMenu
+                requirementId={requirementId}
+                ticketIds={mine.map((t) => t.ticket_id)}
+                exportDisabled={exportBusy}
+                {...(onExport && { onExport })}
+                {...(onAsk && { onAsk })}
+              />
+            </div>
             {splitAt && <p className="text-xs text-muted-foreground">{C.splitAt(splitAt)}</p>}
             {"state" in detail ? (
               <p className="text-sm text-muted-foreground">{C.loading}</p>

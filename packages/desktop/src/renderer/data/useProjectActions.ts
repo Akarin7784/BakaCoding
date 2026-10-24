@@ -2,7 +2,7 @@
 // UI-08：结果不再是内容区顶部一行小字，改成右下角 toast（成功 5 秒消失，错误不消失、可复制详情）。
 // T-081：导入只缺配置时，内容区顶部显示「缺配置」横幅 +「用默认模板创建」按钮（页面横幅，不是 toast 里的按钮）。
 import { useState } from "react";
-import type { BakaDesktopApi, DesktopSettings } from "../../shared/api.js";
+import type { BakaDesktopApi, DesktopExportOptions, DesktopSettings } from "../../shared/api.js";
 import { failureText } from "../../shared/error-text.js";
 import { notifyError, notifyOk } from "../lib/notify";
 
@@ -15,7 +15,8 @@ export interface ProjectActions {
   /** T-081：上次导入只缺配置文件时为 true，界面显示「用默认模板创建」 */
   canCreateDefaultConfig: boolean;
   createDefaultConfig(): Promise<void>;
-  exportDiagnostics(): Promise<void>;
+  /** UI-05f：可带 scope（需求 / 单张单）；不带 = 最近 24 小时 */
+  exportDiagnostics(options?: DesktopExportOptions): Promise<void>;
   openSettings(): Promise<void>;
   closeSettings(): void;
 }
@@ -98,12 +99,12 @@ export function useProjectActions(
       if (!api?.createDefaultConfig) return unavailable();
       await run("create-config", () => api.createDefaultConfig());
     },
-    async exportDiagnostics() {
+    async exportDiagnostics(options?: DesktopExportOptions) {
       if (!api?.exportDiagnostics) return unavailable();
       if (busy) return;
       setBusy("export");
       try {
-        const r = await api.exportDiagnostics();
+        const r = await (options ? api.exportDiagnostics(options) : api.exportDiagnostics());
         if (r.ok) setNotice({ tone: "ok", text: `诊断包已导出：${r.path}` });
         else if (!r.canceled) setNotice({ tone: "error", text: failureText("导出失败", r.reason) });
       } catch {
