@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { AlertCircle, Download, FolderOpen, Settings } from "lucide-react";
 import type {
   BakaDesktopApi,
@@ -73,6 +73,13 @@ export interface SupervisorChatProps {
   now?: () => number;
 }
 
+/** UI-10：离底部这么近（像素）以内算「在底部」，新消息会跟到底。 */
+export const FOLLOW_THRESHOLD_PX = 48;
+
+export function isNearBottom(el: Pick<HTMLElement, "scrollTop" | "scrollHeight" | "clientHeight">) {
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_THRESHOLD_PX;
+}
+
 /** 主管 1:1：唯一可输入的地方。一次只发一条（chat 有状态），等上一条回来才能再发。 */
 export function SupervisorChat({
   initial,
@@ -136,6 +143,10 @@ export function SupervisorChat({
     }
   }, [pending, now]);
   const usage = lastCall && events ? summarizeCalls(events, lastCall) : null;
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (el && followRef.current) el.scrollTop = el.scrollHeight;
+  }, [messages, pending, usage?.calls]);
   useEffect(() => {
     if (prefill === null) return;
     setDraft(prefill);
@@ -171,14 +182,20 @@ export function SupervisorChat({
     };
   }, [listProjects]);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // UI-10：用户在底部附近（≤ FOLLOW_THRESHOLD_PX）时新消息自动滚到底；往上翻了就不拉回
+  const followRef = useRef(true);
   const onScroll = () => {
     const el = scrollRef.current;
-    if (!el || el.scrollTop > 0 || !getHistory) return;
+    if (!el) return;
+    followRef.current = isNearBottom(el);
+    if (el.scrollTop > 0 || !getHistory) return;
     void store.loadOlder((before) => getHistory({ before, limit: CHAT_HISTORY_PAGE }));
   };
 
   /** 发一条；message_id 由界面生成，重试时传回同一个（10 / 2 按 message_id 幂等）。 */
   const deliver = async (text: string, message_id: string, project_id?: string) => {
+    // 自己发的消息总是跟到底
+    followRef.current = true;
     store.append({
       message_id,
       project_id: project_id ?? null,
@@ -289,7 +306,7 @@ export function SupervisorChat({
     <section
       aria-label="主管对话"
       className={cn(
-        "flex min-w-0 flex-col",
+        "flex min-h-0 min-w-0 flex-col overflow-hidden",
         compact ? "h-64 shrink-0 border-t border-border" : "flex-1",
       )}
     >
@@ -325,7 +342,12 @@ export function SupervisorChat({
           </Button>
         </header>
       )}
-      <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-y-auto px-4 py-4">
+      <div
+        ref={scrollRef}
+        onScroll={onScroll}
+        data-testid="chat-scroll"
+        className="min-h-0 flex-1 overflow-y-auto px-4 py-4"
+      >
         <div className={cn(CONTENT_COLUMN, "space-y-4")}>
           {messages.map((m) => {
             if (m.failed !== undefined) {

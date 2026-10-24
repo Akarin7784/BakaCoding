@@ -156,6 +156,13 @@
 }
 
 @layer base {
+  /* UI-10：整页固定为视口高度、不出页面滚动条；只有各区域自己的列表滚动 */
+  html,
+  body,
+  #root {
+    height: 100%;
+    overflow: hidden;
+  }
   html,
   body {
     font-family: var(--font-sans);

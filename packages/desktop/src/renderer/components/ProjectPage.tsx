@@ -97,12 +97,12 @@ export function ProjectPage({
   const count = (c: RequirementCategory) => rows.filter((r) => r.category === c).length;
 
   return (
-    <section aria-label={C.label} className="flex min-h-0 min-w-0 flex-1 flex-col">
+    <section aria-label={C.label} className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       {view.escalations.length > 0 && (
         <ul
           role="alert"
           aria-label="需要人工介入"
-          className="border-b border-border px-4 py-2 text-sm"
+          className="max-h-40 shrink-0 overflow-y-auto border-b border-border px-4 py-2 text-sm"
         >
           {view.escalations.map((e) => (
             <EscalationItem key={e.event_id} e={e} />
@@ -110,7 +110,7 @@ export function ProjectPage({
         </ul>
       )}
       <TicketWarningList warnings={view.warnings} />
-      <div className="flex-1 overflow-y-auto px-4 py-3">
+      <div data-testid="project-scroll" className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
         <div className={cn(CONTENT_COLUMN, "space-y-3")}>
           {rows.length === 0 ? (
             <div className="space-y-3 py-8 text-center" data-testid="project-empty">

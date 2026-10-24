@@ -209,8 +209,8 @@ export function RequirementPage({
   const limit = reviewRoundLimit(resubmitLimit);
 
   return (
-    <section aria-label={C.label} className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <div className="flex-1 overflow-y-auto px-4 py-3">
+    <section aria-label={C.label} className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+      <div data-testid="requirement-scroll" className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
         <div className={cn(CONTENT_COLUMN, "space-y-4")}>
           <header className="space-y-2">
             <div className="flex items-start gap-2">

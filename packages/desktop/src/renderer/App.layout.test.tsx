@@ -320,3 +320,13 @@ describe("现有界面都挂进新骨架", () => {
     expect([...primaries].map((b) => b.getAttribute("aria-label"))).toEqual(["发送"]);
   });
 });
+
+describe("视口固定、无页面滚动条（UI-10）", () => {
+  it("根容器固定视口高度且 overflow hidden，内容区 min-h-0", () => {
+    render(<App api={null} />);
+    const root = screen.getByTestId("app-root").className.split(/\s+/);
+    expect(root).toEqual(expect.arrayContaining(["h-screen", "min-h-0", "overflow-hidden"]));
+    const main = screen.getByRole("main", { name: "内容区" }).className.split(/\s+/);
+    expect(main).toEqual(expect.arrayContaining(["min-h-0", "flex-1"]));
+  });
+});
