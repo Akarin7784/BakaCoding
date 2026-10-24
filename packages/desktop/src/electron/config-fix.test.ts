@@ -1,6 +1,7 @@
 // T-113：「生成配置」（repo:init-config）——预算必填、模板来源、备份后覆盖（要确认）、exclude、路径校验、
 // 嵌套 / 非仓库 / cwd 拒绝、写失败和复查失败都撤回、错误不带配置值。
 // 用 3 的真实 writePricing、4 的真实 checkRepo（T-114 #148 的 nested_repo）；只有个别用例注入假的 checkRepo / writePricing。
+import { realpathSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import {
   existsSync,
@@ -247,6 +248,35 @@ describe("repo:init-config：已有但不合法（先备份再覆盖，要确认
       errors: ["(file): 写入配置失败（EACCES）"],
     });
     expect(readFileSync(join(root, "config", "models.json"), "utf8")).toBe(badModels);
+  });
+
+  it("T-140：writeConfig / writePricing 的报错带绝对路径时，返回的 errors 里没有路径", async () => {
+    for (const which of ["writeConfig", "writePricing"] as const) {
+      const root = badRepo();
+      writeFileSync(join(root, "config", "pricing.json"), "{");
+      const real = realpathSync(root);
+      const { h } = handlers(root, {
+        [which]: async () => ({
+          ok: false,
+          errors: [
+            `(file): 写入配置失败（EACCES: permission denied, open '${real}/config/${which}.tmp'）`,
+            `rename ${root}/config/x -> /home/eva/other/y 失败`,
+            "C:\\Users\\eva\\cfg\\models.json 不可写",
+          ],
+        }),
+      });
+      const r = await h.initConfig({ daily_micro_usd: 5, confirm_overwrite: true });
+      expect(r, which).toMatchObject({ ok: false, code: "write_failed" });
+      const errors = (r as { errors?: string[] }).errors ?? [];
+      expect(errors, which).toHaveLength(3);
+      for (const m of errors) {
+        expect(m, which).not.toContain(root);
+        expect(m, which).not.toContain(real);
+        expect(m, which).not.toMatch(/\/(?:tmp|home|Users|private)\b/);
+        expect(m, which).not.toMatch(/[A-Za-z]:\\/);
+      }
+      expect(errors[0], which).toContain("EACCES");
+    }
   });
 
   it("写完复查不过：撤回（原来缺的删掉、原来坏的恢复），回 verify_failed", async () => {
