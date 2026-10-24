@@ -78,3 +78,15 @@ describe("消息列表滚动（UI-10）", () => {
     expect(box.top).toBe(before);
   });
 });
+
+describe("自己发消息总是跟到底（UI-10）", () => {
+  it("往上翻了以后自己发一条，列表跳到底", () => {
+    const { el, box } = setup();
+    box.top = 100;
+    fireEvent.scroll(el);
+    box.height = 2600;
+    fireEvent.change(screen.getByLabelText("发给主管"), { target: { value: "我自己发的" } });
+    fireEvent.click(screen.getByLabelText("发送"));
+    expect(box.top).toBe(2600 - 400);
+  });
+});
