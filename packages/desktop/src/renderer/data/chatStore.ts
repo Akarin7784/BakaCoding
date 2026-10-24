@@ -38,6 +38,7 @@ export const replyMessageId = (userMessageId: string): string => `${userMessageI
 /** 主管回复在历史里的展示形状（kind 为 null 的旧记录按「回答」显示）。 */
 export function storedReply(m: DesktopSupervisorMessage): ChatReply {
   return {
+    message_id: m.message_id,
     text: m.content,
     kind: m.kind ?? "answer",
     ...(m.project_id !== null && { project_id: m.project_id }),

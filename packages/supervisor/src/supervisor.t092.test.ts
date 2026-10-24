@@ -77,7 +77,7 @@ describe("T-092 主管对话落库", () => {
     const t = setup();
     t.outputs.push(answer("你好呀"));
     const r = await t.sup.chat({ text: "你好", project_id: "p1" });
-    expect(r).toEqual({ kind: "answer", text: "你好呀" });
+    expect(r).toEqual({ message_id: expect.any(String), kind: "answer", text: "你好呀" });
     const h = t.sup.history();
     expect(h.map((m) => [m.role, m.kind, m.content, m.project_id])).toEqual([
       ["user", null, "你好", "p1"],
@@ -153,7 +153,11 @@ describe("T-092 主管对话落库", () => {
   it("没注入 chatLog：chat 照常，history 返回空数组", async () => {
     const t = setup({ chatLog: false });
     t.outputs.push(answer("好"));
-    expect(await t.sup.chat({ text: "嗯" })).toEqual({ kind: "answer", text: "好" });
+    expect(await t.sup.chat({ text: "嗯" })).toEqual({
+      message_id: expect.any(String),
+      kind: "answer",
+      text: "好",
+    });
     expect(t.sup.history()).toEqual([]);
     expect(t.storage.listSupervisorMessages()).toEqual([]);
   });
@@ -171,7 +175,7 @@ describe("T-144 主管对话落库跟进", () => {
     });
     t.outputs.push(answer("照常回复"));
     const r = await t.sup.chat({ text: "你好" });
-    expect(r).toEqual({ kind: "answer", text: "照常回复" });
+    expect(r).toEqual({ message_id: expect.any(String), kind: "answer", text: "照常回复" });
     expect(t.warns.filter((m) => m.includes("主管对话落库失败"))).toHaveLength(2);
   });
 
@@ -196,5 +200,29 @@ describe("T-144 主管对话落库跟进", () => {
     expect(h[1]!.message_id).toBe(`${h[0]!.message_id}-r`);
     expect(h[0]!.created_at).toBe(h[1]!.created_at);
     expect(h.map((m) => m.role)).toEqual(["user", "supervisor"]);
+  });
+});
+
+describe("T-148 ChatReply 带回复自己的 message_id", () => {
+  it("返回的 message_id 与历史里这条回复的 id 相同（10 生成 id 时）", async () => {
+    const t = setup();
+    t.outputs.push(answer("好"));
+    const r = await t.sup.chat({ text: "嗨" });
+    const h = t.sup.history();
+    expect(h.map((m) => m.role)).toEqual(["user", "supervisor"]);
+    expect(r.message_id).toBe(h[1]!.message_id);
+    expect(r.message_id).not.toBe(h[0]!.message_id);
+  });
+
+  it("幂等重试命中：同一用户 message_id 两次返回同一个回复 id，且与历史一致", async () => {
+    const t = setup();
+    t.outputs.push(answer("第一次"), answer("第二次"));
+    const a = await t.sup.chat({ text: "你好", message_id: "u-1" });
+    const b = await t.sup.chat({ text: "你好", message_id: "u-1" });
+    expect(b.message_id).toBe(a.message_id);
+    const h = t.sup.history();
+    expect(h.filter((m) => m.role === "supervisor").map((m) => m.message_id)).toEqual([
+      a.message_id,
+    ]);
   });
 });
