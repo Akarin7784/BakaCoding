@@ -156,6 +156,8 @@ export const UI_EVENT_TYPES = [
   "call_completed",
   "escalated",
   "ticket_warning",
+  // UI-05a：步骤条小标记 / 时间线用（modules.md 事件表 `ticket_status_changed`，T-085）
+  "ticket_status_changed",
 ] as const satisfies readonly BakaEvent["type"][];
 export type UiEventType = (typeof UI_EVENT_TYPES)[number];
 export type UiEvent = Extract<BakaEvent, { type: UiEventType }>;
