@@ -1,4 +1,5 @@
 // 把只读数据与后端状态通过 IPC 推给渲染进程。
+import { aboutInfo, type RawAbout } from "./about.js";
 import {
   IPC_CHANNELS,
   type DesktopChatResult,
@@ -511,6 +512,23 @@ export function serveProjectSettings(ipc: IpcMainLike, deps: ProjectSettingsDeps
     ipc.removeHandler(IPC_CHANNELS.diagnosticsExport);
     ipc.removeHandler(IPC_CHANNELS.diagnosticsOpenDataDir);
     ipc.removeHandler(IPC_CHANNELS.settingsGet);
+  };
+}
+
+/**
+ * 设置 › 关于（UI-07a）：`app:about`。main 注入原始值（app.getVersion、构建时 commit、process.versions），
+ * 这里统一走 aboutInfo 白名单过滤；取值抛错时回全 null，不透出错误。
+ */
+export function serveAbout(ipc: IpcMainLike, raw: () => RawAbout): () => void {
+  ipc.handle(IPC_CHANNELS.appAbout, () => {
+    try {
+      return aboutInfo(raw());
+    } catch {
+      return aboutInfo({ version: null, commit: null });
+    }
+  });
+  return () => {
+    ipc.removeHandler(IPC_CHANNELS.appAbout);
   };
 }
 
