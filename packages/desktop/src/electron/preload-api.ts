@@ -10,7 +10,7 @@ import {
   type DesktopImportResult,
   type DesktopOpenDataDirResult,
   type DesktopAbout,
-  DesktopSettings,
+  type DesktopSettings,
   type DesktopHighRiskDecision,
   type DesktopPendingHighRisk,
   type DesktopReloadResult,
