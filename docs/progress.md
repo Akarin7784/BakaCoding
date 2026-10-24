@@ -195,6 +195,7 @@ flowchart BT
 | T-138 | 模块 2：给 T-129（#172）补一条在 Linux 上也能变红的断言：迁移失败时 `db.close` 恰好调用一次、句柄 `open` 为 false。只改测试。合入后 main `9e4cbf0`，测试 124 个文件 / 2299 个 | 2 | 基础层开发 | 已合入 | #184 | `9e4cbf0` |
 | T-139 | 模块 9：#144（T-112）评审跟进：带 `merge_followup` 标记的单结构化字段读不出来时（10 只给单号 + trace），`recoverMergeFollowup` 照样补发一次 `interface_changed`，受影响单按 6 的 diff 文件算全、标记清掉；9 层 1 条 + 组合根 E2E 1 条。只改测试；反向检查：字段读不出就不发、受影响单只按本单声明范围算，各红 2 条。合入后 main `76eb565`，测试 124 个文件 / 2303 个 | 9 | 编排层开发 | 已合入 | #187 | `76eb565` |
 | T-140 | 模块 12：#189（T-113）跟进：`write_failed` 的报错经 `cleanWriteError` 清理（项目路径换相对写法 + `sanitizeSyncErrorMessage` + 余下绝对路径含 Windows 路径换成 `(path)`）；T-128 两个用例各自断言 `config_missing` / `config_invalid`；`checkProjectDir` 另外指定的 models 不合法时不再提前返回，连同 pricing 的问题一起报（Git 仓库先给 T-081 缺文件结果）。合入后 main `0f69b2a`，测试 126 个文件 / 2345 个 | 12 | 界面与诊断开发 | 已合入 | #191 | `0f69b2a` |
+| T-091 | 模块 2：主管 1:1 对话存储（新表 `supervisor_messages`，库升级到 v4）：`appendSupervisorMessage(msg) → { inserted }`（只有写入方，`message_id` 幂等、先写为准，role / kind 不符报 `invalid_message`，content 轻脱敏）、`listSupervisorMessages({ project_id?, before?, limit? })`（写入方和只读连接都有，按 `created_at`、`message_id` 升序，`before` 游标不存在报 `invalid_cursor`，limit 默认 50 / 最大 200）；新增 `StorageError { code }`；modules.md §2 同步 | 2 | 基础层开发 | 待评审 #N | #N | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
