@@ -36,6 +36,7 @@ import {
   type StorageHealth,
 } from "@bakacoding/storage";
 import type { PendingHighRisk, TakeOverReport, UserMessage } from "@bakacoding/supervisor";
+import type { LedgerStore } from "@bakacoding/types";
 import type {
   DesktopBackendError,
   DesktopRepoSource,
@@ -196,6 +197,11 @@ export interface BackendHandle {
    * 不自己算；只读（没有组合根）时回 null。
    */
   budgetState(): Promise<BudgetState | null>;
+  /**
+   * UI-07e（`ledger:summary`）：存储的台账，只开放 totalsByProject，交给 3 的 ledgerSummary 按项目汇总累计花费。
+   * 后端只读、没有存储时返回 null。
+   */
+  ledgerStore(): Pick<LedgerStore, "totalsByProject"> | null;
   stop(): Promise<void>;
 }
 
@@ -782,6 +788,11 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
     },
     listProjects(): ProjectRow[] | null {
       return storage ? storage.listProjects() : null;
+    },
+    ledgerStore(): Pick<LedgerStore, "totalsByProject"> | null {
+      const s = storage;
+      if (!s) return null;
+      return { totalsByProject: (project_id: string) => s.ledger.totalsByProject(project_id) };
     },
     async removeProject(project_id: string): Promise<{ removed: boolean }> {
       const live = app;

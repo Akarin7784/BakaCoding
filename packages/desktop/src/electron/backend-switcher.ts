@@ -489,6 +489,9 @@ export class BackendSwitcher implements BackendHandle {
   budgetState() {
     return this.current.budgetState();
   }
+  ledgerStore() {
+    return this.current.ledgerStore();
+  }
   /** 退出：先清排队，再等进行中的重载 / 切换结束（它们见 stopped 不装新后端），最后拆当前后端 */
   async stop() {
     this.stopped = true;
@@ -534,6 +537,7 @@ export function readonlyBackend(
     exportDiagnostics: unavailable,
     testConnection: async () => ({ ok: false, reason: "unavailable" }),
     budgetState: async () => null,
+    ledgerStore: () => null,
     stop: async () => {},
   };
 }
