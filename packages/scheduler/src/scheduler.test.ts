@@ -4275,3 +4275,46 @@ describe("T-112 merge_followup：重启补做", () => {
     ).rejects.toThrow(/不是 merged/);
   });
 });
+
+describe("T-139 merge_followup 补做：结构化字段读不出来", () => {
+  it("只带单号 + trace（无 write_scope / interfaces）：照样补发一次，受影响单按 diff 文件算全，标记清掉", async () => {
+    const f = followupStore();
+    f.marks.set("T-1", { pr_id: "pr-1", merge_sha: SHA("f") });
+    const h = harness();
+    h.deps.mergeFollowup = f.store;
+    h.diffs.set("pr-1", ["src/a/x.ts", "src/b/y.ts"]);
+    const s = await started(h);
+    // 受影响：写入范围碰到 src/a/x.ts；接口声明在 src/b/y.ts；写入范围碰到 src/b/y.ts
+    await s.enqueue(ticket("T-2", { write_scope: ["src/a/**"], depends_on: ["T-X"] }));
+    await s.enqueue(
+      ticket("T-3", { interfaces: [{ file: "src/b/y.ts", symbol: "y" }], depends_on: ["T-X"] }),
+    );
+    await s.enqueue(ticket("T-4", { write_scope: ["src/b/y.ts"], depends_on: ["T-X"] }));
+    // 不受影响
+    await s.enqueue(ticket("T-5", { write_scope: ["src/z/**"], depends_on: ["T-X"] }));
+    // 结构化字段读不出来：10 只给单号 + trace
+    const bare: SchedulerTicket = {
+      ticket_id: "T-1",
+      requirement_id: "req-1",
+      trace_id: "trace-T1",
+      span_id: "span-T1",
+      parent_span_id: null,
+    };
+    expect(await s.recoverMergeFollowup(bare, { pr_id: "pr-1", merge_sha: SHA("f") })).toBe(
+      "emitted",
+    );
+    const ev = ifaceEvents(h);
+    expect(ev).toHaveLength(1);
+    expect(ev[0]).toMatchObject({ ticket_id: "T-1", trace_id: "trace-T1" });
+    expect(ev[0]!.payload).toMatchObject({
+      pr_id: "pr-1",
+      base_commit: SHA("f"),
+      changed_interfaces: [],
+    });
+    expect(
+      [...(ev[0]!.payload as { affected_ticket_ids: string[] }).affected_ticket_ids].sort(),
+    ).toEqual(["T-2", "T-3", "T-4"]);
+    expect(f.marks.size).toBe(0);
+    await s.stop();
+  });
+});
