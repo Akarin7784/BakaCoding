@@ -1,6 +1,11 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Download, FolderOpen } from "lucide-react";
-import type { BakaDesktopApi, DesktopPendingHighRisk, DesktopSyncState } from "../shared/api";
+import type {
+  BakaDesktopApi,
+  DesktopPendingHighRisk,
+  DesktopSupervisorMessage,
+  DesktopSyncState,
+} from "../shared/api";
 import { ConversationList, type Selection } from "./components/Sidebar";
 import { SupervisorChat } from "./components/SupervisorChat";
 import { ProjectGroup } from "./components/ProjectGroup";
@@ -72,7 +77,10 @@ export function App(props: AppProps) {
   const unattributed = props.unattributed ?? live?.unattributed ?? [];
   const unattributedWarnings = props.unattributedWarnings ?? live?.unattributedWarnings ?? [];
   // 主管对话的历史还没有落库来源，接入真实数据时先从空对话开始。
-  const supervisorMessages = props.supervisorMessages ?? (live ? [] : mock.supervisorMessages);
+  const supervisorMessages = useMemo(
+    () => toStoredMessages(props.supervisorMessages ?? (live ? [] : mock.supervisorMessages)),
+    [props.supervisorMessages, live],
+  );
   const highRisk = usePendingHighRisk(api, props.pendingHighRisk ?? []);
   const syncState = useSyncState(api, props.syncState ?? null);
   const backend = useBackendStatus(api);
@@ -383,4 +391,18 @@ export function App(props: AppProps) {
       />
     </div>
   );
+}
+
+/** 假数据 / 测试注入的消息转成存储形状（UI-04a：对话记录统一用 2 / 10 的 SupervisorMessage）。 */
+function toStoredMessages(list: readonly SupervisorMessage[]): DesktopSupervisorMessage[] {
+  return list.map((m) => ({
+    message_id: m.id,
+    project_id: null,
+    role: m.from,
+    kind: m.from === "supervisor" ? "answer" : null,
+    content: m.content,
+    requirement_id: null,
+    ticket_ids: [],
+    created_at: Date.parse(m.ts) || 0,
+  }));
 }

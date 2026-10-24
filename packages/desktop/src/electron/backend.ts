@@ -41,12 +41,13 @@ import type {
   DesktopBackendError,
   DesktopRepoSource,
   DesktopChatResult,
+  DesktopHistoryResult,
   DesktopDecideHighRiskResult,
   DesktopExportOptions,
   DesktopSyncState,
 } from "../shared/api.js";
 import { DB_PATH_ENV, DEFAULT_DB_RELATIVE, resolveDbPath } from "./config.js";
-import { createSerialQueue, runSupervisorChat } from "./supervisor-chat.js";
+import { createSerialQueue, runSupervisorChat, runSupervisorHistory } from "./supervisor-chat.js";
 import { backendErrorDetail } from "./backend-error.js";
 import { sanitizeReloadReason } from "./backend-switcher.js";
 import { errorDetail, toDesktopSyncState, unavailableSyncState } from "./sync-state.js";
@@ -187,6 +188,8 @@ export interface BackendHandle {
   exportDiagnostics(target: string, options?: DesktopExportOptions, now?: Date): Promise<string>;
   /** 主管 1:1 对话（T-071）：转给 10 的 chat()；只读 / 抛错为 ok:false，reason 已脱敏截断 */
   supervisorChat(message: UserMessage): Promise<DesktopChatResult>;
+  /** 主管对话历史（UI-04a）：转给 10 的 history()；只读回空列表，抛错为 ok:false（已脱敏） */
+  supervisorHistory(query: unknown): Promise<DesktopHistoryResult>;
   /**
    * 测试连接（UI-03b，`provider:test`）：live 时转给组合根同一个网关的 testConnection（1 的语义不变），
    * 只读（没有网关）时回 `unavailable`，不发请求。
@@ -841,6 +844,10 @@ export async function startBackend(opts: BackendOptions = {}): Promise<BackendHa
         const sup = app?.supervisor;
         return runSupervisorChat(sup ? (m) => sup.chat(m) : undefined, message, env, reason);
       });
+    },
+    async supervisorHistory(query: unknown): Promise<DesktopHistoryResult> {
+      const sup = app?.supervisor;
+      return runSupervisorHistory(sup ? (o) => sup.history(o) : undefined, query, env);
     },
     async testConnection(target): Promise<BackendTestResult> {
       const h = depsHandle;

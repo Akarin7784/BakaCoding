@@ -1,6 +1,6 @@
 # BakaCoding 总开发进度
 
-> 上次更新时 main：`35929fd` · main 上测试：146 个测试文件 / 2551 passed + 2 skipped 个测试（Linux 全量；Windows 基线见 `docs/test-baseline.md`） · 更新日期：2026-10-24（UTC+8）
+> 上次更新时 main：`2f00580` · main 上测试：148 个测试文件 / 2564 passed + 2 skipped 个测试（Linux 全量；Windows 基线见 `docs/test-baseline.md`） · 更新日期：2026-10-24（UTC+8）
 >
 > 需求单来源：项目助理的第一批需求单草稿（T-001～T-021）；PR 编号和合入提交来自 GitHub PR 记录和 `main` 的提交历史。
 
@@ -202,6 +202,7 @@ flowchart BT
 | UI-07c | 模块 12 设置 › 预算标签可编辑（`docs/ui-design.md` §4.6）：每日预算（必填、不给默认值）、每单上限比例 (0,1]、闲时优先，显示今天已花费；新 IPC `budget:status`（今天已花费原样取 3 的 `budgetState()`，报错不带路径），保存复用 `settings:save`（校验 → 只写 config/models.json 的 budget 段 → 07b 的重载规则；--config / BAKACODING_CONFIG 只读）；低于今天已花费只警告不拦；附带模块 11 键名脱敏测试；modules.md §12 同步。合入后 main `ce02150`，测试 140 个文件 / 2479 passed + 2 skipped 个 | 12 | 界面与诊断开发 | 已合入 | #213 | `ce02150` |
 | UI-07d | 模块 12 设置 › 项目标签（`docs/ui-design.md` §4.6）：已导入项目列表（名称 + 仓库路径，已移除的不显示）、二次确认后移除（12 发 `project_removed`，只带 project_id）、打开所在文件夹（主进程按 id 取路径，检查绝对路径和存在后 `shell.openPath`，路径为空时按钮禁用）；新 IPC `project:list` / `project:remove` / `project:open-folder`，失败固定文案不带路径；`UI_EVENT_TYPES` 不加 `project_removed`（列表靠 `project:list` 刷新）；07b / 07c 只读提示统一为「配置来自外部文件，此页只读」；测试覆盖确认框、事件和诊断包不含路径、空路径禁用、只读提示；modules.md §12 同步。合入后 main `71f0026`，测试 143 个文件 / 2493 passed + 2 skipped 个 | 12 | 界面与诊断开发 | 已合入 | #215 | `71f0026` |
 | UI-07e | 模块 12 设置 › 预算「本项目已花费（来自台账）」（`docs/ui-design.md` §4.6）：放在「今天已花费」下面，列出每个已导入项目全部时间的累计花费（已移除的不显示），复投大于 0 时注明；新 IPC `ledger:summary`（对 `listProjects()` 每个项目调 3 的 `ledgerSummary`，只回 id / 名称 / 累计，不带路径和当日花费；只读、抛错回固定文案）；今天已花费仍只取 `budget:status`；测试覆盖确实调用 `ledgerSummary`、返回无路径、空 / 只读 / 抛错、界面四种状态；modules.md §12 同步。合入后 main `35929fd`，测试 146 个文件 / 2551 passed + 2 skipped 个 | 12 | 界面与诊断开发 | 已合入 | #221 | `35929fd` |
+| UI-04a | 模块 12 主管对话接上历史：新 IPC `supervisor:history`（转 10 的 `history()`，`{before?, limit?}`、默认 50；只读回空列表；出错只带错误名 / 错误码并过 `sanitizeChatReason`，不带路径）；`chatStore` 改为存储消息形状，`hydrate` / `loadOlder`（往上滚每次 50 条），按 `message_id` 去重，发送生成 `message_id`、重试沿用；历史一条流不按项目筛选；modules.md §12 同步 | 12 | 界面与诊断开发。合入后 main `2f00580`，测试 148 个文件 / 2564 passed + 2 skipped 个 | 已合入 | #223 | `2f00580` |
 | T-090 | 模块 2 + 3：账本汇总。`LedgerStore.totalsByProject(project_id)`（按 `requirements` 关联项目、全部时间累计、四个角色都列，未登记需求不计入任何项目，未知项目全 0，写入方和只读连接都有）；库升级到 v5，只加 `ledger(requirement_id)` 索引；模块 3 新增 `ledgerSummary(ledger, { project_id }) → { project }`（不带当日花费，当日只看 `budget:status`）；`project_id` 不合法报 `invalid_project_id`；modules.md §2、§3 同步。合入后 main `d76072f`，测试 131 个文件 / 2380 个 | 2、3 | 基础层开发 | 已合入 | #200 | `d76072f` |
 | T-092 | 模块 10：主管 1:1 历史。可选 `SupervisorDeps.chatLog`（2 的 append / list，组合根注入 storage）；`chat` 先存用户消息再存回复，模型失败只留用户消息，重试沿用调用方 `message_id` 幂等；新增 `history({ before?, limit? })` 升序；10 生成单调 message_id（时钟回拨不倒退）；`ChatReply.kind` 与 `ChatReplyKind` 编译期互相可赋值断言；补 takeOver 失败 + awaiting_adopt 合并文案用例；modules.md §10 同步。全仓 128 文件 / 2366 通过、2 跳过。合入后 main `721a16c`，测试 132 个文件 / 2387 个 | 10 | 编排层开发 | 已合入 | #199 | `721a16c` |
 | T-142 | 模块 2 + types：项目记录删除与 `repo_path`。新增项目级事件 `project_removed { project_id }` 和写入方专用 `removeProject(project_id) → { removed }`（只删记录，不动仓库，不删历史事件；未知项目 `{ removed: false }`；删后新的 `project_created` 可重新登记）；`listProjects` 不返回已删除项目并带 `repo_path`；`repo_path` 不进事件，由写入方专用 `setProjectRepoPath(project_id, path。合入后 main `4155018`，测试 136 个文件 / 2432 passed + 2 skipped 个 | null) → { updated }` 写入（未知或已删项目 `{ updated: false }`，`path` 不合法报 `invalid_repo_path`）；库升级到 v6（`projects.repo_path` 可空）；`project_id` 不合法报 `invalid_project_id`；modules.md §2 与事件清单同步。须在 T-143 之后合入 | 2、types | 已合入 | #204 | `4155018` |
@@ -278,9 +279,9 @@ flowchart BT
 - 模块 12（T-073）：开发用 better-sqlite3 12.11.1，打包用 12.12.0 electron-v148 预编译（lib/ 逐字节相同，仅 SQLite 版本不同）。
 - 已解决（T-127）：右面板「动态」标签已接 `group_message`（按单过滤、滚动、折叠、未读小点、状态行）；T-085 `ticket_status_changed` 仍未进桌面端 `UI_EVENT_TYPES` 白名单，状态行暂用快照 `prs`，等 UI-05 步骤条统一接。
 - 模块 11 / 12（UI-09）：诊断面板已能按单张单 / 需求 / 时间段导出并打开数据目录（T-130 #173，时间段严格 ISO 校验 T-137 #182）；`eval_task` 人工补填、SWE-bench JSONL 导出仍未接（11 的接口已支持，T-126 登记）。
-- 模块 12（UI-07）：设置弹层目前只有只读设置 + 密钥 + 模型向导；设计稿 7 个标签里的通用 / 项目 / 模型 / 预算 / 诊断 / 关于和可编辑写回（`writeConfig` / `writePricing` + reload 排队）未做（T-126 登记）。
+- 已解决（UI-07）：设置弹层 7 个标签已全部完成——标签框架 UI-07a（#196）、模型可编辑 UI-07b（#207）、预算可编辑 UI-07c（#213）、项目 UI-07d（#215）、本项目已花费 UI-07e（#221），写回走 settings:save + reload 排队。
 
-- 模块 10（T-117 后）：未注入 `adopt` 的 `awaiting_adopt` 场景，失败单的下游仍会交 9 卡 `waiting`（同类缺口的未覆盖分支）；成环时可能子先父、环内失败的下游已先交付，交 9 处理。
+- 已解决（T-141 #193）：未注入 `adopt` 的 `awaiting_adopt` 场景，失败单的下游不再交 9 卡 `waiting`。仍存在：成环时可能子先父、环内失败的下游已先交付，交 9 处理。
 
 ### 不对应需求单的 PR
 

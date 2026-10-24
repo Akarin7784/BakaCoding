@@ -5,6 +5,7 @@ import { projectListHandlers, type ProjectListDeps } from "./project-list-ipc.js
 import {
   IPC_CHANNELS,
   type DesktopChatResult,
+  type DesktopHistoryResult,
   type DesktopDecideHighRiskResult,
   type DesktopExportOptions,
   type DesktopExportResult,
@@ -271,6 +272,20 @@ export function serveSupervisorChat(
   });
   return () => {
     ipc.removeHandler(IPC_CHANNELS.supervisorChat);
+  };
+}
+
+/** 主管对话历史 IPC（UI-04a）：invoke `supervisor:history` → backend.supervisorHistory → 10 的 history()。 */
+export function serveSupervisorHistory(
+  ipc: IpcMainLike,
+  backend: Pick<BackendHandle, "supervisorHistory">,
+): () => void {
+  ipc.handle(IPC_CHANNELS.supervisorHistory, async (...args: unknown[]) => {
+    const result: DesktopHistoryResult = await backend.supervisorHistory(args[1]);
+    return result;
+  });
+  return () => {
+    ipc.removeHandler(IPC_CHANNELS.supervisorHistory);
   };
 }
 

@@ -8,6 +8,8 @@ import { SupervisorChat } from "./SupervisorChat";
 
 afterEach(cleanup);
 
+const MID = expect.stringMatching(/^u-/);
+
 const replies: ChatReply[] = [
   { kind: "answer", text: "这是回答" },
   { kind: "ask_project", text: "是哪个项目？" },
@@ -50,7 +52,11 @@ describe("SupervisorChat 接 supervisor:chat（T-071）", () => {
     expect(el.dataset.kind).toBe(reply.kind);
     expect(el.textContent).toContain(LABEL[reply.kind]);
     expect(el.textContent).toContain(reply.text);
-    expect(supervisorChat).toHaveBeenCalledWith({ text: "做个登录页", project_id: "P-1" });
+    expect(supervisorChat).toHaveBeenCalledWith({
+      text: "做个登录页",
+      project_id: "P-1",
+      message_id: MID,
+    });
     if (reply.kind === "dispatched") {
       expect(screen.getByTestId("chat-tickets").textContent).toBe("单号：T-1、T-2");
     }
@@ -79,7 +85,7 @@ describe("SupervisorChat 接 supervisor:chat（T-071）", () => {
     expect((screen.getByLabelText("发送") as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(screen.getByLabelText("发送"));
     expect(supervisorChat).toHaveBeenCalledTimes(2);
-    expect(supervisorChat.mock.calls[1]![0]).toEqual({ text: "第二条" });
+    expect(supervisorChat.mock.calls[1]![0]).toEqual({ text: "第二条", message_id: MID });
   });
 
   it("ok:false：显示原因（role=alert）", async () => {
@@ -131,6 +137,65 @@ describe("SupervisorChat 接 supervisor:chat（T-071）", () => {
     expect((await screen.findByTestId("chat-reply")).dataset.kind).toBe("answer");
     fireEvent.click(screen.getByLabelText("发送"));
     expect(supervisorChat).toHaveBeenCalledTimes(2);
-    expect(supervisorChat.mock.calls[1]).toEqual([{ text: "第二条", project_id: "P-9" }]);
+    expect(supervisorChat.mock.calls[1]).toEqual([
+      { text: "第二条", project_id: "P-9", message_id: MID },
+    ]);
+  });
+});
+
+describe("SupervisorChat 历史与重试（UI-04a）", () => {
+  it("挂载时取首屏 50 条历史并显示；主管消息按存储的 kind 渲染", async () => {
+    const getSupervisorHistory = vi.fn(async () => ({
+      ok: true as const,
+      messages: [
+        {
+          message_id: "m1",
+          project_id: "P-1",
+          role: "user" as const,
+          kind: null,
+          content: "历史提问",
+          requirement_id: null,
+          ticket_ids: [],
+          created_at: 1,
+        },
+        {
+          message_id: "m1-r",
+          project_id: "P-1",
+          role: "supervisor" as const,
+          kind: "dispatched" as const,
+          content: "历史派单",
+          requirement_id: "r",
+          ticket_ids: ["T-7"],
+          created_at: 2,
+        },
+      ],
+    }));
+    const supervisorChat = vi.fn(async (): Promise<DesktopChatResult> => ({
+      ok: false,
+      reason: "x",
+    }));
+    render(
+      <SupervisorChat store={new ChatStore()} api={{ supervisorChat, getSupervisorHistory }} />,
+    );
+    expect(await screen.findByText("历史提问")).toBeTruthy();
+    expect(getSupervisorHistory).toHaveBeenCalledWith({ limit: 50 });
+    expect(screen.getByTestId("chat-reply").dataset.kind).toBe("dispatched");
+    expect(screen.getByTestId("chat-tickets").textContent).toBe("单号：T-7");
+  });
+
+  it("重试沿用同一个 message_id，用户消息只留一条", async () => {
+    const supervisorChat = vi
+      .fn<(m: UserMessage) => Promise<DesktopChatResult>>()
+      .mockResolvedValueOnce({ ok: false, reason: "网络错误" })
+      .mockResolvedValueOnce({ ok: true, reply: { kind: "answer", text: "好了" } });
+    render(<SupervisorChat store={new ChatStore()} api={{ supervisorChat }} />);
+    type("再试试");
+    fireEvent.click(await screen.findByTestId("chat-retry"));
+    await screen.findByTestId("chat-reply");
+    const [a, b] = supervisorChat.mock.calls.map((c) => c[0].message_id);
+    expect(a).toMatch(/^u-/);
+    expect(b).toBe(a);
+    expect(screen.getAllByText("再试试")).toHaveLength(1);
+    expect(screen.queryByTestId("chat-error")).toBeNull();
   });
 });
