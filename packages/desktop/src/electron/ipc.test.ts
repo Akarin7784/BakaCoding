@@ -19,6 +19,7 @@ import {
   serveRepoFix,
   serveSecretProvider,
   serveSupervisorChat,
+  serveSupervisorHistory,
   serveSyncState,
   serveAbout,
   serveModelSettings,
@@ -82,6 +83,7 @@ function fakeBackend(over: Partial<BackendHandle> = {}): BackendHandle {
       ok: true as const,
       reply: { text: "好的", kind: "answer" as const },
     })),
+    supervisorHistory: vi.fn(async () => ({ ok: true as const, messages: [] })),
     // T-072：serveProjectSettings 用到的成员（BackendSwitcher 的 switchTo 也放进来）
     repoRoot: vi.fn(() => "/repo"),
     prMode: vi.fn(() => "local" as const),
@@ -145,6 +147,8 @@ const SERVE: Record<string, (ipc: IpcMainLike, backend: BackendHandle) => () => 
   serveHighRisk: (ipc, backend) => serveHighRisk(ipc, backend, () => null),
   serveSyncState: (ipc, backend) => serveSyncState(ipc, backend, () => null, 1000),
   serveSupervisorChat: (ipc, backend) => serveSupervisorChat(ipc, backend),
+  // UI-04a：主管对话历史
+  serveSupervisorHistory: (ipc, backend) => serveSupervisorHistory(ipc, backend),
   // UI-07a：设置 › 关于
   serveAbout: (ipc) => serveAbout(ipc, () => ({ version: "1.0.0", commit: "cbd3b41" })),
   // UI-07b：设置 › 模型；仓库不存在，读 / 写都在形状检查后失败，链路测试只看往返
@@ -335,6 +339,12 @@ describe("handler 参数：第一个是 event，渲染进程参数从第二个�
     await api.getSyncState();
     await api.supervisorChat({ text: "hi", project_id: "p-2" });
     expect(backend.supervisorChat).toHaveBeenCalledWith({ text: "hi", project_id: "p-2" });
+    // UI-04a：历史参数原样到后端，event 不会被当成参数
+    await expect(api.getSupervisorHistory({ before: "m-1", limit: 50 })).resolves.toEqual({
+      ok: true,
+      messages: [],
+    });
+    expect(backend.supervisorHistory).toHaveBeenCalledWith({ before: "m-1", limit: 50 });
     // T-072：三个无参数通道（主进程自己弹对话框；这里对话框取消）
     await expect(api.importProject()).resolves.toEqual({ ok: false, canceled: true });
     // T-081：没有待创建配置的目录时拒绝
@@ -562,6 +572,7 @@ describe("preload 暴露的只读 API", () => {
       "getPendingHighRisk",
       "getSettings",
       "getSnapshot",
+      "getSupervisorHistory",
       "getSyncState",
       "importProject",
       "initConfig",

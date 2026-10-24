@@ -72,9 +72,7 @@ export class ChatStore {
    * 往上滚动时再取一页：before 为当前最早一条的 message_id。取回的消息按 message_id 去重后放到最前；
    * 不满一页说明到头了。取失败只结束加载，不清记录。
    */
-  async loadOlder(
-    fetchPage: (before: string) => Promise<DesktopHistoryResult>,
-  ): Promise<void> {
+  async loadOlder(fetchPage: (before: string) => Promise<DesktopHistoryResult>): Promise<void> {
     const before = this.oldest;
     if (before === undefined || !this.snap.hasOlder || this.snap.loadingOlder) return;
     this.set({ ...this.snap, loadingOlder: true });

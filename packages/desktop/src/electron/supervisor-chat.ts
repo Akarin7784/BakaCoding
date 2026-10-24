@@ -6,7 +6,7 @@ import type {
   DesktopHistoryResult,
   DesktopSupervisorMessage,
 } from "../shared/api.js";
-import { errorDetail, sanitizeSyncErrorMessage } from "./sync-state.js";
+import { errorDetail, sanitizeErrorName, sanitizeSyncErrorMessage } from "./sync-state.js";
 
 /** ok:false 时 reason 的上限（与同步错误同一套脱敏：先换密钥值，再 light，最后截断）。 */
 export const CHAT_REASON_MAX = 2000;
@@ -111,6 +111,19 @@ export function runSupervisorHistory(
     }));
     return { ok: true, messages };
   } catch (e) {
-    return { ok: false, reason: sanitizeChatReason(`读取对话历史失败：${errorDetail(e)}`, env) };
+    return {
+      ok: false,
+      reason: sanitizeChatReason(`读取对话历史失败：${historyErrorText(e)}`, env),
+    };
   }
+}
+
+/**
+ * 历史出错只带错误名和 2 的错误码（如 `StorageError(invalid_cursor)`），不带 message：
+ * 存储 / SQLite 的 message 可能带数据库绝对路径，界面上不能出现路径（UI-04a）。
+ */
+function historyErrorText(e: unknown): string {
+  const name = sanitizeErrorName(e instanceof Error ? e.name : "Error");
+  const code = (e as { code?: unknown } | null)?.code;
+  return typeof code === "string" && /^[A-Za-z0-9_]{1,64}$/.test(code) ? `${name}(${code})` : name;
 }

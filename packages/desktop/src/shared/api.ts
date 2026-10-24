@@ -406,8 +406,7 @@ export interface DesktopHistoryQuery {
 }
 /** `supervisor:history` 的结果（UI-04a）：按时间正序；只读为 ok:true 空列表；reason 已脱敏截断。 */
 export type DesktopHistoryResult =
-  | { ok: true; messages: DesktopSupervisorMessage[] }
-  | { ok: false; reason: string };
+  { ok: true; messages: DesktopSupervisorMessage[] } | { ok: false; reason: string };
 /** `project:import` 结果（T-072）：project 原样取自 3 的 importProject；note 为补充说明（如在用 BAKACODING_CONFIG）。 */
 export type DesktopImportResult =
   | { ok: true; project: Project; note?: string }
