@@ -544,10 +544,12 @@ export function serveProjectList(ipc: IpcMainLike, deps: ProjectListDeps): () =>
   ipc.handle(IPC_CHANNELS.projectList, () => h.list());
   ipc.handle(IPC_CHANNELS.projectRemove, (...args: unknown[]) => h.remove(args[1]));
   ipc.handle(IPC_CHANNELS.projectOpenFolder, (...args: unknown[]) => h.openFolder(args[1]));
+  ipc.handle(IPC_CHANNELS.ledgerSummary, () => h.summary());
   return () => {
     ipc.removeHandler(IPC_CHANNELS.projectList);
     ipc.removeHandler(IPC_CHANNELS.projectRemove);
     ipc.removeHandler(IPC_CHANNELS.projectOpenFolder);
+    ipc.removeHandler(IPC_CHANNELS.ledgerSummary);
   };
 }
 
