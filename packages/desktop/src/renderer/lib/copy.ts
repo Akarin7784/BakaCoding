@@ -151,3 +151,31 @@ export const CHAT_COPY = {
     "记一条决策：所有接口统一返回 snake_case 字段",
   ],
 } as const;
+
+/** 需求页（UI-05c，docs/ui-design.md §4.4）。 */
+export const REQUIREMENT_PAGE_COPY = {
+  label: "需求页",
+  original: "需求原文",
+  expand: "展开全文",
+  collapse: "收起",
+  splitAt: (t: string) => `拆单时间 ${t}`,
+  summary: "拆单推理摘要",
+  tickets: "需求单进度",
+  noTickets: "这个需求还没有需求单",
+  timeline: "时间线",
+  noTimeline: "还没有动态",
+  /** 后端只读 / 详情读不到时的固定提示（不显示主进程原因里的任何输入） */
+  detailUnavailable: "需求原文暂时读不到（后端只读或未接线），下面的进度来自快照。",
+  loading: "正在读取需求…",
+  notFound: "找不到这个需求",
+  back: "返回",
+  supervisor: "主管",
+  subAgent: (ticket_id: string | null) => (ticket_id ? `副 Agent ${ticket_id}` : "副 Agent"),
+  flashRow: (effort: string, tokens: string, secs: string, n: number) =>
+    `Flash 调用${n > 1 ? ` ×${n}` : ""} · ${effort} · ${tokens} tokens · ${secs}s`,
+  modelRow: (effort: string, tokens: string, secs: string, n: number) =>
+    `模型调用${n > 1 ? ` ×${n}` : ""} · ${effort} · ${tokens} tokens · ${secs}s`,
+  statusChange: (from: string, to: string) => `${from} → ${to}`,
+  escalated: "上报",
+  warning: "警告",
+} as const;

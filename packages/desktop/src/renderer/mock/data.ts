@@ -1,4 +1,5 @@
 // 假数据：仅用于 T-013 壳子展示，接入模块 2/3/9/10 后替换。
+import type { TicketView } from "../../shared/api";
 import type { FlashCallSummary, ProjectView, SupervisorMessage } from "./types";
 
 // 事件公共字段，形状同 @bakacoding/types 的 EventCommon。
@@ -125,7 +126,7 @@ export const projects: ProjectView[] = [
           project_id: "p-todo",
           sender: "sub_agent",
           kind: "resubmit",
-          content: "评审未过（空值处理），第 1 次复投。",
+          content: "评审未过（空值处理），第 1 次重写。",
           flash_calls: ["call-2"],
         },
       },
@@ -181,5 +182,27 @@ export const projects: ProjectView[] = [
       main_merge: "user",
     },
     pool: { concurrency: { active: 0, limit: 4 }, rate_limited: true, backpressure: true },
+  },
+];
+
+/** UI-05c：需求页的假单子（快照 tickets 的样子）。 */
+export const tickets: TicketView[] = [
+  {
+    ticket_id: "T-1",
+    project_id: "p-todo",
+    requirement_id: "req-1",
+    created_at: "2026-10-24T01:00:00Z",
+    title: "给 Todo 加 due_date 字段",
+    status: "merged",
+    resubmit_count: 0,
+  },
+  {
+    ticket_id: "T-2",
+    project_id: "p-todo",
+    requirement_id: "req-2",
+    created_at: "2026-10-24T01:05:00Z",
+    title: "列表按 due_date 排序",
+    status: "re_reviewing",
+    resubmit_count: 1,
   },
 ];

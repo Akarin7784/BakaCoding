@@ -5,6 +5,8 @@ import type {
   DesktopPendingHighRisk,
   DesktopSupervisorMessage,
   DesktopSyncState,
+  TicketView,
+  UiEvent,
 } from "../shared/api";
 import { ConversationList, type Selection } from "./components/Sidebar";
 import { SupervisorChat } from "./components/SupervisorChat";
@@ -12,6 +14,9 @@ import { ProjectGroup } from "./components/ProjectGroup";
 import { RightPanel } from "./components/RightPanel";
 import { UnattributedPanel } from "./components/Escalations";
 import { HighRiskPanel } from "./components/HighRiskPanel";
+import { RequirementPage } from "./components/RequirementPage";
+import { useRequirementRoute } from "./lib/requirementRoute";
+import { REQUIREMENT_PAGE_COPY } from "./lib/copy";
 import { useDesktopData } from "./data/useDesktopData";
 import { usePendingHighRisk } from "./data/usePendingHighRisk";
 import { useSyncState } from "./data/useSyncState";
@@ -65,6 +70,9 @@ export interface AppProps {
   api?: BakaDesktopApi | null;
   /** 导入成功后重新加载界面（T-072）；测试注入 */
   onReload?: () => void;
+  /** 测试注入的快照单子 / 事件（UI-05c 需求页）；有 api 时以主进程为准。 */
+  tickets?: TicketView[];
+  events?: UiEvent[];
   /** 测试 / 截图注入「正在退出」（T-106）；有 api 时以主进程的 app:quitting 为准。 */
   quitting?: boolean;
 }
@@ -76,6 +84,12 @@ export function App(props: AppProps) {
   const flashCalls = props.flashCalls ?? live?.flashCalls ?? mock.flashCalls;
   const unattributed = props.unattributed ?? live?.unattributed ?? [];
   const unattributedWarnings = props.unattributedWarnings ?? live?.unattributedWarnings ?? [];
+  // UI-05c：需求页的数据——当前状态只看快照 tickets，事件只给标记 / 时间线
+  const tickets = props.tickets ?? live?.tickets ?? mock.tickets;
+  const events = useMemo<UiEvent[]>(
+    () => props.events ?? live?.events ?? mock.projects.flatMap((p) => p.messages as UiEvent[]),
+    [props.events, live?.events],
+  );
   // 主管对话的历史还没有落库来源，接入真实数据时先从空对话开始。
   const supervisorMessages = useMemo(
     () => toStoredMessages(props.supervisorMessages ?? (live ? [] : mock.supervisorMessages)),
@@ -105,8 +119,11 @@ export function App(props: AppProps) {
     projects[0]?.project.payload.project_id,
   );
 
+  /** UI-05c：需求页走路由 #requirement=<id>（左栏的需求列表留给 05e，「查看需求」按钮留给 05f） */
+  const [requirementId, openRequirement] = useRequirementRoute();
   const select = (s: Selection) => {
     setPrepOpen(false);
+    openRequirement(null);
     setSelection(s);
     if (s.kind === "project") setLastProjectId(s.projectId);
   };
@@ -157,8 +174,14 @@ export function App(props: AppProps) {
   const canPrepare = !!api?.checkRepo;
   // 来源是当前工作目录（评审 B1）时不显示准备页（即使之前开着）
   const showPrep = prepOpen && canPrepare && !!backend.status && repoSourceWritable(backend.status);
+  const showRequirement = !showPrep && requirementId !== null;
   const title = showPrep ? (
     <span className="truncate">{PREP_COPY.title}</span>
+  ) : showRequirement ? (
+    <>
+      <span className="truncate">{REQUIREMENT_PAGE_COPY.label}</span>
+      {readonlyTag}
+    </>
   ) : selection.kind === "unattributed" ? (
     <>
       <span className="truncate">未归属</span>
@@ -176,33 +199,34 @@ export function App(props: AppProps) {
     </>
   );
   // 主管页的导入 / 导出放在标题栏（都是次按钮；每屏最多一个主按钮，§5.3）
-  const titleActions = showPrep ? null : selection.kind === "supervisor" || !current ? (
-    <>
-      {api && (
+  const titleActions =
+    showPrep || showRequirement ? null : selection.kind === "supervisor" || !current ? (
+      <>
+        {api && (
+          <Button
+            variant="secondary"
+            size="sm"
+            aria-label="导入项目"
+            disabled={actions.busy !== null}
+            onClick={() => void actions.importProject()}
+          >
+            <FolderOpen strokeWidth={1.5} />
+            {actions.busy === "import" ? "导入中…" : "导入项目"}
+          </Button>
+        )}
         <Button
           variant="secondary"
           size="sm"
-          aria-label="导入项目"
-          disabled={actions.busy !== null}
-          onClick={() => void actions.importProject()}
+          aria-label="导出诊断包"
+          disabled={actions.busy !== null || backendReadonly}
+          title={backendReadonly ? READONLY_COPY.exportDisabled : undefined}
+          onClick={() => void actions.exportDiagnostics()}
         >
-          <FolderOpen strokeWidth={1.5} />
-          {actions.busy === "import" ? "导入中…" : "导入项目"}
+          <Download strokeWidth={1.5} />
+          {actions.busy === "export" ? "导出中…" : "导出"}
         </Button>
-      )}
-      <Button
-        variant="secondary"
-        size="sm"
-        aria-label="导出诊断包"
-        disabled={actions.busy !== null || backendReadonly}
-        title={backendReadonly ? READONLY_COPY.exportDisabled : undefined}
-        onClick={() => void actions.exportDiagnostics()}
-      >
-        <Download strokeWidth={1.5} />
-        {actions.busy === "export" ? "导出中…" : "导出"}
-      </Button>
-    </>
-  ) : null;
+      </>
+    ) : null;
 
   const panelDocked = layout.rightPanelOpen && !layout.drawer;
 
@@ -306,6 +330,13 @@ export function App(props: AppProps) {
             route={prepRoute}
             onBack={() => setPrepOpen(false)}
             onFixed={() => backend.refresh()}
+          />
+        ) : showRequirement ? (
+          <RequirementPage
+            requirementId={requirementId}
+            tickets={tickets}
+            events={events}
+            api={api}
           />
         ) : selection.kind === "unattributed" ? (
           <UnattributedPanel
