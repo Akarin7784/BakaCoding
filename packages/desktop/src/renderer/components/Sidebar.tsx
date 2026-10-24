@@ -1,11 +1,13 @@
 // UI-02 左栏（docs/ui-design.md §2）：260px，可收起到 56px（只剩图标）；窗口窄于 1024 自动收起。
 // 顶部是拖拽区 + 收起按钮；[新需求]、主管、项目列表；底部设置 + 全局状态点（UI-08，§4.8）。
-// 原「未归属」入口并进状态卡（UI-08）。项目展开显示需求列表留给 UI-05。
+// 原「未归属」入口并进状态卡（UI-08）。项目展开显示需求列表留给 UI-05e。
+// UI-05d：需要你处理（高风险待裁决 / 有单上报）的项目行带红点；需求列表上线后（05e）同一套集合标到需求行。
 import type { ReactNode } from "react";
 import { FolderGit2, PanelLeft, Plus, Settings } from "lucide-react";
 import { cn } from "../lib/utils";
 import { LAYOUT } from "../lib/layout";
 import { SHORTCUT_LABEL } from "../lib/shortcuts";
+import { HIGH_RISK_CARD_COPY } from "../lib/copy";
 import { AgentIcon } from "./AgentIcon";
 import { Separator } from "./ui/separator";
 import type { ProjectView } from "../mock/types";
@@ -25,6 +27,8 @@ export interface SidebarProps {
   insetLeft?: number;
   /** 底部齿轮旁的全局状态点（UI-08） */
   status?: ReactNode;
+  /** UI-05d：需要你处理的项目 id（项目行红点） */
+  attention?: ReadonlySet<string>;
 }
 
 export function ConversationList({
@@ -37,6 +41,7 @@ export function ConversationList({
   onOpenSettings,
   insetLeft = 0,
   status,
+  attention,
 }: SidebarProps) {
   const item = cn(
     "app-no-drag flex h-8 w-full items-center gap-2 rounded-md text-left text-sm transition-colors hover:bg-hover",
@@ -104,6 +109,7 @@ export function ConversationList({
           const id = p.project.payload.project_id;
           const on = selection.kind === "project" && selection.projectId === id;
           const name = p.project.payload.name;
+          const dot = attention?.has(id) ?? false;
           return (
             <button
               type="button"
@@ -113,12 +119,29 @@ export function ConversationList({
               title={collapsed ? name : undefined}
               onClick={() => onSelect({ kind: "project", projectId: id })}
             >
-              <FolderGit2 size={16} strokeWidth={1.5} aria-hidden />
+              <span className="relative inline-flex">
+                <FolderGit2 size={16} strokeWidth={1.5} aria-hidden />
+                {dot && collapsed && (
+                  <span
+                    data-testid="attention-dot"
+                    aria-hidden
+                    className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-danger"
+                  />
+                )}
+              </span>
               {collapsed ? (
                 <span className="sr-only">{name}</span>
               ) : (
-                <span className="truncate">{name}</span>
+                <span className="flex-1 truncate">{name}</span>
               )}
+              {dot && !collapsed && (
+                <span
+                  data-testid="attention-dot"
+                  aria-hidden
+                  className="size-2 shrink-0 rounded-full bg-danger"
+                />
+              )}
+              {dot && <span className="sr-only">（{HIGH_RISK_CARD_COPY.attentionDot}）</span>}
             </button>
           );
         })}

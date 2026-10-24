@@ -179,3 +179,21 @@ export const REQUIREMENT_PAGE_COPY = {
   escalated: "上报",
   warning: "警告",
 } as const;
+
+/** UI-05d：需求页里的高风险待办卡片、左栏红点。 */
+export const HIGH_RISK_CARD_COPY = {
+  label: "待你裁决",
+  title: (ticket_id: string) => `高风险 PR 待裁决 · ${ticket_id}`,
+  reasons: "理由：",
+  files: "命中文件：",
+  more: (n: number) => ` 等另 ${n} 个`,
+  openPr: "打开 PR",
+  release: "放行",
+  reject: "拒绝",
+  rejectReason: "拒绝理由",
+  rejectPlaceholder: "写一句为什么拒绝（会转给主管）",
+  confirmReject: "确认拒绝",
+  cancel: "取消",
+  stalePr: "PR 已更新，请重新查看",
+  attentionDot: "需要你处理",
+} as const;
