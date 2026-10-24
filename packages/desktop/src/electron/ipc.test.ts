@@ -531,15 +531,15 @@ describe("handler 参数：第一个是 event，渲染进程参数从第二个�
     for (const c of PUSH_ONLY) expect(handlers.has(c), c).toBe(false);
   });
 
-  it("ipc.ts 导出的每个 serve* 都在本测试 wireAll 和 main.ts 里接上", () => {
+  it("ipc.ts 导出的每个 serve* 都在本测试 wireAll 和 main-handlers.ts（main.ts 经它注册，UI-06e）里接上", () => {
     const exported = Object.keys(ipcModule)
       .filter((k) => /^serve[A-Z]/.test(k))
       .sort();
     expect(exported.length).toBeGreaterThan(0);
     expect(Object.keys(SERVE).sort()).toEqual(exported);
-    const mainSrc = readFileSync(path.join(here, "main.ts"), "utf8");
+    const mainSrc = readFileSync(path.join(here, "main-handlers.ts"), "utf8");
     for (const name of exported) {
-      expect(mainSrc, name).toMatch(new RegExp(`\\b${name}\\(\\s*ipcMain\\b`));
+      expect(mainSrc, name).toMatch(new RegExp(`\\b${name}\\(\\s*ipc\\b`));
     }
   });
 
