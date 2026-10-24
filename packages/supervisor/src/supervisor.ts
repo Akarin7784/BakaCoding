@@ -123,6 +123,13 @@ function mergeReplies(first: ReplyBody, second: ReplyBody): ReplyBody {
 }
 
 const MAX_FILES_IN_PROMPT = 500;
+/** T-158：判断意图时带进提示词的对话上限（条数 / 字数），超出截掉最早的 */
+export const CHAT_CONTEXT_MAX_MESSAGES = 20;
+export const CHAT_CONTEXT_MAX_CHARS = 12000;
+/** 每次从对话记录里取的条数（再按项目筛、按上限截） */
+const CHAT_CONTEXT_FETCH = 200;
+/** 没注入 chatLog 时进程内最多留的对话条数 */
+const CHAT_MEMORY_MAX = 200;
 const MAX_FEEDBACK_DETAIL = 2000;
 
 /** 重启接管：这些状态的单重新 enqueue（派单时组合根按 PR 记录沿用已开的 PR，不重复开）。 */
@@ -1622,6 +1629,56 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     }
   }
 
+  /** T-158：没注入 chatLog 时，判断意图用的对话上下文存在进程内（最多 CHAT_MEMORY_MAX 条） */
+  const memLog: SupervisorMessage[] = [];
+  function remember(m: SupervisorMessage): void {
+    if (deps.chatLog) return;
+    if (memLog.some((x) => x.message_id === m.message_id)) return;
+    memLog.push(m);
+    if (memLog.length > CHAT_MEMORY_MAX) memLog.splice(0, memLog.length - CHAT_MEMORY_MAX);
+  }
+
+  /**
+   * T-158：本轮之前的对话（按项目取：同项目和还没定项目的；界面没传项目就不筛），
+   * 最多 CHAT_CONTEXT_MAX_MESSAGES 条、CHAT_CONTEXT_MAX_CHARS 字，超出截掉最早的并写明省略了几条。
+   * 读失败只记固定文案和错误码，不带历史内容；没有历史返回 null。
+   */
+  function conversationContext(project_id: string | undefined): string | null {
+    let all: readonly SupervisorMessage[];
+    try {
+      all = deps.chatLog
+        ? deps.chatLog.listSupervisorMessages({ limit: CHAT_CONTEXT_FETCH })
+        : memLog.slice(-CHAT_CONTEXT_FETCH);
+    } catch (err) {
+      const code = (err as { code?: unknown } | null)?.code;
+      logger.warn(
+        `读取主管对话历史失败，本轮不带历史（${typeof code === "string" ? code : "unknown"}）`,
+      );
+      return null;
+    }
+    const rows = project_id
+      ? all.filter((m) => m.project_id === project_id || m.project_id === null)
+      : [...all];
+    if (rows.length === 0) return null;
+    const lines: string[] = [];
+    let chars = 0;
+    for (let i = rows.length - 1; i >= 0 && lines.length < CHAT_CONTEXT_MAX_MESSAGES; i--) {
+      const m = rows[i]!;
+      const who = m.role === "user" ? "用户" : "主管";
+      let content = m.content;
+      const room = CHAT_CONTEXT_MAX_CHARS - chars;
+      if (content.length > room) {
+        if (lines.length > 0) break;
+        content = `…${content.slice(content.length - room + 1)}`;
+      }
+      lines.unshift(`[${who}] ${content}`);
+      chars += content.length;
+    }
+    const omitted = rows.length - lines.length;
+    if (omitted > 0) lines.unshift(`（更早的 ${omitted} 条对话已省略）`);
+    return lines.join("\n");
+  }
+
   function history(opts: { before?: string; limit?: number } = {}): SupervisorMessage[] {
     const log = deps.chatLog;
     if (!log) return [];
@@ -1638,7 +1695,9 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       // 先存用户消息（重试时调用方带回同一个 message_id，存储按幂等忽略），模型失败时只留这一条
       const u = nextMessage(clock().getTime());
       const userId = msg.message_id || u.message_id;
-      logChat({
+      // T-158：先取本轮之前的对话，再存这条用户消息，上下文里不会重复出现当前这条
+      const context = conversationContext(msg.project_id);
+      const userMsg: SupervisorMessage = {
         message_id: userId,
         project_id: msg.project_id ?? null,
         role: "user",
@@ -1648,14 +1707,16 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         ticket_ids: [],
         created_at: u.created_at,
         in_reply_to: null,
-      });
-      const reply = await chatBody(msg);
+      };
+      logChat(userMsg);
+      remember(userMsg);
+      const reply = await chatBody(msg, context);
       // 回复 id 由用户消息 id 推出（`<id>-r`）：重试时与上次已存的回复同 id，靠存储幂等去重；
       // created_at 仍取 10 的单调时间，调用方自带 id 时推后 1 毫秒，保证回复排在用户消息之后
       const at = clock().getTime();
       const r = nextMessage(msg.message_id ? Math.max(at, u.created_at + 1) : at);
       const replyId = `${userId}-r`;
-      logChat({
+      const replyMsg: SupervisorMessage = {
         message_id: replyId,
         project_id: reply.project_id ?? msg.project_id ?? null,
         role: "supervisor",
@@ -1666,7 +1727,9 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         created_at: r.created_at,
         // T-150：回复指向它对应的用户消息；重试同 id 时存储先写为准，仍指向原来那条
         in_reply_to: userId,
-      });
+      };
+      logChat(replyMsg);
+      remember(replyMsg);
       return { ...reply, message_id: replyId };
     } finally {
       chatSplitInflight = Math.max(0, chatSplitInflight - 1);
@@ -1674,7 +1737,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     }
   }
 
-  async function chatBody(msg: UserMessage): Promise<ReplyBody> {
+  async function chatBody(msg: UserMessage, context: string | null): Promise<ReplyBody> {
     const list = projects();
     const explicit = msg.project_id ? list.find((p) => p.project_id === msg.project_id) : undefined;
     // 有暂存需求时：界面传的 project_id 优先；否则原文里恰好提到一个项目才认领，
@@ -1718,17 +1781,19 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         { ...msg, text: rest, ...(explicit ? { project_id: explicit.project_id } : {}) },
         list,
         first.requirement_id,
+        context,
       );
       return mergeReplies(first, second);
     }
     pending = undefined;
-    return handle(msg, list);
+    return handle(msg, list, undefined, context);
   }
 
   async function handle(
     msg: UserMessage,
     list: ProjectInfo[],
     reuseRequirementId?: string,
+    context: string | null = null,
   ): Promise<ReplyBody> {
     const explicit = msg.project_id ? list.find((p) => p.project_id === msg.project_id) : undefined;
     const named = explicit ?? mentioned(msg.text, list);
@@ -1744,6 +1809,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         "projects",
         n,
       ),
+      ...(context ? [wrapUntrusted(context, "conversation", n)] : []),
       wrapUntrusted(msg.text, "user_message", n),
     ].join("\n\n");
     const trace: Trace = { trace_id: newId(), span_id: newId(), parent_span_id: null };
@@ -1771,14 +1837,16 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     } else if (project && !explicit) {
       note = `按项目「${project.name}」处理。`;
     }
+    // T-158：立项用模型合并对话后的完整需求；没给、为空或全是空白时退回这条原文
+    const text = (out.intent === "requirement" && out.requirement?.trim()) || msg.text;
     if (!project) {
       pending = {
         kind: out.intent,
-        text: out.intent === "decision" ? out.decision!.trim() : msg.text,
+        text: out.intent === "decision" ? out.decision!.trim() : text,
       };
       return { ...askProject(list), requirement_id };
     }
-    return act(out.intent, msg.text, out.decision, project, note, requirement_id);
+    return act(out.intent, text, out.decision, project, note, requirement_id);
   }
 
   // ---------- 高风险 PR 裁决（T-041c） ----------
