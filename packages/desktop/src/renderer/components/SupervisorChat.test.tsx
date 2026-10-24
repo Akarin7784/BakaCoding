@@ -316,6 +316,22 @@ describe("SupervisorChat 输入框项目 chip（UI-04b）", () => {
     expect(supervisorChat).toHaveBeenCalledTimes(1);
   });
 
+  it("外层 projectId 变了，chip 跟着变（T-149）", async () => {
+    const supervisorChat = vi.fn(ok);
+    const view = (projectId: string) => (
+      <SupervisorChat
+        store={new ChatStore()}
+        initial={[]}
+        api={{ supervisorChat, listProjects }}
+        projectId={projectId}
+      />
+    );
+    const r = render(view("p-1"));
+    await waitFor(() => expect(screen.getByTestId("composer-chip").textContent).toContain("商城"));
+    r.rerender(view("p-2"));
+    await waitFor(() => expect(screen.getByTestId("composer-chip").textContent).toContain("后台"));
+  });
+
   it("记住上次用的项目：重挂后 chip 默认就是它，发消息带上它", async () => {
     const supervisorChat = vi.fn(ok);
     const first = render(
