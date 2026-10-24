@@ -4,7 +4,7 @@
 // - 单子进度：每张单一行 TicketStepper，当前状态只看快照 tickets；事件只给 stepper 打标记。
 // - 评审上限：settings:config-get 的 pipeline.resubmit_limits.review + 1（查证见 lib/reviewLimit.ts）。
 // - 时间线：按 requirement_id 聚合，相邻模型调用折叠成一行（lib/requirementTimeline.ts）。
-// - 高风险待办卡片（UI-05d）：本需求的单有待裁决高风险 PR 时，在单子进度上方显示；顶部高风险横条保留兜底。
+// - 高风险待办卡片（UI-05d）：本需求的单有待裁决高风险 PR 时，在单子进度上方显示；顶部高风险横条 UI-06d 已删，高风险只在这里裁决。
 // UI-05f：标题右侧「⋯」菜单（RequirementMenu）：导出需求 / 单张单诊断包、在主管对话里追问；「需要你处理」交给 App。
 import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";

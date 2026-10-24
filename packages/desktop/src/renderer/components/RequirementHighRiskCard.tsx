@@ -1,5 +1,5 @@
 // UI-05d：需求页里的高风险待办卡片（docs/ui-design.md §4.4：高风险 PR 裁决挪进需求页时间线，
-// 「放行 / 拒绝」两个按钮，拒绝需填理由）。顶部高风险横条（HighRiskPanel）保留作兜底，不动。
+// 「放行 / 拒绝」两个按钮，拒绝需填理由）。顶部高风险横条（HighRiskPanel）UI-06d 已删。
 // 裁决走现有 high-risk:decide（ticket_id, pr_id, decision, detail?），拒绝理由放进 detail，不加新接口。
 import { useState } from "react";
 import { ShieldAlert } from "lucide-react";

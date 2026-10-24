@@ -14,7 +14,6 @@ import { ProjectPage } from "./components/ProjectPage";
 import { listRequirements, requirementName } from "./lib/requirementList";
 import { RightPanel } from "./components/RightPanel";
 import { UnattributedPanel } from "./components/Escalations";
-import { HighRiskPanel } from "./components/HighRiskPanel";
 import { RequirementPage } from "./components/RequirementPage";
 import { useRequirementRoute } from "./lib/requirementRoute";
 import { REQUIREMENT_MENU_COPY as M, REQUIREMENT_PAGE_COPY, TICKET_LIST_COPY } from "./lib/copy";
@@ -159,12 +158,6 @@ export function App(props: AppProps) {
   // T-127：动态标签的小点——面板开着且停在动态标签才算已读（§4.5.1）
   const viewingActivity = layout.rightPanelOpen && panelTab === "activity";
   const activityDot = useActivityDot(current, viewingActivity);
-
-  // 当前视图相关的高风险单优先；主管页显示全部
-  const panelItems =
-    selection.kind === "project" && current
-      ? highRisk.items.filter((i) => i.project_id === current.project.payload.project_id)
-      : highRisk.items;
 
   // UI-05d：左栏红点（高风险待裁决 / 有单上报）
   const attention = useMemo(() => attentionOf(tickets, highRisk.items), [tickets, highRisk.items]);
@@ -402,9 +395,6 @@ export function App(props: AppProps) {
                 onImport: () => void actions.importProject(),
               })}
           />
-        )}
-        {!showPrep && (
-          <HighRiskPanel items={panelItems} disabled={backendReadonly} onDecide={highRisk.decide} />
         )}
         {showPrep && api ? (
           <RepoPrepPage
