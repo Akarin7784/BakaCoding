@@ -234,6 +234,7 @@ flowchart BT
 | T-154 | 模块 11 抽出不依赖 node 的纯函数路径脱敏 `redactPathsPure`（`path-redaction-core.ts`），主进程 `redactPaths` 转给它（输出不变），渲染进程 `redactForView` 改用它（保留全角标点截止）；补 T-147 三条已接受限制的注释和测试；modules.md §11 / §12 同步。合入后 main `cf2b1d7`，测试 162 个文件 / 2698 passed + 2 skipped 个 | 11、12 | 界面与诊断开发 | 已合入 | #246 | cf2b1d7 |
 | T-155 | 模块 4：新增只读 `branchStatus(dir, { base_branch?, integration_branch?, timeout_ms? }?) → { current_branch: string \| null, ahead }`（ahead = `rev-list --count main..bakacoding/integration`，分离 HEAD 时 current_branch 为 null），失败抛 `BranchStatusError`（not_git / nested_repo / invalid_branch / no_base / no_integration / timeout / git_failed，消息不带路径和值）；补真实临时仓库用例（均做反向检查）；modules.md §4 同步。给 UI-06c `git:status` 用。合入后 main `436ab8f`，测试 168 个文件 / 2755 passed + 2 skipped 个 | 4 | 基础层开发 | 已合入 | #259 | `436ab8f` |
 | T-156 | 模块 4：补 T-155 `branchStatus` 的错误路径测试（不改实现）：rev-list 超时报 `timeout`；退出码非 0 / 被信号杀掉 / 输出非数字统一报 `git_failed`，断言 message、cause、自有属性和 JSON 序列化都不带原始 stderr、stdout 和路径；7 个错误码的 message 与固定文案完全相等。均做反向检查。合入后 main `c951631`，测试 172 个文件 / 2787 passed + 2 skipped 个 | 4 | 基础层开发 | 已合入 | #263 | c951631 |
+| T-157 | 模块 10：本轮调过模型的主管回复都带 `requirement_id`（answer、格式不对的兜底、ask_project 也带）；两段合并的回复第二段沿用第一段的 id，`mergeReplies` 不变；不动接口；补各情况用例（均做反向检查）；modules.md §10 同步。给 UI-06e 按 `requirement_id` 统计用量用 | 10 | 编排层开发 | 待评审 #273 | #273 | — |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
