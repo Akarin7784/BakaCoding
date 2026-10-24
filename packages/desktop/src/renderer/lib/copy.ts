@@ -99,3 +99,12 @@ export const ACTIVITY_COPY = {
   supervisor: "主管",
   subAgent: (ticket_id: string | null) => (ticket_id ? `副 Agent ${ticket_id}` : "副 Agent"),
 } as const;
+
+/** 主管对话输入框（UI-04b，§4.2）：项目 chip + 发送图标按钮。 */
+export const COMPOSER_COPY = {
+  inputLabel: "发给主管",
+  placeholder: "提需求或人工介入，说清是哪个项目",
+  send: "发送",
+  chipLabel: "选择项目",
+  noProject: "不指定",
+} as const;
