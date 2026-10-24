@@ -129,9 +129,9 @@ describe("listProjects()", () => {
     s.ingest(projectCreated("P-a", "2026-10-17T09:00:00.000Z"));
     s.ingest(projectCreated("P-c", "2026-10-17T07:00:00.000Z"));
     const want = [
-      { project_id: "P-c", name: "P-c", created_at: "2026-10-17T07:00:00.000Z" },
-      { project_id: "P-b", name: "P-b", created_at: "2026-10-17T08:00:00.000Z" },
-      { project_id: "P-a", name: "P-a", created_at: "2026-10-17T09:00:00.000Z" },
+      { project_id: "P-c", name: "P-c", created_at: "2026-10-17T07:00:00.000Z", repo_path: null },
+      { project_id: "P-b", name: "P-b", created_at: "2026-10-17T08:00:00.000Z", repo_path: null },
+      { project_id: "P-a", name: "P-a", created_at: "2026-10-17T09:00:00.000Z", repo_path: null },
     ];
     expect(s.listProjects()).toEqual(want);
     const ro = openStorageReadonly({ path });

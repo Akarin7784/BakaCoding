@@ -54,6 +54,7 @@ describe("EventSchema", () => {
         "group_message",
         "interface_changed",
         "project_created",
+        "project_removed",
         "review_backlog",
         "supervisor_backlog",
         "ticket_status_changed",
@@ -382,6 +383,7 @@ describe("requirement_id 可空规则（T-020）", () => {
   it("项目级事件允许 requirement_id 为 null（含 review_backlog / supervisor_backlog，T-066）", () => {
     expect(PROJECT_LEVEL_EVENT_TYPES).toEqual([
       "project_created",
+      "project_removed",
       "review_backlog",
       "supervisor_backlog",
     ]);

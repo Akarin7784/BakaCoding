@@ -202,6 +202,8 @@ export interface ProjectRow {
   /** 项目名（「项目已创建」事件里的 name，T-055 起返回） */
   name: string;
   created_at: string;
+  /** 仓库路径（T-142，「项目已创建」事件里的可选 repo_path），老记录为 null；只给桌面端主进程用 */
+  repo_path: string | null;
 }
 
 export interface Decision {
@@ -379,6 +381,12 @@ export interface Storage {
   listPrRounds(ticket_id: string): RoundRecord[];
   /** 所有已创建的项目（T-010），按创建时间先后排序（同一时刻按 project_id）。 */
   listProjects(): ProjectRow[];
+  /**
+   * 删除一条项目记录（T-142，只有写入方）。只删 projects 里的记录，不动仓库，不删历史事件；
+   * 项目不存在返回 `{ removed: false }`，不抛错。删掉后再收到新的 project_created 会重新登记。
+   * `project_id` 为空或不是字符串抛 `TypeError`（`code: "invalid_project_id"`，消息不带值）。
+   */
+  removeProject(project_id: string): { removed: boolean };
   groupMessages(project_id: string, requirement_id?: string): GroupMessageRow[];
   /**
    * 追加一条主管对话消息（T-091，只有写入方）。message_id 已存在时忽略、返回 inserted:false，先写的为准；
@@ -612,8 +620,10 @@ function open(options: StorageOptions, ro: boolean): Storage {
         @prompt_chars, @output_chars, @summary, @input_tokens, @output_tokens, @cache_hit_input_tokens, @cache_hit, @latency_ms, @cost, @is_resubmit, @rate_limited_retry)`,
     ),
     insertProject: db.prepare(
-      "INSERT OR IGNORE INTO projects (project_id, name, language, has_github_remote, created_at) VALUES (?, ?, ?, ?, ?)",
+      "INSERT OR IGNORE INTO projects (project_id, name, language, has_github_remote, created_at, repo_path) VALUES (?, ?, ?, ?, ?, ?)",
     ),
+    deleteProject: db.prepare("DELETE FROM projects WHERE project_id = ?"),
+    eventExists: db.prepare("SELECT 1 FROM events WHERE event_id = ?"),
     insertGroup: db.prepare(
       "INSERT OR IGNORE INTO groups (project_id, created_at, created_by_event) VALUES (?, ?, ?)",
     ),
@@ -657,15 +667,24 @@ function open(options: StorageOptions, ro: boolean): Storage {
       case "project_created": {
         const p = e.payload;
         project_id = p.project_id;
-        st.insertProject.run(
-          p.project_id,
-          r(p.name),
-          p.language,
-          p.has_github_remote ? 1 : 0,
-          e.ts,
-        );
+        // 同一条事件重投不重新登记（删除后只有新的 project_created 才能再登记，T-142）
+        if (!st.eventExists.get(e.event_id)) {
+          st.insertProject.run(
+            p.project_id,
+            r(p.name),
+            p.language,
+            p.has_github_remote ? 1 : 0,
+            e.ts,
+            p.repo_path ?? null,
+          );
+        }
         // 收到「项目已创建」后建群记录
         st.insertGroup.run(p.project_id, e.ts, e.event_id);
+        break;
+      }
+      case "project_removed": {
+        project_id = e.payload.project_id;
+        if (!st.eventExists.get(e.event_id)) st.deleteProject.run(project_id);
         break;
       }
       case "group_message": {
@@ -824,6 +843,11 @@ function open(options: StorageOptions, ro: boolean): Storage {
   }
 
   // ---------- 需求单 / PR 记录 ----------
+  const removeProject = write("removeProject", (project_id: string) => {
+    if (typeof project_id !== "string" || project_id.length === 0) throw invalidProjectId();
+    return { removed: st.deleteProject.run(project_id).changes > 0 };
+  });
+
   const saveTicket = write("saveTicket", (t: TicketInput) => {
     st.upsertRequirement.run(t.requirement_id, t.project_id);
     db.prepare(
@@ -1355,10 +1379,11 @@ function open(options: StorageOptions, ro: boolean): Storage {
     listProjects() {
       return db
         .prepare(
-          "SELECT project_id, name, created_at FROM projects ORDER BY created_at, project_id",
+          "SELECT project_id, name, created_at, repo_path FROM projects ORDER BY created_at, project_id",
         )
         .all() as ProjectRow[];
     },
+    removeProject,
     listDecisions(project_id) {
       return db
         .prepare(
