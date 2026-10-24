@@ -236,6 +236,7 @@ flowchart BT
 | T-155 | 模块 4：新增只读 `branchStatus(dir, { base_branch?, integration_branch?, timeout_ms? }?) → { current_branch: string \| null, ahead }`（ahead = `rev-list --count main..bakacoding/integration`，分离 HEAD 时 current_branch 为 null），失败抛 `BranchStatusError`（not_git / nested_repo / invalid_branch / no_base / no_integration / timeout / git_failed，消息不带路径和值）；补真实临时仓库用例（均做反向检查）；modules.md §4 同步。给 UI-06c `git:status` 用。合入后 main `436ab8f`，测试 168 个文件 / 2755 passed + 2 skipped 个 | 4 | 基础层开发 | 已合入 | #259 | `436ab8f` |
 | T-156 | 模块 4：补 T-155 `branchStatus` 的错误路径测试（不改实现）：rev-list 超时报 `timeout`；退出码非 0 / 被信号杀掉 / 输出非数字统一报 `git_failed`，断言 message、cause、自有属性和 JSON 序列化都不带原始 stderr、stdout 和路径；7 个错误码的 message 与固定文案完全相等。均做反向检查。合入后 main `c951631`，测试 172 个文件 / 2787 passed + 2 skipped 个 | 4 | 基础层开发 | 已合入 | #263 | c951631 |
 | T-157 | 模块 10：本轮调过模型的主管回复都带 `requirement_id`（answer、格式不对的兜底、ask_project 也带）；两段合并的回复第二段沿用第一段的 id，`mergeReplies` 不变；不动接口；补各情况用例（均做反向检查）；modules.md §10 同步。给 UI-06e 按 `requirement_id` 统计用量用。合入后 main `04a4725`，测试 180 个文件 / 2897 passed + 2 skipped | 10 | 编排层开发 | 已合入 | #273 | 04a4725 |
+| T-158 | 【preview.1 阻断项】模块 10：主管多轮澄清保留上下文。来源：Eva 在 Windows 实机测 preview.1 包（`a59cf05`）时发现，回「按默认方案」时主管找不到上一轮的默认方案，同一句需求被当成新需求从头追问，回「spring boot4」被理解成要升级当前项目。要求：(1) 同一 requirement 的澄清追问把之前的用户和主管对话带进模型上下文，有条数或 token 上限，超出时截掉最早的，不能静默丢掉；(2) 用户回「按默认来」这类短句时，接上主管最近一次提的问题；(3) 回归测试：用上述三轮对话的脚本断言第二轮请求里包含第一轮的问答；(4) 错误文本只用码或固定文案，不把历史全文写进日志。合入后重新打包，Eva 实机复测通过后再发布 | 10 | 编排层开发 | 待开工 | | |
 
 编排层第二批需求单为 T-035～T-042；T-044、T-045、T-047 是执行层跟进单；T-046 由编排层改派给执行层。
 
